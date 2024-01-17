@@ -12,41 +12,43 @@ from fhir.resources.procedure import Procedure
 from sqlalchemy import MetaData, Table, create_engine, select
 from tqdm import tqdm
 
+
 class FHIRDataCollector:
     """Collect data from the FHIR database and save to csv files."""
+
     def __init__(
-        self,
-        db_path: str,
-        schema: str = 'mimic_fhir',
-        save_dir: str = 'data_files',
-        buffer_size: int = 10000,
+            self,
+            db_path: str,
+            schema: str = 'mimic_fhir',
+            save_dir: str = 'data_files',
+            buffer_size: int = 10000,
     ) -> None:
         self.engine = create_engine(db_path)
         self.metadata = MetaData()
         self.schema = schema
         self.save_dir = save_dir
         self.buffer_size = buffer_size
-        
+
         os.makedirs(self.save_dir, exist_ok=True)
-    
+
     def get_patient_data(self) -> None:
         """Get patient data from the database and save to a csv file."""
         patients_table = Table(
-            'patient', 
-            self.metadata, 
-            autoload_with=self.engine, 
+            'patient',
+            self.metadata,
+            autoload_with=self.engine,
             schema=self.schema
         )
-        
+
         patient_cols = [
             'patient_id', 'birthDate', 'gender', 'deceasedBoolean', 'deceasedDateTime'
         ]
         save_path = os.path.join(self.save_dir, 'patients.csv')
         buffer = []
-        
+
         with self.engine.connect() as connection:
             query = select(patients_table.c.fhir)
-            results = connection.execute(query).fetchall() 
+            results = connection.execute(query).fetchall()
             for p in tqdm(results, desc="Processing patients", unit="patient"):
                 patient = Patient(p[0])
                 patient_data = {
@@ -64,20 +66,20 @@ class FHIRDataCollector:
                     buffer = []
                     df_buffer.to_csv(
                         save_path,
-                        mode='a', 
-                        header=(not os.path.exists(save_path)), 
+                        mode='a',
+                        header=(not os.path.exists(save_path)),
                         index=False
                     )
 
             if buffer:
                 df_buffer = pd.DataFrame(buffer, columns=patient_cols)
                 df_buffer.to_csv(
-                    save_path, 
-                    mode='a', 
-                    header=(not os.path.exists(save_path)), 
+                    save_path,
+                    mode='a',
+                    header=(not os.path.exists(save_path)),
                     index=False
                 )
-                
+
     def get_encounter_data(self) -> None:
         """Get encounter data from the database and save to a csv file."""
         try:
@@ -85,31 +87,31 @@ class FHIRDataCollector:
         except FileNotFoundError:
             print("Patients file not found. Please run get_patient_data() first.")
             return
-        
+
         encounters_table = Table(
-            'encounter', 
-            self.metadata, 
-            autoload_with=self.engine, 
+            'encounter',
+            self.metadata,
+            autoload_with=self.engine,
             schema=self.schema
         )
-        
+
         encounter_cols = ['patient_id', 'length', 'encounter_ids', 'starts', 'ends']
         save_path = os.path.join(self.save_dir, 'encounters.csv')
         buffer = []
         outpatient_ids = []
-        
+
         with self.engine.connect() as connection:
             for _, patient_id in tqdm(
-                patients['patient_id'].items(), desc="Processing patients", unit="patient"):
+                    patients['patient_id'].items(), desc="Processing patients", unit="patient"):
                 query = (
-                    select(encounters_table.c.fhir) 
+                    select(encounters_table.c.fhir)
                     .where(encounters_table.c.patient_id == patient_id)
                 )
-                results = connection.execute(query).fetchall() 
+                results = connection.execute(query).fetchall()
                 if len(results) == 0:
                     outpatient_ids.append(patient_id)
                     continue
-                
+
                 starts = []
                 ends = []
                 ids = []
@@ -118,10 +120,10 @@ class FHIRDataCollector:
                     starts.append(enc.period.start.isostring)
                     ends.append(enc.period.end.isostring)
                     ids.append(enc.id)
-                
+
                 assert len(starts) == len(ends), \
                     f"Length of starts and ends should be equal. {len(starts)} != {len(ends)}"
-                
+
                 e_data = {
                     'patient_id': patient_id,
                     'length': len(starts),
@@ -134,24 +136,24 @@ class FHIRDataCollector:
                     df_buffer = pd.DataFrame(buffer, columns=encounter_cols)
                     buffer = []
                     df_buffer.to_csv(
-                        save_path, 
-                        mode='a', 
-                        header=(not os.path.exists(save_path)), 
+                        save_path,
+                        mode='a',
+                        header=(not os.path.exists(save_path)),
                         index=False
                     )
 
             if buffer:
                 df_buffer = pd.DataFrame(buffer, columns=encounter_cols)
                 df_buffer.to_csv(
-                    save_path, 
-                    mode='a', 
-                    header=(not os.path.exists(save_path)), 
+                    save_path,
+                    mode='a',
+                    header=(not os.path.exists(save_path)),
                     index=False
                 )
-        
+
         patients = patients[~patients['patient_id'].isin(outpatient_ids)]
         patients.to_csv(self.save_dir + '/inpatient.csv', index=False)
-        
+
     def get_procedure_data(self) -> None:
         """Get procedure data from the database and save to a csv file."""
         try:
@@ -159,49 +161,49 @@ class FHIRDataCollector:
         except FileNotFoundError:
             print("Patients file not found. Please run get_encounter_data() first.")
             return
-        
+
         procedure_table = Table(
-            'procedure', 
-            self.metadata, 
-            autoload_with=self.engine, 
+            'procedure',
+            self.metadata,
+            autoload_with=self.engine,
             schema=self.schema
         )
-        
+
         procedure_cols = [
             'patient_id', 'length', 'proc_codes', 'proc_dates', 'encounter_ids'
         ]
         save_path = os.path.join(self.save_dir, 'procedures.csv')
         procedure_vocab = set()
         buffer = []
-        
+
         with self.engine.connect() as connection:
             for _, patient_id in tqdm(
-                patients['patient_id'].items(), desc="Processing patients", unit="patient"
+                    patients['patient_id'].items(), desc="Processing patients", unit="patient"
             ):
                 query = (
-                    select(procedure_table.c.fhir) 
+                    select(procedure_table.c.fhir)
                     .where(procedure_table.c.patient_id == patient_id)
                 )
-                
-                results = connection.execute(query).fetchall() 
+
+                results = connection.execute(query).fetchall()
                 proc_codes = []
                 proc_dates = []
                 encounters = []
-                
+
                 for row in results:
                     proc = Procedure(row[0])
                     if proc.encounter is None or proc.code is None \
-                        or proc.performedDateTime is None:
+                            or proc.performedDateTime is None:
                         continue
                     proc_codes.append(proc.code.coding[0].code)
                     proc_dates.append(proc.performedDateTime.isostring)
                     encounters.append(proc.encounter.reference.split('/')[-1])
                     procedure_vocab.add(proc.code.coding[0].code)
-                    
-                assert len(proc_codes) == len(proc_dates),\
+
+                assert len(proc_codes) == len(proc_dates), \
                     f"Length of proc_codes and proc_dates should be equal. \
                         {len(proc_codes)} != {len(proc_dates)}"
-                
+
                 m_data = {
                     'patient_id': patient_id,
                     'length': len(proc_codes),
@@ -214,24 +216,24 @@ class FHIRDataCollector:
                     df_buffer = pd.DataFrame(buffer, columns=procedure_cols)
                     buffer = []
                     df_buffer.to_csv(
-                        save_path, 
-                        mode='a', 
-                        header=(not os.path.exists(save_path)), 
+                        save_path,
+                        mode='a',
+                        header=(not os.path.exists(save_path)),
                         index=False
                     )
 
             if buffer:
                 df_buffer = pd.DataFrame(buffer, columns=procedure_cols)
                 df_buffer.to_csv(
-                    save_path, 
-                    mode='a', 
-                    header=(not os.path.exists(save_path)), 
+                    save_path,
+                    mode='a',
+                    header=(not os.path.exists(save_path)),
                     index=False
                 )
-                
+
         with open(self.save_dir + '/procedure_vocab.json', 'w') as f:
             json.dump(list(procedure_vocab), f)
-        
+
     def get_medication_data(self) -> None:
         """Get medication data from the database and save to a csv file."""
         try:
@@ -239,33 +241,33 @@ class FHIRDataCollector:
         except FileNotFoundError:
             print("Patients file not found. Please run get_encounter_data() first.")
             return
-        
+
         med_request_table = Table(
-            'medication_request', 
-            self.metadata, 
-            autoload_with=self.engine, 
+            'medication_request',
+            self.metadata,
+            autoload_with=self.engine,
             schema=self.schema
         )
         medication_table = Table(
-            'medication', 
-            self.metadata, 
-            autoload_with=self.engine, 
+            'medication',
+            self.metadata,
+            autoload_with=self.engine,
             schema=self.schema
         )
-        
-        medication_cols =  ['patient_id', 'length', 'med_codes', 'med_dates', 'encounter_ids']
+
+        medication_cols = ['patient_id', 'length', 'med_codes', 'med_dates', 'encounter_ids']
         save_path = os.path.join(self.save_dir, 'med_requests.csv')
         med_vocab = set()
         buffer = []
-        
+
         with self.engine.connect() as connection:
             for _, patient_id in tqdm(
-                patients['patient_id'].items(), desc="Processing patients", unit="patient"):
+                    patients['patient_id'].items(), desc="Processing patients", unit="patient"):
                 query = (
-                    select(med_request_table.c.fhir) 
+                    select(med_request_table.c.fhir)
                     .where(med_request_table.c.patient_id == patient_id)
                 )
-                results = connection.execute(query).fetchall() 
+                results = connection.execute(query).fetchall()
                 med_codes = []
                 med_dates = []
                 encounters = []
@@ -289,7 +291,7 @@ class FHIRDataCollector:
                             continue
                         med_query = (select(medication_table.c.fhir).where(
                             medication_table.c.id == \
-                                med_req.medicationReference.reference.split('/')[-1]))
+                            med_req.medicationReference.reference.split('/')[-1]))
                         med_result = connection.execute(med_query).fetchone()
                         med_result = Medication(med_result[0]) if med_result else None
                         if med_result is not None:
@@ -300,7 +302,7 @@ class FHIRDataCollector:
                             med_codes.append(code)
                             med_dates.append(med_req.authoredOn.isostring)
                             encounters.append(med_req.encounter.reference.split('/')[-1])
-                        
+
                 assert len(med_codes) == len(med_dates), \
                     f"Length of med_codes and med_dates should be equal. \
                         {len(med_codes)} != {len(med_dates)}"
@@ -316,24 +318,23 @@ class FHIRDataCollector:
                     df_buffer = pd.DataFrame(buffer, columns=medication_cols)
                     buffer = []
                     df_buffer.to_csv(
-                        save_path, 
-                        mode='a', 
-                        header=(not os.path.exists(save_path)), 
+                        save_path,
+                        mode='a',
+                        header=(not os.path.exists(save_path)),
                         index=False
                     )
 
             if buffer:
                 df_buffer = pd.DataFrame(buffer, columns=medication_cols)
                 df_buffer.to_csv(
-                    save_path, 
-                    mode='a', 
-                    header=(not os.path.exists(save_path)), 
+                    save_path,
+                    mode='a',
+                    header=(not os.path.exists(save_path)),
                     index=False
                 )
         with open(self.save_dir + '/med_vocab.json', 'w') as f:
             json.dump(list(med_vocab), f)
-                
-                
+
     def get_lab_data(self) -> None:
         """Get lab data from the database and save to a csv file."""
         try:
@@ -341,66 +342,65 @@ class FHIRDataCollector:
         except FileNotFoundError:
             print("Patients file not found. Please run get_encounter_data() first.")
             return
-        
+
         lab_table = Table(
-            'observation_labevents', 
-            self.metadata, 
-            autoload_with=self.engine, 
+            'observation_labevents',
+            self.metadata,
+            autoload_with=self.engine,
             schema=self.schema
         )
-        
+
         lab_cols = [
-            'patient_id', 'length', 'lab_codes', 'lab_values', 
+            'patient_id', 'length', 'lab_codes', 'lab_values',
             'lab_units', 'lab_dates', 'encounter_ids'
         ]
         save_path = os.path.join(self.save_dir, 'labs.csv')
         lab_vocab = set()
         all_units = {}
         buffer = []
-        
+
         with self.engine.connect() as connection:
             for _, patient_id in tqdm(
-                patients['patient_id'].items(), desc="Processing patients", unit="patient"
+                    patients['patient_id'].items(), desc="Processing patients", unit="patient"
             ):
                 query = (
-                    select(lab_table.c.fhir) 
+                    select(lab_table.c.fhir)
                     .where(lab_table.c.patient_id == patient_id)
                 )
-                
-                results = connection.execute(query).fetchall() 
+
+                results = connection.execute(query).fetchall()
                 lab_codes = []
                 lab_values = []
                 lab_units = []
                 lab_dates = []
                 encounters = []
-                
+
                 for row in results:
                     event = Observation(row[0])
                     if event.encounter is None \
-                        or event.effectiveDateTime is None \
-                        or event.code is None \
-                        or event.valueQuantity is None:
+                            or event.effectiveDateTime is None \
+                            or event.code is None \
+                            or event.valueQuantity is None:
                         continue
                     code = event.code.coding[0].code
-                    
+
                     lab_codes.append(code)
                     lab_vocab.add(code)
-                    
+
                     lab_dates.append(event.effectiveDateTime.isostring)
                     lab_values.append(event.valueQuantity.value)
                     lab_units.append(event.valueQuantity.unit)
                     encounters.append(event.encounter.reference.split('/')[-1])
-                    
+
                     if code not in all_units:
                         all_units[code] = set([event.valueQuantity.unit])
                     else:
                         all_units[code].add(event.valueQuantity.unit)
-                    
-                    
-                assert len(lab_codes) == len(lab_values) == len(lab_dates),\
+
+                assert len(lab_codes) == len(lab_values) == len(lab_dates), \
                     f"Length of lab_codes, lab_values and lab_dates should be equal. \
                         {len(lab_codes)} != {len(lab_values)} != {len(lab_dates)}"
-                
+
                 m_data = {
                     'patient_id': patient_id,
                     'length': len(lab_codes),
@@ -415,29 +415,29 @@ class FHIRDataCollector:
                     df_buffer = pd.DataFrame(buffer, columns=lab_cols)
                     buffer = []
                     df_buffer.to_csv(
-                        save_path, 
-                        mode='a', 
-                        header=(not os.path.exists(save_path)), 
+                        save_path,
+                        mode='a',
+                        header=(not os.path.exists(save_path)),
                         index=False
                     )
 
             if buffer:
                 df_buffer = pd.DataFrame(buffer, columns=lab_cols)
                 df_buffer.to_csv(
-                    save_path, 
-                    mode='a', 
-                    header=(not os.path.exists(save_path)), 
+                    save_path,
+                    mode='a',
+                    header=(not os.path.exists(save_path)),
                     index=False
                 )
-                
+
         with open(self.save_dir + '/lab_vocab.json', 'w') as f:
             json.dump(list(lab_vocab), f)
-            
+
         all_units = {k: list(v) for k, v in all_units.items()}
         with open(self.save_dir + '/lab_units.json', 'w') as f:
             json.dump(all_units, f)
-            
-    def filter_lab_data(self,) -> None:
+
+    def filter_lab_data(self, ) -> None:
         """Filter out lab codes that have more than one units."""
         try:
             labs = pd.read_csv(self.save_dir + '/labs.csv')
@@ -446,30 +446,30 @@ class FHIRDataCollector:
         except FileNotFoundError:
             print("Labs file not found. Please run get_lab_data() first.")
             return
-        
+
         for code, units in lab_units.items():
             if len(units) > 1:
                 lab_vocab.remove(code)
-                
+
         def filter_codes(row, vocab):
             for col in \
-                ['lab_codes', 'lab_values', 'lab_units', 'lab_dates', 'encounter_ids']:
+                    ['lab_codes', 'lab_values', 'lab_units', 'lab_dates', 'encounter_ids']:
                 row[col] = eval(row[col])
-                
+
             indices = [i for i, code in enumerate(row['lab_codes']) if code in vocab]
             for col in \
-                ['lab_codes', 'lab_values', 'lab_units', 'lab_dates', 'encounter_ids']:
+                    ['lab_codes', 'lab_values', 'lab_units', 'lab_dates', 'encounter_ids']:
                 row[col] = [row[col][i] for i in indices]
-                
+
             row['length'] = len(row['lab_codes'])
             return row
-        
+
         labs = labs.apply(lambda x: filter_codes(x, lab_vocab), axis=1)
-        
+
         labs.to_csv(self.save_dir + '/filtered_labs.csv', index=False)
         with open(self.save_dir + '/lab_vocab.json', 'w') as f:
             json.dump(list(lab_vocab), f)
-            
+
     def process_lab_values(self, num_bins: int = 5):
         """Bin lab values into discrete values.
 
@@ -484,12 +484,12 @@ class FHIRDataCollector:
         except FileNotFoundError:
             print("Labs file not found. Please run get_lab_data() first.")
             return
-        
+
         def apply_eval(row):
             for col in ['lab_codes', 'lab_values']:
                 row[col] = eval(row[col])
             return row
-        
+
         def assign_to_quantile_bins(row):
             if row['length'] == 0:
                 row['binned_values'] = []
@@ -500,21 +500,21 @@ class FHIRDataCollector:
                 binned_values.append(bin_index)
             row['binned_values'] = binned_values
             return row
-        
+
         labs = labs.apply(apply_eval, axis=1)
         quantile_bins = {}
         for code in lab_vocab:
             all_values = [
-                value for sublist, sublist_codes in zip(labs['lab_values'], labs['lab_codes']) 
+                value for sublist, sublist_codes in zip(labs['lab_values'], labs['lab_codes'])
                 for value, sublist_code in zip(sublist, sublist_codes) if sublist_code == code
             ]
-                    
+
             quantile_bins[code] = pd.qcut(all_values, q=num_bins, duplicates='drop').categories
-        
+
         labs = labs.apply(assign_to_quantile_bins, axis=1)
         labs.to_csv(self.save_dir + '/processed_labs.csv', index=False)
-        
-        
+
+
 if __name__ == '__main__':
     collector = FHIRDataCollector(
         db_path='postgresql://postgres:pwd@localhost:5432/mimiciv-2.0',
@@ -529,12 +529,3 @@ if __name__ == '__main__':
     collector.get_lab_data()
     collector.filter_lab_data()
     collector.process_lab_values()
-    
-    
-            
-    
-        
-
-
-
-
