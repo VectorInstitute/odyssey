@@ -168,7 +168,7 @@ output_size = 1  # Binary classification, so output size is 1
 dropout_rate = 0.5  # Dropout rate for regularization
 
 epochs = 10
-learning_rate = 0.003
+learning_rate = 0.0005
 
 # Training Loop
 model = BiLSTMModel(input_size, hidden_size, num_layers, output_size, dropout_rate).to(config.device)
@@ -181,7 +181,7 @@ for epoch in range(epochs):
     train_accuracy = 0
     test_accuracy = 0
 
-    mode.train()
+    model.train()
     for batch_no, batch in tqdm(enumerate(train_loader),
                                 total=len(train_loader), desc=f'Epoch {epoch + 1}/{epochs}', unit=' batch'):
         inputs, labels = model.get_inputs_labels(batch)
@@ -214,6 +214,7 @@ for epoch in range(epochs):
             test_accuracy += balanced_accuracy_score(labels, predictions)
 
     print(
+        f'Epoch {epoch + 1}/{epochs}  |  '
         f'Average Train Loss: {train_total_loss / len(train_loader):.5f}  |  Last Batch Train Loss: {loss.item()}  |  '
         f'Train Accuracy: {train_accuracy / len(train_loader)}  |  Test Accuracy: {test_accuracy / len(test_loader)}')
     scheduler.step()

@@ -119,10 +119,10 @@ class Embeddings(nn.Module):
         self.time_embedding = TimeEmbeddingLayer(embedding_size=time_embedding_size)
         self.age_embedding = TimeEmbeddingLayer(embedding_size=time_embedding_size)
         self.positional_embedding = PositionalEmbedding(
-            embedding_size=embedding_size, max_len=max_len                                      ###### CHANGE
+            embedding_size=time_embedding_size, max_len=max_len                                      ###### CHANGE
         )
         self.visit_embedding = VisitEmbedding(
-            visit_order_size=visit_order_size, embedding_size=time_embedding_size               ###### CHANGE
+            visit_order_size=visit_order_size, embedding_size=embedding_size               ###### CHANGE
         )
         self.scale_back_concat_layer = nn.Linear(
             embedding_size + 3 * time_embedding_size, embedding_size
