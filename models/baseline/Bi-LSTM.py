@@ -43,7 +43,7 @@ class config:
     data_dir = DATA_ROOT
     test_size = 0.2
     batch_size = 64
-    num_workers = 3
+    num_workers = 2
     vocab_size = None
     embedding_size = 128
     time_embeddings_size = 16
@@ -123,7 +123,7 @@ train_loader = DataLoader(
     train_dataset_with_lengths,
     batch_size=config.batch_size,
     num_workers=config.num_workers,
-    shuffle=True,
+    shuffle=False,
     pin_memory=True,
 )
 
@@ -131,7 +131,7 @@ test_loader = DataLoader(
     test_dataset_with_lengths,
     batch_size=config.batch_size,
     num_workers=config.num_workers,
-    shuffle=True,
+    shuffle=False,
     pin_memory=True,
 )
 
@@ -200,12 +200,14 @@ num_layers = 5  # number of LSTM layers
 output_size = 1  # Binary classification, so output size is 1
 dropout_rate = 0.2  # Dropout rate for regularization
 
-epochs = 10
+epochs = 6
 learning_rate = 0.001
 
+# %%
 # Training Loop
 model = BiLSTMModel(input_size, hidden_size, num_layers, output_size, dropout_rate).to(config.device)
-loss_fcn = nn.BCEWithLogitsLoss()
+class_weights = torch.tensor([8.0]).to(config.device)  # because ~11% of data is of class 1
+loss_fcn = nn.BCEWithLogitsLoss(weight=class_weights)
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 scheduler = ExponentialLR(optimizer, gamma=0.7, verbose=True)
 
@@ -213,7 +215,6 @@ for epoch in range(epochs):
     train_total_loss = 0
     train_accuracy = 0
     test_accuracy = 0
-
 
     model.train()
     for batch_no, (sequences, lengths) in tqdm(enumerate(train_loader), file=sys.stdout,
@@ -228,8 +229,8 @@ for epoch in range(epochs):
         optimizer.step()
 
         train_total_loss += loss.item()
-        tqdm.write(f'\nBatch Loss: {loss.item():.4f}', end='\r')
-
+        # tqdm.write(f'Batch Loss: {loss.item():.4f}', file=sys.stdout, end='\r')
+        # print(f'\nBatch Loss: {loss.item():.4f}', end='\r')
 
     model.eval()
     with torch.no_grad():
@@ -240,7 +241,6 @@ for epoch in range(epochs):
             inputs, labels = model.get_inputs_labels(sequences)
             outputs = model(inputs, lengths)
             train_accuracy += model.get_balanced_accuracy(outputs, labels)
-
 
         for batch_no, (sequences, lengths) in tqdm(enumerate(test_loader), file=sys.stdout,
                                                    total=len(test_loader), desc=f'Test Evaluation {epoch + 1}/{epochs}',
@@ -256,4 +256,4 @@ for epoch in range(epochs):
         f'Test Accuracy: {test_accuracy / len(test_loader):.5f}\n\n')
     scheduler.step()
 
-torch.save(model, 'LSTM_V1.pt')
+torch.save(model, 'LSTM_V4_Weighted.pt')
