@@ -122,6 +122,7 @@ def main(args):
 
     model = BertPretrain(
         vocab_size=tokenizer.get_vocab_size(),
+        padding_idx=tokenizer.get_pad_token_id(),
     )
 
     trainer.fit(
