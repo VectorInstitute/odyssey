@@ -24,39 +24,40 @@ def main(args):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     pl.seed_everything(args.seed)
-    
+
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
     torch.cuda.empty_cache()
-    torch.set_float32_matmul_precision('medium')
+    torch.set_float32_matmul_precision("medium")
 
     if not args.resume:
-        data = pd.read_parquet(join(args.data_dir, 'patient_sequences.parquet'))
+        data = pd.read_parquet(join(args.data_dir, "patient_sequences.parquet"))
 
-        data['label'] = \
-            ((data['death_after_end']>0) & (data['death_after_end']< 365)).astype(int)
-        neg_pos_data = data[(data['deceased'] == 0) | (data['label'] == 1)]
+        data["label"] = (
+            (data["death_after_end"] > 0) & (data["death_after_end"] < 365)
+        ).astype(int)
+        neg_pos_data = data[(data["deceased"] == 0) | (data["label"] == 1)]
 
         pre_data = data[~data.index.isin(neg_pos_data.index)]
 
         pre_df, fine_df = train_test_split(
-            neg_pos_data, 
-            test_size=args.finetune_size, 
-            random_state=args.seed, 
-            stratify=neg_pos_data['label']
+            neg_pos_data,
+            test_size=args.finetune_size,
+            random_state=args.seed,
+            stratify=neg_pos_data["label"],
         )
 
         pre_data = pd.concat([pre_data, pre_df])
-        
-        fine_df.to_parquet(join(args.data_dir, 'fine_tune.parquet'))
-        pre_data.to_parquet(join(args.data_dir, 'pretrain.parquet'))
+
+        fine_df.to_parquet(join(args.data_dir, "fine_tune.parquet"))
+        pre_data.to_parquet(join(args.data_dir, "pretrain.parquet"))
     else:
-        pre_data = pd.read_parquet(join(args.data_dir, 'pretrain.parquet'))
-    
+        pre_data = pd.read_parquet(join(args.data_dir, "pretrain.parquet"))
+
     pre_train, pre_val = train_test_split(
-        pre_data, 
-        test_size=args.val_size, 
-        random_state=args.seed, 
-        stratify=pre_data['label']
+        pre_data,
+        test_size=args.val_size,
+        random_state=args.seed,
+        stratify=pre_data["label"],
     )
 
     tokenizer = ConceptTokenizer(data_dir=args.data_dir)
@@ -68,7 +69,7 @@ def main(args):
         max_len=args.max_len,
         mask_prob=args.mask_prob,
     )
-    
+
     val_dataset = PretrainDataset(
         data=pre_val,
         tokenizer=tokenizer,
@@ -89,7 +90,7 @@ def main(args):
         num_workers=args.num_workers,
         pin_memory=True,
     )
-    
+
     callbacks = [
         ModelCheckpoint(
             monitor="val_loss",
@@ -103,13 +104,13 @@ def main(args):
         LearningRateMonitor(logging_interval="step"),
     ]
     wandb_logger = WandbLogger(
-        project="pretrain", 
+        project="pretrain",
         save_dir=args.log_dir,
     )
     trainer = pl.Trainer(
-        accelerator='gpu',
+        accelerator="gpu",
         devices=args.gpus,
-        strategy=DDPStrategy(find_unused_parameters=True) if args.gpus > 1 else 'auto',
+        strategy=DDPStrategy(find_unused_parameters=True) if args.gpus > 1 else "auto",
         precision=16,
         check_val_every_n_epoch=1,
         max_epochs=args.max_epochs,
@@ -128,98 +129,72 @@ def main(args):
         train_dataloaders=train_loader,
         val_dataloaders=val_loader,
     )
-    
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        '--seed', 
-        type=int, 
-        default=42, 
-        help='Random seed for reproducibility'
+        "--seed", type=int, default=42, help="Random seed for reproducibility"
     )
     parser.add_argument(
-        '--resume', 
-        action='store_true', 
-        help='Flag to resume training from a checkpoint'
+        "--resume",
+        action="store_true",
+        help="Flag to resume training from a checkpoint",
     )
     parser.add_argument(
-        '--data_dir',
-        type=str,
-        default='data_files',
-        help='Path to the data directory'
+        "--data_dir", type=str, default="data_files", help="Path to the data directory"
     )
     parser.add_argument(
-        '--finetune_size',
+        "--finetune_size",
         type=float,
         default=0.1,
-        help='Finetune dataset size for splitting the data'
+        help="Finetune dataset size for splitting the data",
     )
     parser.add_argument(
-        '--val_size',
+        "--val_size",
         type=float,
         default=0.1,
-        help='Validation set size for splitting the data'
+        help="Validation set size for splitting the data",
     )
     parser.add_argument(
-        '--max_len',
-        type=int,
-        default=512,
-        help='Maximum length of the sequence'
+        "--max_len", type=int, default=512, help="Maximum length of the sequence"
     )
     parser.add_argument(
-        '--mask_prob',
-        type=float,
-        default=0.15,
-        help='Probability of masking the token'
+        "--mask_prob", type=float, default=0.15, help="Probability of masking the token"
     )
     parser.add_argument(
-        '--batch_size',
-        type=int,
-        default=32,
-        help='Batch size for training'
+        "--batch_size", type=int, default=32, help="Batch size for training"
     )
     parser.add_argument(
-        '--num_workers',
-        type=int,
-        default=4,
-        help='Number of workers for training'
+        "--num_workers", type=int, default=4, help="Number of workers for training"
     )
     parser.add_argument(
-        '--checkpoint_dir', 
-        type=str, 
-        default='checkpoints/pretraining', 
-        help='Path to the training checkpoint'
-    )
-    parser.add_argument(
-        '--log_dir',
+        "--checkpoint_dir",
         type=str,
-        default='logs',
-        help='Path to the log directory'
+        default="checkpoints/pretraining",
+        help="Path to the training checkpoint",
     )
     parser.add_argument(
-        '--gpus',
-        type=int,
-        default=2,
-        help='Number of gpus for training'
+        "--log_dir", type=str, default="logs", help="Path to the log directory"
     )
     parser.add_argument(
-        '--max_epochs',
-        type=int,
-        default=50,
-        help='Number of epochs for training'
+        "--gpus", type=int, default=2, help="Number of gpus for training"
     )
     parser.add_argument(
-        '--log_every_n_steps',
+        "--max_epochs", type=int, default=50, help="Number of epochs for training"
+    )
+    parser.add_argument(
+        "--log_every_n_steps",
         type=int,
         default=10,
-        help='Number of steps to log the training'
+        help="Number of steps to log the training",
     )
     parser.add_argument(
-        '--checkpoint_path',
+        "--checkpoint_path",
         type=str,
         default=None,
-        help='Checkpoint to resume training from'
-    ) 
-    
+        help="Checkpoint to resume training from",
+    )
+
     args = parser.parse_args()
     main(args)
