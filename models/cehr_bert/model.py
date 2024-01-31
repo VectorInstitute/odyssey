@@ -8,11 +8,12 @@ from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from torch.nn import CrossEntropyLoss
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from transformers import BertConfig
-from transformers.modeling_outputs import (MaskedLMOutput,
-                                           SequenceClassifierOutput)
-from transformers.models.bert.modeling_bert import (BertEncoder,
-                                                    BertOnlyMLMHead,
-                                                    BertPooler)
+from transformers.modeling_outputs import MaskedLMOutput, SequenceClassifierOutput
+from transformers.models.bert.modeling_bert import (
+    BertEncoder,
+    BertOnlyMLMHead,
+    BertPooler,
+)
 
 from .embeddings import Embeddings
 
@@ -21,19 +22,19 @@ class BertPretrain(pl.LightningModule):
     """BERT model for pretraining."""
 
     def __init__(
-            self,
-            vocab_size,
-            embedding_size: int = 128,
-            time_embeddings_size: int = 16,
-            max_seq_length: int = 512,
-            depth: int = 5,
-            num_heads: int = 8,
-            intermediate_size: int = 2048,
-            learning_rate: float = 2e-4,
-            eta_min: float = 1e-8,
-            num_iterations: int = 10,
-            increase_factor: float = 2,
-            dropout_prob: float = 0.1,
+        self,
+        vocab_size,
+        embedding_size: int = 128,
+        time_embeddings_size: int = 16,
+        max_seq_length: int = 512,
+        depth: int = 5,
+        num_heads: int = 8,
+        intermediate_size: int = 2048,
+        learning_rate: float = 2e-4,
+        eta_min: float = 1e-8,
+        num_iterations: int = 10,
+        increase_factor: float = 2,
+        dropout_prob: float = 0.1,
     ):
         super().__init__()
 
@@ -77,7 +78,7 @@ class BertPretrain(pl.LightningModule):
         self.post_init()
 
     def _init_weights(self, module) -> None:
-        """ Initialize the weights """
+        """Initialize the weights"""
         if isinstance(module, nn.Linear):
             module.weight.data.normal_(mean=0.0, std=self.bert_config.initializer_range)
             if module.bias is not None:
@@ -94,13 +95,15 @@ class BertPretrain(pl.LightningModule):
         self.apply(self._init_weights)
 
     def forward(
-            self,
-            input: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
-            attention_mask: Optional[torch.Tensor] = None,
-            labels: Optional[torch.Tensor] = None,
-            output_attentions: Optional[bool] = None,
-            output_hidden_states: Optional[bool] = None,
-            return_dict: Optional[bool] = None,
+        self,
+        input: Tuple[
+            torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
+        ],
+        attention_mask: Optional[torch.Tensor] = None,
+        labels: Optional[torch.Tensor] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
     ) -> Union[Tuple[torch.Tensor, ...], MaskedLMOutput]:
         """Forward pass for the model."""
         concept_ids, time_stamps, ages, visit_orders, visit_segments = input
@@ -129,7 +132,9 @@ class BertPretrain(pl.LightningModule):
 
         if not return_dict:
             output = (prediction_scores,) + encoder_outputs[2:]
-            return ((masked_lm_loss,) + output) if masked_lm_loss is not None else output
+            return (
+                ((masked_lm_loss,) + output) if masked_lm_loss is not None else output
+            )
 
         return MaskedLMOutput(
             loss=masked_lm_loss,
@@ -140,27 +145,43 @@ class BertPretrain(pl.LightningModule):
 
     def training_step(self, batch, batch_idx) -> torch.Tensor:
         """Training step."""
-        input = batch['concept_ids'], batch['time_stamps'], batch['ages'], \
-            batch['visit_orders'], batch['visit_segments']
-        labels = batch['labels']
-        attention_mask = batch['attention_mask']
-        loss = self(input, attention_mask=attention_mask, labels=labels, return_dict=True)[0]
-        self.log('train_loss', loss)
+        input = (
+            batch["concept_ids"],
+            batch["time_stamps"],
+            batch["ages"],
+            batch["visit_orders"],
+            batch["visit_segments"],
+        )
+        labels = batch["labels"]
+        attention_mask = batch["attention_mask"]
+        loss = self(
+            input, attention_mask=attention_mask, labels=labels, return_dict=True
+        )[0]
+        self.log("train_loss", loss)
         return loss
 
     def validation_step(self, batch, batch_idx) -> torch.Tensor:
         """Validation step."""
-        input = batch['concept_ids'], batch['time_stamps'], batch['ages'], \
-            batch['visit_orders'], batch['visit_segments']
-        labels = batch['labels']
-        attention_mask = batch['attention_mask']
-        loss = self(input, attention_mask=attention_mask, labels=labels, return_dict=True)[0]
-        self.log('val_loss', loss, sync_dist=True)
+        input = (
+            batch["concept_ids"],
+            batch["time_stamps"],
+            batch["ages"],
+            batch["visit_orders"],
+            batch["visit_segments"],
+        )
+        labels = batch["labels"]
+        attention_mask = batch["attention_mask"]
+        loss = self(
+            input, attention_mask=attention_mask, labels=labels, return_dict=True
+        )[0]
+        self.log("val_loss", loss, sync_dist=True)
         return loss
 
     def configure_optimizers(self) -> dict:
         """Configure optimizers and learning rate scheduler."""
-        optimizer = optim.Adam(self.parameters(), lr=self.learning_rate)  # ADIBQ WHY IS THIS NOT ADAMW
+        optimizer = optim.Adam(
+            self.parameters(), lr=self.learning_rate
+        )  # ADIBQ WHY IS THIS NOT ADAMW
         scheduler = CosineAnnealingWarmRestarts(
             optimizer,
             T_0=self.num_iterations,
@@ -174,16 +195,16 @@ class BertFinetune(pl.LightningModule):
     """BERT model for finetuning."""
 
     def __init__(
-            self,
-            pretrained_model: BertPretrain,
-            num_labels: int = 2,
-            hidden_size: int = 128,
-            classifier_dropout: float = 0.1,
-            hidden_dropout_prob: float = 0.1,
-            learning_rate: float = 2e-5,
-            eta_min: float = 1e-8,
-            num_iterations: int = 10,
-            increase_factor: float = 2,
+        self,
+        pretrained_model: BertPretrain,
+        num_labels: int = 2,
+        hidden_size: int = 128,
+        classifier_dropout: float = 0.1,
+        hidden_dropout_prob: float = 0.1,
+        learning_rate: float = 2e-5,
+        eta_min: float = 1e-8,
+        num_iterations: int = 10,
+        increase_factor: float = 2,
     ):
         super().__init__()
         self.num_labels = num_labels
@@ -204,8 +225,9 @@ class BertFinetune(pl.LightningModule):
         self.pooler = BertPooler(self.config)
         # SequenceClassification
         classifier_dropout = (
-            self.config.classifier_dropout if
-            self.config.classifier_dropout is not None else self.config.hidden_dropout_prob
+            self.config.classifier_dropout
+            if self.config.classifier_dropout is not None
+            else self.config.hidden_dropout_prob
         )
         self.dropout = nn.Dropout(classifier_dropout)
         self.classifier = nn.Linear(self.hidden_size, self.num_labels)
@@ -231,13 +253,15 @@ class BertFinetune(pl.LightningModule):
         self.apply(self._init_weights)
 
     def forward(
-            self,
-            input: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
-            attention_mask: Optional[torch.Tensor] = None,
-            labels: Optional[torch.Tensor] = None,
-            output_attentions: Optional[bool] = None,
-            output_hidden_states: Optional[bool] = None,
-            return_dict: Optional[bool] = None,
+        self,
+        input: Tuple[
+            torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
+        ],
+        attention_mask: Optional[torch.Tensor] = None,
+        labels: Optional[torch.Tensor] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
     ) -> Union[Tuple[torch.Tensor, ...], SequenceClassifierOutput]:
         """Forward pass for the model."""
         if attention_mask is None:
@@ -249,7 +273,7 @@ class BertFinetune(pl.LightningModule):
             output_hidden_states=True,
             return_dict=True,
         )
-        hidden_states = outputs['hidden_states']  # hidden_states
+        hidden_states = outputs["hidden_states"]  # hidden_states
         hidden_states = hidden_states[-1]
         pooled_output = self.pooler(hidden_states) if self.pooler is not None else None
         pooled_output = self.dropout(pooled_output)
@@ -273,45 +297,66 @@ class BertFinetune(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         """Training step."""
-        input = batch['concept_ids'], batch['time_stamps'], batch['ages'], \
-            batch['visit_orders'], batch['visit_segments']
-        labels = batch['labels']
-        attention_mask = batch['attention_mask']
-        loss = self(input, attention_mask=attention_mask, labels=labels, return_dict=True)[0]
-        self.log('train_loss', loss)
+        input = (
+            batch["concept_ids"],
+            batch["time_stamps"],
+            batch["ages"],
+            batch["visit_orders"],
+            batch["visit_segments"],
+        )
+        labels = batch["labels"]
+        attention_mask = batch["attention_mask"]
+        loss = self(
+            input, attention_mask=attention_mask, labels=labels, return_dict=True
+        )[0]
+        self.log("train_loss", loss)
         return loss
 
     def validation_step(self, batch, batch_idx):
         """Validation step."""
-        input = batch['concept_ids'], batch['time_stamps'], batch['ages'], \
-            batch['visit_orders'], batch['visit_segments']
-        labels = batch['labels']
-        attention_mask = batch['attention_mask']
-        loss = self(input, attention_mask=attention_mask, labels=labels, return_dict=True)[0]
-        self.log('val_loss', loss)
+        input = (
+            batch["concept_ids"],
+            batch["time_stamps"],
+            batch["ages"],
+            batch["visit_orders"],
+            batch["visit_segments"],
+        )
+        labels = batch["labels"]
+        attention_mask = batch["attention_mask"]
+        loss = self(
+            input, attention_mask=attention_mask, labels=labels, return_dict=True
+        )[0]
+        self.log("val_loss", loss)
         return loss
 
     def test_step(self, batch, batch_idx):
         """Test step."""
-        input = batch['concept_ids'], batch['time_stamps'], batch['ages'], \
-            batch['visit_orders'], batch['visit_segments']
-        labels = batch['labels']
-        attention_mask = batch['attention_mask']
-        outputs = self(input, attention_mask=attention_mask, labels=labels, return_dict=True)
+        input = (
+            batch["concept_ids"],
+            batch["time_stamps"],
+            batch["ages"],
+            batch["visit_orders"],
+            batch["visit_segments"],
+        )
+        labels = batch["labels"]
+        attention_mask = batch["attention_mask"]
+        outputs = self(
+            input, attention_mask=attention_mask, labels=labels, return_dict=True
+        )
         loss = outputs[0]
         logits = outputs[1]
         preds = torch.argmax(logits, dim=1)
-        return {'loss': loss, 'preds': preds, 'labels': labels}
+        return {"loss": loss, "preds": preds, "labels": labels}
 
     def test_epoch_end(self, outputs):
         """Evaluate after the test epoch."""
-        labels = torch.cat([x['labels'] for x in outputs]).cpu()
-        preds = torch.cat([x['preds'] for x in outputs]).cpu()
-        loss = torch.stack([x['loss'] for x in outputs]).mean().cpu()
-        self.log('test_loss', loss)
-        self.log('test_acc', accuracy_score(preds, labels))
-        self.log('test_f1', f1_score(preds, labels))
-        self.log('test_auc', roc_auc_score(preds, labels))
+        labels = torch.cat([x["labels"] for x in outputs]).cpu()
+        preds = torch.cat([x["preds"] for x in outputs]).cpu()
+        loss = torch.stack([x["loss"] for x in outputs]).mean().cpu()
+        self.log("test_loss", loss)
+        self.log("test_acc", accuracy_score(preds, labels))
+        self.log("test_f1", f1_score(preds, labels))
+        self.log("test_auc", roc_auc_score(preds, labels))
         return loss
 
     def configure_optimizers(self):

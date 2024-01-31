@@ -1,6 +1,6 @@
 fhir.resources==5.1.1
-lightning==2.0.6
 keras==2.15.0
+lightning==2.0.6
 torch==1.13.1
 tqdm==4.65.0
 wandb==0.16.0
