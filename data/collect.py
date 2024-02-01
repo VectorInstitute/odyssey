@@ -555,10 +555,14 @@ class FHIRDataCollector:
             ).categories
 
         labs = labs.apply(assign_to_quantile_bins, axis=1)
-        labs.to_csv(self.save_dir + "/processed_labs.csv", index=False)
-
-
-if __name__ == "__main__":
+        labs.to_csv(self.save_dir + '/processed_labs.csv', index=False)
+        
+        lab_vocab_binned = []
+        lab_vocab_binned.extend([f'{code}_{i}' for code in lab_vocab for i in range(num_bins)])
+        with open(self.save_dir + '/lab_vocab.json', 'w') as f:
+            json.dump(lab_vocab_binned, f)
+        
+if __name__ == '__main__':
     collector = FHIRDataCollector(
         db_path="postgresql://postgres:pwd@localhost:5432/mimiciv-2.0",
         schema="mimic_fhir",

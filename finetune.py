@@ -119,6 +119,7 @@ def main(args):
 
     pretrained_model = BertPretrain(
         vocab_size=tokenizer.get_vocab_size(),
+        padding_idx=tokenizer.get_pad_token_id(),
     )
     pretrained_model.load_state_dict(torch.load(args.pretrained_path)["state_dict"])
 

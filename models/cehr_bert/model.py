@@ -4,7 +4,8 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
+from sklearn.metrics import (accuracy_score, f1_score, precision_score,
+                             recall_score, roc_auc_score)
 from torch.nn import CrossEntropyLoss
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from transformers import BertConfig
@@ -35,6 +36,7 @@ class BertPretrain(pl.LightningModule):
         num_iterations: int = 10,
         increase_factor: float = 2,
         dropout_prob: float = 0.1,
+        padding_idx: int = 1,
     ):
         super().__init__()
 
@@ -50,6 +52,7 @@ class BertPretrain(pl.LightningModule):
         self.num_iterations = num_iterations
         self.increase_factor = increase_factor
         self.dropout_prob = dropout_prob
+        self.padding_idx = padding_idx
 
         self.bert_config = BertConfig(
             vocab_size=self.vocab_size,
@@ -69,6 +72,7 @@ class BertPretrain(pl.LightningModule):
             embedding_size=self.embedding_size,
             time_embedding_size=self.time_embeddings_size,
             max_len=self.max_seq_length,
+            padding_idx=self.padding_idx,
         )
         self.encoder = BertEncoder(self.bert_config)
         self.pooler = BertPooler(self.bert_config)
@@ -350,13 +354,15 @@ class BertFinetune(pl.LightningModule):
 
     def test_epoch_end(self, outputs):
         """Evaluate after the test epoch."""
-        labels = torch.cat([x["labels"] for x in outputs]).cpu()
-        preds = torch.cat([x["preds"] for x in outputs]).cpu()
-        loss = torch.stack([x["loss"] for x in outputs]).mean().cpu()
-        self.log("test_loss", loss)
-        self.log("test_acc", accuracy_score(preds, labels))
-        self.log("test_f1", f1_score(preds, labels))
-        self.log("test_auc", roc_auc_score(preds, labels))
+        labels = torch.cat([x['labels'] for x in outputs]).cpu()
+        preds = torch.cat([x['preds'] for x in outputs]).cpu()
+        loss = torch.stack([x['loss'] for x in outputs]).mean().cpu()
+        self.log('test_loss', loss)
+        self.log('test_acc', accuracy_score(labels, preds))
+        self.log('test_f1', f1_score(labels, preds))
+        self.log('test_auc', roc_auc_score(labels, preds))
+        self.log('test_precision', precision_score(labels, preds))
+        self.log('test_recall', recall_score(labels, preds))
         return loss
 
     def configure_optimizers(self):
