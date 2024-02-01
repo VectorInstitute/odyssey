@@ -113,10 +113,11 @@ class Embeddings(nn.Module):
         max_len: int = 512,
         layer_norm_eps: float = 1e-12,
         dropout_prob: float = 0.1,
+        padding_idx: int = 1,
     ):
         super().__init__()
         self.concept_embedding = ConceptEmbedding(
-            num_embeddings=vocab_size, embedding_size=embedding_size
+            num_embeddings=vocab_size, embedding_size=embedding_size, padding_idx=padding_idx
         )
         self.time_embedding = TimeEmbeddingLayer(embedding_size=time_embedding_size)
         self.age_embedding = TimeEmbeddingLayer(embedding_size=time_embedding_size)
