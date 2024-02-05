@@ -38,7 +38,7 @@ class BigBirdPretrain(pl.LightningModule):
         num_iterations: int = 10,
         increase_factor: float = 2,
         dropout_prob: float = 0.1,
-        padding_idx: int = 0,                                       # padding_idx should match
+        padding_idx: int = 0,
     ):
         super().__init__()
 
@@ -58,7 +58,6 @@ class BigBirdPretrain(pl.LightningModule):
 
         self.bigbird_config = BigBirdConfig(
             vocab_size=self.vocab_size,
-            type_vocab_size=2,                          # Change later on if using different token_type_id
             hidden_size=self.embedding_size,
             num_hidden_layers=self.depth,
             num_attention_heads=self.num_heads,
@@ -161,9 +160,13 @@ class BigBirdPretrain(pl.LightningModule):
         )
         labels = batch["labels"]
         attention_mask = batch["attention_mask"]
+
+        # This is not necessary but makes sure we use the right attention
+        self.encoder.set_attention_type("block_sparse")
         loss = self(
             input, attention_mask=attention_mask, labels=labels, return_dict=True
         )[0]
+
         self.log("train_loss", loss)
         return loss
 
@@ -178,9 +181,13 @@ class BigBirdPretrain(pl.LightningModule):
         )
         labels = batch["labels"]
         attention_mask = batch["attention_mask"]
+
+        # This is not necessary but makes sure we use the right attention
+        self.encoder.set_attention_type("block_sparse")
         loss = self(
             input, attention_mask=attention_mask, labels=labels, return_dict=True
         )[0]
+
         self.log("val_loss", loss, sync_dist=True)
         return loss
 
@@ -313,9 +320,13 @@ class BigBirdFinetune(pl.LightningModule):
         )
         labels = batch["labels"]
         attention_mask = batch["attention_mask"]
+
+        # This is not necessary but makes sure we use the right attention
+        self.encoder.set_attention_type("block_sparse")
         loss = self(
             input, attention_mask=attention_mask, labels=labels, return_dict=True
         )[0]
+
         self.log("train_loss", loss)
         return loss
 
@@ -330,9 +341,13 @@ class BigBirdFinetune(pl.LightningModule):
         )
         labels = batch["labels"]
         attention_mask = batch["attention_mask"]
+
+        # This is not necessary but makes sure we use the right attention
+        self.encoder.set_attention_type("block_sparse")
         loss = self(
             input, attention_mask=attention_mask, labels=labels, return_dict=True
         )[0]
+
         self.log("val_loss", loss)
         return loss
 
@@ -347,9 +362,13 @@ class BigBirdFinetune(pl.LightningModule):
         )
         labels = batch["labels"]
         attention_mask = batch["attention_mask"]
+
+        # This is not necessary but makes sure we use the right attention
+        self.encoder.set_attention_type("block_sparse")
         outputs = self(
             input, attention_mask=attention_mask, labels=labels, return_dict=True
         )
+
         loss = outputs[0]
         logits = outputs[1]
         preds = torch.argmax(logits, dim=1)
