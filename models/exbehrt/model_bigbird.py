@@ -7,7 +7,7 @@ import torch.optim as optim
 from sklearn.metrics import (accuracy_score, f1_score, precision_score,
                              recall_score, roc_auc_score)
 from torch.nn import CrossEntropyLoss
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, LinearLR, SequentialLR
 from transformers import BertConfig, BigBirdConfig
 from transformers.modeling_outputs import MaskedLMOutput, SequenceClassifierOutput
 from transformers.models.bert.modeling_bert import BertPooler
@@ -19,6 +19,17 @@ from transformers.models.big_bird.modeling_big_bird import (
 )
 
 from .embeddings import Embeddings
+
+
+DATASET_LEN = 173671
+NGPUS = 2
+BATCH_SIZE = 32
+MAX_EPOCHS = 5
+
+GRAD_STEPS = DATASET_LEN / BATCH_SIZE / NGPUS * MAX_EPOCHS
+
+WARMUP = int(0.1 * GRAD_STEPS)
+DECAY = int(0.9 * GRAD_STEPS)
 
 
 class BigBirdPretrain(pl.LightningModule):
@@ -193,15 +204,28 @@ class BigBirdPretrain(pl.LightningModule):
 
     def configure_optimizers(self) -> dict:
         """Configure optimizers and learning rate scheduler."""
-        optimizer = optim.Adam(
+        optimizer = optim.AdamW(
             self.parameters(), lr=self.learning_rate
-        )  # ADIBQ WHY IS THIS NOT ADAMW
-        scheduler = CosineAnnealingWarmRestarts(
-            optimizer,
-            T_0=self.num_iterations,
-            T_mult=self.increase_factor,
-            eta_min=self.eta_min,
         )
+
+        warmup = LinearLR(
+            optimizer,
+            start_factor=0.01,
+            end_factor=1.,
+            total_iters=WARMUP)
+
+        linear_decay = LinearLR(
+            optimizer,
+            start_factor=1.,
+            end_factor=0.01,
+            total_iters=DECAY)
+
+        scheduler = SequentialLR(
+            optimizer=optimizer,
+            schedulers=[warmup, linear_decay],
+            milestones=[WARMUP]
+        )
+
         return {"optimizer": optimizer, "lr_scheduler": scheduler}
 
 
@@ -389,11 +413,26 @@ class BigBirdFinetune(pl.LightningModule):
 
     def configure_optimizers(self):
         """Configure optimizers and learning rate scheduler."""
-        optimizer = optim.Adam(self.parameters(), lr=self.learning_rate)
-        scheduler = CosineAnnealingWarmRestarts(
-            optimizer,
-            T_0=self.num_iterations,
-            T_mult=self.increase_factor,
-            eta_min=self.eta_min,
+        optimizer = optim.AdamW(
+            self.parameters(), lr=self.learning_rate
         )
+
+        warmup = LinearLR(
+            optimizer,
+            start_factor=0.01,
+            end_factor=1.,
+            total_iters=WARMUP)
+
+        linear_decay = LinearLR(
+            optimizer,
+            start_factor=1.,
+            end_factor=0.01,
+            total_iters=DECAY)
+
+        scheduler = SequentialLR(
+            optimizer=optimizer,
+            schedulers=[warmup, linear_decay],
+            milestones=[WARMUP]
+        )
+
         return {"optimizer": optimizer, "lr_scheduler": scheduler}
