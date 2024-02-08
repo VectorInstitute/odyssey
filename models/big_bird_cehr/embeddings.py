@@ -38,9 +38,9 @@ class VisitEmbedding(nn.Module):
     """Embedding layer for visit segments."""
 
     def __init__(
-        self,
-        visit_order_size: int,
-        embedding_size: int,
+            self,
+            visit_order_size: int,
+            embedding_size: int,
     ):
         super().__init__()
         self.visit_order_size = visit_order_size
@@ -56,10 +56,10 @@ class ConceptEmbedding(nn.Module):
     """Embedding layer for event concepts."""
 
     def __init__(
-        self,
-        num_embeddings: int,
-        embedding_size: int,
-        padding_idx: int = None,
+            self,
+            num_embeddings: int,
+            embedding_size: int,
+            padding_idx: int = None,
     ):
         super(ConceptEmbedding, self).__init__()
         self.embedding = nn.Embedding(
@@ -83,8 +83,8 @@ class PositionalEmbedding(nn.Module):
 
         position = torch.arange(0, max_len).float().unsqueeze(1)
         div_term = (
-            torch.arange(0, embedding_size, 2).float()
-            * -(math.log(10000.0) / embedding_size)
+                torch.arange(0, embedding_size, 2).float()
+                * -(math.log(10000.0) / embedding_size)
         ).exp()
 
         pe[:, 0::2] = torch.sin(position * div_term)
@@ -105,55 +105,57 @@ class Embeddings(nn.Module):
     """Embeddings for CEHR-BERT."""
 
     def __init__(
-        self,
-        vocab_size: int,
-        embedding_size: int = 128,
-        time_embedding_size: int = 16,
-        visit_order_size: int = 3,
-        max_len: int = 2048,
-        layer_norm_eps: float = 1e-12,
-        dropout_prob: float = 0.1,
-        padding_idx: int = 1,
+            self,
+            vocab_size: int,
+            embedding_size: int = 128,
+            time_embedding_size: int = 16,
+            type_vocab_size: int = 8,
+            visit_order_size: int = 3,
+            max_len: int = 2048,
+            layer_norm_eps: float = 1e-12,
+            dropout_prob: float = 0.1,
+            padding_idx: int = 1,
     ):
         super().__init__()
         self.concept_embedding = ConceptEmbedding(
             num_embeddings=vocab_size, embedding_size=embedding_size, padding_idx=padding_idx
         )
-        self.time_embedding = TimeEmbeddingLayer(embedding_size=time_embedding_size)
+        self.token_type_embeddings = nn.Embedding(type_vocab_size, embedding_size)
+        self.time_embedding = TimeEmbeddingLayer(embedding_size=time_embedding_size, is_time_delta=True)
         self.age_embedding = TimeEmbeddingLayer(embedding_size=time_embedding_size)
         self.positional_embedding = PositionalEmbedding(
-            embedding_size=time_embedding_size, max_len=max_len
+            embedding_size=embedding_size, max_len=max_len
         )
         self.visit_embedding = VisitEmbedding(
             visit_order_size=visit_order_size, embedding_size=embedding_size
         )
         self.scale_back_concat_layer = nn.Linear(
-            embedding_size + 3 * time_embedding_size, embedding_size
+            embedding_size + 2 * time_embedding_size, embedding_size
         )  # Assuming 4 input features are concatenated
         self.tanh = nn.Tanh()
         self.LayerNorm = nn.LayerNorm(embedding_size, eps=layer_norm_eps)
         self.dropout = nn.Dropout(dropout_prob)
 
     def forward(
-        self,
-        concept_ids: torch.Tensor,
-        time_stamps: torch.Tensor,
-        ages: torch.Tensor,
-        visit_orders: torch.Tensor,
-        visit_segments: torch.Tensor,
+            self,
+            concept_ids: torch.Tensor,
+            type_ids: torch.Tensor,
+            time_stamps: torch.Tensor,
+            ages: torch.Tensor,
+            visit_orders: torch.Tensor,
+            visit_segments: torch.Tensor,
     ) -> torch.Tensor:
         """Applies embeddings to the input features."""
         concept_embed = self.concept_embedding(concept_ids)
+        type_embed = self.token_type_embeddings(type_ids)
         time_embed = self.time_embedding(time_stamps)
         age_embed = self.age_embedding(ages)
         positional_embed = self.positional_embedding(visit_orders)
         visit_segment_embed = self.visit_embedding(visit_segments)
 
-        embeddings = torch.cat(
-            (concept_embed, time_embed, age_embed, positional_embed), dim=-1
-        )
+        embeddings = torch.cat((concept_embed, time_embed, age_embed), dim=-1)
         embeddings = self.tanh(self.scale_back_concat_layer(embeddings))
-        embeddings = visit_segment_embed + embeddings
+        embeddings = embeddings + type_embed + positional_embed + visit_segment_embed
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
 
