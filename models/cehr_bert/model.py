@@ -25,12 +25,13 @@ class BertPretrain(pl.LightningModule):
     def __init__(
         self,
         vocab_size,
-        embedding_size: int = 128,
-        time_embeddings_size: int = 16,
+        embedding_size: int = 768,
+        time_embeddings_size: int = 32,
+        type_vocab_size: int = 8,
         max_seq_length: int = 512,
         depth: int = 5,
         num_heads: int = 8,
-        intermediate_size: int = 2048,
+        intermediate_size: int = 3072,
         learning_rate: float = 2e-4,
         eta_min: float = 1e-8,
         num_iterations: int = 10,
@@ -43,6 +44,7 @@ class BertPretrain(pl.LightningModule):
         self.vocab_size = vocab_size
         self.embedding_size = embedding_size
         self.time_embeddings_size = time_embeddings_size
+        self.type_vocab_size = type_vocab_size
         self.max_seq_length = max_seq_length
         self.depth = depth
         self.num_heads = num_heads
@@ -71,6 +73,7 @@ class BertPretrain(pl.LightningModule):
             vocab_size=self.vocab_size,
             embedding_size=self.embedding_size,
             time_embedding_size=self.time_embeddings_size,
+            type_vocab_size=self.type_vocab_size,
             max_len=self.max_seq_length,
             padding_idx=self.padding_idx,
         )
@@ -101,7 +104,7 @@ class BertPretrain(pl.LightningModule):
     def forward(
         self,
         input: Tuple[
-            torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
+            torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
         ],
         attention_mask: Optional[torch.Tensor] = None,
         labels: Optional[torch.Tensor] = None,
@@ -110,9 +113,9 @@ class BertPretrain(pl.LightningModule):
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple[torch.Tensor, ...], MaskedLMOutput]:
         """Forward pass for the model."""
-        concept_ids, time_stamps, ages, visit_orders, visit_segments = input
+        concept_ids, type_ids, time_stamps, ages, visit_orders, visit_segments = input
         embedding_output = self.embeddings(
-            concept_ids, time_stamps, ages, visit_orders, visit_segments
+            concept_ids, type_ids, time_stamps, ages, visit_orders, visit_segments
         )
         if attention_mask is None:
             attention_mask = torch.ones_like(concept_ids)
@@ -151,6 +154,7 @@ class BertPretrain(pl.LightningModule):
         """Training step."""
         input = (
             batch["concept_ids"],
+            batch["type_ids"],
             batch["time_stamps"],
             batch["ages"],
             batch["visit_orders"],
@@ -168,6 +172,7 @@ class BertPretrain(pl.LightningModule):
         """Validation step."""
         input = (
             batch["concept_ids"],
+            batch["type_ids"],
             batch["time_stamps"],
             batch["ages"],
             batch["visit_orders"],
@@ -202,7 +207,7 @@ class BertFinetune(pl.LightningModule):
         self,
         pretrained_model: BertPretrain,
         num_labels: int = 2,
-        hidden_size: int = 128,
+        hidden_size: int = 768,
         classifier_dropout: float = 0.1,
         hidden_dropout_prob: float = 0.1,
         learning_rate: float = 2e-5,
@@ -259,7 +264,7 @@ class BertFinetune(pl.LightningModule):
     def forward(
         self,
         input: Tuple[
-            torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
+            torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
         ],
         attention_mask: Optional[torch.Tensor] = None,
         labels: Optional[torch.Tensor] = None,
@@ -303,6 +308,7 @@ class BertFinetune(pl.LightningModule):
         """Training step."""
         input = (
             batch["concept_ids"],
+            batch["type_ids"],
             batch["time_stamps"],
             batch["ages"],
             batch["visit_orders"],
@@ -320,6 +326,7 @@ class BertFinetune(pl.LightningModule):
         """Validation step."""
         input = (
             batch["concept_ids"],
+            batch["type_ids"],
             batch["time_stamps"],
             batch["ages"],
             batch["visit_orders"],
@@ -337,6 +344,7 @@ class BertFinetune(pl.LightningModule):
         """Test step."""
         input = (
             batch["concept_ids"],
+            batch["type_ids"],
             batch["time_stamps"],
             batch["ages"],
             batch["visit_orders"],

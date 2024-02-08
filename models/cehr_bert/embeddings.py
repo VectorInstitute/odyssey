@@ -109,6 +109,7 @@ class Embeddings(nn.Module):
         vocab_size: int,
         embedding_size: int = 128,
         time_embedding_size: int = 16,
+        type_vocab_size: int = 8,
         visit_order_size: int = 3,
         max_len: int = 512,
         layer_norm_eps: float = 1e-12,
@@ -119,16 +120,17 @@ class Embeddings(nn.Module):
         self.concept_embedding = ConceptEmbedding(
             num_embeddings=vocab_size, embedding_size=embedding_size, padding_idx=padding_idx
         )
-        self.time_embedding = TimeEmbeddingLayer(embedding_size=time_embedding_size)
+        self.token_type_embeddings = nn.Embedding(type_vocab_size, embedding_size)
+        self.time_embedding = TimeEmbeddingLayer(embedding_size=time_embedding_size, is_time_delta=True)
         self.age_embedding = TimeEmbeddingLayer(embedding_size=time_embedding_size)
         self.positional_embedding = PositionalEmbedding(
-            embedding_size=time_embedding_size, max_len=max_len
+            embedding_size=embedding_size, max_len=max_len
         )
         self.visit_embedding = VisitEmbedding(
             visit_order_size=visit_order_size, embedding_size=embedding_size
         )
         self.scale_back_concat_layer = nn.Linear(
-            embedding_size + 3 * time_embedding_size, embedding_size
+            embedding_size + 2 * time_embedding_size, embedding_size
         )  # Assuming 4 input features are concatenated
         self.tanh = nn.Tanh()
         self.LayerNorm = nn.LayerNorm(embedding_size, eps=layer_norm_eps)
@@ -137,6 +139,7 @@ class Embeddings(nn.Module):
     def forward(
         self,
         concept_ids: torch.Tensor,
+        type_ids: torch.Tensor,
         time_stamps: torch.Tensor,
         ages: torch.Tensor,
         visit_orders: torch.Tensor,
@@ -144,16 +147,15 @@ class Embeddings(nn.Module):
     ) -> torch.Tensor:
         """Applies embeddings to the input features."""
         concept_embed = self.concept_embedding(concept_ids)
+        type_embed = self.token_type_embeddings(type_ids)
         time_embed = self.time_embedding(time_stamps)
         age_embed = self.age_embedding(ages)
         positional_embed = self.positional_embedding(visit_orders)
         visit_segment_embed = self.visit_embedding(visit_segments)
 
-        embeddings = torch.cat(
-            (concept_embed, time_embed, age_embed, positional_embed), dim=-1
-        )
+        embeddings = torch.cat((concept_embed, time_embed, age_embed), dim=-1) 
         embeddings = self.tanh(self.scale_back_concat_layer(embeddings))
-        embeddings = visit_segment_embed + embeddings
+        embeddings =  embeddings + type_embed + positional_embed + visit_segment_embed
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
 
