@@ -29,29 +29,29 @@ def main(args):
     torch.cuda.empty_cache()
     torch.set_float32_matmul_precision("medium")
 
-    if not args.resume:
-        data = pd.read_parquet(join(args.data_dir, "patient_sequences.parquet"))
+    # if not args.resume:
+    #     data = pd.read_parquet(join(args.data_dir, "patient_sequences.parquet"))
 
-        data["label"] = (
-            (data["death_after_end"] > 0) & (data["death_after_end"] < 365)
-        ).astype(int)
-        neg_pos_data = data[(data["deceased"] == 0) | (data["label"] == 1)]
+    #     data["label"] = (
+    #         (data["death_after_end"] >= 0) & (data["death_after_end"] < 365)
+    #     ).astype(int)
+    #     neg_pos_data = data[(data["deceased"] == 0) | (data["label"] == 1)]
 
-        pre_data = data[~data.index.isin(neg_pos_data.index)]
+    #     pre_data = data[~data.index.isin(neg_pos_data.index)]
 
-        pre_df, fine_df = train_test_split(
-            neg_pos_data,
-            test_size=args.finetune_size,
-            random_state=args.seed,
-            stratify=neg_pos_data["label"],
-        )
+    #     pre_df, fine_df = train_test_split(
+    #         neg_pos_data,
+    #         test_size=args.finetune_size,
+    #         random_state=args.seed,
+    #         stratify=neg_pos_data["label"],
+    #     )
 
-        pre_data = pd.concat([pre_data, pre_df])
+    #     pre_data = pd.concat([pre_data, pre_df])
 
-        fine_df.to_parquet(join(args.data_dir, "fine_tune.parquet"))
-        pre_data.to_parquet(join(args.data_dir, "pretrain.parquet"))
-    else:
-        pre_data = pd.read_parquet(join(args.data_dir, "pretrain.parquet"))
+    #     fine_df.to_parquet(join(args.data_dir, "fine_tune.parquet"))
+    #     pre_data.to_parquet(join(args.data_dir, "pretrain.parquet"))
+    # else:
+    pre_data = pd.read_parquet(join(args.data_dir, "pretrain.parquet"))
 
     pre_train, pre_val = train_test_split(
         pre_data,
