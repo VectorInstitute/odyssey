@@ -39,7 +39,9 @@ class ConceptTokenizer:
         self.tokenizer.fit_on_texts(self.special_tokens)
 
     def encode(
-        self, concept_sequences: Union[str, Sequence[str]], is_generator: bool = False
+        self,
+        concept_sequences: Union[str, Sequence[str]],
+        is_generator: bool = False,
     ) -> Union[int, Sequence[int]]:
         """Encode the concept sequences into token ids."""
         return (
@@ -49,7 +51,8 @@ class ConceptTokenizer:
         )
 
     def decode(
-        self, concept_sequence_token_ids: Union[int, Sequence[int]]
+        self,
+        concept_sequence_token_ids: Union[int, Sequence[int]],
     ) -> Sequence[str]:
         """Decode the concept sequence token ids into concepts."""
         return self.tokenizer.sequences_to_texts(concept_sequence_token_ids)
@@ -65,7 +68,7 @@ class ConceptTokenizer:
                 [
                     self.tokenizer.word_index[special_token]
                     for special_token in self.special_tokens
-                ]
+                ],
             )
             all_keys = all_keys - excluded
         return all_keys
