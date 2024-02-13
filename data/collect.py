@@ -566,7 +566,7 @@ if __name__ == '__main__':
     collector = FHIRDataCollector(
         db_path="postgresql://postgres:pwd@localhost:5432/mimiciv-2.0",
         schema="mimic_fhir",
-        save_dir="data_files",
+        save_dir="/mnt/data/odyssey/mimiciv_fhir2",
         buffer_size=10000,
     )
     collector.get_patient_data()

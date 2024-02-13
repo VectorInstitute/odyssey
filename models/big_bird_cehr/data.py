@@ -16,12 +16,12 @@ class PretrainDataset(Dataset):
         self,
         data: pd.DataFrame,
         tokenizer: ConceptTokenizer,
-        max_len: int = 512,
+        max_len: int = 2048,
         mask_prob: float = 0.15,
     ):
         self.data = data
         self.tokenizer = tokenizer
-        self.max_len = max_len #TODO: max_len is not used
+        self.max_len = max_len
         self.mask_prob = mask_prob
 
     def __len__(self):
@@ -109,7 +109,7 @@ class FinetuneDataset(Dataset):
         self,
         data: pd.DataFrame,
         tokenizer: ConceptTokenizer,
-        max_len: int = 512,
+        max_len: int = 2048,
     ):
         self.data = data
         self.tokenizer = tokenizer
