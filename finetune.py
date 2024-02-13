@@ -33,18 +33,20 @@ def main(args):
     torch.cuda.empty_cache()
     torch.set_float32_matmul_precision("medium")
 
-    fine_data = pd.read_parquet(join(args.data_dir, "fine_tune.parquet"))
-    fine_train, fine_valtest = train_test_split(
-        fine_data,
-        train_size=args.train_size,
-        random_state=args.seed,
-        stratify=fine_data["label"],
-    )
-    fine_val, fine_test = train_test_split(
-        fine_valtest,
+    fine_tune = pd.read_parquet(join(args.data_dir, "fine_tune.parquet"))
+    fine_test = pd.read_parquet(join(args.data_dir, "fine_test.parquet"))
+    # fine_data = pd.read_parquet(join(args.data_dir, "fine_tune.parquet"))
+    # fine_train, fine_valtest = train_test_split(
+    #     fine_data,
+    #     train_size=args.train_size,
+    #     random_state=args.seed,
+    #     stratify=fine_data["label"],
+    # )
+    fine_train, fine_val = train_test_split(
+        fine_tune,
         test_size=args.test_size,
         random_state=args.seed,
-        stratify=fine_valtest["label"],
+        stratify=fine_tune["label"],
     )
 
     tokenizer = ConceptTokenizer()
