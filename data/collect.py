@@ -34,7 +34,10 @@ class FHIRDataCollector:
     def get_patient_data(self) -> None:
         """Get patient data from the database and save to a csv file."""
         patients_table = Table(
-            "patient", self.metadata, autoload_with=self.engine, schema=self.schema
+            "patient",
+            self.metadata,
+            autoload_with=self.engine,
+            schema=self.schema,
         )
 
         patient_cols = [
@@ -92,7 +95,10 @@ class FHIRDataCollector:
             return
 
         encounters_table = Table(
-            "encounter", self.metadata, autoload_with=self.engine, schema=self.schema
+            "encounter",
+            self.metadata,
+            autoload_with=self.engine,
+            schema=self.schema,
         )
 
         encounter_cols = ["patient_id", "length", "encounter_ids", "starts", "ends"]
@@ -107,7 +113,7 @@ class FHIRDataCollector:
                 unit="patient",
             ):
                 query = select(encounters_table.c.fhir).where(
-                    encounters_table.c.patient_id == patient_id
+                    encounters_table.c.patient_id == patient_id,
                 )
                 results = connection.execute(query).fetchall()
                 if len(results) == 0:
@@ -124,7 +130,7 @@ class FHIRDataCollector:
                     ids.append(enc.id)
 
                 assert len(starts) == len(
-                    ends
+                    ends,
                 ), f"Length of starts and ends should be equal. {len(starts)} != {len(ends)}"
 
                 e_data = {
@@ -166,7 +172,10 @@ class FHIRDataCollector:
             return
 
         procedure_table = Table(
-            "procedure", self.metadata, autoload_with=self.engine, schema=self.schema
+            "procedure",
+            self.metadata,
+            autoload_with=self.engine,
+            schema=self.schema,
         )
 
         procedure_cols = [
@@ -187,7 +196,7 @@ class FHIRDataCollector:
                 unit="patient",
             ):
                 query = select(procedure_table.c.fhir).where(
-                    procedure_table.c.patient_id == patient_id
+                    procedure_table.c.patient_id == patient_id,
                 )
 
                 results = connection.execute(query).fetchall()
@@ -209,7 +218,7 @@ class FHIRDataCollector:
                     procedure_vocab.add(proc.code.coding[0].code)
 
                 assert len(proc_codes) == len(
-                    proc_dates
+                    proc_dates,
                 ), f"Length of proc_codes and proc_dates should be equal. \
                         {len(proc_codes)} != {len(proc_dates)}"
 
@@ -258,7 +267,10 @@ class FHIRDataCollector:
             schema=self.schema,
         )
         medication_table = Table(
-            "medication", self.metadata, autoload_with=self.engine, schema=self.schema
+            "medication",
+            self.metadata,
+            autoload_with=self.engine,
+            schema=self.schema,
         )
 
         medication_cols = [
@@ -279,7 +291,7 @@ class FHIRDataCollector:
                 unit="patient",
             ):
                 query = select(med_request_table.c.fhir).where(
-                    med_request_table.c.patient_id == patient_id
+                    med_request_table.c.patient_id == patient_id,
                 )
                 results = connection.execute(query).fetchall()
                 med_codes = []
@@ -305,7 +317,7 @@ class FHIRDataCollector:
                             continue
                         med_query = select(medication_table.c.fhir).where(
                             medication_table.c.id
-                            == med_req.medicationReference.reference.split("/")[-1]
+                            == med_req.medicationReference.reference.split("/")[-1],
                         )
                         med_result = connection.execute(med_query).fetchone()
                         med_result = Medication(med_result[0]) if med_result else None
@@ -317,11 +329,11 @@ class FHIRDataCollector:
                             med_codes.append(code)
                             med_dates.append(med_req.authoredOn.isostring)
                             encounters.append(
-                                med_req.encounter.reference.split("/")[-1]
+                                med_req.encounter.reference.split("/")[-1],
                             )
 
                 assert len(med_codes) == len(
-                    med_dates
+                    med_dates,
                 ), f"Length of med_codes and med_dates should be equal. \
                         {len(med_codes)} != {len(med_dates)}"
                 m_data = {
@@ -389,7 +401,7 @@ class FHIRDataCollector:
                 unit="patient",
             ):
                 query = select(lab_table.c.fhir).where(
-                    lab_table.c.patient_id == patient_id
+                    lab_table.c.patient_id == patient_id,
                 )
 
                 results = connection.execute(query).fetchall()
@@ -551,18 +563,23 @@ class FHIRDataCollector:
             ]
 
             quantile_bins[code] = pd.qcut(
-                all_values, q=num_bins, duplicates="drop"
+                all_values,
+                q=num_bins,
+                duplicates="drop",
             ).categories
 
         labs = labs.apply(assign_to_quantile_bins, axis=1)
-        labs.to_csv(self.save_dir + '/processed_labs.csv', index=False)
-        
+        labs.to_csv(self.save_dir + "/processed_labs.csv", index=False)
+
         lab_vocab_binned = []
-        lab_vocab_binned.extend([f'{code}_{i}' for code in lab_vocab for i in range(num_bins)])
-        with open(self.save_dir + '/lab_vocab.json', 'w') as f:
+        lab_vocab_binned.extend(
+            [f"{code}_{i}" for code in lab_vocab for i in range(num_bins)],
+        )
+        with open(self.save_dir + "/lab_vocab.json", "w") as f:
             json.dump(lab_vocab_binned, f)
-        
-if __name__ == '__main__':
+
+
+if __name__ == "__main__":
     collector = FHIRDataCollector(
         db_path="postgresql://postgres:pwd@localhost:5432/mimiciv-2.0",
         schema="mimic_fhir",

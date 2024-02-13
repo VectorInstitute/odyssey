@@ -40,7 +40,9 @@ class SequenceGenerator:
     def time_delta_tokens(self) -> list:
         """Gets the time delta tokens."""
         return (
-            [f"[W_{i}]" for i in range(0, 4)] + [f"[M_{i}]" for i in range(0, 13)] + ["[LT]"]
+            [f"[W_{i}]" for i in range(0, 4)]
+            + [f"[M_{i}]" for i in range(0, 13)]
+            + ["[LT]"]
         )
 
     @property
@@ -54,21 +56,19 @@ class SequenceGenerator:
             self.class_token,
             self.unknown_token,
         ] + self.time_delta_tokens
-        
+
     @property
     def get_token_type_dict(self) -> dict:
         return {
-            'pad': 0,
-            'class': 1,
-            'start': 2,
-            'end': 3,
-            'time': 4,
-            'lab': 5,
-            'med': 6,
-            'proc': 7,
+            "pad": 0,
+            "class": 1,
+            "start": 2,
+            "end": 3,
+            "time": 4,
+            "lab": 5,
+            "med": 6,
+            "proc": 7,
         }
-            
-        
 
     def _load_patients(self) -> pd.DataFrame:
         """Loads the patients dataframe."""
@@ -77,22 +77,34 @@ class SequenceGenerator:
 
     def _load_encounters(self) -> pd.DataFrame:
         """Loads the encounters dataframe."""
-        encounters = pd.read_csv(os.path.join(self.data_dir, "encounters.csv"), nrows=1000)
+        encounters = pd.read_csv(
+            os.path.join(self.data_dir, "encounters.csv"),
+            nrows=1000,
+        )
         return encounters
 
     def _load_procedures(self) -> pd.DataFrame:
         """Loads the procedures dataframe."""
-        procedures = pd.read_csv(os.path.join(self.data_dir, "procedures.csv"), nrows=1000)
+        procedures = pd.read_csv(
+            os.path.join(self.data_dir, "procedures.csv"),
+            nrows=1000,
+        )
         return procedures
 
     def _load_medications(self) -> pd.DataFrame:
         """Loads the medications dataframe."""
-        medications = pd.read_csv(os.path.join(self.data_dir, "med_requests.csv"), nrows=1000)
+        medications = pd.read_csv(
+            os.path.join(self.data_dir, "med_requests.csv"),
+            nrows=1000,
+        )
         return medications
 
     def _load_labs(self) -> pd.DataFrame:
         """Loads the labs dataframe."""
-        labs = pd.read_csv(os.path.join(self.data_dir, "processed_labs.csv"), nrows=1000)
+        labs = pd.read_csv(
+            os.path.join(self.data_dir, "processed_labs.csv"),
+            nrows=1000,
+        )
         return labs
 
     def _sort_encounters(self, encounter_row: pd.Series) -> pd.Series:
@@ -123,7 +135,9 @@ class SequenceGenerator:
         return encounter_row
 
     def _get_encounters_age(
-        self, encounter_row: pd.Series, patient_row: pd.Series
+        self,
+        encounter_row: pd.Series,
+        patient_row: pd.Series,
     ) -> pd.Series:
         """Get the age of the patient at the time of the encounters.
 
@@ -200,9 +214,9 @@ class SequenceGenerator:
             # and the start of the next encounter is negative, we consider
             # them to be a single encounter
             if days < 0:
-                if start_id not in eq_encounters.keys():
+                if start_id not in eq_encounters:
                     eq_encounters[start_id] = []
-                if end_id not in eq_encounters.keys():
+                if end_id not in eq_encounters:
                     eq_encounters[end_id] = []
 
                 eq_encounters[start_id].append(end_id)
@@ -224,7 +238,10 @@ class SequenceGenerator:
         return encounter_row
 
     def _edit_datetimes(
-        self, row: pd.Series, encounter_row: pd.Series, concept_name: str
+        self,
+        row: pd.Series,
+        encounter_row: pd.Series,
+        concept_name: str,
     ) -> pd.Series:
         """Edits the datetimes of the events so that they won't fall
         out of the corresponding encounter time frame.
@@ -265,7 +282,7 @@ class SequenceGenerator:
         date_column = f"{concept_name}_dates"
         for i, date in enumerate(row[date_column]):
             encounter_index = encounter_row["encounter_ids"].index(
-                row["encounter_ids"][i]
+                row["encounter_ids"][i],
             )
             encounter_start = encounter_row["starts"][encounter_index]
             encounter_end = encounter_row["ends"][encounter_index]
@@ -317,10 +334,10 @@ class SequenceGenerator:
             lab_codes = [code.upper() for code in lab_codes]
             lab_bins = labs.iloc[i]["binned_values"]
             lab_codes = [f"{el1}_{el2}" for el1, el2 in zip(lab_codes, lab_bins)]
-            
-            proc_type_ids = [self.get_token_type_dict['proc']] * len(proc_codes)
-            med_type_ids = [self.get_token_type_dict['med']] * len(med_codes)
-            lab_type_ids = [self.get_token_type_dict['lab']] * len(lab_codes)
+
+            proc_type_ids = [self.get_token_type_dict["proc"]] * len(proc_codes)
+            med_type_ids = [self.get_token_type_dict["med"]] * len(med_codes)
+            lab_type_ids = [self.get_token_type_dict["lab"]] * len(lab_codes)
 
             proc_dates = procedures.iloc[i]["proc_dates"]
             med_dates = medications.iloc[i]["med_dates"]
@@ -341,7 +358,12 @@ class SequenceGenerator:
             }
 
             combined = sorted(
-                zip(combined_dates, combined_codes, combined_encounters, combined_type_ids),
+                zip(
+                    combined_dates,
+                    combined_codes,
+                    combined_encounters,
+                    combined_type_ids,
+                ),
                 key=lambda x: (x[0], encounter_order.get(x[2])),
             )
             sorted_dates, sorted_codes, sorted_encounters, sorted_type_ids = (
@@ -388,7 +410,7 @@ class SequenceGenerator:
         age_mapping = dict(zip(ecounters, encounter_row["ages"]))
         time_mapping = dict(zip(ecounters, encounter_row["times"]))
         event_tokens = [self.class_token]
-        type_tokens = [self.get_token_type_dict['class']]
+        type_tokens = [self.get_token_type_dict["class"]]
         age_tokens = [0]
         time_tokens = [0]
         visit_segments = [0]
@@ -399,7 +421,11 @@ class SequenceGenerator:
 
         prev_encounter = None
 
-        for event, event_encounter, event_type in zip(events, events_encounters, events_types):
+        for event, event_encounter, event_type in zip(
+            events,
+            events_encounters,
+            events_types,
+        ):
             if (
                 event_encounter != prev_encounter
                 and event_encounter not in eq_encounters.keys()
@@ -407,16 +433,15 @@ class SequenceGenerator:
                 if prev_encounter is not None:
                     # Adding Visit End Token
                     event_tokens.append(self.end_token)
-                    type_tokens.append(self.get_token_type_dict['end'])
+                    type_tokens.append(self.get_token_type_dict["end"])
                     age_tokens.append(age_mapping[event_encounter])
                     time_tokens.append(time_mapping[event_encounter])
                     visit_segments.append(segment_value)
                     position_tokens.append(position_value)
 
-
                     # Adding interval token
                     event_tokens.append(intervals[event_encounter])
-                    type_tokens.append(self.get_token_type_dict['time'])
+                    type_tokens.append(self.get_token_type_dict["time"])
                     age_tokens.append(0)
                     time_tokens.append(0)
                     visit_segments.append(0)
@@ -424,7 +449,7 @@ class SequenceGenerator:
 
                 # Adding Visit Start Token
                 event_tokens.append(self.start_token)
-                type_tokens.append(self.get_token_type_dict['start'])
+                type_tokens.append(self.get_token_type_dict["start"])
                 age_tokens.append(age_mapping[event_encounter])
                 time_tokens.append(time_mapping[event_encounter])
 
@@ -445,7 +470,7 @@ class SequenceGenerator:
             prev_encounter = event_encounter
 
         event_tokens.append(self.end_token)
-        type_tokens.append(self.get_token_type_dict['end'])
+        type_tokens.append(self.get_token_type_dict["end"])
         age_tokens.append(age_mapping[event_encounter])
         time_tokens.append(time_mapping[event_encounter])
         visit_segments.append(segment_value)
@@ -471,7 +496,10 @@ class SequenceGenerator:
         return row
 
     def _get_mortality_label(
-        self, row: pd.Series, patient_row: pd.Series, encounter_row: pd.Series
+        self,
+        row: pd.Series,
+        patient_row: pd.Series,
+        encounter_row: pd.Series,
     ) -> pd.Series:
         """Gets the mortality label for the patient.
 
@@ -551,16 +579,24 @@ class SequenceGenerator:
                 start_index += 1
 
             if sequence[start_index] != self.start_token:
-                new_sequence = [self.class_token, self.start_token] + sequence[start_index:end_index]
-                new_type = [self.get_token_type_dict['class'], self.get_token_type_dict['start']] \
-                    + type[start_index:end_index]
+                new_sequence = [self.class_token, self.start_token] + sequence[
+                    start_index:end_index
+                ]
+                new_type = [
+                    self.get_token_type_dict["class"],
+                    self.get_token_type_dict["start"],
+                ] + type[start_index:end_index]
                 new_age = [0, age[start_index]] + age[start_index:end_index]
                 new_time = [0, time[start_index]] + time[start_index:end_index]
                 new_visit = [0, visit[start_index]] + visit[start_index:end_index]
-                new_position = [0, position[start_index]] + position[start_index:end_index]
+                new_position = [0, position[start_index]] + position[
+                    start_index:end_index
+                ]
             else:
                 new_sequence = [self.class_token] + sequence[start_index:end_index]
-                new_type = [self.get_token_type_dict['class']] + type[start_index:end_index]
+                new_type = [self.get_token_type_dict["class"]] + type[
+                    start_index:end_index
+                ]
                 new_age = [0] + age[start_index:end_index]
                 new_time = [0] + time[start_index:end_index]
                 new_visit = [0] + visit[start_index:end_index]
@@ -579,23 +615,47 @@ class SequenceGenerator:
         if seq_length < self.max_seq_length:
             padded_length = int(max(0, self.max_seq_length - seq_length))
             if truncated:
-                row[f"event_tokens_{self.max_seq_length}"] = row[f"event_tokens_{self.max_seq_length}"] + \
-                    [self.pad_token] * padded_length
-                row[f"type_tokens_{self.max_seq_length}"] = row[f"type_tokens_{self.max_seq_length}"] + \
-                    [self.get_token_type_dict['pad']] * padded_length
-                row[f"age_tokens_{self.max_seq_length}"] = row[f"age_tokens_{self.max_seq_length}"] + [0] * padded_length
-                row[f"time_tokens_{self.max_seq_length}"] = row[f"time_tokens_{self.max_seq_length}"] + [0] * padded_length
-                row[f"visit_tokens_{self.max_seq_length}"] = row[f"visit_tokens_{self.max_seq_length}"] + [0] * padded_length
+                row[f"event_tokens_{self.max_seq_length}"] = (
+                    row[f"event_tokens_{self.max_seq_length}"]
+                    + [self.pad_token] * padded_length
+                )
+                row[f"type_tokens_{self.max_seq_length}"] = (
+                    row[f"type_tokens_{self.max_seq_length}"]
+                    + [self.get_token_type_dict["pad"]] * padded_length
+                )
+                row[f"age_tokens_{self.max_seq_length}"] = (
+                    row[f"age_tokens_{self.max_seq_length}"] + [0] * padded_length
+                )
+                row[f"time_tokens_{self.max_seq_length}"] = (
+                    row[f"time_tokens_{self.max_seq_length}"] + [0] * padded_length
+                )
+                row[f"visit_tokens_{self.max_seq_length}"] = (
+                    row[f"visit_tokens_{self.max_seq_length}"] + [0] * padded_length
+                )
                 row[f"position_tokens_{self.max_seq_length}"] = (
-                    row[f"position_tokens_{self.max_seq_length}"] + [self.max_seq_length + 1] * padded_length
+                    row[f"position_tokens_{self.max_seq_length}"]
+                    + [self.max_seq_length + 1] * padded_length
                 )
             else:
-                row[f"event_tokens_{self.max_seq_length}"] = row["event_tokens"] + [self.pad_token] * padded_length
-                row[f"type_tokens_{self.max_seq_length}"] = row["type_tokens"] + [self.get_token_type_dict['pad']] * padded_length
-                row[f"age_tokens_{self.max_seq_length}"] = row["age_tokens"] + [0] * padded_length
-                row[f"time_tokens_{self.max_seq_length}"] = row["time_tokens"] + [0] * padded_length
-                row[f"visit_tokens_{self.max_seq_length}"] = row["visit_tokens"] + [0] * padded_length
-                row[f"position_tokens_{self.max_seq_length}"] = row["position_tokens"] + [self.max_seq_length + 1] * padded_length
+                row[f"event_tokens_{self.max_seq_length}"] = (
+                    row["event_tokens"] + [self.pad_token] * padded_length
+                )
+                row[f"type_tokens_{self.max_seq_length}"] = (
+                    row["type_tokens"]
+                    + [self.get_token_type_dict["pad"]] * padded_length
+                )
+                row[f"age_tokens_{self.max_seq_length}"] = (
+                    row["age_tokens"] + [0] * padded_length
+                )
+                row[f"time_tokens_{self.max_seq_length}"] = (
+                    row["time_tokens"] + [0] * padded_length
+                )
+                row[f"visit_tokens_{self.max_seq_length}"] = (
+                    row["visit_tokens"] + [0] * padded_length
+                )
+                row[f"position_tokens_{self.max_seq_length}"] = (
+                    row["position_tokens"] + [self.max_seq_length + 1] * padded_length
+                )
 
         for key in [
             f"event_tokens_{self.max_seq_length}",
@@ -614,12 +674,13 @@ class SequenceGenerator:
 
     def create_patient_sequence(self) -> None:
         """Creates patient sequences and saves them as a parquet file."""
-        file_paths = [f"{self.data_dir}/inpatient.csv", 
-                  f'{self.data_dir}/encounters.csv',
-                  f'{self.data_dir}/procedures.csv', 
-                  f'{self.data_dir}/med_requests.csv', 
-                  f'{self.data_dir}/processed_labs.csv',
-                ]
+        file_paths = [
+            f"{self.data_dir}/inpatient.csv",
+            f"{self.data_dir}/encounters.csv",
+            f"{self.data_dir}/procedures.csv",
+            f"{self.data_dir}/med_requests.csv",
+            f"{self.data_dir}/processed_labs.csv",
+        ]
         rounds = 0
         readers = [pd.read_csv(path, chunksize=10000) for path in file_paths]
         while True:
@@ -634,36 +695,56 @@ class SequenceGenerator:
                 patients, encounters, procedures, medications, labs = dataframes
                 encounters = encounters.apply(self._sort_encounters, axis=1)
                 encounters = encounters.apply(
-                    lambda row: self._get_encounters_age(row, patients.iloc[row.name]), axis=1
+                    lambda row: self._get_encounters_age(row, patients.iloc[row.name]),
+                    axis=1,
                 )
                 encounters = encounters.apply(
-                    lambda row: self._get_encounters_time(row), axis=1
+                    lambda row: self._get_encounters_time(row),
+                    axis=1,
                 )
                 encounters = encounters.apply(self._calculate_intervals, axis=1)
                 # process events
                 procedures = procedures.apply(
-                    lambda row: self._edit_datetimes(row, encounters.iloc[row.name], "proc"),
+                    lambda row: self._edit_datetimes(
+                        row,
+                        encounters.iloc[row.name],
+                        "proc",
+                    ),
                     axis=1,
                 )
                 medications = medications.apply(
-                    lambda row: self._edit_datetimes(row, encounters.iloc[row.name], "med"),
+                    lambda row: self._edit_datetimes(
+                        row,
+                        encounters.iloc[row.name],
+                        "med",
+                    ),
                     axis=1,
                 )
                 labs = labs.apply(
-                    lambda row: self._edit_datetimes(row, encounters.iloc[row.name], "lab"),
+                    lambda row: self._edit_datetimes(
+                        row,
+                        encounters.iloc[row.name],
+                        "lab",
+                    ),
                     axis=1,
                 )
                 # combine events
                 combined_events = self._concat_concepts(
-                    procedures, medications, labs, encounters
+                    procedures,
+                    medications,
+                    labs,
+                    encounters,
                 )
                 combined_events = combined_events[combined_events["length"] > 0]
                 combined_events = combined_events.apply(
-                    lambda row: self._add_tokens(row, encounters.iloc[row.name]), axis=1
+                    lambda row: self._add_tokens(row, encounters.iloc[row.name]),
+                    axis=1,
                 )
                 combined_events = combined_events.apply(
                     lambda row: self._get_mortality_label(
-                        row, patients.iloc[row.name], encounters.iloc[row.name]
+                        row,
+                        patients.iloc[row.name],
+                        encounters.iloc[row.name],
                     ),
                     axis=1,
                 )
@@ -671,7 +752,8 @@ class SequenceGenerator:
                     ~combined_events["patient_id"].isin(self.after_death_events)
                 ]
                 combined_events = combined_events.apply(
-                    lambda row: self._truncate_or_pad(row), axis=1
+                    lambda row: self._truncate_or_pad(row),
+                    axis=1,
                 )
 
                 output_columns = [
@@ -696,7 +778,9 @@ class SequenceGenerator:
                     f"position_tokens_{self.max_seq_length}",
                 ]
                 combined_events = combined_events[output_columns]
-                combined_events = combined_events.dropna(subset=[f"event_tokens_{self.max_seq_length}"])
+                combined_events = combined_events.dropna(
+                    subset=[f"event_tokens_{self.max_seq_length}"],
+                )
                 combined_events.to_parquet(
                     self.save_dir + f"/patient_sequences_{rounds}.parquet",
                     engine="pyarrow",
@@ -707,10 +791,9 @@ class SequenceGenerator:
                 break
 
 
-
 if __name__ == "__main__":
     generator = SequenceGenerator(
         data_dir="/mnt/data/odyssey/mimiciv_fhir2",
-        save_dir="/mnt/data/odyssey/mimiciv_fhir2/parquets"
+        save_dir="/mnt/data/odyssey/mimiciv_fhir2/parquets",
     )
     generator.create_patient_sequence()
