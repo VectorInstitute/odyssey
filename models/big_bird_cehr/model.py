@@ -32,11 +32,11 @@ class BigBirdPretrain(pl.LightningModule):
             embedding_size: int = 768,
             time_embeddings_size: int = 32,
             type_vocab_size: int = 8,
-            max_seq_length: int = 512,
-            depth: int = 5,
-            num_heads: int = 8,
+            max_seq_length: int = 2048,
+            depth: int = 5,  # increase to 12
+            num_heads: int = 12,
             intermediate_size: int = 3072,
-            learning_rate: float = 2e-4,
+            learning_rate: float = 5e-5,
             eta_min: float = 1e-8,
             num_iterations: int = 10,
             increase_factor: float = 2,
@@ -111,15 +111,15 @@ class BigBirdPretrain(pl.LightningModule):
         self.apply(self._init_weights)
 
     def forward(
-        self,
-        input: Tuple[
-            torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
-        ],
-        attention_mask: Optional[torch.Tensor] = None,
-        labels: Optional[torch.Tensor] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
+            self,
+            input: Tuple[
+                torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
+            ],
+            attention_mask: Optional[torch.Tensor] = None,
+            labels: Optional[torch.Tensor] = None,
+            output_attentions: Optional[bool] = None,
+            output_hidden_states: Optional[bool] = None,
+            return_dict: Optional[bool] = None,
     ) -> Union[Tuple[torch.Tensor, ...], MaskedLMOutput]:
         """Forward pass for the model."""
         concept_ids, type_ids, time_stamps, ages, visit_orders, visit_segments = input
@@ -127,7 +127,7 @@ class BigBirdPretrain(pl.LightningModule):
             concept_ids, type_ids, time_stamps, ages, visit_orders, visit_segments
         )
         if attention_mask is None:
-            attention_mask = torch.ones_like(concept_ids)
+            attention_mask = torch.ones_like(concept_ids) * 5
         attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
         encoder_outputs = self.encoder(
             embedding_output,
@@ -172,8 +172,11 @@ class BigBirdPretrain(pl.LightningModule):
         labels = batch["labels"]
         attention_mask = batch["attention_mask"]
 
+        print(f"\n\nInput:\n{input}\n\n")
+        print(f"\n\nattention:\n{attention_mask}\n\nlabels:\n{labels}")
+
         # This is not necessary but makes sure we use the right attention
-        self.encoder.set_attention_type("block_sparse")
+        self.encoder.set_attention_type("original_full")
         loss = self(
             input, attention_mask=attention_mask, labels=labels, return_dict=True
         )[0]
@@ -259,7 +262,7 @@ class BigBirdFinetune(pl.LightningModule):
             increase_factor: float = 2,
     ):
         super().__init__()
-        
+
         self.num_labels = num_labels
         self.learning_rate = learning_rate
         self.hidden_size = hidden_size
@@ -311,15 +314,15 @@ class BigBirdFinetune(pl.LightningModule):
         self.apply(self._init_weights)
 
     def forward(
-        self,
-        input: Tuple[
-            torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
-        ],
-        attention_mask: Optional[torch.Tensor] = None,
-        labels: Optional[torch.Tensor] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
+            self,
+            input: Tuple[
+                torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
+            ],
+            attention_mask: Optional[torch.Tensor] = None,
+            labels: Optional[torch.Tensor] = None,
+            output_attentions: Optional[bool] = None,
+            output_hidden_states: Optional[bool] = None,
+            return_dict: Optional[bool] = None,
     ) -> Union[Tuple[torch.Tensor, ...], SequenceClassifierOutput]:
         """Forward pass for the model."""
         if attention_mask is None:
@@ -365,7 +368,7 @@ class BigBirdFinetune(pl.LightningModule):
         )
         labels = batch["labels"]
         attention_mask = batch["attention_mask"]
-        
+
         # This is not necessary but makes sure we use the right attention
         self.encoder.set_attention_type("block_sparse")
         loss = self(
@@ -392,7 +395,7 @@ class BigBirdFinetune(pl.LightningModule):
         )
         labels = batch["labels"]
         attention_mask = batch["attention_mask"]
-        
+
         # This is not necessary but makes sure we use the right attention
         self.encoder.set_attention_type("block_sparse")
         loss = self(
@@ -470,4 +473,3 @@ class BigBirdFinetune(pl.LightningModule):
         )
 
         return {"optimizer": optimizer, "lr_scheduler": scheduler}
-
