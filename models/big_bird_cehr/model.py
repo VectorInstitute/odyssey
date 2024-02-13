@@ -249,7 +249,7 @@ class BigBirdFinetune(pl.LightningModule):
 
     def __init__(
             self,
-            args,
+            args: tuple,
             dataset_len: int,
             pretrained_model: BigBirdPretrain,
             num_labels: int = 2,
