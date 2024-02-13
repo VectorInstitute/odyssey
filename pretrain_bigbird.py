@@ -6,15 +6,15 @@ import numpy as np
 import pandas as pd
 import pytorch_lightning as pl
 import torch
-from lightning.pytorch.loggers import WandbLogger
+# from lightning.pytorch.loggers import WandbLogger
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.strategies.ddp import DDPStrategy
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 
-from models.cehr_bert.data import PretrainDataset
-from models.cehr_bert.model import BertPretrain
-from models.cehr_bert.tokenizer import ConceptTokenizer
+from models.big_bird_cehr.data import PretrainDataset
+from models.big_bird_cehr.model import BigBirdPretrain
+from models.big_bird_cehr.tokenizer import ConceptTokenizer
 
 
 def main(args):
@@ -52,6 +52,8 @@ def main(args):
     #     pre_data.to_parquet(join(args.data_dir, "pretrain.parquet"))
     # else:
     pre_data = pd.read_parquet(join(args.data_dir, "pretrain.parquet"))
+    pre_data = pre_data[pre_data['event_tokens_2048'].notnull()]
+    pre_data = pre_data[:1000]
 
     pre_train, pre_val = train_test_split(
         pre_data,
@@ -103,24 +105,26 @@ def main(args):
         ),
         LearningRateMonitor(logging_interval="step"),
     ]
-    wandb_logger = WandbLogger(
-        project="pretrain",
-        save_dir=args.log_dir,
-    )
+    # wandb_logger = WandbLogger(
+    #    project="pretrain",
+    #    save_dir=args.log_dir,
+    # )
     trainer = pl.Trainer(
         accelerator="gpu",
         devices=args.gpus,
         strategy=DDPStrategy(find_unused_parameters=True) if args.gpus > 1 else "auto",
-        precision=16,
+        precision='16-mixed',
         check_val_every_n_epoch=1,
         max_epochs=args.max_epochs,
         callbacks=callbacks,
-        logger=wandb_logger,
-        resume_from_checkpoint=args.checkpoint_path if args.resume else None,
+        # logger=wandb_logger,
+        # resume_from_checkpoint=args.checkpoint_path if args.resume else None,
         log_every_n_steps=args.log_every_n_steps,
     )
 
-    model = BertPretrain(
+    model = BigBirdPretrain(
+        args,
+        dataset_len=len(train_dataset),
         vocab_size=tokenizer.get_vocab_size(),
         padding_idx=tokenizer.get_pad_token_id(),
     )
@@ -128,7 +132,7 @@ def main(args):
     trainer.fit(
         model=model,
         train_dataloaders=train_loader,
-        val_dataloaders=val_loader,
+        #    val_dataloaders=val_loader,
     )
 
 
@@ -143,7 +147,9 @@ if __name__ == "__main__":
         help="Flag to resume training from a checkpoint",
     )
     parser.add_argument(
-        "--data_dir", type=str, default="data_files", help="Path to the data directory"
+        "--data_dir", type=str,
+        default="/h/afallah/odyssey/odyssey/data/slurm_data/2048/one_month",
+        help="Path to the data directory"
     )
     parser.add_argument(
         "--finetune_size",
@@ -158,13 +164,13 @@ if __name__ == "__main__":
         help="Validation set size for splitting the data",
     )
     parser.add_argument(
-        "--max_len", type=int, default=512, help="Maximum length of the sequence"
+        "--max_len", type=int, default=2048, help="Maximum length of the sequence"
     )
     parser.add_argument(
         "--mask_prob", type=float, default=0.15, help="Probability of masking the token"
     )
     parser.add_argument(
-        "--batch_size", type=int, default=32, help="Batch size for training"
+        "--batch_size", type=int, default=5, help="Batch size for training"
     )
     parser.add_argument(
         "--num_workers", type=int, default=4, help="Number of workers for training"
@@ -179,10 +185,10 @@ if __name__ == "__main__":
         "--log_dir", type=str, default="logs", help="Path to the log directory"
     )
     parser.add_argument(
-        "--gpus", type=int, default=2, help="Number of gpus for training"
+        "--gpus", type=int, default=1, help="Number of gpus for training"
     )
     parser.add_argument(
-        "--max_epochs", type=int, default=50, help="Number of epochs for training"
+        "--max_epochs", type=int, default=5, help="Number of epochs for training"
     )
     parser.add_argument(
         "--log_every_n_steps",
