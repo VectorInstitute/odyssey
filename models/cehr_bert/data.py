@@ -21,7 +21,7 @@ class PretrainDataset(Dataset):
     ):
         self.data = data
         self.tokenizer = tokenizer
-        self.max_len = max_len
+        self.max_len = max_len #TODO: max_len is not used
         self.mask_prob = mask_prob
 
     def __len__(self):
@@ -71,16 +71,18 @@ class PretrainDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict:
         data = self.data.iloc[idx]
-        concept_tokens = self.tokenize_data(data["event_tokens"])
-        age_tokens = data["age_tokens"]
-        time_tokens = data["time_tokens"]
-        visit_tokens = data["visit_tokens"]
-        position_tokens = data["position_tokens"]
+        concept_tokens = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
+        type_tokens = data[f"type_tokens_{self.max_len}"]
+        age_tokens = data[f"age_tokens_{self.max_len}"]
+        time_tokens = data[f"time_tokens_{self.max_len}"]
+        visit_tokens = data[f"visit_tokens_{self.max_len}"]
+        position_tokens = data[f"position_tokens_{self.max_len}"]
 
         attention_mask = self.get_attention_mask(concept_tokens)
         masked_tokens, labels = self.mask_tokens(concept_tokens)
 
         masked_tokens = torch.tensor(masked_tokens)
+        type_tokens = torch.tensor(type_tokens)
         age_tokens = torch.tensor(age_tokens)
         time_tokens = torch.tensor(time_tokens)
         visit_tokens = torch.tensor(visit_tokens)
@@ -90,6 +92,7 @@ class PretrainDataset(Dataset):
 
         return {
             "concept_ids": masked_tokens,
+            "type_ids": type_tokens,
             "ages": age_tokens,
             "time_stamps": time_tokens,
             "visit_orders": position_tokens,
@@ -130,15 +133,17 @@ class FinetuneDataset(Dataset):
 
     def __getitem__(self, idx):
         data = self.data.iloc[idx]
-        concept_tokens = self.tokenize_data(data["event_tokens"])
-        age_tokens = data["age_tokens"]
-        time_tokens = data["time_tokens"]
-        visit_tokens = data["visit_tokens"]
-        position_tokens = data["position_tokens"]
+        concept_tokens = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
+        type_tokens = data[f"type_tokens_{self.max_len}"]
+        age_tokens = data[f"age_tokens_{self.max_len}"]
+        time_tokens = data[f"time_tokens_{self.max_len}"]
+        visit_tokens = data[f"visit_tokens_{self.max_len}"]
+        position_tokens = data[f"position_tokens_{self.max_len}"]
         labels = data["label"]
         attention_mask = self.get_attention_mask(concept_tokens)
 
         concept_tokens = torch.tensor(concept_tokens)
+        type_tokens = torch.tensor(type_tokens)
         age_tokens = torch.tensor(age_tokens)
         time_tokens = torch.tensor(time_tokens)
         visit_tokens = torch.tensor(visit_tokens)
@@ -148,6 +153,7 @@ class FinetuneDataset(Dataset):
 
         return {
             "concept_ids": concept_tokens,
+            "type_ids": type_tokens,
             "ages": age_tokens,
             "time_stamps": time_tokens,
             "visit_orders": position_tokens,

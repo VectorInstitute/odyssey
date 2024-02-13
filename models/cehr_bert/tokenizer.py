@@ -15,6 +15,7 @@ class ConceptTokenizer:
         mask_token: str = "[MASK]",
         start_token: str = "[VS]",
         end_token: str = "[VE]",
+        class_token: str = "[CLS]",
         oov_token="-1",
         data_dir: str = "data_files",
     ):
@@ -22,10 +23,10 @@ class ConceptTokenizer:
         self.mask_token = mask_token
         self.pad_token = pad_token
         self.special_tokens = (
-            [pad_token, mask_token, start_token, end_token]
-            + [f"W_{i}" for i in range(0, 4)]
-            + [f"M_{i}" for i in range(0, 13)]
-            + ["LT"]
+            [pad_token, mask_token, start_token, end_token, class_token]
+            + [f"[W_{i}]" for i in range(0, 4)]
+            + [f"[M_{i}]" for i in range(0, 13)]
+            + ["[LT]"]
         )
         self.data_dir = data_dir
 
