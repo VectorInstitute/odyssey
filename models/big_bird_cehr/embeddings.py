@@ -108,7 +108,7 @@ class Embeddings(nn.Module):
             self,
             vocab_size: int,
             embedding_size: int = 128,
-            time_embedding_size: int = 16,
+            time_embeddings_size: int = 16,
             type_vocab_size: int = 8,
             visit_order_size: int = 3,
             max_len: int = 2048,
@@ -121,8 +121,8 @@ class Embeddings(nn.Module):
             num_embeddings=vocab_size, embedding_size=embedding_size, padding_idx=padding_idx
         )
         self.token_type_embeddings = nn.Embedding(type_vocab_size, embedding_size)
-        self.time_embedding = TimeEmbeddingLayer(embedding_size=time_embedding_size, is_time_delta=True)
-        self.age_embedding = TimeEmbeddingLayer(embedding_size=time_embedding_size)
+        self.time_embedding = TimeEmbeddingLayer(embedding_size=time_embeddings_size, is_time_delta=True)
+        self.age_embedding = TimeEmbeddingLayer(embedding_size=time_embeddings_size)
         self.positional_embedding = PositionalEmbedding(
             embedding_size=embedding_size, max_len=max_len
         )
@@ -130,7 +130,7 @@ class Embeddings(nn.Module):
             visit_order_size=visit_order_size, embedding_size=embedding_size
         )
         self.scale_back_concat_layer = nn.Linear(
-            embedding_size + 2 * time_embedding_size, embedding_size
+            embedding_size + 2 * time_embeddings_size, embedding_size
         )  # Assuming 4 input features are concatenated
         self.tanh = nn.Tanh()
         self.LayerNorm = nn.LayerNorm(embedding_size, eps=layer_norm_eps)
@@ -147,36 +147,49 @@ class Embeddings(nn.Module):
     ) -> torch.Tensor:
         """Applies embeddings to the input features."""
         concept_embed = self.concept_embedding(concept_ids)
-        # type_embed = self.token_type_embeddings(type_ids)
+        type_embed = self.token_type_embeddings(type_ids)
         time_embed = self.time_embedding(time_stamps)
         age_embed = self.age_embedding(ages)
-        # positional_embed = self.positional_embedding(visit_orders)
+        positional_embed = self.positional_embedding(visit_orders)
         visit_segment_embed = self.visit_embedding(visit_segments)
 
         embeddings = torch.cat((concept_embed, time_embed, age_embed), dim=-1)
         embeddings = self.tanh(self.scale_back_concat_layer(embeddings))
-        # embeddings = embeddings + type_embed + positional_embed + visit_segment_embed
-        # embeddings = self.LayerNorm(embeddings)
-        # embeddings = self.dropout(embeddings)
+        embeddings = embeddings + type_embed + positional_embed + visit_segment_embed
+        embeddings = self.LayerNorm(embeddings)
+        embeddings = self.dropout(embeddings)
 
         return embeddings
+
+
+#######################################################################################################################
 
 
 class BigBirdEmbeddingsForCEHR(nn.Module):
     """Construct the embeddings from word, position and token_type embeddings."""
 
     # Copied from transformers.models.bert.modeling_bert.BertEmbeddings.__init__
-    def __init__(self, config, cehr_embedding):
+    def __init__(self, config, time_embeddings_size, visit_order_size):
         super().__init__()
-        self.word_embeddings = None
+        self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id)
         self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
         self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)
-        self.visit_segment_embed = None
+        self.time_embeddings = TimeEmbeddingLayer(embedding_size=time_embeddings_size, is_time_delta=True)
+        self.age_embeddings = TimeEmbeddingLayer(embedding_size=time_embeddings_size)
+        self.visit_segment_embeddings = VisitEmbedding(visit_order_size=visit_order_size,
+                                                       embedding_size=config.hidden_size)
+        self.scale_back_concat_layer = nn.Linear(config.hidden_size + 2 * time_embeddings_size, config.hidden_size)
+
+        self.time_stamps = None
+        self.ages = None
+        self.visit_segments = None
 
         # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
         # any TensorFlow checkpoint file
+        self.tanh = nn.Tanh()
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
+
         # position_ids (1, len position emb) is contiguous in memory and exported when serialized
         self.position_embedding_type = getattr(config, "position_embedding_type", "absolute")
         self.register_buffer(
@@ -190,8 +203,13 @@ class BigBirdEmbeddingsForCEHR(nn.Module):
         self.rescale_embeddings = config.rescale_embeddings
         self.hidden_size = config.hidden_size
 
+    def cache_input(self, time_stamps, ages, visit_segments):
+        self.time_stamps = time_stamps
+        self.ages = ages
+        self.visit_segments = visit_segments
+
     def forward(
-        self, input_ids=None, token_type_ids=None, position_ids=None, inputs_embeds=None, past_key_values_length=0
+            self, input_ids=None, token_type_ids=None, position_ids=None, inputs_embeds=None, past_key_values_length=0
     ):
         if input_ids is not None:
             input_shape = input_ids.size()
@@ -201,7 +219,7 @@ class BigBirdEmbeddingsForCEHR(nn.Module):
         seq_length = input_shape[1]
 
         if position_ids is None:
-            position_ids = self.position_ids[:, past_key_values_length : seq_length + past_key_values_length]
+            position_ids = self.position_ids[:, past_key_values_length: seq_length + past_key_values_length]
 
         # Setting the token_type_ids to the registered buffer in constructor where it is all zeros, which usually
         # occurs when its auto-generated, registered buffer helps users when tracing the model without passing
@@ -218,7 +236,14 @@ class BigBirdEmbeddingsForCEHR(nn.Module):
             inputs_embeds = self.word_embeddings(input_ids)
 
         if self.rescale_embeddings:
-            inputs_embeds = inputs_embeds * (self.hidden_size**0.5)
+            inputs_embeds = inputs_embeds * (self.hidden_size ** 0.5)
+
+        time_stamps_embeds = self.time_embeddings(self.time_stamps)
+        ages_embeds = self.age_embeddings(self.ages)
+        visit_segments_embeds = self.visit_segment_embeddings(self.visit_segments)
+
+        inputs_embeds = torch.cat((inputs_embeds, time_stamps_embeds, ages_embeds), dim=-1)
+        inputs_embeds = self.tanh(self.scale_back_concat_layer(inputs_embeds))
 
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
 
@@ -226,7 +251,11 @@ class BigBirdEmbeddingsForCEHR(nn.Module):
 
         position_embeddings = self.position_embeddings(position_ids)
         embeddings += position_embeddings
+        embeddings += visit_segments_embeds
 
         embeddings = self.dropout(embeddings)
         embeddings = self.LayerNorm(embeddings)
+
+        del self.time_stamps, self.ages, self.visit_segments
+
         return embeddings

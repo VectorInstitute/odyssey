@@ -16,7 +16,7 @@ class ConceptTokenizer:
         start_token: str = "[VS]",
         end_token: str = "[VE]",
         class_token: str = "[CLS]",
-        oov_token="-1",
+        oov_token= "-1",
         data_dir: str = "data_files",
     ):
         self.tokenizer = Tokenizer(oov_token=oov_token, filters="", lower=False)
@@ -32,11 +32,11 @@ class ConceptTokenizer:
 
     def fit_on_vocab(self) -> None:
         """Fit the tokenizer on the vocabulary."""
+        self.tokenizer.fit_on_texts(self.special_tokens)
         vocab_json_files = glob.glob(os.path.join(self.data_dir, "*_vocab.json"))
         for file in vocab_json_files:
             vocab = json.load(open(file, "r"))
             self.tokenizer.fit_on_texts(vocab)
-        self.tokenizer.fit_on_texts(self.special_tokens)
 
     def encode(
         self, concept_sequences: Union[str, Sequence[str]], is_generator: bool = False
@@ -81,13 +81,13 @@ class ConceptTokenizer:
         return len(self.tokenizer.index_word) + 1
 
     def get_pad_token_id(self):
-        pad_token_id = self.encode(self.pad_token)
+        pad_token_id = self.encode([self.pad_token])
         while isinstance(pad_token_id, list):
             pad_token_id = pad_token_id[0]
         return pad_token_id
 
     def get_mask_token_id(self):
-        mask_token_id = self.encode(self.mask_token)
+        mask_token_id = self.encode([self.mask_token])
         while isinstance(mask_token_id, list):
             mask_token_id = mask_token_id[0]
         return mask_token_id
