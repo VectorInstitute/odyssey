@@ -51,9 +51,8 @@ def main(args):
     #     fine_df.to_parquet(join(args.data_dir, "fine_tune.parquet"))
     #     pre_data.to_parquet(join(args.data_dir, "pretrain.parquet"))
     # else:
-    pre_data = pd.read_parquet(join(args.data_dir, "pretrain.parquet"))
+    pre_data = pd.read_parquet(join(args.data_dir, "fine_test.parquet"))
     pre_data = pre_data[pre_data['event_tokens_2048'].notnull()]
-    pre_data = pre_data[:1000]
 
     pre_train, pre_val = train_test_split(
         pre_data,
@@ -123,7 +122,7 @@ def main(args):
     )
 
     model = BigBirdPretrain(
-        args,
+        args=args,
         dataset_len=len(train_dataset),
         vocab_size=tokenizer.get_vocab_size(),
         padding_idx=tokenizer.get_pad_token_id(),
@@ -132,7 +131,7 @@ def main(args):
     trainer.fit(
         model=model,
         train_dataloaders=train_loader,
-        #    val_dataloaders=val_loader,
+        val_dataloaders=val_loader,
     )
 
 
@@ -170,10 +169,10 @@ if __name__ == "__main__":
         "--mask_prob", type=float, default=0.15, help="Probability of masking the token"
     )
     parser.add_argument(
-        "--batch_size", type=int, default=5, help="Batch size for training"
+        "--batch_size", type=int, default=6, help="Batch size for training"
     )
     parser.add_argument(
-        "--num_workers", type=int, default=4, help="Number of workers for training"
+        "--num_workers", type=int, default=3, help="Number of workers for training"
     )
     parser.add_argument(
         "--checkpoint_dir",
