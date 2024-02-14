@@ -1,7 +1,7 @@
 import math
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 
 class TimeEmbeddingLayer(nn.Module):
@@ -63,7 +63,9 @@ class ConceptEmbedding(nn.Module):
     ):
         super(ConceptEmbedding, self).__init__()
         self.embedding = nn.Embedding(
-            num_embeddings, embedding_size, padding_idx=padding_idx
+            num_embeddings,
+            embedding_size,
+            padding_idx=padding_idx,
         )
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
@@ -96,7 +98,9 @@ class PositionalEmbedding(nn.Module):
         """Applies positional embedding to the input visit orders."""
         first_visit_concept_orders = visit_orders[:, 0:1]
         normalized_visit_orders = torch.clamp(
-            visit_orders - first_visit_concept_orders, 0, self.pe.size(0) - 1
+            visit_orders - first_visit_concept_orders,
+            0,
+            self.pe.size(0) - 1,
         )
         return self.pe[normalized_visit_orders]
 
@@ -118,19 +122,27 @@ class Embeddings(nn.Module):
     ):
         super().__init__()
         self.concept_embedding = ConceptEmbedding(
-            num_embeddings=vocab_size, embedding_size=embedding_size, padding_idx=padding_idx
+            num_embeddings=vocab_size,
+            embedding_size=embedding_size,
+            padding_idx=padding_idx,
         )
         self.token_type_embeddings = nn.Embedding(type_vocab_size, embedding_size)
-        self.time_embedding = TimeEmbeddingLayer(embedding_size=time_embedding_size, is_time_delta=True)
+        self.time_embedding = TimeEmbeddingLayer(
+            embedding_size=time_embedding_size,
+            is_time_delta=True,
+        )
         self.age_embedding = TimeEmbeddingLayer(embedding_size=time_embedding_size)
         self.positional_embedding = PositionalEmbedding(
-            embedding_size=embedding_size, max_len=max_len
+            embedding_size=embedding_size,
+            max_len=max_len,
         )
         self.visit_embedding = VisitEmbedding(
-            visit_order_size=visit_order_size, embedding_size=embedding_size
+            visit_order_size=visit_order_size,
+            embedding_size=embedding_size,
         )
         self.scale_back_concat_layer = nn.Linear(
-            embedding_size + 2 * time_embedding_size, embedding_size
+            embedding_size + 2 * time_embedding_size,
+            embedding_size,
         )  # Assuming 4 input features are concatenated
         self.tanh = nn.Tanh()
         self.LayerNorm = nn.LayerNorm(embedding_size, eps=layer_norm_eps)
@@ -153,9 +165,9 @@ class Embeddings(nn.Module):
         positional_embed = self.positional_embedding(visit_orders)
         visit_segment_embed = self.visit_embedding(visit_segments)
 
-        embeddings = torch.cat((concept_embed, time_embed, age_embed), dim=-1) 
+        embeddings = torch.cat((concept_embed, time_embed, age_embed), dim=-1)
         embeddings = self.tanh(self.scale_back_concat_layer(embeddings))
-        embeddings =  embeddings + type_embed + positional_embed + visit_segment_embed
+        embeddings = embeddings + type_embed + positional_embed + visit_segment_embed
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
 
