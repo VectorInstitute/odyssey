@@ -135,7 +135,10 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--seed", type=int, default=42, help="Random seed for reproducibility"
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducibility",
     )
     parser.add_argument(
         "--resume",
@@ -143,7 +146,10 @@ if __name__ == "__main__":
         help="Flag to resume training from a checkpoint",
     )
     parser.add_argument(
-        "--data_dir", type=str, default="data_files", help="Path to the data directory"
+        "--data_dir",
+        type=str,
+        default="data_files",
+        help="Path to the data directory",
     )
     parser.add_argument(
         "--finetune_size",
@@ -158,16 +164,28 @@ if __name__ == "__main__":
         help="Validation set size for splitting the data",
     )
     parser.add_argument(
-        "--max_len", type=int, default=512, help="Maximum length of the sequence"
+        "--max_len",
+        type=int,
+        default=512,
+        help="Maximum length of the sequence",
     )
     parser.add_argument(
-        "--mask_prob", type=float, default=0.15, help="Probability of masking the token"
+        "--mask_prob",
+        type=float,
+        default=0.15,
+        help="Probability of masking the token",
     )
     parser.add_argument(
-        "--batch_size", type=int, default=32, help="Batch size for training"
+        "--batch_size",
+        type=int,
+        default=32,
+        help="Batch size for training",
     )
     parser.add_argument(
-        "--num_workers", type=int, default=4, help="Number of workers for training"
+        "--num_workers",
+        type=int,
+        default=4,
+        help="Number of workers for training",
     )
     parser.add_argument(
         "--checkpoint_dir",
@@ -176,13 +194,22 @@ if __name__ == "__main__":
         help="Path to the training checkpoint",
     )
     parser.add_argument(
-        "--log_dir", type=str, default="logs", help="Path to the log directory"
+        "--log_dir",
+        type=str,
+        default="logs",
+        help="Path to the log directory",
     )
     parser.add_argument(
-        "--gpus", type=int, default=2, help="Number of gpus for training"
+        "--gpus",
+        type=int,
+        default=2,
+        help="Number of gpus for training",
     )
     parser.add_argument(
-        "--max_epochs", type=int, default=50, help="Number of epochs for training"
+        "--max_epochs",
+        type=int,
+        default=50,
+        help="Number of epochs for training",
     )
     parser.add_argument(
         "--log_every_n_steps",

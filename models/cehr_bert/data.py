@@ -21,7 +21,7 @@ class PretrainDataset(Dataset):
     ):
         self.data = data
         self.tokenizer = tokenizer
-        self.max_len = max_len #TODO: max_len is not used
+        self.max_len = max_len  # TODO: max_len is not used
         self.mask_prob = mask_prob
 
     def __len__(self):

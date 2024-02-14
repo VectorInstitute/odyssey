@@ -4,29 +4,26 @@ Code to train and evaluate a bi-directional LSTM model on MIMIC-IV FHIR dataset.
 """
 
 import sys
+
 import numpy as np
 import pandas as pd
-
-from sklearn.model_selection import train_test_split
+import torch
 from sklearn.metrics import (
     balanced_accuracy_score,
 )
-
-import torch
-import torch.nn as nn
-import torch.optim as optim
+from sklearn.model_selection import train_test_split
+from torch import nn, optim
 from torch.nn.functional import sigmoid
-from torch.utils.data import Dataset, DataLoader
-from torch.optim.lr_scheduler import ExponentialLR
 from torch.nn.utils.rnn import pack_padded_sequence
+from torch.optim.lr_scheduler import ExponentialLR
+from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
 
 # os.chdir('/home/afallah/odyssey/odyssey')
-
 from models.cehr_bert.data import FinetuneDataset
-from models.cehr_bert.tokenizer import ConceptTokenizer
 from models.cehr_bert.embeddings import Embeddings
+from models.cehr_bert.tokenizer import ConceptTokenizer
 
-from tqdm import tqdm
 
 # ROOT = '/home/afallah/odyssey/slurm'; os.chdir(ROOT)
 DATA_ROOT = "data"
@@ -86,11 +83,13 @@ class DatasetWithTokenLength(Dataset):
         self.tokenized_data = tokenized_data
         self.length_data = length_data
         assert len(tokenized_data) == len(
-            length_data
+            length_data,
         ), "Datasets have different lengths"
 
         self.sorted_indices = sorted(
-            range(len(length_data)), key=lambda x: length_data[x], reverse=True
+            range(len(length_data)),
+            key=lambda x: length_data[x],
+            reverse=True,
         )
         # self.tokenized_data = [tokenized_data[i] for i in self.sorted_indices]
         # self.length_data = [min(length_data[i], ) for i in self.sorted_indices]
@@ -105,7 +104,10 @@ class DatasetWithTokenLength(Dataset):
 
 # Get training and test datasets
 train_data, test_data = train_test_split(
-    data, test_size=config.test_size, random_state=config.seed, stratify=data["label"]
+    data,
+    test_size=config.test_size,
+    random_state=config.seed,
+    stratify=data["label"],
 )
 
 train_dataset = FinetuneDataset(
@@ -121,10 +123,12 @@ test_dataset = FinetuneDataset(
 )
 
 train_dataset_with_lengths = DatasetWithTokenLength(
-    train_dataset, train_data["token_length"].values
+    train_dataset,
+    train_data["token_length"].values,
 )
 test_dataset_with_lengths = DatasetWithTokenLength(
-    test_dataset, test_data["token_length"].values
+    test_dataset,
+    test_data["token_length"].values,
 )
 
 train_loader = DataLoader(
@@ -151,7 +155,12 @@ print("Data is ready to go!\n")
 
 class BiLSTMModel(nn.Module):
     def __init__(
-        self, embedding_dim, hidden_size, num_layers, output_size, dropout_rate
+        self,
+        embedding_dim,
+        hidden_size,
+        num_layers,
+        output_size,
+        dropout_rate,
     ):
         super(BiLSTMModel, self).__init__()
 
@@ -221,10 +230,10 @@ learning_rate = 0.001
 # %%
 # Training Loop
 model = BiLSTMModel(input_size, hidden_size, num_layers, output_size, dropout_rate).to(
-    config.device
+    config.device,
 )
 class_weights = torch.tensor([8.0]).to(
-    config.device
+    config.device,
 )  # because ~11% of data is of class 1
 loss_fcn = nn.BCEWithLogitsLoss(weight=class_weights)
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
@@ -283,7 +292,7 @@ for epoch in range(epochs):
         f"\nEpoch {epoch + 1}/{epochs}  |  "
         f"Average Train Loss: {train_total_loss / len(train_loader):.5f}  |  "
         f"Train Accuracy: {train_accuracy / len(train_loader):.5f}  |  "
-        f"Test Accuracy: {test_accuracy / len(test_loader):.5f}\n\n"
+        f"Test Accuracy: {test_accuracy / len(test_loader):.5f}\n\n",
     )
     scheduler.step()
 
