@@ -10,23 +10,23 @@ class ConceptTokenizer:
     """Tokenizer for event concepts."""
 
     def __init__(
-        self,
-        pad_token: str = "[PAD]",
-        mask_token: str = "[MASK]",
-        start_token: str = "[VS]",
-        end_token: str = "[VE]",
-        class_token: str = "[CLS]",
-        oov_token= "-1",
-        data_dir: str = "data_files",
+            self,
+            pad_token: str = "[PAD]",
+            mask_token: str = "[MASK]",
+            start_token: str = "[VS]",
+            end_token: str = "[VE]",
+            class_token: str = "[CLS]",
+            oov_token="-1",
+            data_dir: str = "data_files",
     ):
         self.tokenizer = Tokenizer(oov_token=oov_token, filters="", lower=False)
         self.mask_token = mask_token
         self.pad_token = pad_token
         self.special_tokens = (
-            [pad_token, mask_token, start_token, end_token, class_token]
-            + [f"[W_{i}]" for i in range(0, 4)]
-            + [f"[M_{i}]" for i in range(0, 13)]
-            + ["[LT]"]
+                [pad_token, mask_token, start_token, end_token, class_token]
+                + [f"[W_{i}]" for i in range(0, 4)]
+                + [f"[M_{i}]" for i in range(0, 13)]
+                + ["[LT]"]
         )
         self.data_dir = data_dir
 
@@ -39,7 +39,7 @@ class ConceptTokenizer:
             self.tokenizer.fit_on_texts(vocab)
 
     def encode(
-        self, concept_sequences: Union[str, Sequence[str]], is_generator: bool = False
+            self, concept_sequences: Union[str, Sequence[str]], is_generator: bool = False
     ) -> Union[int, Sequence[int]]:
         """Encode the concept sequences into token ids."""
         return (
@@ -49,7 +49,7 @@ class ConceptTokenizer:
         )
 
     def decode(
-        self, concept_sequence_token_ids: Union[int, Sequence[int]]
+            self, concept_sequence_token_ids: Union[int, Sequence[int]]
     ) -> Sequence[str]:
         """Decode the concept sequence token ids into concepts."""
         return self.tokenizer.sequences_to_texts(concept_sequence_token_ids)
