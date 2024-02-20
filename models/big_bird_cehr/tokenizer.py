@@ -3,7 +3,7 @@ import glob
 import json
 
 from itertools import chain
-from typing import Sequence, Union, List, Dict, Set
+from typing import Optional, Sequence, Union, Any, List, Tuple, Dict, Set
 
 from transformers import PreTrainedTokenizerFast
 from tokenizers import Tokenizer, decoders, models, normalizers, pre_tokenizers, processors, trainers
