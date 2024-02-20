@@ -37,8 +37,13 @@ class HuggingFaceConceptTokenizer:
         self.token_type_vocab = {}
         self.data_dir = data_dir
 
+        self.special_token_ids = None
+        self.first_token_index = None
+        self.last_token_index = None
+
     def fit_on_vocab(self) -> None:
         """Fit the tokenizer on the vocabulary."""
+
         # Create dictionary of all possible medical concepts
         self.token_type_vocab['special_tokens'] = self.special_tokens
         vocab_json_files = glob.glob(os.path.join(self.data_dir, '*_vocab.json'))
@@ -58,6 +63,12 @@ class HuggingFaceConceptTokenizer:
                                                     max_input_chars_per_word=1000))
         self.tokenizer.pre_tokenizer = pre_tokenizers.WhitespaceSplit()
 
+        # Get the first, last , and special token indexes from the dictionary
+        self.first_token_index = min(self.tokenizer_vocab, key=lambda token: self.tokenizer_vocab[token])
+        self.last_token_index = max(self.tokenizer_vocab, key=lambda token: self.tokenizer_vocab[token])
+        self.special_token_ids = [id_list[0] for id_list in self.encode(self.special_tokens)]
+
+        # Check to make sure tokenizer follows the same vocabulary
         assert self.tokenizer_vocab == self.tokenizer.get_vocab(), "Tokenizer vocabulary does not match original"
 
     def __call__(
@@ -102,11 +113,11 @@ class HuggingFaceConceptTokenizer:
 
     def get_first_token_index(self) -> int:
         """ Return the smallest token id in vocabulary """
-        return min(self.tokenizer_vocab, key=lambda token: self.tokenizer_vocab[token])
+        return self.first_token_index
 
     def get_last_token_index(self) -> int:
         """ Return the largest token id in vocabulary """
-        return max(self.tokenizer_vocab, key=lambda token: self.tokenizer_vocab[token])
+        return self.last_token_index
 
     def get_vocab_size(self) -> int:
         """ Return the number of possible tokens in vocabulary """
@@ -122,9 +133,7 @@ class HuggingFaceConceptTokenizer:
 
     def get_special_token_ids(self) -> List[int]:
         """ Get a list of ids representing special tokens. """
-        special_ids = self.encode(self.special_tokens)
-        flat_special_ids = [item[0] for item in special_ids]
-        return flat_special_ids
+        return self.special_token_ids
 
     def save_tokenizer_to_disk(self, save_dir: str) -> None:
         """ Saves the tokenizer object to disk as a JSON file. """
