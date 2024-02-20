@@ -68,7 +68,7 @@ class HuggingFaceConceptTokenizer:
             truncation: bool = True,
             padding: bool = True,
             max_length: int = 2048
-    ) -> Union[Dict[str, List[int]], List[Dict[str, List[int]]]]:
+    ) -> Dict[str, List[List[int]]]:
         """ Return the tokenized dictionary of input batch. """
 
         return self.tokenizer(
