@@ -3,6 +3,8 @@ import math
 import torch
 import torch.nn as nn
 
+from transformers import BigBirdConfig
+
 
 class TimeEmbeddingLayer(nn.Module):
     """Embedding layer for time features."""
@@ -162,23 +164,39 @@ class Embeddings(nn.Module):
         return embeddings
 
 
-#######################################################################################################################
-
-
 class BigBirdEmbeddingsForCEHR(nn.Module):
     """Construct the embeddings from word, position and token_type embeddings."""
 
     # Copied from transformers.models.bert.modeling_bert.BertEmbeddings.__init__
-    def __init__(self, config, time_embeddings_size, visit_order_size):
+    def __init__(
+            self,
+            config: BigBirdConfig,
+            time_embeddings_size: int = 16,
+            visit_order_size: int = 3
+    ):
+        """ Wrapper class for embeddings used in BigBird CEHR classes. """
         super().__init__()
-        self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id)
-        self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
-        self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)
-        self.time_embeddings = TimeEmbeddingLayer(embedding_size=time_embeddings_size, is_time_delta=True)
-        self.age_embeddings = TimeEmbeddingLayer(embedding_size=time_embeddings_size)
-        self.visit_segment_embeddings = VisitEmbedding(visit_order_size=visit_order_size,
-                                                       embedding_size=config.hidden_size)
-        self.scale_back_concat_layer = nn.Linear(config.hidden_size + 2 * time_embeddings_size, config.hidden_size)
+
+        self.word_embeddings = nn.Embedding(
+            config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id
+        )
+        self.position_embeddings = nn.Embedding(
+            config.max_position_embeddings, config.hidden_size
+        )
+        self.token_type_embeddings = nn.Embedding(
+            config.type_vocab_size, config.hidden_size
+        )
+        self.time_embeddings = TimeEmbeddingLayer(
+            embedding_size=time_embeddings_size, is_time_delta=True
+        )
+        self.age_embeddings = TimeEmbeddingLayer(
+            embedding_size=time_embeddings_size
+        )
+        self.visit_segment_embeddings = VisitEmbedding(
+            visit_order_size=visit_order_size, embedding_size=config.hidden_size
+        )
+        self.scale_back_concat_layer = nn.Linear(config.hidden_size + 2 * time_embeddings_size,
+                                                 config.hidden_size)
 
         self.time_stamps = None
         self.ages = None
@@ -203,14 +221,32 @@ class BigBirdEmbeddingsForCEHR(nn.Module):
         self.rescale_embeddings = config.rescale_embeddings
         self.hidden_size = config.hidden_size
 
-    def cache_input(self, time_stamps, ages, visit_segments):
+    def cache_input(
+            self,
+            time_stamps: torch.Tensor,
+            ages: torch.Tensor,
+            visit_segments: torch.Tensor
+    ) -> None:
+        """ Cache values for time_stamps, ages, and visit_segments inside the class object.
+        These values will be used by the forward pass to change the final embedding. """
         self.time_stamps = time_stamps
         self.ages = ages
         self.visit_segments = visit_segments
 
+    def clear_cache(self) -> None:
+        """ Delete the tensors cached by cache_input method """
+        del self.time_stamps, self.ages, self.visit_segments
+
     def forward(
-            self, input_ids=None, token_type_ids=None, position_ids=None, inputs_embeds=None, past_key_values_length=0
-    ):
+            self,
+            input_ids: torch.Tensor = None,
+            token_type_ids: torch.Tensor = None,
+            position_ids: torch.Tensor = None,
+            inputs_embeds: torch.Tensor = None,
+            past_key_values_length: int = 0
+    ) -> torch.Tensor:
+        """ Return the final embeddings of concept ids using input and cached values. """
+
         if input_ids is not None:
             input_shape = input_ids.size()
         else:
@@ -238,6 +274,7 @@ class BigBirdEmbeddingsForCEHR(nn.Module):
         if self.rescale_embeddings:
             inputs_embeds = inputs_embeds * (self.hidden_size ** 0.5)
 
+        # Using cached values from a prior cache_input call
         time_stamps_embeds = self.time_embeddings(self.time_stamps)
         ages_embeds = self.age_embeddings(self.ages)
         visit_segments_embeds = self.visit_segment_embeddings(self.visit_segments)
@@ -256,6 +293,7 @@ class BigBirdEmbeddingsForCEHR(nn.Module):
         embeddings = self.dropout(embeddings)
         embeddings = self.LayerNorm(embeddings)
 
-        del self.time_stamps, self.ages, self.visit_segments
+        # Clear the cache for next forward call
+        self.clear_cache()
 
         return embeddings
