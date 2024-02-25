@@ -1,59 +1,54 @@
-import argparse
 import os
+import argparse
 from os.path import join
 
 import numpy as np
 import pandas as pd
-import pytorch_lightning as pl
+
 import torch
-# from lightning.pytorch.loggers import WandbLogger
+from torch.utils.data import DataLoader
+
+import pytorch_lightning as pl
+from lightning.pytorch.loggers import WandbLogger
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.strategies.ddp import DDPStrategy
+
 from sklearn.model_selection import train_test_split
-from torch.utils.data import DataLoader
 
 from models.big_bird_cehr.data import PretrainDataset
 from models.big_bird_cehr.model import BigBirdPretrain
-from models.big_bird_cehr.tokenizer import ConceptTokenizer
+from models.big_bird_cehr.tokenizer import ConceptTokenizer, HuggingFaceConceptTokenizer
+
+
+def seed_everything(seed: int) -> None:
+    """ Seed all components of the model. """
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    pl.seed_everything(seed)
+
+
+def get_latest_checkpoint(checkpoint_dir: str) -> str:
+    """ Return the most recent checkpointed file to resume training from. """
+    list_of_files = glob.glob(os.path.join(checkpoint_dir, '*.ckpt'))
+    latest_checkpoint = max(list_of_files, key=os.path.getctime) if list_of_files else None
+    return latest_checkpoint
 
 
 def main(args):
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    pl.seed_everything(args.seed)
-
+    # Setup environment
+    seed_everything(args.seed)
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
     torch.cuda.empty_cache()
     torch.set_float32_matmul_precision("medium")
 
-    # if not args.resume:
-    #     data = pd.read_parquet(join(args.data_dir, "patient_sequences.parquet"))
-
-    #     data["label"] = (
-    #         (data["death_after_end"] >= 0) & (data["death_after_end"] < 365)
-    #     ).astype(int)
-    #     neg_pos_data = data[(data["deceased"] == 0) | (data["label"] == 1)]
-
-    #     pre_data = data[~data.index.isin(neg_pos_data.index)]
-
-    #     pre_df, fine_df = train_test_split(
-    #         neg_pos_data,
-    #         test_size=args.finetune_size,
-    #         random_state=args.seed,
-    #         stratify=neg_pos_data["label"],
-    #     )
-
-    #     pre_data = pd.concat([pre_data, pre_df])
-
-    #     fine_df.to_parquet(join(args.data_dir, "fine_tune.parquet"))
-    #     pre_data.to_parquet(join(args.data_dir, "pretrain.parquet"))
-    # else:
-    pre_data = pd.read_parquet(join(args.data_dir, "fine_test.parquet"))
+    # Load data
+    pre_data = pd.read_parquet(join(args.data_dir, "pretrain.parquet"))
     pre_data = pre_data[pre_data['event_tokens_2048'].notnull()]
 
+    # Split data
     pre_train, pre_val = train_test_split(
         pre_data,
         test_size=args.val_size,
@@ -61,9 +56,11 @@ def main(args):
         stratify=pre_data["label"],
     )
 
-    tokenizer = ConceptTokenizer(data_dir=args.data_dir)
+    # Train Tokenizer
+    tokenizer = HuggingFaceConceptTokenizer(data_dir=args.data_dir)
     tokenizer.fit_on_vocab()
 
+    # Load datasets
     train_dataset = PretrainDataset(
         data=pre_train,
         tokenizer=tokenizer,
@@ -82,16 +79,20 @@ def main(args):
         train_dataset,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        persistent_workers=True,
         shuffle=True,
         pin_memory=True,
     )
+
     val_loader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        persistent_workers=True,
         pin_memory=True,
     )
 
+    # Setup model dependencies
     callbacks = [
         ModelCheckpoint(
             monitor="val_loss",
@@ -104,10 +105,16 @@ def main(args):
         ),
         LearningRateMonitor(logging_interval="step"),
     ]
-    # wandb_logger = WandbLogger(
-    #    project="pretrain",
-    #    save_dir=args.log_dir,
-    # )
+
+    wandb_logger = WandbLogger(
+        project="bigbird_pretrain",
+        save_dir=args.log_dir,
+    )
+
+    # Load latest checkpoint to continue training
+    latest_checkpoint = get_latest_checkpoint(args.checkpoint_path)
+
+    # Setup PyTorchLightning trainer
     trainer = pl.Trainer(
         accelerator="gpu",
         devices=args.gpus,
@@ -116,11 +123,16 @@ def main(args):
         check_val_every_n_epoch=1,
         max_epochs=args.max_epochs,
         callbacks=callbacks,
-        # logger=wandb_logger,
-        # resume_from_checkpoint=args.checkpoint_path if args.resume else None,
+        deterministic=False,
+        enable_checkpointing=True,
+        logger=wandb_logger,
+        resume_from_checkpoint=latest_checkpoint if args.resume else None,
         log_every_n_steps=args.log_every_n_steps,
+        accumulate_grad_batches=args.acc,
+        gradient_clip_val=1.0
     )
 
+    # Create BigBird model
     model = BigBirdPretrain(
         args=args,
         dataset_len=len(train_dataset),
@@ -128,6 +140,7 @@ def main(args):
         padding_idx=tokenizer.get_pad_token_id(),
     )
 
+    # Train the model
     trainer.fit(
         model=model,
         train_dataloaders=train_loader,
@@ -143,6 +156,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--resume",
         action="store_true",
+        default=True,
         help="Flag to resume training from a checkpoint",
     )
     parser.add_argument(
@@ -190,6 +204,9 @@ if __name__ == "__main__":
         "--max_epochs", type=int, default=5, help="Number of epochs for training"
     )
     parser.add_argument(
+        "--acc", type=int, default=1, help="Gradient accumulation"
+    )
+    parser.add_argument(
         "--log_every_n_steps",
         type=int,
         default=10,
@@ -200,6 +217,12 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Checkpoint to resume training from",
+    )
+    parser.add_argument(
+        "--output_model_path",
+        type=str,
+        default="/h/afallah/odyssey/odyssey/bigbird_pretrained_2048.pt",
+        help="Directory to save the model",
     )
 
     args = parser.parse_args()
