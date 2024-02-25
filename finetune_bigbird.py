@@ -83,6 +83,7 @@ def main(args):
         train_dataset,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        persistent_workers=True,
         shuffle=True,
         pin_memory=True,
     )
@@ -91,6 +92,7 @@ def main(args):
         val_dataset,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        persistent_workers=True,
         pin_memory=True,
     )
 
@@ -98,6 +100,7 @@ def main(args):
         test_dataset,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        persistent_workers=True,
         pin_memory=True,
     )
 
@@ -117,7 +120,7 @@ def main(args):
     ]
 
     wandb_logger = WandbLogger(
-        project="finetune",
+        project="bigbird_finetune",
         save_dir=args.log_dir,
     )
 
@@ -133,9 +136,13 @@ def main(args):
         check_val_every_n_epoch=1,
         max_epochs=args.max_epochs,
         callbacks=callbacks,
+        deterministic=False,
+        enable_checkpointing=True,
         logger=wandb_logger,
         resume_from_checkpoint=latest_checkpoint if args.resume else None,
         log_every_n_steps=args.log_every_n_steps,
+        accumulate_grad_batches=args.acc,
+        gradient_clip_val=1.0
     )
 
     # Create pretrain BigBird model and load the pretrained state_dict
@@ -219,6 +226,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--max_epochs", type=int, default=10, help="Number of epochs for training"
+    )
+    parser.add_argument(
+        "--acc", type=int, default=1, help="Gradient accumulation"
     )
     parser.add_argument(
         "--log_every_n_steps",
