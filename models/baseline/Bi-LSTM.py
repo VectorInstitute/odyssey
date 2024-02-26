@@ -306,9 +306,8 @@ if __name__ == "__main__":
         print(
             f"\nEpoch {epoch + 1}/{epochs}"
             f"  |  Average Train Loss: {train_total_loss / len(train_loader):.5f}"
-            f"  |  Train Accuracy: {train_accuracy / len(train_loader):.5f}"
+            f"  |  Train Accuracy: {train_accuracy / len(train_loader):.5f}",
             # f"  |  Test Accuracy: {test_accuracy / len(test_loader):.5f}\n\n"
-            ,
             "\n\n",
         )
         scheduler.step()
