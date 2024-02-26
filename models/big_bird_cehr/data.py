@@ -1,9 +1,7 @@
 import random
-from typing import Optional, Sequence, Union, Any, List, Tuple, Dict, Set
+from typing import Dict, List, Sequence, Union
 
-import numpy as np
 import pandas as pd
-
 import torch
 from torch.utils.data import Dataset
 
@@ -29,7 +27,10 @@ class PretrainDataset(Dataset):
         """Return the length of the dataset."""
         return len(self.data)
 
-    def tokenize_data(self, sequence: Union[str, Sequence[str]]) -> Dict[str, List[List[int]]]:
+    def tokenize_data(
+        self,
+        sequence: Union[str, Sequence[str]],
+    ) -> Dict[str, List[List[int]]]:
         """Tokenize the sequence and return input_ids and attention mask"""
         return self.tokenizer(sequence)
 
@@ -64,8 +65,8 @@ class PretrainDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         data = self.data.iloc[idx]
         tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
-        concept_tokens = tokenized_input['input_ids']
-        attention_mask = tokenized_input['attention_mask']
+        concept_tokens = tokenized_input["input_ids"]
+        attention_mask = tokenized_input["attention_mask"]
 
         type_tokens = data[f"type_tokens_{self.max_len}"]
         age_tokens = data[f"age_tokens_{self.max_len}"]
@@ -118,8 +119,8 @@ class FinetuneDataset(Dataset):
     def __getitem__(self, idx) -> Dict[str, torch.Tensor]:
         data = self.data.iloc[idx]
         tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
-        concept_tokens = tokenized_input['input_ids']
-        attention_mask = tokenized_input['attention_mask']
+        concept_tokens = tokenized_input["input_ids"]
+        attention_mask = tokenized_input["attention_mask"]
 
         type_tokens = data[f"type_tokens_{self.max_len}"]
         age_tokens = data[f"age_tokens_{self.max_len}"]
