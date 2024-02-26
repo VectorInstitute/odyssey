@@ -7,7 +7,7 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-from models.cehr_bert.tokenizer import ConceptTokenizer, HuggingFaceConceptTokenizer
+from models.big_bird_cehr.tokenizer import HuggingFaceConceptTokenizer
 
 
 class PretrainDataset(Dataset):

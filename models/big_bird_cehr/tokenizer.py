@@ -23,6 +23,7 @@ class HuggingFaceConceptTokenizer:
             unknown_token: str = "[UNK]",
             data_dir: str = "data_files",
     ):
+        self.tokenizer_object = None
         self.tokenizer = None
         self.mask_token = mask_token
         self.pad_token = pad_token
@@ -58,26 +59,44 @@ class HuggingFaceConceptTokenizer:
         self.tokenizer_vocab = {token: i for i, token in enumerate(tokens)}
 
         # Create the tokenizer object
-        self.tokenizer = Tokenizer(models.WordPiece(vocab=self.tokenizer_vocab,
-                                                    unk_token=self.unknown_token,
-                                                    max_input_chars_per_word=1000))
-        self.tokenizer.pre_tokenizer = pre_tokenizers.WhitespaceSplit()
+        self.tokenizer_object = Tokenizer(models.WordPiece(vocab=self.tokenizer_vocab,
+                                                           unk_token=self.unknown_token,
+                                                           max_input_chars_per_word=1000))
+        self.tokenizer_object.pre_tokenizer = pre_tokenizers.WhitespaceSplit()
+        self.tokenizer = self.create_tokenizer(self.tokenizer_object)
 
         # Get the first, last , and special token indexes from the dictionary
-        self.first_token_index = min(self.tokenizer_vocab, key=lambda token: self.tokenizer_vocab[token])
-        self.last_token_index = max(self.tokenizer_vocab, key=lambda token: self.tokenizer_vocab[token])
-        self.special_token_ids = [id_list[0] for id_list in self.encode(self.special_tokens)]
+        self.first_token_index = self.get_first_token_index()
+        self.last_token_index = self.get_last_token_index()
+        self.special_token_ids = self.get_special_token_ids()
 
         # Check to make sure tokenizer follows the same vocabulary
         assert self.tokenizer_vocab == self.tokenizer.get_vocab(), "Tokenizer vocabulary does not match original"
+
+    def create_tokenizer(
+            self,
+            tokenizer_obj: Optional[Tokenizer],
+    ) -> PreTrainedTokenizerFast:
+        """ Loads the tokenizer from a JSON file on disk. """
+        self.tokenizer = PreTrainedTokenizerFast(
+            tokenizer_object=tokenizer_obj,
+            bos_token="[VS]",
+            eos_token="[VE]",
+            unk_token="[UNK]",
+            # sep_token="[SEP]",
+            pad_token="[PAD]",
+            cls_token="[CLS]",
+            mask_token="[MASK]",
+        )
+        return self.tokenizer
 
     def __call__(
             self,
             batch: Union[str, List[str]],
             return_attention_mask: bool = True,
             return_token_type_ids: bool = False,
-            truncation: bool = True,
-            padding: bool = True,
+            truncation: bool = False,
+            padding: str = 'max_length',
             max_length: int = 2048
     ) -> Dict[str, List[List[int]]]:
         """ Return the tokenized dictionary of input batch. """
@@ -92,17 +111,21 @@ class HuggingFaceConceptTokenizer:
             return_tensors="pt",
         )
 
-    def encode(
-            self, concept_sequences: Union[str, List[str]],
-    ) -> Union[List[int], List[List[int]]]:
-        """Encode the concept sequences into token ids."""
-        return self.tokenizer.encode(concept_sequences)
+    def encode(self, concept_tokens: str) -> List[int]:
+        """Encode the concept tokens into token ids."""
+        return self.tokenizer_object.encode(concept_tokens).ids
 
-    def decode(
-            self, concept_sequence_token_ids: Union[int, List[int]]
-    ) -> Union[str, List[str]]:
-        """Decode the concept sequence token ids into concepts."""
-        return self.tokenizer.decode(concept_sequence_token_ids)
+    def decode(self, concept_ids: List[int]) -> str:
+        """Decode the concept sequence token id into token concept."""
+        return self.tokenizer_object.decode(concept_ids)
+
+    def token_to_id(self, token: str) -> int:
+        """ Return the id corresponding to token. """
+        return self.tokenizer_object.token_to_id(token)
+
+    def id_to_token(self, token_id: int) -> str:
+        """ Return the token corresponding to id. """
+        return self.tokenizer_object.id_to_token(token_id)
 
     def get_all_token_indexes(self, with_special_tokens: bool = True) -> Set[int]:
         """ Return a set of all possible token ids """
@@ -113,11 +136,11 @@ class HuggingFaceConceptTokenizer:
 
     def get_first_token_index(self) -> int:
         """ Return the smallest token id in vocabulary """
-        return self.first_token_index
+        return min(self.tokenizer_vocab, key=lambda token: self.token_to_id(token))
 
     def get_last_token_index(self) -> int:
         """ Return the largest token id in vocabulary """
-        return self.last_token_index
+        return max(self.tokenizer_vocab, key=lambda token: self.token_to_id(token))
 
     def get_vocab_size(self) -> int:
         """ Return the number of possible tokens in vocabulary """
@@ -125,32 +148,25 @@ class HuggingFaceConceptTokenizer:
 
     def get_pad_token_id(self) -> int:
         """ Return the token id of PAD token. """
-        return self.encode(self.pad_token)[0]
+        return self.token_to_id(self.pad_token)
 
     def get_mask_token_id(self) -> int:
         """ Return the token id of MASK token. """
-        return self.encode(self.mask_token)[0]
+        return self.token_to_id(self.mask_token)
 
     def get_special_token_ids(self) -> List[int]:
         """ Get a list of ids representing special tokens. """
+        self.special_token_ids = []
+
+        for special_token in self.special_tokens:
+            special_token_id = self.token_to_id(special_token)
+            self.special_token_ids.append(special_token_id)
+
         return self.special_token_ids
 
     def save_tokenizer_to_disk(self, save_dir: str) -> None:
         """ Saves the tokenizer object to disk as a JSON file. """
         self.tokenizer.save(path=save_dir)
-
-    def load_tokenizer_from_disk(self, tokenizer_dir: str) -> None:
-        """ Loads the tokenizer from a JSON file on disk. """
-        self.tokenizer = PreTrainedTokenizerFast(
-            tokenizer_file=tokenizer_dir,
-            bos_token="[VS]",
-            eos_token="[VE]",
-            unk_token="[UNK]",
-            # sep_token="[SEP]",
-            pad_token="[PAD]",
-            cls_token="[CLS]",
-            mask_token="[MASK]",
-        )
 
 
 class ConceptTokenizer:
