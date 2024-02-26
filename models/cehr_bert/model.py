@@ -2,10 +2,14 @@ from typing import Optional, Tuple, Union
 
 import pytorch_lightning as pl
 import torch
-import torch.nn as nn
-import torch.optim as optim
-from sklearn.metrics import (accuracy_score, f1_score, precision_score,
-                             recall_score, roc_auc_score)
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
+from torch import nn, optim
 from torch.nn import CrossEntropyLoss
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from transformers import BertConfig
@@ -104,7 +108,12 @@ class BertPretrain(pl.LightningModule):
     def forward(
         self,
         input: Tuple[
-            torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
         ],
         attention_mask: Optional[torch.Tensor] = None,
         labels: Optional[torch.Tensor] = None,
@@ -115,7 +124,12 @@ class BertPretrain(pl.LightningModule):
         """Forward pass for the model."""
         concept_ids, type_ids, time_stamps, ages, visit_orders, visit_segments = input
         embedding_output = self.embeddings(
-            concept_ids, type_ids, time_stamps, ages, visit_orders, visit_segments
+            concept_ids,
+            type_ids,
+            time_stamps,
+            ages,
+            visit_orders,
+            visit_segments,
         )
         if attention_mask is None:
             attention_mask = torch.ones_like(concept_ids)
@@ -134,7 +148,8 @@ class BertPretrain(pl.LightningModule):
         if labels is not None:
             loss_fct = CrossEntropyLoss()
             masked_lm_loss = loss_fct(
-                prediction_scores.view(-1, self.bert_config.vocab_size), labels.view(-1)
+                prediction_scores.view(-1, self.bert_config.vocab_size),
+                labels.view(-1),
             )
 
         if not return_dict:
@@ -163,7 +178,10 @@ class BertPretrain(pl.LightningModule):
         labels = batch["labels"]
         attention_mask = batch["attention_mask"]
         loss = self(
-            input, attention_mask=attention_mask, labels=labels, return_dict=True
+            input,
+            attention_mask=attention_mask,
+            labels=labels,
+            return_dict=True,
         )[0]
         self.log("train_loss", loss)
         return loss
@@ -181,7 +199,10 @@ class BertPretrain(pl.LightningModule):
         labels = batch["labels"]
         attention_mask = batch["attention_mask"]
         loss = self(
-            input, attention_mask=attention_mask, labels=labels, return_dict=True
+            input,
+            attention_mask=attention_mask,
+            labels=labels,
+            return_dict=True,
         )[0]
         self.log("val_loss", loss, sync_dist=True)
         return loss
@@ -189,7 +210,8 @@ class BertPretrain(pl.LightningModule):
     def configure_optimizers(self) -> dict:
         """Configure optimizers and learning rate scheduler."""
         optimizer = optim.Adam(
-            self.parameters(), lr=self.learning_rate
+            self.parameters(),
+            lr=self.learning_rate,
         )  # ADIBQ WHY IS THIS NOT ADAMW
         scheduler = CosineAnnealingWarmRestarts(
             optimizer,
@@ -264,7 +286,12 @@ class BertFinetune(pl.LightningModule):
     def forward(
         self,
         input: Tuple[
-            torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
         ],
         attention_mask: Optional[torch.Tensor] = None,
         labels: Optional[torch.Tensor] = None,
@@ -317,7 +344,10 @@ class BertFinetune(pl.LightningModule):
         labels = batch["labels"]
         attention_mask = batch["attention_mask"]
         loss = self(
-            input, attention_mask=attention_mask, labels=labels, return_dict=True
+            input,
+            attention_mask=attention_mask,
+            labels=labels,
+            return_dict=True,
         )[0]
         self.log("train_loss", loss)
         return loss
@@ -335,7 +365,10 @@ class BertFinetune(pl.LightningModule):
         labels = batch["labels"]
         attention_mask = batch["attention_mask"]
         loss = self(
-            input, attention_mask=attention_mask, labels=labels, return_dict=True
+            input,
+            attention_mask=attention_mask,
+            labels=labels,
+            return_dict=True,
         )[0]
         self.log("val_loss", loss)
         return loss
@@ -353,7 +386,10 @@ class BertFinetune(pl.LightningModule):
         labels = batch["labels"]
         attention_mask = batch["attention_mask"]
         outputs = self(
-            input, attention_mask=attention_mask, labels=labels, return_dict=True
+            input,
+            attention_mask=attention_mask,
+            labels=labels,
+            return_dict=True,
         )
         loss = outputs[0]
         logits = outputs[1]
@@ -362,15 +398,15 @@ class BertFinetune(pl.LightningModule):
 
     def test_epoch_end(self, outputs):
         """Evaluate after the test epoch."""
-        labels = torch.cat([x['labels'] for x in outputs]).cpu()
-        preds = torch.cat([x['preds'] for x in outputs]).cpu()
-        loss = torch.stack([x['loss'] for x in outputs]).mean().cpu()
-        self.log('test_loss', loss)
-        self.log('test_acc', accuracy_score(labels, preds))
-        self.log('test_f1', f1_score(labels, preds))
-        self.log('test_auc', roc_auc_score(labels, preds))
-        self.log('test_precision', precision_score(labels, preds))
-        self.log('test_recall', recall_score(labels, preds))
+        labels = torch.cat([x["labels"] for x in outputs]).cpu()
+        preds = torch.cat([x["preds"] for x in outputs]).cpu()
+        loss = torch.stack([x["loss"] for x in outputs]).mean().cpu()
+        self.log("test_loss", loss)
+        self.log("test_acc", accuracy_score(labels, preds))
+        self.log("test_f1", f1_score(labels, preds))
+        self.log("test_auc", roc_auc_score(labels, preds))
+        self.log("test_precision", precision_score(labels, preds))
+        self.log("test_recall", recall_score(labels, preds))
         return loss
 
     def configure_optimizers(self):
