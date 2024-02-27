@@ -1,4 +1,13 @@
+"""
+File: finetune_bigbird.py
+---------------------------
+Finetune an already pretrained bigbird model on MIMIC-IV FHIR data.
+The finetuning objective is binary classification on patient mortality or
+hospital readmission labels.
+"""
+
 import os
+import glob
 import argparse
 from os.path import join
 
@@ -30,14 +39,15 @@ def seed_everything(seed: int) -> None:
     pl.seed_everything(seed)
 
 
-def get_latest_checkpoint(checkpoint_dir: str) -> str:
+def get_latest_checkpoint(checkpoint_dir: str) -> Any:
     """ Return the most recent checkpointed file to resume training from. """
     list_of_files = glob.glob(os.path.join(checkpoint_dir, '*.ckpt'))
-    latest_checkpoint = max(list_of_files, key=os.path.getctime) if list_of_files else None
-    return latest_checkpoint
+    return max(list_of_files, key=os.path.getctime) if list_of_files else None
 
 
 def main(args):
+    """ Main training script. """
+
     # Setup environment
     seed_everything(args.seed)
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
@@ -138,6 +148,8 @@ def main(args):
         callbacks=callbacks,
         deterministic=False,
         enable_checkpointing=True,
+        enable_progress_bar=True,
+        enable_model_summary=True,
         logger=wandb_logger,
         resume_from_checkpoint=latest_checkpoint if args.resume else None,
         log_every_n_steps=args.log_every_n_steps,
