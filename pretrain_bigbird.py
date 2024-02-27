@@ -1,24 +1,34 @@
-import argparse
+"""
+File: pretrain_bigbird.py
+---------------------------
+Pretrain a bigbird model on MIMIC-IV FHIR data using Masked Language Modeling objective.
+"""
+
 import os
+import argparse
+import glob
 from os.path import join
 
 import numpy as np
 import pandas as pd
-import pytorch_lightning as pl
+
 import torch
+from torch.utils.data import DataLoader
+
+import pytorch_lightning as pl
 from lightning.pytorch.loggers import WandbLogger
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.strategies.ddp import DDPStrategy
+
 from sklearn.model_selection import train_test_split
-from torch.utils.data import DataLoader
 
 from models.big_bird_cehr.data import PretrainDataset
 from models.big_bird_cehr.model import BigBirdPretrain
-from models.big_bird_cehr.tokenizer import HuggingFaceConceptTokenizer
+from models.big_bird_cehr.tokenizer import ConceptTokenizer, HuggingFaceConceptTokenizer
 
 
 def seed_everything(seed: int) -> None:
-    """Seed all components of the model."""
+    """ Seed all components of the model. """
     torch.manual_seed(seed)
     np.random.seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -27,16 +37,15 @@ def seed_everything(seed: int) -> None:
     pl.seed_everything(seed)
 
 
-def get_latest_checkpoint(checkpoint_dir: str) -> str:
-    """Return the most recent checkpointed file to resume training from."""
-    list_of_files = glob.glob(os.path.join(checkpoint_dir, "*.ckpt"))
-    latest_checkpoint = (
-        max(list_of_files, key=os.path.getctime) if list_of_files else None
-    )
-    return latest_checkpoint
+def get_latest_checkpoint(checkpoint_dir: str) -> Any:
+    """ Return the most recent checkpointed file to resume training from. """
+    list_of_files = glob.glob(os.path.join(checkpoint_dir, '*.ckpt'))
+    return max(list_of_files, key=os.path.getctime) if list_of_files else None
 
 
 def main(args):
+    """ Main training script. """
+
     # Setup environment
     seed_everything(args.seed)
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
@@ -45,7 +54,7 @@ def main(args):
 
     # Load data
     pre_data = pd.read_parquet(join(args.data_dir, "pretrain.parquet"))
-    pre_data = pre_data[pre_data["event_tokens_2048"].notnull()]
+    pre_data = pre_data[pre_data['event_tokens_2048'].notnull()]
 
     # Split data
     pre_train, pre_val = train_test_split(
@@ -118,17 +127,19 @@ def main(args):
         accelerator="gpu",
         devices=args.gpus,
         strategy=DDPStrategy(find_unused_parameters=True) if args.gpus > 1 else "auto",
-        precision="16-mixed",
+        precision='16-mixed',
         check_val_every_n_epoch=1,
         max_epochs=args.max_epochs,
         callbacks=callbacks,
         deterministic=False,
         enable_checkpointing=True,
+        enable_progress_bar=True,
+        enable_model_summary=True,
         logger=wandb_logger,
         resume_from_checkpoint=latest_checkpoint if args.resume else None,
         log_every_n_steps=args.log_every_n_steps,
         accumulate_grad_batches=args.acc,
-        gradient_clip_val=1.0,
+        gradient_clip_val=1.0
     )
 
     # Create BigBird model
@@ -150,10 +161,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Random seed for reproducibility",
+        "--seed", type=int, default=42, help="Random seed for reproducibility"
     )
     parser.add_argument(
         "--resume",
@@ -162,10 +170,9 @@ if __name__ == "__main__":
         help="Flag to resume training from a checkpoint",
     )
     parser.add_argument(
-        "--data_dir",
-        type=str,
+        "--data_dir", type=str,
         default="/h/afallah/odyssey/odyssey/data/slurm_data/2048/one_month",
-        help="Path to the data directory",
+        help="Path to the data directory"
     )
     parser.add_argument(
         "--finetune_size",
@@ -180,28 +187,16 @@ if __name__ == "__main__":
         help="Validation set size for splitting the data",
     )
     parser.add_argument(
-        "--max_len",
-        type=int,
-        default=2048,
-        help="Maximum length of the sequence",
+        "--max_len", type=int, default=2048, help="Maximum length of the sequence"
     )
     parser.add_argument(
-        "--mask_prob",
-        type=float,
-        default=0.15,
-        help="Probability of masking the token",
+        "--mask_prob", type=float, default=0.15, help="Probability of masking the token"
     )
     parser.add_argument(
-        "--batch_size",
-        type=int,
-        default=6,
-        help="Batch size for training",
+        "--batch_size", type=int, default=6, help="Batch size for training"
     )
     parser.add_argument(
-        "--num_workers",
-        type=int,
-        default=3,
-        help="Number of workers for training",
+        "--num_workers", type=int, default=3, help="Number of workers for training"
     )
     parser.add_argument(
         "--checkpoint_dir",
@@ -210,24 +205,17 @@ if __name__ == "__main__":
         help="Path to the training checkpoint",
     )
     parser.add_argument(
-        "--log_dir",
-        type=str,
-        default="logs",
-        help="Path to the log directory",
+        "--log_dir", type=str, default="logs", help="Path to the log directory"
     )
     parser.add_argument(
-        "--gpus",
-        type=int,
-        default=1,
-        help="Number of gpus for training",
+        "--gpus", type=int, default=1, help="Number of gpus for training"
     )
     parser.add_argument(
-        "--max_epochs",
-        type=int,
-        default=5,
-        help="Number of epochs for training",
+        "--max_epochs", type=int, default=5, help="Number of epochs for training"
     )
-    parser.add_argument("--acc", type=int, default=1, help="Gradient accumulation")
+    parser.add_argument(
+        "--acc", type=int, default=1, help="Gradient accumulation"
+    )
     parser.add_argument(
         "--log_every_n_steps",
         type=int,
