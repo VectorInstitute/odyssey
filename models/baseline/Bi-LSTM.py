@@ -76,7 +76,7 @@ class DatasetWithTokenLength(Dataset):
         self.length_data = length_data
 
         assert len(tokenized_data) == len(
-            length_data
+            length_data,
         ), "Datasets have different lengths"
 
         self.sorted_indices = sorted(
@@ -188,7 +188,7 @@ if __name__ == "__main__":
     train_data = pd.concat((pretrain_data, finetune_data))
     train_data.reset_index(inplace=True)
     train_data.drop_duplicates(subset="index", keep="first", inplace=True).set_index(
-        "index"
+        "index",
     )
 
     del pretrain_data, finetune_data
@@ -252,7 +252,11 @@ if __name__ == "__main__":
 
     # Training Loop
     model = BiLSTMModel(
-        input_size, hidden_size, num_layers, output_size, dropout_rate
+        input_size,
+        hidden_size,
+        num_layers,
+        output_size,
+        dropout_rate,
     ).to(
         CONFIG.device,
     )
