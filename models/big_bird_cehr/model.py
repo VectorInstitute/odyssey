@@ -1,3 +1,8 @@
+"""
+File: model.py
+---------------
+Implement BigBird using HuggingFace for pretraining and finetuning.
+"""
 
 from typing import Optional, Sequence, Union, Any, List, Tuple, Dict, Set
 
@@ -94,8 +99,8 @@ class BigBirdPretrain(pl.LightningModule):
         self.warmup = int(0.1 * grad_steps)
         self.decay = int(0.9 * grad_steps)
 
-    def _init_weights(self, module) -> None:
-        """Initialize the weights"""
+    def _init_weights(self, module: torch.nn.Module) -> None:
+        """ Initialize the weights. """
         if isinstance(module, nn.Linear):
             module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
             if module.bias is not None:
@@ -109,6 +114,7 @@ class BigBirdPretrain(pl.LightningModule):
             module.weight.data.fill_(1.0)
 
     def post_init(self) -> None:
+        """ Apply weight initialization. """
         self.apply(self._init_weights)
 
     def forward(
@@ -130,7 +136,7 @@ class BigBirdPretrain(pl.LightningModule):
         if attention_mask is None:
             attention_mask = torch.ones_like(concept_ids)
 
-        outputs = self.model(
+        return self.model(
             input_ids=concept_ids,
             attention_mask=attention_mask,
             token_type_ids=type_ids,
@@ -140,10 +146,8 @@ class BigBirdPretrain(pl.LightningModule):
             return_dict=return_dict,
         )
 
-        return outputs
-
-    def training_step(self, batch, batch_idx) -> torch.Tensor:
-        """Training step."""
+    def training_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
+        """ Train model on training dataset. """
         inputs = (
             batch["concept_ids"],
             batch["type_ids"],
@@ -169,8 +173,8 @@ class BigBirdPretrain(pl.LightningModule):
         )
         return loss
 
-    def validation_step(self, batch, batch_idx) -> torch.Tensor:
-        """Validation step."""
+    def validation_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
+        """ Evaluate model on validation dataset. """
         inputs = (
             batch["concept_ids"],
             batch["type_ids"],
@@ -197,7 +201,7 @@ class BigBirdPretrain(pl.LightningModule):
         )
         return loss
 
-    def configure_optimizers(self) -> tuple[list[AdamW], list[dict[str, SequentialLR | str]]]:
+    def configure_optimizers(self) -> Tuple[list[AdamW], list[dict[str, SequentialLR | str]]]:
         """Configure optimizers and learning rate scheduler."""
         optimizer = optim.AdamW(
             self.parameters(), lr=self.learning_rate
@@ -229,7 +233,7 @@ class BigBirdFinetune(pl.LightningModule):
 
     def __init__(
             self,
-            args: tuple,
+            args: Tuple[Any, ...],
             dataset_len: int,
             pretrained_model: BigBirdPretrain,
             num_labels: int = 2,
@@ -279,7 +283,7 @@ class BigBirdFinetune(pl.LightningModule):
         self.warmup = int(0.1 * grad_steps)
         self.decay = int(0.9 * grad_steps)
 
-    def _init_weights(self, module) -> None:
+    def _init_weights(self, module: torch.nn.Module) -> None:
         """Initialize the weights."""
         if isinstance(module, nn.Linear):
             module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
@@ -294,6 +298,7 @@ class BigBirdFinetune(pl.LightningModule):
             module.weight.data.fill_(1.0)
 
     def post_init(self) -> None:
+        """ Apply weight initialization. """
         self.apply(self._init_weights)
 
     def forward(
@@ -338,8 +343,8 @@ class BigBirdFinetune(pl.LightningModule):
             attentions=outputs.attentions,
         )
 
-    def training_step(self, batch, batch_idx) -> torch.Tensor:
-        """Training step."""
+    def training_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
+        """ Train model on training dataset. """
         inputs = (
             batch["concept_ids"],
             batch["type_ids"],
@@ -365,8 +370,8 @@ class BigBirdFinetune(pl.LightningModule):
         )
         return loss
 
-    def validation_step(self, batch, batch_idx) -> torch.Tensor:
-        """Validation step."""
+    def validation_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
+        """ Evaluate model on validation dataset. """
         inputs = (
             batch["concept_ids"],
             batch["type_ids"],
@@ -393,7 +398,7 @@ class BigBirdFinetune(pl.LightningModule):
         )
         return loss
 
-    def test_step(self, batch, batch_idx) -> Dict[str, torch.Tensor]:
+    def test_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
         """Test step."""
         inputs = (
             batch["concept_ids"],
@@ -425,7 +430,7 @@ class BigBirdFinetune(pl.LightningModule):
         )
         return log
 
-    def test_epoch_end(self, outputs) -> torch.Tensor:
+    def test_epoch_end(self, outputs: Any) -> Any:
         """Evaluate after the test epoch."""
         labels = torch.cat([x['labels'] for x in outputs]).cpu()
         preds = torch.cat([x['preds'] for x in outputs]).cpu()
@@ -437,8 +442,8 @@ class BigBirdFinetune(pl.LightningModule):
         self.log('test_precision', precision_score(labels, preds))
         self.log('test_recall', recall_score(labels, preds))
         return loss
-
-    def configure_optimizers(self) -> tuple[list[AdamW], list[dict[str, SequentialLR | str]]]:
+    
+    def configure_optimizers(self) -> Tuple[list[AdamW], list[dict[str, SequentialLR | str]]]:
         """Configure optimizers and learning rate scheduler."""
         optimizer = optim.AdamW(
             self.parameters(), lr=self.learning_rate

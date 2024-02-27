@@ -1,3 +1,9 @@
+"""
+data.py
+--------
+Create custom pretrain and finetune PyTorch Dataset objects for MIMIC-IV FHIR dataset.
+"""
+
 import random
 from typing import Optional, Sequence, Union, Any, List, Tuple, Dict, Set
 
@@ -20,21 +26,24 @@ class PretrainDataset(Dataset):
         max_len: int = 2048,
         mask_prob: float = 0.15,
     ):
+        """ Initiate the class. """
+        super(PretrainDataset, self).__init__()
+
         self.data = data
         self.tokenizer = tokenizer
         self.max_len = max_len
         self.mask_prob = mask_prob
 
-    def __len__(self):
-        """Return the length of the dataset."""
+    def __len__(self) -> int:
+        """ Return the length of the dataset. """
         return len(self.data)
 
-    def tokenize_data(self, sequence: Union[str, Sequence[str]]) -> Dict[str, List[List[int]]]:
-        """Tokenize the sequence and return input_ids and attention mask"""
+    def tokenize_data(self, sequence: Union[str, List[str]]) -> Dict[str, torch.Tensor]:
+        """ Tokenize the sequence and return input_ids and attention mask. """
         return self.tokenizer(sequence)
 
-    def mask_tokens(self, sequence: torch.Tensor) -> tuple:
-        """Mask the tokens in the sequence."""
+    def mask_tokens(self, sequence: torch.Tensor) -> Tuple[List[int], List[int]]:
+        """ Mask the tokens in the sequence. """
         masked_sequence = []
         labels = []
         for token in sequence:
@@ -62,6 +71,9 @@ class PretrainDataset(Dataset):
         return masked_sequence, labels
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        """ Get data at corresponding index and return it as a dictionary including
+        all different token sequences along with attention mask and labels. """
+
         data = self.data.iloc[idx]
         tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
         concept_tokens = tokenized_input['input_ids']
@@ -96,7 +108,7 @@ class PretrainDataset(Dataset):
 
 
 class FinetuneDataset(Dataset):
-    """Dataset for finetuning the model."""
+    """ Dataset for finetuning the model. """
 
     def __init__(
         self,
@@ -104,18 +116,25 @@ class FinetuneDataset(Dataset):
         tokenizer: HuggingFaceConceptTokenizer,
         max_len: int = 2048,
     ):
+        """ Initiate the class. """
+        super(FinetuneDataset, self).__init__()
+        
         self.data = data
         self.tokenizer = tokenizer
         self.max_len = max_len
 
     def __len__(self) -> int:
+        """ Return the length of dataset. """
         return len(self.data)
 
-    def tokenize_data(self, sequence) -> Dict[str, List[List[int]]]:
-        """Tokenize the sequence and return input_ids and attention mask"""
+    def tokenize_data(self, sequence: Union[str, List[str]]) -> Dict[str, torch.Tensor]:
+        """ Tokenize the sequence and return input_ids and attention mask. """
         return self.tokenizer(sequence)
 
     def __getitem__(self, idx) -> Dict[str, torch.Tensor]:
+        """ Get data at corresponding index and return it as a dictionary including
+        all different token sequences along with attention mask and labels. """
+
         data = self.data.iloc[idx]
         tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
         concept_tokens = tokenized_input['input_ids']
