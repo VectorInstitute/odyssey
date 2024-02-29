@@ -52,10 +52,10 @@ def main(args: Dict[str, Any]) -> None:
 
     # Load data
     data = pd.read_parquet(
-        join(args.data_dir, "patient_sequences_2048_labeled.parquet")
+        join(args.data_dir, "patient_sequences_2048_labeled.parquet"),
     )
     patient_ids = pickle.load(
-        open(join(args.data_dir, "dataset_2048_mortality_1month.pkl"), "rb")
+        open(join(args.data_dir, "dataset_2048_mortality_1month.pkl"), "rb"),
     )
     pre_data = data.loc[data["patient_id"].isin(patient_ids["pretrain"])]
 

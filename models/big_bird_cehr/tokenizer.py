@@ -78,7 +78,7 @@ class HuggingFaceConceptTokenizer:
                 vocab=self.tokenizer_vocab,
                 unk_token=self.unknown_token,
                 max_input_chars_per_word=1000,
-            )
+            ),
         )
         self.tokenizer_object.pre_tokenizer = pre_tokenizers.WhitespaceSplit()
         self.tokenizer = self.create_tokenizer(self.tokenizer_object)
