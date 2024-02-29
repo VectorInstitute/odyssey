@@ -1,6 +1,6 @@
 """
-File: embeddings.py
---------------------
+File: embeddings.py.
+
 Custom embedding class that is both compatible with a HuggingFace implementation
 of BigBird transformer and the defined Datasets by data.py
 """
@@ -84,7 +84,7 @@ class ConceptEmbedding(nn.Module):
 class PositionalEmbedding(nn.Module):
     """Positional embedding layer."""
 
-    def __init__(self, embedding_size, max_len=2048):
+    def __init__(self, embedding_size: int, max_len: int = 2048):
         super().__init__()
 
         # Compute the positional encodings once in log space.
@@ -130,9 +130,15 @@ class Embeddings(nn.Module):
         self.concept_embedding = ConceptEmbedding(
             num_embeddings=vocab_size, embedding_size=embedding_size, padding_idx=padding_idx
         )
-        self.token_type_embeddings = nn.Embedding(type_vocab_size, embedding_size)
-        self.time_embedding = TimeEmbeddingLayer(embedding_size=time_embeddings_size, is_time_delta=True)
-        self.age_embedding = TimeEmbeddingLayer(embedding_size=time_embeddings_size)
+        self.token_type_embeddings = nn.Embedding(
+            type_vocab_size, embedding_size
+        )
+        self.time_embedding = TimeEmbeddingLayer(
+            embedding_size=time_embeddings_size, is_time_delta=True
+        )
+        self.age_embedding = TimeEmbeddingLayer(
+            embedding_size=time_embeddings_size
+        )
         self.positional_embedding = PositionalEmbedding(
             embedding_size=embedding_size, max_len=max_len
         )
@@ -233,7 +239,7 @@ class BigBirdEmbeddingsForCEHR(nn.Module):
             ages: torch.Tensor,
             visit_segments: torch.Tensor
     ) -> None:
-        """ Cache values for time_stamps, ages, and visit_segments inside the class object.
+        """ Cache values for time_stamps, ages, & visit_segments inside the class object.
         These values will be used by the forward pass to change the final embedding. """
 
         self.time_stamps = time_stamps
@@ -247,10 +253,10 @@ class BigBirdEmbeddingsForCEHR(nn.Module):
 
     def forward(
             self,
-            input_ids: torch.Tensor = None,
-            token_type_ids: torch.Tensor = None,
-            position_ids: torch.Tensor = None,
-            inputs_embeds: torch.Tensor = None,
+            input_ids: Optional[torch.Tensor] = None,
+            token_type_ids: Optional[torch.Tensor] = None,
+            position_ids: Optional[torch.Tensor] = None,
+            inputs_embeds: Optional[torch.Tensor] = None,
             past_key_values_length: int = 0
     ) -> Any:
         """ Return the final embeddings of concept ids using input and cached values. """
