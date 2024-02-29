@@ -221,11 +221,17 @@ class BigBirdPretrain(pl.LightningModule):
         )
 
         warmup = LinearLR(
-            optimizer, start_factor=0.01, end_factor=1.0, total_iters=self.warmup
+            optimizer,
+            start_factor=0.01,
+            end_factor=1.0,
+            total_iters=self.warmup,
         )
 
         linear_decay = LinearLR(
-            optimizer, start_factor=1.0, end_factor=0.01, total_iters=self.decay
+            optimizer,
+            start_factor=1.0,
+            end_factor=0.01,
+            total_iters=self.decay,
         )
 
         scheduler = SequentialLR(
@@ -477,11 +483,17 @@ class BigBirdFinetune(pl.LightningModule):
         )
 
         warmup = LinearLR(
-            optimizer, start_factor=0.01, end_factor=1.0, total_iters=self.warmup
+            optimizer,
+            start_factor=0.01,
+            end_factor=1.0,
+            total_iters=self.warmup,
         )
 
         linear_decay = LinearLR(
-            optimizer, start_factor=1.0, end_factor=0.01, total_iters=self.decay
+            optimizer,
+            start_factor=1.0,
+            end_factor=0.01,
+            total_iters=self.decay,
         )
 
         scheduler = SequentialLR(
