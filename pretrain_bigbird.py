@@ -1,6 +1,6 @@
 """
-File: pretrain_bigbird.py
----------------------------
+File: pretrain_bigbird.py.
+
 Pretrain a bigbird model on MIMIC-IV FHIR data using Masked Language Modeling objective.
 """
 
@@ -46,8 +46,8 @@ def get_latest_checkpoint(checkpoint_dir: str) -> Any:
     return max(list_of_files, key=os.path.getctime) if list_of_files else None
 
 
-def main(args: Dict[str, Any]):
-    """ Main training script. """
+def main(args: Dict[str, Any]) -> None:
+    """ Train the model. """
 
     # Setup environment
     seed_everything(args.seed)
