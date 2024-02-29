@@ -1,6 +1,6 @@
 """
 file: tokenizer.py
--------------------
+--------------------
 Custom HuggingFace tokenizer for medical concepts in MIMIC-IV FHIR dataset.
 """
 
@@ -57,7 +57,8 @@ class HuggingFaceConceptTokenizer:
         vocab_json_files = glob.glob(os.path.join(self.data_dir, '*_vocab.json'))
 
         for file in vocab_json_files:
-            with json.load(open(file, 'r')) as vocab:
+            with open(file, 'r') as vocab_file:
+                vocab = json.load(vocab_file)
                 vocab_type = file.split("/")[-1].split(".")[0]
                 self.token_type_vocab[vocab_type] = vocab
 
