@@ -1,6 +1,6 @@
 """
-File: model.py
----------------
+File: model.py.
+
 Implement BigBird using HuggingFace for pretraining and finetuning.
 """
 

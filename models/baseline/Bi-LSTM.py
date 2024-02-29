@@ -1,6 +1,6 @@
 """
-File: Bi-LSTM.ipynb
----------------------
+File: Bi-LSTM.ipynb.
+
 Code to train and evaluate a bi-directional LSTM model on MIMIC-IV FHIR dataset.
 """
 
