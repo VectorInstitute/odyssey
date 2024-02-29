@@ -1,6 +1,6 @@
 """
-file: tokenizer.py
---------------------
+file: tokenizer.py.
+
 Custom HuggingFace tokenizer for medical concepts in MIMIC-IV FHIR dataset.
 """
 
@@ -118,19 +118,19 @@ class HuggingFaceConceptTokenizer:
             return_tensors="pt",
         )
 
-    def encode(self, concept_tokens: str) -> List[int]:
+    def encode(self, concept_tokens: str) -> Any:
         """Encode the concept tokens into token ids."""
         return self.tokenizer_object.encode(concept_tokens).ids
 
-    def decode(self, concept_ids: List[int]) -> str:
+    def decode(self, concept_ids: List[int]) -> Any:
         """Decode the concept sequence token id into token concept."""
         return self.tokenizer_object.decode(concept_ids)
 
-    def token_to_id(self, token: str) -> int:
+    def token_to_id(self, token: str) -> Any:
         """ Return the id corresponding to token. """
         return self.tokenizer_object.token_to_id(token)
 
-    def id_to_token(self, token_id: int) -> str:
+    def id_to_token(self, token_id: int) -> Any:
         """ Return the token corresponding to id. """
         return self.tokenizer_object.id_to_token(token_id)
 

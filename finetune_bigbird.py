@@ -1,6 +1,6 @@
 """
-File: finetune_bigbird.py
----------------------------
+File: finetune_bigbird.py.
+
 Finetune an already pretrained bigbird model on MIMIC-IV FHIR data.
 The finetuning objective is binary classification on patient mortality or
 hospital readmission labels.
@@ -11,7 +11,7 @@ import glob
 import argparse
 from os.path import join
 
-from typing import Any
+from typing import Any, Dict
 
 import numpy as np
 import pandas as pd
@@ -28,7 +28,7 @@ from sklearn.model_selection import train_test_split
 
 from models.big_bird_cehr.data import FinetuneDataset
 from models.big_bird_cehr.model import BigBirdPretrain, BigBirdFinetune
-from models.big_bird_cehr.tokenizer import ConceptTokenizer, HuggingFaceConceptTokenizer
+from models.big_bird_cehr.tokenizer import HuggingFaceConceptTokenizer
 
 
 def seed_everything(seed: int) -> None:
@@ -47,8 +47,8 @@ def get_latest_checkpoint(checkpoint_dir: str) -> Any:
     return max(list_of_files, key=os.path.getctime) if list_of_files else None
 
 
-def main(args):
-    """ Main training script. """
+def main(args: Dict[str, Any]) -> None:
+    """ Train the model. """
 
     # Setup environment
     seed_everything(args.seed)
