@@ -129,8 +129,11 @@ class FHIRDataCollector:
                     ends.append(enc.period.end.isostring)
                     ids.append(enc.id)
 
-                assert len(starts) == len(
-                    ends,
+                assert (
+                    len(starts)
+                    == len(
+                        ends,
+                    )
                 ), f"Length of starts and ends should be equal. {len(starts)} != {len(ends)}"
 
                 e_data = {
