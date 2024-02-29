@@ -1,6 +1,6 @@
 """
-data.py
---------
+data.py.
+
 Create custom pretrain and finetune PyTorch Dataset objects for MIMIC-IV FHIR dataset.
 """
 
@@ -38,7 +38,7 @@ class PretrainDataset(Dataset):
         """ Return the length of the dataset. """
         return len(self.data)
 
-    def tokenize_data(self, sequence: Union[str, List[str]]) -> Dict[str, torch.Tensor]:
+    def tokenize_data(self, sequence: Union[str, List[str]]) -> Any:
         """ Tokenize the sequence and return input_ids and attention mask. """
         return self.tokenizer(sequence)
 
@@ -127,11 +127,11 @@ class FinetuneDataset(Dataset):
         """ Return the length of dataset. """
         return len(self.data)
 
-    def tokenize_data(self, sequence: Union[str, List[str]]) -> Dict[str, torch.Tensor]:
+    def tokenize_data(self, sequence: Union[str, List[str]]) -> Any:
         """ Tokenize the sequence and return input_ids and attention mask. """
         return self.tokenizer(sequence)
 
-    def __getitem__(self, idx) -> Dict[str, torch.Tensor]:
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """ Get data at corresponding index and return it as a dictionary including
         all different token sequences along with attention mask and labels. """
 
