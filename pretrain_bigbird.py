@@ -1,13 +1,16 @@
 """
-File: pretrain_bigbird.py
----------------------------
+File: pretrain_bigbird.py.
+
 Pretrain a bigbird model on MIMIC-IV FHIR data using Masked Language Modeling objective.
 """
 
 import os
 import argparse
 import glob
+import pickle
 from os.path import join
+
+from typing import Dict, Any
 
 import numpy as np
 import pandas as pd
@@ -24,7 +27,7 @@ from sklearn.model_selection import train_test_split
 
 from models.big_bird_cehr.data import PretrainDataset
 from models.big_bird_cehr.model import BigBirdPretrain
-from models.big_bird_cehr.tokenizer import ConceptTokenizer, HuggingFaceConceptTokenizer
+from models.big_bird_cehr.tokenizer import HuggingFaceConceptTokenizer
 
 
 def seed_everything(seed: int) -> None:
@@ -43,8 +46,8 @@ def get_latest_checkpoint(checkpoint_dir: str) -> Any:
     return max(list_of_files, key=os.path.getctime) if list_of_files else None
 
 
-def main(args):
-    """ Main training script. """
+def main(args: Dict[str, Any]) -> None:
+    """ Train the model. """
 
     # Setup environment
     seed_everything(args.seed)
@@ -53,19 +56,20 @@ def main(args):
     torch.set_float32_matmul_precision("medium")
 
     # Load data
-    pre_data = pd.read_parquet(join(args.data_dir, "pretrain.parquet"))
-    pre_data = pre_data[pre_data['event_tokens_2048'].notnull()]
+    data = pd.read_parquet(join(args.data_dir, "patient_sequences_2048_labeled.parquet"))
+    patient_ids = pickle.load(open(join(args.data_dir, 'dataset_2048_mortality_1month.pkl'), 'rb'))
+    pre_data = data.loc[data['patient_id'].isin(patient_ids['pretrain'])]
 
     # Split data
     pre_train, pre_val = train_test_split(
         pre_data,
         test_size=args.val_size,
         random_state=args.seed,
-        stratify=pre_data["label"],
+        stratify=pre_data["label_mortality_1month"],
     )
 
     # Train Tokenizer
-    tokenizer = HuggingFaceConceptTokenizer(data_dir=args.data_dir)
+    tokenizer = HuggingFaceConceptTokenizer(data_dir=args.vocab_dir)
     tokenizer.fit_on_vocab()
 
     # Load datasets
@@ -115,12 +119,12 @@ def main(args):
     ]
 
     wandb_logger = WandbLogger(
-        project="bigbird_pretrain",
+        project="bigbird_pretrain_a100",
         save_dir=args.log_dir,
     )
 
     # Load latest checkpoint to continue training
-    latest_checkpoint = get_latest_checkpoint(args.checkpoint_path)
+    # latest_checkpoint = get_latest_checkpoint(args.checkpoint_path)
 
     # Setup PyTorchLightning trainer
     trainer = pl.Trainer(
@@ -136,7 +140,7 @@ def main(args):
         enable_progress_bar=True,
         enable_model_summary=True,
         logger=wandb_logger,
-        resume_from_checkpoint=latest_checkpoint if args.resume else None,
+        # resume_from_checkpoint=latest_checkpoint if args.resume else None,
         log_every_n_steps=args.log_every_n_steps,
         accumulate_grad_batches=args.acc,
         gradient_clip_val=1.0
@@ -166,13 +170,18 @@ if __name__ == "__main__":
     parser.add_argument(
         "--resume",
         action="store_true",
-        default=True,
+        default=False,
         help="Flag to resume training from a checkpoint",
     )
     parser.add_argument(
         "--data_dir", type=str,
-        default="/h/afallah/odyssey/odyssey/data/slurm_data/2048/one_month",
+        default="/h/afallah/odyssey/odyssey/data/bigbird_data",
         help="Path to the data directory"
+    )
+    parser.add_argument(
+        "--vocab_dir", type=str,
+        default="/h/afallah/odyssey/odyssey/data/vocab",
+        help="Path to the vocabulary directory of json files"
     )
     parser.add_argument(
         "--finetune_size",
@@ -193,25 +202,25 @@ if __name__ == "__main__":
         "--mask_prob", type=float, default=0.15, help="Probability of masking the token"
     )
     parser.add_argument(
-        "--batch_size", type=int, default=6, help="Batch size for training"
+        "--batch_size", type=int, default=12, help="Batch size for training"
     )
     parser.add_argument(
-        "--num_workers", type=int, default=3, help="Number of workers for training"
+        "--num_workers", type=int, default=4, help="Number of workers for training"
     )
     parser.add_argument(
         "--checkpoint_dir",
         type=str,
-        default="checkpoints/pretraining",
+        default="checkpoints/bigbird_pretraining_a100",
         help="Path to the training checkpoint",
     )
     parser.add_argument(
         "--log_dir", type=str, default="logs", help="Path to the log directory"
     )
     parser.add_argument(
-        "--gpus", type=int, default=1, help="Number of gpus for training"
+        "--gpus", type=int, default=4, help="Number of gpus for training"
     )
     parser.add_argument(
-        "--max_epochs", type=int, default=5, help="Number of epochs for training"
+        "--max_epochs", type=int, default=10, help="Number of epochs for training"
     )
     parser.add_argument(
         "--acc", type=int, default=1, help="Gradient accumulation"
