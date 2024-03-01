@@ -38,7 +38,7 @@ class BigBirdPretrain(pl.LightningModule):
             embedding_size: int = 768,
             time_embeddings_size: int = 32,
             visit_order_size: int = 3,
-            type_vocab_size: int = 8,
+            type_vocab_size: int = 9,
             max_seq_length: int = 2048,
             depth: int = 6,
             num_heads: int = 12,
@@ -160,7 +160,7 @@ class BigBirdPretrain(pl.LightningModule):
         attention_mask = batch["attention_mask"]
 
         # This is not necessary but makes sure we use the right attention
-        self.encoder.set_attention_type("block_sparse")
+        self.model.bert.set_attention_type("block_sparse")
         loss = self(
             inputs, attention_mask=attention_mask, labels=labels, return_dict=True
         ).loss
@@ -187,7 +187,7 @@ class BigBirdPretrain(pl.LightningModule):
         attention_mask = batch["attention_mask"]
 
         # This is not necessary but makes sure we use the right attention
-        self.encoder.set_attention_type("block_sparse")
+        self.model.bert.set_attention_type("block_sparse")
         loss = self(
             inputs, attention_mask=attention_mask, labels=labels, return_dict=True
         ).loss
@@ -357,7 +357,7 @@ class BigBirdFinetune(pl.LightningModule):
         attention_mask = batch["attention_mask"]
 
         # This is not necessary but makes sure we use the right attention
-        self.encoder.set_attention_type("block_sparse")
+        self.pretrained_model.model.bert.set_attention_type("block_sparse")
         loss = self(
             inputs, attention_mask=attention_mask, labels=labels, return_dict=True
         )[0]
@@ -384,7 +384,7 @@ class BigBirdFinetune(pl.LightningModule):
         attention_mask = batch["attention_mask"]
 
         # This is not necessary but makes sure we use the right attention
-        self.encoder.set_attention_type("block_sparse")
+        self.pretrained_model.model.bert.set_attention_type("block_sparse")
         loss = self(
             inputs, attention_mask=attention_mask, labels=labels, return_dict=True
         )[0]
@@ -412,7 +412,7 @@ class BigBirdFinetune(pl.LightningModule):
         attention_mask = batch["attention_mask"]
 
         # This is not necessary but makes sure we use the right attention
-        self.encoder.set_attention_type("block_sparse")
+        self.pretrained_model.model.bert.set_attention_type("block_sparse")
         outputs = self(
             inputs, attention_mask=attention_mask, labels=labels, return_dict=True
         )

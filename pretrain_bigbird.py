@@ -202,10 +202,10 @@ if __name__ == "__main__":
         "--mask_prob", type=float, default=0.15, help="Probability of masking the token"
     )
     parser.add_argument(
-        "--batch_size", type=int, default=12, help="Batch size for training"
+        "--batch_size", type=int, default=10, help="Batch size for training"
     )
     parser.add_argument(
-        "--num_workers", type=int, default=4, help="Number of workers for training"
+        "--num_workers", type=int, default=3, help="Number of workers for training"
     )
     parser.add_argument(
         "--checkpoint_dir",
