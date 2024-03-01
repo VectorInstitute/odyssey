@@ -42,32 +42,30 @@ class PretrainDataset(Dataset):
         """ Tokenize the sequence and return input_ids and attention mask. """
         return self.tokenizer(sequence)
 
-    def mask_tokens(self, sequence: torch.Tensor) -> Tuple[List[int], List[int]]:
-        """ Mask the tokens in the sequence. """
-        masked_sequence = []
-        labels = []
-        for token in sequence:
-            if token in self.tokenizer.get_special_token_ids():
-                masked_sequence.append(token)
-                labels.append(-100)
-                continue
-            prob = random.random()
-            if prob < self.mask_prob:
-                dice = random.random()
-                if dice < 0.8:
-                    masked_sequence.append(self.tokenizer.get_mask_token_id())
-                elif dice < 0.9:
-                    random_token = random.randint(
-                        self.tokenizer.get_first_token_index(),
-                        self.tokenizer.get_last_token_index(),
-                    )
-                    masked_sequence.append(random_token)
-                else:
-                    masked_sequence.append(token)
-                labels.append(token)
-            else:
-                masked_sequence.append(token)
-                labels.append(-100)
+    def mask_tokens(self, sequence: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """ Mask the tokens in the sequence using vectorized operations."""
+        mask_token_id = self.tokenizer.get_mask_token_id()
+
+        masked_sequence = sequence.clone()
+
+        # Ignore [PAD], [UNK], [MASK] tokens
+        prob_matrix = torch.full(masked_sequence.shape, self.mask_prob)
+        prob_matrix[torch.where(masked_sequence <= mask_token_id)] = 0
+        selected = torch.bernoulli(prob_matrix).bool()
+
+        # 80% of the time, replace masked input tokens with respective mask tokens
+        replaced = torch.bernoulli(torch.full(selected.shape, 0.8)).bool() & selected
+        masked_sequence[replaced] = mask_token_id
+
+        # 10% of the time, we replace masked input tokens with random vector.
+        randomized = torch.bernoulli(torch.full(selected.shape, 0.1)).bool() & selected & ~replaced
+        random_idx = torch.randint(low=self.tokenizer.get_first_token_index(),
+                                   high=self.tokenizer.get_last_token_index(),
+                                   size=prob_matrix.shape, dtype=torch.long)
+        masked_sequence[randomized] = random_idx[randomized]
+
+        labels = torch.where(selected, sequence, -100)
+
         return masked_sequence, labels
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
@@ -76,8 +74,8 @@ class PretrainDataset(Dataset):
 
         data = self.data.iloc[idx]
         tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
-        concept_tokens = tokenized_input['input_ids']
-        attention_mask = tokenized_input['attention_mask']
+        concept_tokens = tokenized_input['input_ids'].squeeze()
+        attention_mask = tokenized_input['attention_mask'].squeeze()
 
         type_tokens = data[f"type_tokens_{self.max_len}"]
         age_tokens = data[f"age_tokens_{self.max_len}"]
@@ -87,13 +85,11 @@ class PretrainDataset(Dataset):
 
         masked_tokens, labels = self.mask_tokens(concept_tokens)
 
-        masked_tokens = torch.tensor(masked_tokens)
         type_tokens = torch.tensor(type_tokens)
         age_tokens = torch.tensor(age_tokens)
         time_tokens = torch.tensor(time_tokens)
         visit_tokens = torch.tensor(visit_tokens)
         position_tokens = torch.tensor(position_tokens)
-        labels = torch.tensor(labels)
 
         return {
             "concept_ids": masked_tokens,
@@ -137,8 +133,8 @@ class FinetuneDataset(Dataset):
 
         data = self.data.iloc[idx]
         tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
-        concept_tokens = tokenized_input['input_ids']
-        attention_mask = tokenized_input['attention_mask']
+        concept_tokens = tokenized_input['input_ids'].squeeze()
+        attention_mask = tokenized_input['attention_mask'].squeeze()
 
         type_tokens = data[f"type_tokens_{self.max_len}"]
         age_tokens = data[f"age_tokens_{self.max_len}"]
@@ -156,7 +152,7 @@ class FinetuneDataset(Dataset):
 
         return {
             "concept_ids": concept_tokens,
-            "type_ids": type_tokens,
+            "cccccccc": type_tokens,
             "ages": age_tokens,
             "time_stamps": time_tokens,
             "visit_orders": position_tokens,
