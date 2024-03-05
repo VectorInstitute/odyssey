@@ -152,7 +152,7 @@ class FinetuneDataset(Dataset):
 
         return {
             "concept_ids": concept_tokens,
-            "cccccccc": type_tokens,
+            "type_ids": type_tokens,
             "ages": age_tokens,
             "time_stamps": time_tokens,
             "visit_orders": position_tokens,

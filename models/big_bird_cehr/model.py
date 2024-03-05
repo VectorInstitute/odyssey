@@ -32,7 +32,7 @@ class BigBirdPretrain(pl.LightningModule):
 
     def __init__(
             self,
-            args: Tuple[Any, ...],
+            args: Dict[str, Any],
             dataset_len: int,
             vocab_size: int,
             embedding_size: int = 768,
@@ -124,9 +124,9 @@ class BigBirdPretrain(pl.LightningModule):
             ],
             attention_mask: Optional[torch.Tensor] = None,
             labels: Optional[torch.Tensor] = None,
-            output_attentions: Optional[bool] = None,
-            output_hidden_states: Optional[bool] = None,
-            return_dict: Optional[bool] = None,
+            output_attentions: Optional[bool] = False,
+            output_hidden_states: Optional[bool] = False,
+            return_dict: Optional[bool] = True,
     ) -> Union[Tuple[torch.Tensor, ...], MaskedLMOutput]:
         """Forward pass for the model."""
 
@@ -233,7 +233,7 @@ class BigBirdFinetune(pl.LightningModule):
 
     def __init__(
             self,
-            args: Tuple[Any, ...],
+            args: Dict[str, Any],
             dataset_len: int,
             pretrained_model: BigBirdPretrain,
             num_labels: int = 2,
@@ -308,18 +308,18 @@ class BigBirdFinetune(pl.LightningModule):
             ],
             attention_mask: Optional[torch.Tensor] = None,
             labels: Optional[torch.Tensor] = None,
-            output_attentions: Optional[bool] = None,
-            output_hidden_states: Optional[bool] = None,
-            return_dict: Optional[bool] = None,
+            return_dict: Optional[bool] = True,
     ) -> Union[Tuple[torch.Tensor, ...], SequenceClassifierOutput]:
         """Forward pass for the model."""
 
-        outputs = self.pretrained_model(inputs=inputs,
-                                        attention_mask=attention_mask,
-                                        labels=labels,
-                                        output_attentions=output_attentions,
-                                        output_hidden_states=output_hidden_states,
-                                        return_dict=return_dict)
+        outputs = self.pretrained_model(
+            inputs=inputs,
+            attention_mask=attention_mask,
+            labels=None,
+            output_attentions=True,
+            output_hidden_states=True,
+            return_dict=return_dict
+        )
 
         hidden_states = outputs["hidden_states"]  # hidden_states
         hidden_states = hidden_states[-1]

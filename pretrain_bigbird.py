@@ -59,13 +59,14 @@ def main(args: Dict[str, Any]) -> None:
     data = pd.read_parquet(join(args.data_dir, "patient_sequences_2048_labeled.parquet"))
     patient_ids = pickle.load(open(join(args.data_dir, 'dataset_2048_mortality_1month.pkl'), 'rb'))
     pre_data = data.loc[data['patient_id'].isin(patient_ids['pretrain'])]
+    pre_data.rename(columns={'label_mortality_1month': 'label'}, inplace=True)
 
     # Split data
     pre_train, pre_val = train_test_split(
         pre_data,
         test_size=args.val_size,
         random_state=args.seed,
-        stratify=pre_data["label_mortality_1month"],
+        stratify=pre_data["label"],
     )
 
     # Train Tokenizer
