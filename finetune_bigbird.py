@@ -9,6 +9,7 @@ hospital readmission labels.
 import os
 import glob
 import argparse
+import pickle
 from os.path import join
 
 from typing import Any, Dict
@@ -57,19 +58,25 @@ def main(args: Dict[str, Any]) -> None:
     torch.set_float32_matmul_precision("medium")
 
     # Load data
-    fine_tune = pd.read_parquet(join(args.data_dir, "fine_tune.parquet"))
-    fine_test = pd.read_parquet(join(args.data_dir, "fine_test.parquet"))
+    data = pd.read_parquet(join(args.data_dir, "patient_sequences_2048_labeled.parquet"))
+    patient_ids = pickle.load(open(join(args.data_dir, 'dataset_2048_mortality_1month.pkl'), 'rb'))
+
+    fine_tune = data.loc[data['patient_id'].isin(patient_ids['valid'][args.valid_scheme][args.num_finetune_patients])]
+    fine_test = data.loc[data['patient_id'].isin(patient_ids['test'])]
+
+    fine_tune.rename(columns={'label_mortality_1month': 'label'}, inplace=True)
+    fine_test.rename(columns={'label_mortality_1month': 'label'}, inplace=True)
 
     # Split data
     fine_train, fine_val = train_test_split(
         fine_tune,
-        test_size=args.test_size,
+        test_size=args.valid_size,
         random_state=args.seed,
         stratify=fine_tune["label"],
     )
 
     # Train Tokenizer
-    tokenizer = HuggingFaceConceptTokenizer(data_dir=args.data_dir)
+    tokenizer = HuggingFaceConceptTokenizer(data_dir=args.vocab_dir)
     tokenizer.fit_on_vocab()
 
     # Load datasets
@@ -94,8 +101,8 @@ def main(args: Dict[str, Any]) -> None:
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        persistent_workers=True,
+        # num_workers=3,
+        # persistent_workers=True,
         shuffle=True,
         pin_memory=True,
     )
@@ -103,16 +110,16 @@ def main(args: Dict[str, Any]) -> None:
     val_loader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        persistent_workers=True,
+        # num_workers=1,
+        # persistent_workers=True,
         pin_memory=True,
     )
 
     test_loader = DataLoader(
         test_dataset,
         batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        persistent_workers=True,
+        # num_workers=3,
+        # persistent_workers=True,
         pin_memory=True,
     )
 
@@ -132,12 +139,12 @@ def main(args: Dict[str, Any]) -> None:
     ]
 
     wandb_logger = WandbLogger(
-        project="bigbird_finetune",
+        project="bigbird_finetune_mortality_1month_20000_patients",
         save_dir=args.log_dir,
     )
 
     # Load latest checkpoint to continue training
-    latest_checkpoint = get_latest_checkpoint(args.checkpoint_path)
+    # latest_checkpoint = get_latest_checkpoint(args.checkpoint_path)
 
     # Setup PyTorchLightning trainer
     trainer = pl.Trainer(
@@ -153,7 +160,7 @@ def main(args: Dict[str, Any]) -> None:
         enable_progress_bar=True,
         enable_model_summary=True,
         logger=wandb_logger,
-        resume_from_checkpoint=latest_checkpoint if args.resume else None,
+        # resume_from_checkpoint=latest_checkpoint if args.resume else None,
         log_every_n_steps=args.log_every_n_steps,
         accumulate_grad_batches=args.acc,
         gradient_clip_val=1.0
@@ -170,7 +177,7 @@ def main(args: Dict[str, Any]) -> None:
 
     # Create fine tune BigBird model
     model = BigBirdFinetune(
-        args,
+        args=args,
         dataset_len=len(train_dataset),
         pretrained_model=pretrained_model,
     )
@@ -188,9 +195,14 @@ def main(args: Dict[str, Any]) -> None:
         dataloaders=test_loader,
     )
 
+    # Save the model directly to disk
+    state_dict = model.state_dict()
+    torch.save(state_dict, args.output_dir)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+
     parser.add_argument(
         "--seed", type=int, default=42, help="Random seed for reproducibility"
     )
@@ -202,20 +214,19 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--data_dir", type=str,
-        default="/h/afallah/odyssey/odyssey/data/slurm_data/one_month",
+        default="/h/afallah/odyssey/odyssey/data/bigbird_data",
         help="Path to the data directory"
     )
     parser.add_argument(
-        "--train_size",
-        type=float,
-        default=0.3,
-        help="Train set size for splitting the data",
+        "--vocab_dir", type=str,
+        default="/h/afallah/odyssey/odyssey/data/vocab",
+        help="Path to the vocabulary directory of json files"
     )
     parser.add_argument(
-        "--test_size",
+        "--valid_size",
         type=float,
-        default=0.6,
-        help="Test set size for splitting the data",
+        default=0.1,
+        help="Validation set size for splitting the data",
     )
     parser.add_argument(
         "--max_len", type=int, default=2048, help="Maximum length of the sequence"
@@ -224,19 +235,26 @@ if __name__ == "__main__":
         "--batch_size", type=int, default=16, help="Batch size for training"
     )
     parser.add_argument(
-        "--num_workers", type=int, default=4, help="Number of workers for training"
+        "--num_workers", type=int, default=3, help="Number of workers for training"
     )
     parser.add_argument(
         "--checkpoint_dir",
         type=str,
-        default="checkpoints/finetuning",
+        default="checkpoints/bigbird_finetune/mortality_1month_20000_patients",
         help="Path to the training checkpoint",
     )
     parser.add_argument(
-        "--log_dir", type=str, default="logs", help="Path to the log directory"
+        "--output_dir",
+        type=str,
+        default="checkpoints/bigbird_finetune/mortality_1month_20000_patients/" +
+                "bigbird_finetune_mortality_1month_20000_patients.pt",
+        help="Path to the training checkpoint",
     )
     parser.add_argument(
-        "--gpus", type=int, default=1, help="Number of gpus for training"
+        "--log_dir", type=str, default="/h/afallah/odyssey/wandb", help="Path to the log directory"
+    )
+    parser.add_argument(
+        "--gpus", type=int, default=4, help="Number of gpus for training"
     )
     parser.add_argument(
         "--max_epochs", type=int, default=10, help="Number of epochs for training"
@@ -253,9 +271,20 @@ if __name__ == "__main__":
     parser.add_argument(
         "--pretrained_path",
         type=str,
-        default=None,
-        required=True,
+        default="checkpoints/bigbird_pretraining_a100/best.ckpt",
         help="Checkpoint to the pretrained model",
+    )
+    parser.add_argument(
+        '--valid_scheme',
+        type=str,
+        default='few_shot',
+        help='Define the type of validation, few_shot or kfold'
+    )
+    parser.add_argument(
+        '--num_finetune_patients',
+        type=str,
+        default='20000_patients',
+        help='Define the number of patients to be fine_tuned on'
     )
 
     args = parser.parse_args()
