@@ -17,7 +17,7 @@ from torch.optim.lr_scheduler import LinearLR, SequentialLR
 from transformers import BertConfig, BigBirdConfig
 from transformers.modeling_outputs import MaskedLMOutput, SequenceClassifierOutput
 from transformers.models.bert.modeling_bert import BertPooler
-from transformers.models.big_bird.modeling_big_bird import BigBirdForMaskedLM
+from transformers.models.big_bird.modeling_big_bird import BigBirdForMaskedLM, BigBirdForSequenceClassification
 
 import pytorch_lightning as pl
 
@@ -81,6 +81,7 @@ class BigBirdPretrain(pl.LightningModule):
             is_decoder=False,
             pad_token_id=padding_idx
         )
+
         # BigBirdForMaskedLM
         self.embeddings = BigBirdEmbeddingsForCEHR(
             config=self.config,
@@ -234,50 +235,29 @@ class BigBirdFinetune(pl.LightningModule):
     def __init__(
             self,
             args: Dict[str, Any],
-            dataset_len: int,
             pretrained_model: BigBirdPretrain,
+            dataset_len: int,
             num_labels: int = 2,
-            hidden_size: int = 768,
+            learning_rate: float = 5e-6,
             classifier_dropout: float = 0.1,
-            hidden_dropout_prob: float = 0.1,
-            learning_rate: float = 5e-7,
-            eta_min: float = 1e-8,
-            num_iterations: int = 10,
-            increase_factor: float = 2,
     ):
         super().__init__()
 
         self.num_labels = num_labels
         self.learning_rate = learning_rate
-        self.hidden_size = hidden_size
-        self.eta_min = eta_min
-        self.num_iterations = num_iterations
-        self.increase_factor = increase_factor
         self.classifier_dropout = classifier_dropout
-        self.hidden_dropout_prob = hidden_dropout_prob
         self.test_outputs = []
 
-        self.config = BertConfig(
-            num_labels=self.num_labels,
-            hidden_size=self.hidden_size,
-            classifier_dropout=self.classifier_dropout,
-            hidden_dropout_prob=self.hidden_dropout_prob,
-        )
+        self.config = pretrained_model.config
+        self.config.num_labels = self.num_labels
+        self.config.classifier_dropout = self.classifier_dropout
+        self.config.problem_type = 'single_label_classification'
 
-        # BigBirdForSequenceClassification
-        self.pooler = BertPooler(self.config)
-
-        # SequenceClassification
-        classifier_dropout = (
-            self.config.classifier_dropout
-            if self.config.classifier_dropout is not None
-            else self.config.hidden_dropout_prob
-        )
-        self.dropout = nn.Dropout(classifier_dropout)
-        self.classifier = nn.Linear(self.hidden_size, self.num_labels)
-
+        self.model = BigBirdForSequenceClassification(config=self.config)
         self.post_init()
+
         self.pretrained_model = pretrained_model
+        self.model.bert = self.pretrained_model.model.bert
 
         # Define warmup and decay iterations for the scheduler
         grad_steps = dataset_len / args.batch_size / args.gpus * args.max_epochs
@@ -313,35 +293,20 @@ class BigBirdFinetune(pl.LightningModule):
     ) -> Union[Tuple[torch.Tensor, ...], SequenceClassifierOutput]:
         """Forward pass for the model."""
 
-        outputs = self.pretrained_model(
-            inputs=inputs,
+        concept_ids, type_ids, time_stamps, ages, visit_orders, visit_segments = inputs
+        self.model.bert.embeddings.cache_input(time_stamps, ages, visit_segments)
+
+        if attention_mask is None:
+            attention_mask = torch.ones_like(concept_ids)
+
+        return self.model(
+            input_ids=concept_ids,
             attention_mask=attention_mask,
-            labels=None,
+            token_type_ids=type_ids,
+            labels=labels,
             output_attentions=True,
             output_hidden_states=True,
-            return_dict=return_dict
-        )
-
-        hidden_states = outputs["hidden_states"]  # hidden_states
-        hidden_states = hidden_states[-1]
-        pooled_output = self.pooler(hidden_states) if self.pooler is not None else None
-        pooled_output = self.dropout(pooled_output)
-        logits = self.classifier(pooled_output)
-
-        loss = None
-        if labels is not None:
-            loss_fct = CrossEntropyLoss()
-            loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
-
-        if not return_dict:
-            output = (logits,) + outputs[2:]
-            return ((loss,) + output) if loss is not None else output
-
-        return SequenceClassifierOutput(
-            loss=loss,
-            logits=logits,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
+            return_dict=return_dict,
         )
 
     def training_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
@@ -358,7 +323,7 @@ class BigBirdFinetune(pl.LightningModule):
         attention_mask = batch["attention_mask"]
 
         # This is not necessary but makes sure we use the right attention
-        self.pretrained_model.model.bert.set_attention_type("block_sparse")
+        self.model.bert.set_attention_type("block_sparse")
         loss = self(
             inputs, attention_mask=attention_mask, labels=labels, return_dict=True
         )[0]
@@ -385,7 +350,7 @@ class BigBirdFinetune(pl.LightningModule):
         attention_mask = batch["attention_mask"]
 
         # This is not necessary but makes sure we use the right attention
-        self.pretrained_model.model.bert.set_attention_type("block_sparse")
+        self.model.bert.set_attention_type("block_sparse")
         loss = self(
             inputs, attention_mask=attention_mask, labels=labels, return_dict=True
         )[0]
@@ -413,7 +378,7 @@ class BigBirdFinetune(pl.LightningModule):
         attention_mask = batch["attention_mask"]
 
         # This is not necessary but makes sure we use the right attention
-        self.pretrained_model.model.bert.set_attention_type("block_sparse")
+        self.model.bert.set_attention_type("block_sparse")
         outputs = self(
             inputs, attention_mask=attention_mask, labels=labels, return_dict=True
         )
@@ -440,7 +405,7 @@ class BigBirdFinetune(pl.LightningModule):
         self.log('test_precision', precision_score(labels, preds))
         self.log('test_recall', recall_score(labels, preds))
         return loss
-    
+
     def configure_optimizers(self) -> Tuple[list[AdamW], list[dict[str, SequentialLR | str]]]:
         """Configure optimizers and learning rate scheduler."""
         optimizer = optim.AdamW(

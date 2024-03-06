@@ -64,8 +64,12 @@ def main(args: Dict[str, Any]) -> None:
     data = pd.read_parquet(join(args.data_dir, "patient_sequences_2048_labeled.parquet"))
     patient_ids = pickle.load(open(join(args.data_dir, 'dataset_2048_mortality_1month.pkl'), 'rb'))
 
-    fine_tune = data.loc[data['patient_id'].isin(patient_ids['valid'][args.valid_scheme][args.num_finetune_patients])]
-    fine_test = data.loc[data['patient_id'].isin(patient_ids['test'])]
+    fine_tune = data.loc[
+        data['patient_id'].isin(patient_ids['valid'][args.valid_scheme][args.num_finetune_patients])
+    ]
+    fine_test = data.loc[
+        data['patient_id'].isin(patient_ids['test'])
+    ]
 
     fine_tune.rename(columns={'label_mortality_1month': 'label'}, inplace=True)
     fine_test.rename(columns={'label_mortality_1month': 'label'}, inplace=True)
@@ -84,7 +88,7 @@ def main(args: Dict[str, Any]) -> None:
 
     # Load datasets
     train_dataset = FinetuneDataset(
-        data=fine_tune,
+        data=fine_train,
         tokenizer=tokenizer,
         max_len=args.max_len,
     )
@@ -121,15 +125,15 @@ def main(args: Dict[str, Any]) -> None:
     test_loader = DataLoader(
         test_dataset,
         batch_size=args.batch_size,
-        #num_workers=2,
-        #persistent_workers=True,
+        # num_workers=2,
+        # persistent_workers=True,
         pin_memory=True,
     )
 
     # Setup model dependencies
     callbacks = [
         ModelCheckpoint(
-            monitor="train_loss",
+            monitor="val_loss",
             mode="min",
             filename="best",
             save_top_k=1,
@@ -138,11 +142,11 @@ def main(args: Dict[str, Any]) -> None:
             dirpath=args.checkpoint_dir,
         ),
         LearningRateMonitor(logging_interval="step"),
-        EarlyStopping(monitor="train_loss", patience=5, verbose=True, mode="min"),
+        EarlyStopping(monitor="val_loss", patience=5, verbose=True, mode="min"),
     ]
 
     wandb_logger = WandbLogger(
-        project="bigbird_finetune_mortality_1month_100_patients",
+        project="bigbird_finetune_mortality_1month_20000_patients",
         save_dir=args.log_dir,
     )
 
@@ -188,7 +192,7 @@ def main(args: Dict[str, Any]) -> None:
     trainer.fit(
         model=model,
         train_dataloaders=train_loader,
-        # val_dataloaders=val_loader,
+        val_dataloaders=val_loader,
         ckpt_path=latest_checkpoint if args.resume else None,
     )
 
@@ -207,7 +211,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "--seed", type=int, default=42, help="Random seed for reproducibility"
+        "--seed", type=int, default=23, help="Random seed for reproducibility"
     )
     parser.add_argument(
         "--resume",
@@ -235,21 +239,21 @@ if __name__ == "__main__":
         "--max_len", type=int, default=2048, help="Maximum length of the sequence"
     )
     parser.add_argument(
-        "--batch_size", type=int, default=10, help="Batch size for training"
+        "--batch_size", type=int, default=3, help="Batch size for training"
     )
     parser.add_argument(
-        "--num_workers", type=int, default=3, help="Number of workers for training"
+        "--num_workers", type=int, default=2, help="Number of workers for training"
     )
     parser.add_argument(
         "--checkpoint_dir",
         type=str,
-        default=f"{ROOT}/checkpoints/bigbird_finetune/mortality_1month_100_patients",
+        default=f"{ROOT}/checkpoints/bigbird_finetune/mortality_1month_20000_patients",
         help="Path to the training checkpoint",
     )
     parser.add_argument(
         "--output_dir",
         type=str,
-        default=f"{ROOT}/checkpoints/bigbird_finetune/mortality_1month_100_patients/" +
+        default=f"{ROOT}/checkpoints/bigbird_finetune/mortality_1month_20000_patients/" +
                 "bigbird_finetune_mortality_1month_20000_patients.pt",
         help="Path to the training checkpoint",
     )
@@ -286,7 +290,7 @@ if __name__ == "__main__":
     parser.add_argument(
         '--num_finetune_patients',
         type=str,
-        default='100_patients',
+        default='20000_patients',
         help='Define the number of patients to be fine_tuned on'
     )
 
