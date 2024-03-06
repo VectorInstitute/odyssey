@@ -240,7 +240,7 @@ class BigBirdFinetune(pl.LightningModule):
             hidden_size: int = 768,
             classifier_dropout: float = 0.1,
             hidden_dropout_prob: float = 0.1,
-            learning_rate: float = 5e-5,
+            learning_rate: float = 5e-7,
             eta_min: float = 1e-8,
             num_iterations: int = 10,
             increase_factor: float = 2,
@@ -255,6 +255,7 @@ class BigBirdFinetune(pl.LightningModule):
         self.increase_factor = increase_factor
         self.classifier_dropout = classifier_dropout
         self.hidden_dropout_prob = hidden_dropout_prob
+        self.test_outputs = []
 
         self.config = BertConfig(
             num_labels=self.num_labels,
@@ -422,19 +423,16 @@ class BigBirdFinetune(pl.LightningModule):
         preds = torch.argmax(logits, dim=1)
         log = {"loss": loss, "preds": preds, "labels": labels}
 
-        self.log_dict(
-            dictionary=log,
-            on_step=True,
-            prog_bar=True,
-            sync_dist=True
-        )
+        # Append the outputs to the instance attribute
+        self.test_outputs.append(log)
+
         return log
 
-    def test_epoch_end(self, outputs: Any) -> Any:
+    def on_test_epoch_end(self) -> Any:
         """Evaluate after the test epoch."""
-        labels = torch.cat([x['labels'] for x in outputs]).cpu()
-        preds = torch.cat([x['preds'] for x in outputs]).cpu()
-        loss = torch.stack([x['loss'] for x in outputs]).mean().cpu()
+        labels = torch.cat([x['labels'] for x in self.test_outputs]).cpu()
+        preds = torch.cat([x['preds'] for x in self.test_outputs]).cpu()
+        loss = torch.stack([x['loss'] for x in self.test_outputs]).mean().cpu()
         self.log('test_loss', loss)
         self.log('test_acc', accuracy_score(labels, preds))
         self.log('test_f1', f1_score(labels, preds))

@@ -42,8 +42,9 @@ def seed_everything(seed: int) -> None:
 
 def get_latest_checkpoint(checkpoint_dir: str) -> Any:
     """ Return the most recent checkpointed file to resume training from. """
-    list_of_files = glob.glob(os.path.join(checkpoint_dir, '*.ckpt'))
-    return max(list_of_files, key=os.path.getctime) if list_of_files else None
+    list_of_files = glob.glob(os.path.join(checkpoint_dir, 'best.ckpt'))
+    return list_of_files[-1]
+    # return max(list_of_files, key=os.path.getctime) if list_of_files else None
 
 
 def main(args: Dict[str, Any]) -> None:
@@ -141,7 +142,6 @@ def main(args: Dict[str, Any]) -> None:
         enable_progress_bar=True,
         enable_model_summary=True,
         logger=wandb_logger,
-        # resume_from_checkpoint=latest_checkpoint if args.resume else None,
         log_every_n_steps=args.log_every_n_steps,
         accumulate_grad_batches=args.acc,
         gradient_clip_val=1.0
@@ -160,6 +160,7 @@ def main(args: Dict[str, Any]) -> None:
         model=model,
         train_dataloaders=train_loader,
         val_dataloaders=val_loader,
+        ckpt_path=latest_checkpoint if args.resume else None,
     )
 
 

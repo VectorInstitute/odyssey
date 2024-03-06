@@ -31,6 +31,8 @@ from models.big_bird_cehr.data import FinetuneDataset
 from models.big_bird_cehr.model import BigBirdPretrain, BigBirdFinetune
 from models.big_bird_cehr.tokenizer import HuggingFaceConceptTokenizer
 
+ROOT = "/h/afallah/odyssey/odyssey"
+
 
 def seed_everything(seed: int) -> None:
     """ Seed all components of the model. """
@@ -44,8 +46,9 @@ def seed_everything(seed: int) -> None:
 
 def get_latest_checkpoint(checkpoint_dir: str) -> Any:
     """ Return the most recent checkpointed file to resume training from. """
-    list_of_files = glob.glob(os.path.join(checkpoint_dir, '*.ckpt'))
-    return max(list_of_files, key=os.path.getctime) if list_of_files else None
+    list_of_files = glob.glob(os.path.join(checkpoint_dir, 'best.ckpt'))
+    return list_of_files[-1]
+    # return max(list_of_files, key=os.path.getmtime) if list_of_files else None
 
 
 def main(args: Dict[str, Any]) -> None:
@@ -81,7 +84,7 @@ def main(args: Dict[str, Any]) -> None:
 
     # Load datasets
     train_dataset = FinetuneDataset(
-        data=fine_train,
+        data=fine_tune,
         tokenizer=tokenizer,
         max_len=args.max_len,
     )
@@ -118,15 +121,15 @@ def main(args: Dict[str, Any]) -> None:
     test_loader = DataLoader(
         test_dataset,
         batch_size=args.batch_size,
-        # num_workers=3,
-        # persistent_workers=True,
+        #num_workers=2,
+        #persistent_workers=True,
         pin_memory=True,
     )
 
     # Setup model dependencies
     callbacks = [
         ModelCheckpoint(
-            monitor="val_loss",
+            monitor="train_loss",
             mode="min",
             filename="best",
             save_top_k=1,
@@ -135,16 +138,16 @@ def main(args: Dict[str, Any]) -> None:
             dirpath=args.checkpoint_dir,
         ),
         LearningRateMonitor(logging_interval="step"),
-        EarlyStopping(monitor="val_loss", patience=5, verbose=True, mode="min"),
+        EarlyStopping(monitor="train_loss", patience=5, verbose=True, mode="min"),
     ]
 
     wandb_logger = WandbLogger(
-        project="bigbird_finetune_mortality_1month_20000_patients",
+        project="bigbird_finetune_mortality_1month_100_patients",
         save_dir=args.log_dir,
     )
 
     # Load latest checkpoint to continue training
-    # latest_checkpoint = get_latest_checkpoint(args.checkpoint_path)
+    # latest_checkpoint = get_latest_checkpoint(args.checkpoint_dir)
 
     # Setup PyTorchLightning trainer
     trainer = pl.Trainer(
@@ -160,7 +163,6 @@ def main(args: Dict[str, Any]) -> None:
         enable_progress_bar=True,
         enable_model_summary=True,
         logger=wandb_logger,
-        # resume_from_checkpoint=latest_checkpoint if args.resume else None,
         log_every_n_steps=args.log_every_n_steps,
         accumulate_grad_batches=args.acc,
         gradient_clip_val=1.0
@@ -186,7 +188,8 @@ def main(args: Dict[str, Any]) -> None:
     trainer.fit(
         model=model,
         train_dataloaders=train_loader,
-        val_dataloaders=val_loader,
+        # val_dataloaders=val_loader,
+        ckpt_path=latest_checkpoint if args.resume else None,
     )
 
     # Test the model
@@ -214,12 +217,12 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--data_dir", type=str,
-        default="/h/afallah/odyssey/odyssey/data/bigbird_data",
+        default=f"{ROOT}/data/bigbird_data",
         help="Path to the data directory"
     )
     parser.add_argument(
         "--vocab_dir", type=str,
-        default="/h/afallah/odyssey/odyssey/data/vocab",
+        default=f"{ROOT}/data/vocab",
         help="Path to the vocabulary directory of json files"
     )
     parser.add_argument(
@@ -232,7 +235,7 @@ if __name__ == "__main__":
         "--max_len", type=int, default=2048, help="Maximum length of the sequence"
     )
     parser.add_argument(
-        "--batch_size", type=int, default=16, help="Batch size for training"
+        "--batch_size", type=int, default=10, help="Batch size for training"
     )
     parser.add_argument(
         "--num_workers", type=int, default=3, help="Number of workers for training"
@@ -240,13 +243,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--checkpoint_dir",
         type=str,
-        default="checkpoints/bigbird_finetune/mortality_1month_20000_patients",
+        default=f"{ROOT}/checkpoints/bigbird_finetune/mortality_1month_100_patients",
         help="Path to the training checkpoint",
     )
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="checkpoints/bigbird_finetune/mortality_1month_20000_patients/" +
+        default=f"{ROOT}/checkpoints/bigbird_finetune/mortality_1month_100_patients/" +
                 "bigbird_finetune_mortality_1month_20000_patients.pt",
         help="Path to the training checkpoint",
     )
@@ -254,10 +257,10 @@ if __name__ == "__main__":
         "--log_dir", type=str, default="/h/afallah/odyssey/wandb", help="Path to the log directory"
     )
     parser.add_argument(
-        "--gpus", type=int, default=4, help="Number of gpus for training"
+        "--gpus", type=int, default=1, help="Number of gpus for training"
     )
     parser.add_argument(
-        "--max_epochs", type=int, default=10, help="Number of epochs for training"
+        "--max_epochs", type=int, default=5, help="Number of epochs for training"
     )
     parser.add_argument(
         "--acc", type=int, default=1, help="Gradient accumulation"
@@ -271,7 +274,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--pretrained_path",
         type=str,
-        default="checkpoints/bigbird_pretraining_a100/best.ckpt",
+        default=f"{ROOT}/checkpoints/bigbird_pretraining_a100/best.ckpt",
         help="Checkpoint to the pretrained model",
     )
     parser.add_argument(
@@ -283,7 +286,7 @@ if __name__ == "__main__":
     parser.add_argument(
         '--num_finetune_patients',
         type=str,
-        default='20000_patients',
+        default='100_patients',
         help='Define the number of patients to be fine_tuned on'
     )
 
