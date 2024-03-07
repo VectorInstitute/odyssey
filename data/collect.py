@@ -76,7 +76,6 @@ class FHIRDataCollector:
                         header=(not os.path.exists(save_path)),
                         index=False,
                     )
-
             if buffer:
                 df_buffer = pd.DataFrame(buffer, columns=patient_cols)
                 df_buffer.to_csv(
