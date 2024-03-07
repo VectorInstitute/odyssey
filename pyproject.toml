@@ -15,6 +15,10 @@ lightning = "2.2.0"
 torch = "1.13.1"
 tqdm = "4.65.0"
 wandb = "0.16.0"
+pandas = "^2.2.1"
+sqlalchemy = "^2.0.28"
+psycopg2 = "^2.9.9"
+fhir-resources = "^5.1.1"
 
 [tool.poetry.group.test]
 optional = true
