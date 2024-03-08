@@ -403,7 +403,7 @@ class SequenceGenerator:
         position_tokens = [0]
 
         segment_value = 1
-        position_value = 1
+        position_value = 0
 
         prev_encounter = None
 
@@ -486,7 +486,7 @@ class SequenceGenerator:
         row["time_tokens"] = time_tokens
         row["visit_tokens"] = visit_segments
         row["position_tokens"] = position_tokens
-        row["num_visits"] = len(set(position_tokens))
+        row["num_visits"] = len(set(position_tokens)) - 1
         return row
 
     def _get_mortality_label(
