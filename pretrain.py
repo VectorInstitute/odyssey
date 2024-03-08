@@ -169,6 +169,12 @@ if __name__ == "__main__":
         help="Path to model config file",
     )
     parser.add_argument(
+        "--label-name",
+        type=str,
+        required=True,
+        help="Name of the label column",
+    )
+    parser.add_argument(
         "--workspace-name",
         type=str,
         default=None,
@@ -205,12 +211,6 @@ if __name__ == "__main__":
         type=str,
         default="data_files/vocab",
         help="Path to the vocabulary directory of json files",
-    )
-    parser.add_argument(
-        "--label-name",
-        type=str,
-        required=True,
-        help="Name of the label column",
     )
     parser.add_argument(
         "--val-size",
