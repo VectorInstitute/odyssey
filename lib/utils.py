@@ -4,7 +4,7 @@ import os
 import pickle
 import uuid
 from os.path import join
-from typing import Any, Dict
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -13,7 +13,7 @@ import torch
 import yaml
 
 
-def load_config(config_dir: str, model_type: str) -> Dict[str, Any]:
+def load_config(config_dir: str, model_type: str) -> Any:
     """Load the model configuration."""
     config_file = join(config_dir, f"{model_type}.yaml")
     with open(config_file, "r") as file:
@@ -92,6 +92,7 @@ def get_run_id(
     checkpoint_dir: str,
     retrieve: bool = False,
     run_id_file: str = "wandb_run_id.txt",
+    length: int = 8,
 ) -> str:
     """
     Return the run ID for the current run.
@@ -103,7 +104,7 @@ def get_run_id(
         with open(run_id_path, "r") as file:
             run_id = file.read().strip()
     else:
-        run_id = str(uuid.uuid4())
+        run_id = str(uuid.uuid4())[:length]
         with open(run_id_path, "w") as file:
             file.write(run_id)
     return run_id
