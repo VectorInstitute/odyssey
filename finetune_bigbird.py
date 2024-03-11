@@ -23,6 +23,7 @@ from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.strategies.ddp import DDPStrategy
+from pytorch_lightning.strategies import DeepSpeedStrategy
 from lightning.pytorch.loggers import WandbLogger
 
 from sklearn.model_selection import train_test_split
@@ -130,6 +131,9 @@ def main(args: Any) -> None:
         pin_memory=True,
     )
 
+    # Load latest checkpoint
+    latest_checkpoint = get_latest_checkpoint(args.checkpoint_dir)
+
     # Setup model dependencies
     callbacks = [
         ModelCheckpoint(
@@ -150,14 +154,11 @@ def main(args: Any) -> None:
         save_dir=args.log_dir,
     )
 
-    # Load latest checkpoint to continue training
-    latest_checkpoint = get_latest_checkpoint(args.checkpoint_dir)
-
     # Setup PyTorchLightning trainer
     trainer = pl.Trainer(
         accelerator="gpu",
         devices=args.gpus,
-        strategy=DDPStrategy(find_unused_parameters=True) if args.gpus > 1 else "auto",
+        strategy=DeepSpeedStrategy(stage=2),
         precision='16-mixed',
         check_val_every_n_epoch=1,
         max_epochs=args.max_epochs,
@@ -174,8 +175,6 @@ def main(args: Any) -> None:
 
     # Create pretrain BigBird model and load the pretrained state_dict
     pretrained_model = BigBirdPretrain(
-        args=args,
-        dataset_len=len(train_dataset),
         vocab_size=tokenizer.get_vocab_size(),
         padding_idx=tokenizer.get_pad_token_id(),
     )
@@ -183,19 +182,18 @@ def main(args: Any) -> None:
 
     # Create fine tune BigBird model
     model = BigBirdFinetune(
-        args=args,
-        dataset_len=len(train_dataset),
         pretrained_model=pretrained_model,
     )
 
     # Train the model
-    #trainer.fit(
-    #    model=model,
-    #    train_dataloaders=train_loader,
-    #    val_dataloaders=val_loader,
-    #    ckpt_path=latest_checkpoint if args.resume else None,
-    #)
+    trainer.fit(
+       model=model,
+       train_dataloaders=train_loader,
+       val_dataloaders=val_loader,
+       ckpt_path=latest_checkpoint if args.resume else None,
+    )
 
+    # Test with the best model
     checkpoint = torch.load(latest_checkpoint)
     model.load_state_dict(checkpoint['state_dict'])
 
@@ -204,10 +202,6 @@ def main(args: Any) -> None:
         model=model,
         dataloaders=test_loader,
     )
-
-    # Save the model directly to disk
-    #state_dict = model.state_dict()
-    #torch.save(state_dict, args.output_dir)
 
 
 if __name__ == "__main__":
@@ -242,7 +236,7 @@ if __name__ == "__main__":
         "--max_len", type=int, default=2048, help="Maximum length of the sequence"
     )
     parser.add_argument(
-        "--batch_size", type=int, default=48, help="Batch size for training"
+        "--batch_size", type=int, default=28, help="Batch size for training"
     )
     parser.add_argument(
         "--num_workers", type=int, default=2, help="Number of workers for training"

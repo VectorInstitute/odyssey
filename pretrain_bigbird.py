@@ -22,12 +22,15 @@ import pytorch_lightning as pl
 from lightning.pytorch.loggers import WandbLogger
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.strategies.ddp import DDPStrategy
+from pytorch_lightning.strategies import DeepSpeedStrategy
 
 from sklearn.model_selection import train_test_split
 
 from models.big_bird_cehr.data import PretrainDataset
 from models.big_bird_cehr.model import BigBirdPretrain
 from models.big_bird_cehr.tokenizer import HuggingFaceConceptTokenizer
+
+DEBUG = True
 
 
 def seed_everything(seed: int) -> None:
@@ -42,9 +45,8 @@ def seed_everything(seed: int) -> None:
 
 def get_latest_checkpoint(checkpoint_dir: str) -> Any:
     """ Return the most recent checkpointed file to resume training from. """
-    list_of_files = glob.glob(os.path.join(checkpoint_dir, 'best.ckpt'))
-    return list_of_files[-1]
-    # return max(list_of_files, key=os.path.getctime) if list_of_files else None
+    list_of_files = glob.glob(os.path.join(checkpoint_dir, '*.ckpt'))
+    return max(list_of_files, key=os.path.getctime) if list_of_files else None
 
 
 def main(args: Dict[str, Any]) -> None:
@@ -92,18 +94,18 @@ def main(args: Dict[str, Any]) -> None:
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        persistent_workers=True,
+        num_workers=0 if DEBUG else args.num_workers,
+        persistent_workers=not DEBUG,
+        pin_memory=not DEBUG,
         shuffle=True,
-        pin_memory=True,
     )
 
     val_loader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        persistent_workers=True,
-        pin_memory=True,
+        num_workers=0 if DEBUG else args.num_workers,
+        persistent_workers=not DEBUG,
+        pin_memory=not DEBUG
     )
 
     # Setup model dependencies
@@ -125,14 +127,12 @@ def main(args: Dict[str, Any]) -> None:
         save_dir=args.log_dir,
     )
 
-    # Load latest checkpoint to continue training
-    # latest_checkpoint = get_latest_checkpoint(args.checkpoint_path)
-
     # Setup PyTorchLightning trainer
     trainer = pl.Trainer(
         accelerator="gpu",
-        devices=args.gpus,
-        strategy=DDPStrategy(find_unused_parameters=True) if args.gpus > 1 else "auto",
+        num_nodes=args.nodes,
+        devices=1 if DEBUG else args.gpus,
+        strategy='deepspeed_stage_2',
         precision='16-mixed',
         check_val_every_n_epoch=1,
         max_epochs=args.max_epochs,
@@ -149,8 +149,6 @@ def main(args: Dict[str, Any]) -> None:
 
     # Create BigBird model
     model = BigBirdPretrain(
-        args=args,
-        dataset_len=len(train_dataset),
         vocab_size=tokenizer.get_vocab_size(),
         padding_idx=tokenizer.get_pad_token_id(),
     )
@@ -160,7 +158,7 @@ def main(args: Dict[str, Any]) -> None:
         model=model,
         train_dataloaders=train_loader,
         val_dataloaders=val_loader,
-        ckpt_path=latest_checkpoint if args.resume else None,
+        ckpt_path=get_latest_checkpoint(args.checkpoint_path) if args.resume else None,
     )
 
 
@@ -186,12 +184,6 @@ if __name__ == "__main__":
         help="Path to the vocabulary directory of json files"
     )
     parser.add_argument(
-        "--finetune_size",
-        type=float,
-        default=0.1,
-        help="Finetune dataset size for splitting the data",
-    )
-    parser.add_argument(
         "--val_size",
         type=float,
         default=0.1,
@@ -204,7 +196,7 @@ if __name__ == "__main__":
         "--mask_prob", type=float, default=0.15, help="Probability of masking the token"
     )
     parser.add_argument(
-        "--batch_size", type=int, default=10, help="Batch size for training"
+        "--batch_size", type=int, default=26, help="Batch size for training"
     )
     parser.add_argument(
         "--num_workers", type=int, default=3, help="Number of workers for training"
@@ -222,15 +214,18 @@ if __name__ == "__main__":
         "--gpus", type=int, default=4, help="Number of gpus for training"
     )
     parser.add_argument(
+        "--nodes", type=int, default=1, help="Number of nodes for training"
+    )
+    parser.add_argument(
         "--max_epochs", type=int, default=10, help="Number of epochs for training"
     )
     parser.add_argument(
-        "--acc", type=int, default=1, help="Gradient accumulation"
+        "--acc", type=int, default=8, help="Gradient accumulation"
     )
     parser.add_argument(
         "--log_every_n_steps",
         type=int,
-        default=10,
+        default=16,
         help="Number of steps to log the training",
     )
     parser.add_argument(
