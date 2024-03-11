@@ -10,6 +10,7 @@ import torch
 from lightning.pytorch.loggers import WandbLogger
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.strategies.ddp import DDPStrategy
+from pytorch_lightning.strategies import DeepSpeedStrategy
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 
@@ -59,7 +60,6 @@ def main(args: Dict[str, Any], model_config: Dict[str, Any]) -> None:
         max_len=args.max_len,
         mask_prob=args.mask_prob,
     )
-    args.dataset_len = len(train_dataset)
 
     val_dataset = PretrainDataset(
         data=pre_val,
@@ -108,7 +108,6 @@ def main(args: Dict[str, Any], model_config: Dict[str, Any]) -> None:
         )
     elif args.model_type == "cehr_bigbird":
         model = BigBirdPretrain(
-            args=args,
             vocab_size=tokenizer.get_vocab_size(),
             padding_idx=tokenizer.get_pad_token_id(),
             **model_config,
@@ -129,6 +128,7 @@ def main(args: Dict[str, Any], model_config: Dict[str, Any]) -> None:
     # Setup PyTorchLightning trainer
     trainer = pl.Trainer(
         accelerator="gpu",
+        num_nodes=args.nodes,
         devices=args.gpus,
         strategy=DDPStrategy(find_unused_parameters=True) if args.gpus > 1 else "auto",
         precision="16-mixed",
@@ -150,7 +150,7 @@ def main(args: Dict[str, Any], model_config: Dict[str, Any]) -> None:
         model=model,
         train_dataloaders=train_loader,
         val_dataloaders=val_loader,
-        ckpt_path=latest_checkpoint if latest_checkpoint else None,
+        ckpt_path=latest_checkpoint,
     )
 
 

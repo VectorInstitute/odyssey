@@ -4,31 +4,41 @@ File: Bi-LSTM.ipynb.
 Code to train and evaluate a bi-directional LSTM model on MIMIC-IV FHIR dataset.
 """
 
-import os
 import sys
-from typing import Any, Dict, Optional, Tuple
+import os
+
+from tqdm import tqdm
+from typing import Optional, Sequence, Union, Any, List, Tuple, Dict, Set
 
 import numpy as np
 import pandas as pd
-import torch
-from sklearn.metrics import (
-    balanced_accuracy_score,
-)
-from torch import nn, optim
-from torch.nn.functional import sigmoid
-from torch.nn.utils.rnn import pack_padded_sequence
-from torch.optim.lr_scheduler import ExponentialLR
-from torch.utils.data import DataLoader, Dataset
-from tqdm import tqdm
+import matplotlib.pyplot as plt
 
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import balanced_accuracy_score, precision_score, recall_score
+from sklearn.metrics import (
+    f1_score,
+    roc_curve,
+    auc,
+    precision_recall_curve,
+    roc_auc_score,
+    average_precision_score,
+)
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.nn.functional import sigmoid
+from torch.utils.data import Dataset, DataLoader
+from torch.optim.lr_scheduler import ExponentialLR
+from torch.nn.utils.rnn import pack_padded_sequence
 
 ROOT = "/fs01/home/afallah/odyssey/odyssey"
 os.chdir(ROOT)
 
 from models.big_bird_cehr.data import FinetuneDataset
-from models.big_bird_cehr.embeddings import Embeddings
 from models.big_bird_cehr.tokenizer import HuggingFaceConceptTokenizer
-
+from models.big_bird_cehr.embeddings import Embeddings
 
 DATA_ROOT = f"{ROOT}/data/slurm_data/512/one_month"
 DATA_PATH = f"{DATA_ROOT}/pretrain.parquet"
@@ -39,8 +49,7 @@ SAVE_MODEL_DIR = f"{ROOT}LSTM_V2.pt"
 
 # save parameters and configurations
 class CONFIG:
-    """A simple class to store all configurations."""
-
+    """ A simple class to store all configurations. """
     seed = 23
     data_dir = DATA_ROOT
     test_size = 0.2
@@ -56,7 +65,7 @@ class CONFIG:
 
 
 def seed_all(seed: int) -> None:
-    """Seed all parts of the training process."""
+    """ Seed all parts of the training process. """
     torch.manual_seed(seed)
     np.random.seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -66,48 +75,44 @@ def seed_all(seed: int) -> None:
 
 # Define dataset with token lengths
 class DatasetWithTokenLength(Dataset):
-    """A custom dataset to fetch batches of data with similar token lengths."""
+    """ A custom dataset to fetch batches of data with similar token lengths. """
 
     def __init__(self, tokenized_data: FinetuneDataset, length_data: np.ndarray):
-        """Initiate the class."""
+        """ Initiate the class. """
         super(DatasetWithTokenLength, self).__init__()
 
         self.tokenized_data = tokenized_data
         self.length_data = length_data
 
-        assert len(tokenized_data) == len(
-            length_data,
-        ), "Datasets have different lengths"
+        assert len(tokenized_data) == len(length_data), "Datasets have different lengths"
 
         self.sorted_indices = sorted(
-            range(len(length_data)),
-            key=lambda x: length_data[x],
-            reverse=True,
+            range(len(length_data)), key=lambda x: length_data[x], reverse=True
         )
 
     def __len__(self) -> int:
-        """Return the length of dataset."""
+        """ Return the length of dataset. """
         return len(self.tokenized_data)
 
     def __getitem__(self, index: int) -> Tuple[Any, int]:
-        """Get the data at given index along with its length."""
+        """ Get the data at given index along with its length. """
         index = self.sorted_indices[index]
         return self.tokenized_data[index], min(CONFIG.max_len, self.length_data[index])
 
 
 # Define model architecture
 class BiLSTMModel(nn.Module):
-    """PyTorch's implementation of BiLSTM model."""
+    """ PyTorch's implementation of BiLSTM model. """
 
     def __init__(
-        self,
-        embedding_dim: int,
-        hidden_size: int,
-        num_layers: int,
-        output_size: int,
-        dropout_rate: float,
+            self,
+            embedding_dim: int,
+            hidden_size: int,
+            num_layers: int,
+            output_size: int,
+            dropout_rate: float
     ):
-        """Initiate the class."""
+        """ Initiate the class. """
         super(BiLSTMModel, self).__init__()
 
         self.embeddings = Embeddings(
@@ -116,7 +121,7 @@ class BiLSTMModel(nn.Module):
             time_embeddings_size=CONFIG.time_embeddings_size,
             type_vocab_size=CONFIG.type_vocab_size,
             max_len=CONFIG.max_len,
-            padding_idx=CONFIG.padding_idx,
+            padding_idx=CONFIG.padding_idx
         )
 
         self.lstm = nn.LSTM(
@@ -133,7 +138,7 @@ class BiLSTMModel(nn.Module):
         self.linear = nn.Linear(hidden_size * 2, output_size)
 
     def forward(self, inputs: Tuple[Any], lengths: torch.Tensor) -> torch.Tensor:
-        """Forward pass of Bi-LSTM model."""
+        """ Forward pass of Bi-LSTM model. """
         embed = self.embeddings(*inputs)
         packed_embed = pack_padded_sequence(embed, lengths.cpu(), batch_first=True)
 
@@ -144,10 +149,8 @@ class BiLSTMModel(nn.Module):
         return self.linear(output)
 
     @staticmethod
-    def get_inputs_labels(
-        sequences: Dict[str, torch.Tensor],
-    ) -> Tuple[Any, torch.Tensor]:
-        """Create inputs tuples from a dictionary of sequences."""
+    def get_inputs_labels(sequences: Dict[str, torch.Tensor]) -> Tuple[Any, torch.Tensor]:
+        """ Create inputs tuples from a dictionary of sequences. """
         labels = sequences["labels"].view(-1, 1).to(CONFIG.device)
         inputs = (
             sequences["concept_ids"].to(CONFIG.device),
@@ -162,7 +165,7 @@ class BiLSTMModel(nn.Module):
 
     @staticmethod
     def get_balanced_accuracy(outputs: torch.Tensor, labels: torch.Tensor) -> Any:
-        """Return the balanced accuracy metric by comparing outputs to labels"""
+        """ Return the balanced accuracy metric by comparing outputs to labels """
         predictions = torch.round(sigmoid(outputs))
         predictions = predictions.detach().cpu().numpy()
         labels = labels.detach().cpu().numpy()
@@ -170,26 +173,24 @@ class BiLSTMModel(nn.Module):
         return balanced_accuracy_score(labels, predictions)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     seed_all(CONFIG.seed)
     print(f"Cuda: {torch.cuda.get_device_name(torch.cuda.current_device())}")
 
     # Load data
     pretrain_data = pd.read_parquet(DATA_PATH)
-    pretrain_data = pretrain_data[pretrain_data["event_tokens_512"].notnull()]
+    pretrain_data = pretrain_data[pretrain_data['event_tokens_512'].notnull()]
 
     finetune_data = pd.read_parquet(FINE_TUNE_PATH)
-    finetune_data = finetune_data[finetune_data["event_tokens_512"].notnull()]
+    finetune_data = finetune_data[finetune_data['event_tokens_512'].notnull()]
 
     test_data = pd.read_parquet(TEST_DATA_PATH)
-    test_data = test_data[test_data["event_tokens_512"].notnull()]
+    test_data = test_data[test_data['event_tokens_512'].notnull()]
     test_length = len(test_data)
 
     train_data = pd.concat((pretrain_data, finetune_data))
     train_data.reset_index(inplace=True)
-    train_data.drop_duplicates(subset="index", keep="first", inplace=True).set_index(
-        "index",
-    )
+    train_data.drop_duplicates(subset='index', keep='first', inplace=True).set_index('index')
 
     del pretrain_data, finetune_data
 
@@ -213,12 +214,10 @@ if __name__ == "__main__":
     )
 
     train_dataset_with_lengths = DatasetWithTokenLength(
-        train_dataset,
-        train_data["token_length"].values,
+        train_dataset, train_data["token_length"].values
     )
     test_dataset_with_lengths = DatasetWithTokenLength(
-        test_dataset,
-        test_data["token_length"].values,
+        test_dataset, test_data["token_length"].values
     )
 
     train_loader = DataLoader(
@@ -251,14 +250,8 @@ if __name__ == "__main__":
     learning_rate = 0.001
 
     # Training Loop
-    model = BiLSTMModel(
-        input_size,
-        hidden_size,
-        num_layers,
-        output_size,
-        dropout_rate,
-    ).to(
-        CONFIG.device,
+    model = BiLSTMModel(input_size, hidden_size, num_layers, output_size, dropout_rate).to(
+        CONFIG.device
     )
     class_weights = torch.tensor([6]).to(CONFIG.device)  # Determined with experiment
     loss_fcn = nn.BCEWithLogitsLoss(weight=class_weights)
@@ -272,11 +265,11 @@ if __name__ == "__main__":
 
         model.train()
         for _, (sequences, lengths) in tqdm(
-            enumerate(train_loader),
-            file=sys.stdout,
-            total=len(train_loader),
-            desc=f"Epoch {epoch + 1}/{epochs}",
-            unit=" batch",
+                enumerate(train_loader),
+                file=sys.stdout,
+                total=len(train_loader),
+                desc=f"Epoch {epoch + 1}/{epochs}",
+                unit=" batch",
         ):
             inputs, labels = model.get_inputs_labels(sequences)
             outputs = model(inputs, lengths)
@@ -317,8 +310,8 @@ if __name__ == "__main__":
             f"\nEpoch {epoch + 1}/{epochs}"
             f"  |  Average Train Loss: {train_total_loss / len(train_loader):.5f}"
             f"  |  Train Accuracy: {train_accuracy / len(train_loader):.5f}"
-            f"  |  Test Accuracy: {test_accuracy / len(test_loader):.5f}\n\n",
-            "\n\n",
+            f"  |  Test Accuracy: {test_accuracy / len(test_loader):.5f}\n\n"
+            , '\n\n'
         )
         scheduler.step()
 
