@@ -1,4 +1,5 @@
 """Collect data from the FHIR database and save to csv files."""
+
 import json
 import os
 from typing import List
