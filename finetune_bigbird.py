@@ -46,12 +46,12 @@ def seed_everything(seed: int) -> None:
 
 def get_latest_checkpoint(checkpoint_dir: str) -> Any:
     """ Return the most recent checkpointed file to resume training from. """
-    list_of_files = glob.glob(os.path.join(checkpoint_dir, 'best.ckpt'))
+    list_of_files = glob.glob(os.path.join(checkpoint_dir, 'best-v3.ckpt'))
     return list_of_files[-1]
     # return max(list_of_files, key=os.path.getmtime) if list_of_files else None
 
 
-def main(args: Dict[str, Any]) -> None:
+def main(args: Any) -> None:
     """ Train the model. """
 
     # Setup environment
@@ -108,7 +108,7 @@ def main(args: Dict[str, Any]) -> None:
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
-        # num_workers=3,
+        # num_workers=2,
         # persistent_workers=True,
         shuffle=True,
         pin_memory=True,
@@ -151,7 +151,7 @@ def main(args: Dict[str, Any]) -> None:
     )
 
     # Load latest checkpoint to continue training
-    # latest_checkpoint = get_latest_checkpoint(args.checkpoint_dir)
+    latest_checkpoint = get_latest_checkpoint(args.checkpoint_dir)
 
     # Setup PyTorchLightning trainer
     trainer = pl.Trainer(
@@ -189,12 +189,15 @@ def main(args: Dict[str, Any]) -> None:
     )
 
     # Train the model
-    trainer.fit(
-        model=model,
-        train_dataloaders=train_loader,
-        val_dataloaders=val_loader,
-        ckpt_path=latest_checkpoint if args.resume else None,
-    )
+    #trainer.fit(
+    #    model=model,
+    #    train_dataloaders=train_loader,
+    #    val_dataloaders=val_loader,
+    #    ckpt_path=latest_checkpoint if args.resume else None,
+    #)
+
+    checkpoint = torch.load(latest_checkpoint)
+    model.load_state_dict(checkpoint['state_dict'])
 
     # Test the model
     trainer.test(
@@ -203,15 +206,15 @@ def main(args: Dict[str, Any]) -> None:
     )
 
     # Save the model directly to disk
-    state_dict = model.state_dict()
-    torch.save(state_dict, args.output_dir)
+    #state_dict = model.state_dict()
+    #torch.save(state_dict, args.output_dir)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "--seed", type=int, default=23, help="Random seed for reproducibility"
+        "--seed", type=int, default=42, help="Random seed for reproducibility"
     )
     parser.add_argument(
         "--resume",
@@ -239,7 +242,7 @@ if __name__ == "__main__":
         "--max_len", type=int, default=2048, help="Maximum length of the sequence"
     )
     parser.add_argument(
-        "--batch_size", type=int, default=3, help="Batch size for training"
+        "--batch_size", type=int, default=48, help="Batch size for training"
     )
     parser.add_argument(
         "--num_workers", type=int, default=2, help="Number of workers for training"
