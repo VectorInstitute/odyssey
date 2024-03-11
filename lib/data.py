@@ -4,16 +4,13 @@ data.py.
 Create custom pretrain and finetune PyTorch Dataset objects for MIMIC-IV FHIR dataset.
 """
 
-import random
-from typing import Optional, Sequence, Union, Any, List, Tuple, Dict, Set
+from typing import Any, Dict, List, Tuple, Union
 
-import numpy as np
 import pandas as pd
-
 import torch
 from torch.utils.data import Dataset
 
-from models.big_bird_cehr.tokenizer import HuggingFaceConceptTokenizer
+from .tokenizer import ConceptTokenizer
 
 
 class PretrainDataset(Dataset):
@@ -22,11 +19,11 @@ class PretrainDataset(Dataset):
     def __init__(
         self,
         data: pd.DataFrame,
-        tokenizer: HuggingFaceConceptTokenizer,
+        tokenizer: ConceptTokenizer,
         max_len: int = 2048,
         mask_prob: float = 0.15,
     ):
-        """ Initiate the class. """
+        """Initiate the class."""
         super(PretrainDataset, self).__init__()
 
         self.data = data
@@ -35,15 +32,23 @@ class PretrainDataset(Dataset):
         self.mask_prob = mask_prob
 
     def __len__(self) -> int:
-        """ Return the length of the dataset. """
+        """Return the length of the dataset."""
         return len(self.data)
 
     def tokenize_data(self, sequence: Union[str, List[str]]) -> Any:
+<<<<<<< HEAD:models/big_bird_cehr/data.py
         """ Tokenize the sequence and return input_ids and attention mask. """
         return self.tokenizer(sequence)
 
     def mask_tokens(self, sequence: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """ Mask the tokens in the sequence using vectorized operations."""
+=======
+        """Tokenize the sequence and return input_ids and attention mask."""
+        return self.tokenizer(sequence, max_length=self.max_len)
+
+    def mask_tokens(self, sequence: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Mask the tokens in the sequence using vectorized operations."""
+>>>>>>> main:lib/data.py
         mask_token_id = self.tokenizer.get_mask_token_id()
 
         masked_sequence = sequence.clone()
@@ -58,10 +63,24 @@ class PretrainDataset(Dataset):
         masked_sequence[replaced] = mask_token_id
 
         # 10% of the time, we replace masked input tokens with random vector.
+<<<<<<< HEAD:models/big_bird_cehr/data.py
         randomized = torch.bernoulli(torch.full(selected.shape, 0.1)).bool() & selected & ~replaced
         random_idx = torch.randint(low=self.tokenizer.get_first_token_index(),
                                    high=self.tokenizer.get_last_token_index(),
                                    size=prob_matrix.shape, dtype=torch.long)
+=======
+        randomized = (
+            torch.bernoulli(torch.full(selected.shape, 0.1)).bool()
+            & selected
+            & ~replaced
+        )
+        random_idx = torch.randint(
+            low=self.tokenizer.get_first_token_index(),
+            high=self.tokenizer.get_last_token_index(),
+            size=prob_matrix.shape,
+            dtype=torch.long,
+        )
+>>>>>>> main:lib/data.py
         masked_sequence[randomized] = random_idx[randomized]
 
         labels = torch.where(selected, sequence, -100)
@@ -69,13 +88,20 @@ class PretrainDataset(Dataset):
         return masked_sequence, labels
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        """ Get data at corresponding index and return it as a dictionary including
-        all different token sequences along with attention mask and labels. """
+        """Get data at corresponding index.
 
+        Return it as a dictionary including
+        all different token sequences along with attention mask and labels.
+        """
         data = self.data.iloc[idx]
         tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
+<<<<<<< HEAD:models/big_bird_cehr/data.py
         concept_tokens = tokenized_input['input_ids'].squeeze()
         attention_mask = tokenized_input['attention_mask'].squeeze()
+=======
+        concept_tokens = tokenized_input["input_ids"].squeeze()
+        attention_mask = tokenized_input["attention_mask"].squeeze()
+>>>>>>> main:lib/data.py
 
         type_tokens = data[f"type_tokens_{self.max_len}"]
         age_tokens = data[f"age_tokens_{self.max_len}"]
@@ -104,37 +130,44 @@ class PretrainDataset(Dataset):
 
 
 class FinetuneDataset(Dataset):
-    """ Dataset for finetuning the model. """
+    """Dataset for finetuning the model."""
 
     def __init__(
         self,
         data: pd.DataFrame,
-        tokenizer: HuggingFaceConceptTokenizer,
+        tokenizer: ConceptTokenizer,
         max_len: int = 2048,
     ):
-        """ Initiate the class. """
+        """Initiate the class."""
         super(FinetuneDataset, self).__init__()
-        
+
         self.data = data
         self.tokenizer = tokenizer
         self.max_len = max_len
 
     def __len__(self) -> int:
-        """ Return the length of dataset. """
+        """Return the length of dataset."""
         return len(self.data)
 
     def tokenize_data(self, sequence: Union[str, List[str]]) -> Any:
-        """ Tokenize the sequence and return input_ids and attention mask. """
-        return self.tokenizer(sequence)
+        """Tokenize the sequence and return input_ids and attention mask."""
+        return self.tokenizer(sequence, max_length=self.max_len)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        """ Get data at corresponding index and return it as a dictionary including
-        all different token sequences along with attention mask and labels. """
+        """Get data at corresponding index.
 
+        Return it as a dictionary including
+        all different token sequences along with attention mask and labels.
+        """
         data = self.data.iloc[idx]
         tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
+<<<<<<< HEAD:models/big_bird_cehr/data.py
         concept_tokens = tokenized_input['input_ids'].squeeze()
         attention_mask = tokenized_input['attention_mask'].squeeze()
+=======
+        concept_tokens = tokenized_input["input_ids"].squeeze()
+        attention_mask = tokenized_input["attention_mask"].squeeze()
+>>>>>>> main:lib/data.py
 
         type_tokens = data[f"type_tokens_{self.max_len}"]
         age_tokens = data[f"age_tokens_{self.max_len}"]

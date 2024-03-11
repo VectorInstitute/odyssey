@@ -1,5 +1,8 @@
+"""Collect data from the FHIR database and save to csv files."""
+
 import json
 import os
+from typing import Any, Dict, List
 
 import numpy as np
 import pandas as pd
@@ -11,6 +14,30 @@ from fhir.resources.patient import Patient
 from fhir.resources.procedure import Procedure
 from sqlalchemy import MetaData, Table, create_engine, select
 from tqdm import tqdm
+
+
+def _save_to_csv(
+    data: List[Dict[str, Any]], columns: List[str], save_path: str
+) -> None:
+    """Save the DataFrame to a csv file.
+
+    Parameters
+    ----------
+    data : List[Dict[str, Any]]
+        The data to save.
+    columns : List[str]
+        The column names of the data.
+    save_path : str
+        The path to save the data.
+
+    """
+    dataframe = pd.DataFrame(data, columns=columns)
+    dataframe.to_csv(
+        save_path,
+        mode="a",
+        header=(not os.path.exists(save_path)),
+        index=False,
+    )
 
 
 class FHIRDataCollector:
@@ -29,7 +56,12 @@ class FHIRDataCollector:
         self.save_dir = save_dir
         self.buffer_size = buffer_size
 
+        self.vocab_dir = os.path.join(self.save_dir, "vocab")
+        self.csv_dir = os.path.join(self.save_dir, "csv_files")
+
         os.makedirs(self.save_dir, exist_ok=True)
+        os.makedirs(self.vocab_dir, exist_ok=True)
+        os.makedirs(self.csv_dir, exist_ok=True)
 
     def get_patient_data(self) -> None:
         """Get patient data from the database and save to a csv file."""
@@ -47,7 +79,7 @@ class FHIRDataCollector:
             "deceasedBoolean",
             "deceasedDateTime",
         ]
-        save_path = os.path.join(self.save_dir, "patients.csv")
+        save_path = os.path.join(self.csv_dir, "patients.csv")
         buffer = []
 
         with self.engine.connect() as connection:
@@ -68,28 +100,15 @@ class FHIRDataCollector:
                 }
                 buffer.append(patient_data)
                 if len(buffer) >= self.buffer_size:
-                    df_buffer = pd.DataFrame(buffer, columns=patient_cols)
                     buffer = []
-                    df_buffer.to_csv(
-                        save_path,
-                        mode="a",
-                        header=(not os.path.exists(save_path)),
-                        index=False,
-                    )
-
+                    _save_to_csv(buffer, patient_cols, save_path)
             if buffer:
-                df_buffer = pd.DataFrame(buffer, columns=patient_cols)
-                df_buffer.to_csv(
-                    save_path,
-                    mode="a",
-                    header=(not os.path.exists(save_path)),
-                    index=False,
-                )
+                _save_to_csv(buffer, patient_cols, save_path)
 
     def get_encounter_data(self) -> None:
         """Get encounter data from the database and save to a csv file."""
         try:
-            patients = pd.read_csv(self.save_dir + "/patients.csv")
+            patients = pd.read_csv(self.csv_dir + "/patients.csv")
         except FileNotFoundError:
             print("Patients file not found. Please run get_patient_data() first.")
             return
@@ -102,7 +121,7 @@ class FHIRDataCollector:
         )
 
         encounter_cols = ["patient_id", "length", "encounter_ids", "starts", "ends"]
-        save_path = os.path.join(self.save_dir, "encounters.csv")
+        save_path = os.path.join(self.csv_dir, "encounters.csv")
         buffer = []
         outpatient_ids = []
 
@@ -129,8 +148,11 @@ class FHIRDataCollector:
                     ends.append(enc.period.end.isostring)
                     ids.append(enc.id)
 
-                assert len(starts) == len(
-                    ends,
+                assert (
+                    len(starts)
+                    == len(
+                        ends,
+                    )
                 ), f"Length of starts and ends should be equal. {len(starts)} != {len(ends)}"
 
                 e_data = {
@@ -142,31 +164,19 @@ class FHIRDataCollector:
                 }
                 buffer.append(e_data)
                 if len(buffer) >= self.buffer_size:
-                    df_buffer = pd.DataFrame(buffer, columns=encounter_cols)
                     buffer = []
-                    df_buffer.to_csv(
-                        save_path,
-                        mode="a",
-                        header=(not os.path.exists(save_path)),
-                        index=False,
-                    )
+                    _save_to_csv(buffer, encounter_cols, save_path)
 
             if buffer:
-                df_buffer = pd.DataFrame(buffer, columns=encounter_cols)
-                df_buffer.to_csv(
-                    save_path,
-                    mode="a",
-                    header=(not os.path.exists(save_path)),
-                    index=False,
-                )
+                _save_to_csv(buffer, encounter_cols, save_path)
 
         patients = patients[~patients["patient_id"].isin(outpatient_ids)]
-        patients.to_csv(self.save_dir + "/inpatient.csv", index=False)
+        patients.to_csv(self.csv_dir + "/inpatient.csv", index=False)
 
     def get_procedure_data(self) -> None:
         """Get procedure data from the database and save to a csv file."""
         try:
-            patients = pd.read_csv(self.save_dir + "/inpatient.csv")
+            patients = pd.read_csv(self.csv_dir + "/inpatient.csv")
         except FileNotFoundError:
             print("Patients file not found. Please run get_encounter_data() first.")
             return
@@ -177,7 +187,6 @@ class FHIRDataCollector:
             autoload_with=self.engine,
             schema=self.schema,
         )
-
         procedure_cols = [
             "patient_id",
             "length",
@@ -185,7 +194,7 @@ class FHIRDataCollector:
             "proc_dates",
             "encounter_ids",
         ]
-        save_path = os.path.join(self.save_dir, "procedures.csv")
+        save_path = os.path.join(self.csv_dir, "procedures.csv")
         procedure_vocab = set()
         buffer = []
 
@@ -198,7 +207,6 @@ class FHIRDataCollector:
                 query = select(procedure_table.c.fhir).where(
                     procedure_table.c.patient_id == patient_id,
                 )
-
                 results = connection.execute(query).fetchall()
                 proc_codes = []
                 proc_dates = []
@@ -231,31 +239,19 @@ class FHIRDataCollector:
                 }
                 buffer.append(m_data)
                 if len(buffer) >= self.buffer_size:
-                    df_buffer = pd.DataFrame(buffer, columns=procedure_cols)
                     buffer = []
-                    df_buffer.to_csv(
-                        save_path,
-                        mode="a",
-                        header=(not os.path.exists(save_path)),
-                        index=False,
-                    )
+                    _save_to_csv(buffer, procedure_cols, save_path)
 
             if buffer:
-                df_buffer = pd.DataFrame(buffer, columns=procedure_cols)
-                df_buffer.to_csv(
-                    save_path,
-                    mode="a",
-                    header=(not os.path.exists(save_path)),
-                    index=False,
-                )
+                _save_to_csv(buffer, procedure_cols, save_path)
 
-        with open(self.save_dir + "/procedure_vocab.json", "w") as f:
+        with open(self.vocab_dir + "/procedure_vocab.json", "w") as f:
             json.dump(list(procedure_vocab), f)
 
     def get_medication_data(self) -> None:
         """Get medication data from the database and save to a csv file."""
         try:
-            patients = pd.read_csv(self.save_dir + "/inpatient.csv")
+            patients = pd.read_csv(self.csv_dir + "/inpatient.csv")
         except FileNotFoundError:
             print("Patients file not found. Please run get_encounter_data() first.")
             return
@@ -280,7 +276,7 @@ class FHIRDataCollector:
             "med_dates",
             "encounter_ids",
         ]
-        save_path = os.path.join(self.save_dir, "med_requests.csv")
+        save_path = os.path.join(self.csv_dir, "med_requests.csv")
         med_vocab = set()
         buffer = []
 
@@ -301,36 +297,27 @@ class FHIRDataCollector:
                     data = row[0]
                     if "medicationCodeableConcept" in data:
                         # includes messy text data, so we skip it
+                        # should not be of type list
                         continue
-                        # if isinstance(data['medicationCodeableConcept'], list):
-                        #     data['medicationCodeableConcept'] = \
-                        #        data['medicationCodeableConcept'][0]
-                        # med_req = MedicationRequest(data)
-                        # if med_req.authoredOn is None or med_req.encounter is None:
-                        #     continue
-                        # med_codes.append(med_req.medicationCodeableConcept.coding[0].code)
-                        # med_dates.append(med_req.authoredOn.isostring)
-                        # encounters.append(med_req.encounter.reference.split('/')[-1])
-                    else:
-                        med_req = MedicationRequest(data)
-                        if med_req.authoredOn is None or med_req.encounter is None:
+                    med_req = MedicationRequest(data)
+                    if med_req.authoredOn is None or med_req.encounter is None:
+                        continue
+                    med_query = select(medication_table.c.fhir).where(
+                        medication_table.c.id
+                        == med_req.medicationReference.reference.split("/")[-1],
+                    )
+                    med_result = connection.execute(med_query).fetchone()
+                    med_result = Medication(med_result[0]) if med_result else None
+                    if med_result is not None:
+                        code = med_result.code.coding[0].code
+                        if not code.isdigit():
                             continue
-                        med_query = select(medication_table.c.fhir).where(
-                            medication_table.c.id
-                            == med_req.medicationReference.reference.split("/")[-1],
+                        med_vocab.add(code)
+                        med_codes.append(code)
+                        med_dates.append(med_req.authoredOn.isostring)
+                        encounters.append(
+                            med_req.encounter.reference.split("/")[-1],
                         )
-                        med_result = connection.execute(med_query).fetchone()
-                        med_result = Medication(med_result[0]) if med_result else None
-                        if med_result is not None:
-                            code = med_result.code.coding[0].code
-                            if not code.isdigit():
-                                continue
-                            med_vocab.add(code)
-                            med_codes.append(code)
-                            med_dates.append(med_req.authoredOn.isostring)
-                            encounters.append(
-                                med_req.encounter.reference.split("/")[-1],
-                            )
 
                 assert len(med_codes) == len(
                     med_dates,
@@ -345,30 +332,19 @@ class FHIRDataCollector:
                 }
                 buffer.append(m_data)
                 if len(buffer) >= self.buffer_size:
-                    df_buffer = pd.DataFrame(buffer, columns=medication_cols)
                     buffer = []
-                    df_buffer.to_csv(
-                        save_path,
-                        mode="a",
-                        header=(not os.path.exists(save_path)),
-                        index=False,
-                    )
+                    _save_to_csv(buffer, medication_cols, save_path)
 
             if buffer:
-                df_buffer = pd.DataFrame(buffer, columns=medication_cols)
-                df_buffer.to_csv(
-                    save_path,
-                    mode="a",
-                    header=(not os.path.exists(save_path)),
-                    index=False,
-                )
-        with open(self.save_dir + "/med_vocab.json", "w") as f:
+                _save_to_csv(buffer, medication_cols, save_path)
+
+        with open(self.vocab_dir + "/med_vocab.json", "w") as f:
             json.dump(list(med_vocab), f)
 
     def get_lab_data(self) -> None:
         """Get lab data from the database and save to a csv file."""
         try:
-            patients = pd.read_csv(self.save_dir + "/inpatient.csv")
+            patients = pd.read_csv(self.csv_dir + "/inpatient.csv")
         except FileNotFoundError:
             print("Patients file not found. Please run get_encounter_data() first.")
             return
@@ -389,7 +365,7 @@ class FHIRDataCollector:
             "lab_dates",
             "encounter_ids",
         ]
-        save_path = os.path.join(self.save_dir, "labs.csv")
+        save_path = os.path.join(self.csv_dir, "labs.csv")
         lab_vocab = set()
         all_units = {}
         buffer = []
@@ -451,29 +427,17 @@ class FHIRDataCollector:
                 }
                 buffer.append(m_data)
                 if len(buffer) >= self.buffer_size:
-                    df_buffer = pd.DataFrame(buffer, columns=lab_cols)
                     buffer = []
-                    df_buffer.to_csv(
-                        save_path,
-                        mode="a",
-                        header=(not os.path.exists(save_path)),
-                        index=False,
-                    )
+                    _save_to_csv(buffer, lab_cols, save_path)
 
             if buffer:
-                df_buffer = pd.DataFrame(buffer, columns=lab_cols)
-                df_buffer.to_csv(
-                    save_path,
-                    mode="a",
-                    header=(not os.path.exists(save_path)),
-                    index=False,
-                )
+                _save_to_csv(buffer, lab_cols, save_path)
 
-        with open(self.save_dir + "/lab_vocab.json", "w") as f:
+        with open(self.vocab_dir + "/lab_vocab.json", "w") as f:
             json.dump(list(lab_vocab), f)
 
         all_units = {k: list(v) for k, v in all_units.items()}
-        with open(self.save_dir + "/lab_units.json", "w") as f:
+        with open(self.vocab_dir + "/lab_units.json", "w") as f:
             json.dump(all_units, f)
 
     def filter_lab_data(
@@ -481,9 +445,11 @@ class FHIRDataCollector:
     ) -> None:
         """Filter out lab codes that have more than one units."""
         try:
-            labs = pd.read_csv(self.save_dir + "/labs.csv")
-            lab_vocab = json.load(open(self.save_dir + "/lab_vocab.json", "r"))
-            lab_units = json.load(open(self.save_dir + "/lab_units.json", "r"))
+            labs = pd.read_csv(self.csv_dir + "/labs.csv")
+            with open(self.vocab_dir + "/lab_vocab.json", "r") as f:
+                lab_vocab = json.load(f)
+            with open(self.vocab_dir + "/lab_units.json", "r") as f:
+                lab_units = json.load(f)
         except FileNotFoundError:
             print("Labs file not found. Please run get_lab_data() first.")
             return
@@ -492,7 +458,7 @@ class FHIRDataCollector:
             if len(units) > 1:
                 lab_vocab.remove(code)
 
-        def filter_codes(row, vocab):
+        def filter_codes(row: pd.Series, vocab: List[str]) -> pd.Series:
             for col in [
                 "lab_codes",
                 "lab_values",
@@ -517,11 +483,11 @@ class FHIRDataCollector:
 
         labs = labs.apply(lambda x: filter_codes(x, lab_vocab), axis=1)
 
-        labs.to_csv(self.save_dir + "/filtered_labs.csv", index=False)
-        with open(self.save_dir + "/lab_vocab.json", "w") as f:
+        labs.to_csv(self.csv_dir + "/filtered_labs.csv", index=False)
+        with open(self.vocab_dir + "/lab_vocab.json", "w") as f:
             json.dump(list(lab_vocab), f)
 
-    def process_lab_values(self, num_bins: int = 5):
+    def process_lab_values(self, num_bins: int = 5) -> None:
         """Bin lab values into discrete values.
 
         Parameters
@@ -530,18 +496,19 @@ class FHIRDataCollector:
             number of bins, by default 5
         """
         try:
-            labs = pd.read_csv(self.save_dir + "/filtered_labs.csv")
-            lab_vocab = json.load(open(self.save_dir + "/lab_vocab.json", "r"))
+            labs = pd.read_csv(self.csv_dir + "/filtered_labs.csv")
+            with open(self.vocab_dir + "/lab_vocab.json", "r") as f:
+                lab_vocab = json.load(f)
         except FileNotFoundError:
             print("Labs file not found. Please run get_lab_data() first.")
             return
 
-        def apply_eval(row):
+        def apply_eval(row: pd.Series) -> pd.Series:
             for col in ["lab_codes", "lab_values"]:
                 row[col] = eval(row[col])
             return row
 
-        def assign_to_quantile_bins(row):
+        def assign_to_quantile_bins(row: pd.Series) -> pd.Series:
             if row["length"] == 0:
                 row["binned_values"] = []
                 return row
@@ -569,13 +536,13 @@ class FHIRDataCollector:
             ).categories
 
         labs = labs.apply(assign_to_quantile_bins, axis=1)
-        labs.to_csv(self.save_dir + "/processed_labs.csv", index=False)
+        labs.to_csv(self.csv_dir + "/processed_labs.csv", index=False)
 
         lab_vocab_binned = []
         lab_vocab_binned.extend(
             [f"{code}_{i}" for code in lab_vocab for i in range(num_bins)],
         )
-        with open(self.save_dir + "/lab_vocab.json", "w") as f:
+        with open(self.vocab_dir + "/lab_vocab.json", "w") as f:
             json.dump(lab_vocab_binned, f)
 
 
@@ -583,7 +550,7 @@ if __name__ == "__main__":
     collector = FHIRDataCollector(
         db_path="postgresql://postgres:pwd@localhost:5432/mimiciv-2.0",
         schema="mimic_fhir",
-        save_dir="/mnt/data/odyssey/mimiciv_fhir2",
+        save_dir="/mnt/data/odyssey/mimiciv_fhir",
         buffer_size=10000,
     )
     collector.get_patient_data()
