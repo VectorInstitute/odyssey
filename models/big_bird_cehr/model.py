@@ -32,8 +32,6 @@ class BigBirdPretrain(pl.LightningModule):
 
     def __init__(
             self,
-            args: Dict[str, Any],
-            dataset_len: int,
             vocab_size: int,
             embedding_size: int = 768,
             time_embeddings_size: int = 32,
@@ -95,11 +93,6 @@ class BigBirdPretrain(pl.LightningModule):
         # Initialize weights and apply final processing
         self.post_init()
 
-        # Define warmup and decay iterations for the scheduler
-        grad_steps = dataset_len / args.batch_size / args.gpus * args.max_epochs
-        self.warmup = int(0.1 * grad_steps)
-        self.decay = int(0.9 * grad_steps)
-
     def _init_weights(self, module: torch.nn.Module) -> None:
         """ Initialize the weights. """
         if isinstance(module, nn.Linear):
@@ -132,7 +125,7 @@ class BigBirdPretrain(pl.LightningModule):
         """Forward pass for the model."""
 
         concept_ids, type_ids, time_stamps, ages, visit_orders, visit_segments = inputs
-        self.embeddings.cache_input(time_stamps, ages, visit_segments)
+        self.embeddings.cache_input(time_stamps, ages, visit_orders, visit_segments)
 
         if attention_mask is None:
             attention_mask = torch.ones_like(concept_ids)
@@ -208,22 +201,21 @@ class BigBirdPretrain(pl.LightningModule):
             self.parameters(), lr=self.learning_rate
         )
 
-        warmup = LinearLR(
-            optimizer,
-            start_factor=0.01,
-            end_factor=1.,
-            total_iters=self.warmup)
+        n_steps = self.trainer.estimated_stepping_batches
+        n_warmup_steps = int(0.1 * n_steps)
+        n_decay_steps = int(0.9 * n_steps)
 
-        linear_decay = LinearLR(
-            optimizer,
-            start_factor=1.,
-            end_factor=0.01,
-            total_iters=self.decay)
+        warmup = LinearLR(
+            optimizer, start_factor=0.01, end_factor=1.0, total_iters=n_warmup_steps
+        )
+        decay = LinearLR(
+            optimizer, start_factor=1.0, end_factor=0.01, total_iters=n_decay_steps
+        )
 
         scheduler = SequentialLR(
             optimizer=optimizer,
-            schedulers=[warmup, linear_decay],
-            milestones=[self.warmup]
+            schedulers=[warmup, decay],
+            milestones=[n_warmup_steps],
         )
 
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
@@ -234,9 +226,7 @@ class BigBirdFinetune(pl.LightningModule):
 
     def __init__(
             self,
-            args: Dict[str, Any],
             pretrained_model: BigBirdPretrain,
-            dataset_len: int,
             num_labels: int = 2,
             learning_rate: float = 5e-5,
             classifier_dropout: float = 0.1,
@@ -258,11 +248,6 @@ class BigBirdFinetune(pl.LightningModule):
 
         self.pretrained_model = pretrained_model
         self.model.bert = self.pretrained_model.model.bert
-
-        # Define warmup and decay iterations for the scheduler
-        grad_steps = dataset_len / args.batch_size / args.gpus * args.max_epochs
-        self.warmup = int(0.1 * grad_steps)
-        self.decay = int(0.9 * grad_steps)
 
     def _init_weights(self, module: torch.nn.Module) -> None:
         """Initialize the weights."""
@@ -294,7 +279,7 @@ class BigBirdFinetune(pl.LightningModule):
         """Forward pass for the model."""
 
         concept_ids, type_ids, time_stamps, ages, visit_orders, visit_segments = inputs
-        self.model.bert.embeddings.cache_input(time_stamps, ages, visit_segments)
+        self.model.bert.embeddings.cache_input(time_stamps, ages, visit_orders, visit_segments)
 
         if attention_mask is None:
             attention_mask = torch.ones_like(concept_ids)
@@ -412,22 +397,21 @@ class BigBirdFinetune(pl.LightningModule):
             self.parameters(), lr=self.learning_rate
         )
 
-        warmup = LinearLR(
-            optimizer,
-            start_factor=0.01,
-            end_factor=1.,
-            total_iters=self.warmup)
+        n_steps = self.trainer.estimated_stepping_batches
+        n_warmup_steps = int(0.1 * n_steps)
+        n_decay_steps = int(0.9 * n_steps)
 
-        linear_decay = LinearLR(
-            optimizer,
-            start_factor=1.,
-            end_factor=0.01,
-            total_iters=self.decay)
+        warmup = LinearLR(
+            optimizer, start_factor=0.01, end_factor=1.0, total_iters=n_warmup_steps
+        )
+        decay = LinearLR(
+            optimizer, start_factor=1.0, end_factor=0.01, total_iters=n_decay_steps
+        )
 
         scheduler = SequentialLR(
             optimizer=optimizer,
-            schedulers=[warmup, linear_decay],
-            milestones=[self.warmup]
+            schedulers=[warmup, decay],
+            milestones=[n_warmup_steps],
         )
 
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
