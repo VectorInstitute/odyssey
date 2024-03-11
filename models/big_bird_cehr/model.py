@@ -238,7 +238,7 @@ class BigBirdFinetune(pl.LightningModule):
             pretrained_model: BigBirdPretrain,
             dataset_len: int,
             num_labels: int = 2,
-            learning_rate: float = 5e-6,
+            learning_rate: float = 5e-5,
             classifier_dropout: float = 0.1,
     ):
         super().__init__()
