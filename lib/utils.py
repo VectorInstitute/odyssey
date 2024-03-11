@@ -33,8 +33,9 @@ def seed_everything(seed: int) -> None:
 
 def get_latest_checkpoint(checkpoint_dir: str) -> Any:
     """Return the most recent checkpointed file to resume training from."""
-    list_of_files = glob.glob(join(checkpoint_dir, "last*.ckpt"))
-    return max(list_of_files, key=os.path.getctime) if list_of_files else None
+    if checkpoint_dir:
+        list_of_files = glob.glob(join(checkpoint_dir, "last*.ckpt"))
+        return max(list_of_files, key=os.path.getctime) if list_of_files else None
 
 
 def load_pretrain_data(

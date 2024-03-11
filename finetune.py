@@ -14,6 +14,7 @@ from pytorch_lightning.callbacks import (
     ModelCheckpoint,
 )
 from pytorch_lightning.strategies.ddp import DDPStrategy
+from pytorch_lightning.strategies import DeepSpeedStrategy
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 
@@ -72,7 +73,6 @@ def main(
         tokenizer=tokenizer,
         max_len=args.max_len,
     )
-    args.dataset_len = len(train_dataset)
 
     val_dataset = FinetuneDataset(
         data=fine_val,
@@ -146,16 +146,13 @@ def main(
 
     elif args.model_type == "cehr_bigbird":
         pretrained_model = BigBirdPretrain(
-            args=args,
             vocab_size=tokenizer.get_vocab_size(),
             padding_idx=tokenizer.get_pad_token_id(),
             **pre_model_config,
         )
-
         pretrained_model.load_state_dict(torch.load(args.pretrained_path)["state_dict"])
 
         model = BigBirdFinetune(
-            args=args,
             pretrained_model=pretrained_model,
             **fine_model_config,
         )
@@ -196,7 +193,7 @@ def main(
         model=model,
         train_dataloaders=train_loader,
         val_dataloaders=val_loader,
-        ckpt_path=latest_checkpoint if latest_checkpoint else None,
+        ckpt_path=latest_checkpoint,
     )
 
     # Test the model
@@ -296,7 +293,7 @@ if __name__ == "__main__":
         help="Define the number of patients to be fine_tuned on",
     )
 
-    # checkpointing and loggig arguments
+    # checkpointing and logging arguments
     parser.add_argument(
         "--checkpoint-dir",
         type=str,
