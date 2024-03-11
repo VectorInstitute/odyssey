@@ -19,6 +19,8 @@ pandas = "^2.2.1"
 sqlalchemy = "^2.0.28"
 psycopg2 = "^2.9.9"
 fhir-resources = "^5.1.1"
+pyarrow = "^15.0.1"
+plotly = "^5.7.0"
 
 [tool.poetry.group.test]
 optional = true
@@ -31,7 +33,7 @@ pytest-cov = "^3.0.0"
 codecov = "^2.1.13"
 nbstripout = "^0.6.1"
 mypy = "^1.7.0"
-ruff = "^0.2.0"
+ruff = "^0.3.0"
 nbqa = { version = "^1.7.0", extras = ["toolchain"] }
 
 [tool.mypy]

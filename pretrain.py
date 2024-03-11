@@ -1,9 +1,10 @@
+"""Train the model."""
+
 import argparse
 import os
-from os.path import join
+import sys
+from typing import Any, Dict
 
-import numpy as np
-import pandas as pd
 import pytorch_lightning as pl
 import torch
 from lightning.pytorch.loggers import WandbLogger
@@ -12,47 +13,34 @@ from pytorch_lightning.strategies.ddp import DDPStrategy
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 
-from models.cehr_bert.data import PretrainDataset
+from lib.data import PretrainDataset
+from lib.tokenizer import ConceptTokenizer
+from lib.utils import (
+    get_latest_checkpoint,
+    get_run_id,
+    load_config,
+    load_pretrain_data,
+    seed_everything,
+)
+from models.big_bird_cehr.model import BigBirdPretrain
 from models.cehr_bert.model import BertPretrain
-from models.cehr_bert.tokenizer import ConceptTokenizer
 
 
-def main(args):
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    pl.seed_everything(args.seed)
-
+def main(args: Dict[str, Any], model_config: Dict[str, Any]) -> None:
+    """Train the model."""
+    seed_everything(args.seed)
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
     torch.cuda.empty_cache()
     torch.set_float32_matmul_precision("medium")
 
-    # if not args.resume:
-    #     data = pd.read_parquet(join(args.data_dir, "patient_sequences.parquet"))
+    pre_data = load_pretrain_data(
+        args.data_dir,
+        args.sequence_file,
+        args.id_file,
+    )
+    pre_data.rename(columns={args.label_name: "label"}, inplace=True)
 
-    #     data["label"] = (
-    #         (data["death_after_end"] >= 0) & (data["death_after_end"] < 365)
-    #     ).astype(int)
-    #     neg_pos_data = data[(data["deceased"] == 0) | (data["label"] == 1)]
-
-    #     pre_data = data[~data.index.isin(neg_pos_data.index)]
-
-    #     pre_df, fine_df = train_test_split(
-    #         neg_pos_data,
-    #         test_size=args.finetune_size,
-    #         random_state=args.seed,
-    #         stratify=neg_pos_data["label"],
-    #     )
-
-    #     pre_data = pd.concat([pre_data, pre_df])
-
-    #     fine_df.to_parquet(join(args.data_dir, "fine_tune.parquet"))
-    #     pre_data.to_parquet(join(args.data_dir, "pretrain.parquet"))
-    # else:
-    pre_data = pd.read_parquet(join(args.data_dir, "pretrain.parquet"))
-
+    # Split data
     pre_train, pre_val = train_test_split(
         pre_data,
         test_size=args.val_size,
@@ -60,15 +48,18 @@ def main(args):
         stratify=pre_data["label"],
     )
 
-    tokenizer = ConceptTokenizer(data_dir=args.data_dir)
+    # Train Tokenizer
+    tokenizer = ConceptTokenizer(data_dir=args.vocab_dir)
     tokenizer.fit_on_vocab()
 
+    # Load datasets
     train_dataset = PretrainDataset(
         data=pre_train,
         tokenizer=tokenizer,
         max_len=args.max_len,
         mask_prob=args.mask_prob,
     )
+    args.dataset_len = len(train_dataset)
 
     val_dataset = PretrainDataset(
         data=pre_val,
@@ -81,14 +72,17 @@ def main(args):
         train_dataset,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        persistent_workers=args.persistent_workers,
         shuffle=True,
-        pin_memory=True,
+        pin_memory=args.pin_memory,
     )
+
     val_loader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        pin_memory=True,
+        persistent_workers=args.persistent_workers,
+        pin_memory=args.pin_memory,
     )
 
     callbacks = [
@@ -103,113 +97,147 @@ def main(args):
         ),
         LearningRateMonitor(logging_interval="step"),
     ]
+
+    # Create model
+    if args.model_type == "cehr_bert":
+        model = BertPretrain(
+            args=args,
+            vocab_size=tokenizer.get_vocab_size(),
+            padding_idx=tokenizer.get_pad_token_id(),
+            **model_config,
+        )
+    elif args.model_type == "cehr_bigbird":
+        model = BigBirdPretrain(
+            args=args,
+            vocab_size=tokenizer.get_vocab_size(),
+            padding_idx=tokenizer.get_pad_token_id(),
+            **model_config,
+        )
+
+    latest_checkpoint = get_latest_checkpoint(args.checkpoint_dir)
+
+    run_id = get_run_id(args.checkpoint_dir, retrieve=(latest_checkpoint is not None))
+
     wandb_logger = WandbLogger(
-        project="pretrain",
+        project=args.exp_name,
         save_dir=args.log_dir,
+        entity=args.workspace_name,
+        id=run_id,
+        resume="allow",
     )
+
+    # Setup PyTorchLightning trainer
     trainer = pl.Trainer(
         accelerator="gpu",
         devices=args.gpus,
         strategy=DDPStrategy(find_unused_parameters=True) if args.gpus > 1 else "auto",
-        precision=16,
+        precision="16-mixed",
         check_val_every_n_epoch=1,
         max_epochs=args.max_epochs,
         callbacks=callbacks,
+        deterministic=False,
+        enable_checkpointing=True,
+        enable_progress_bar=True,
+        enable_model_summary=True,
         logger=wandb_logger,
-        resume_from_checkpoint=args.checkpoint_path if args.resume else None,
         log_every_n_steps=args.log_every_n_steps,
+        accumulate_grad_batches=args.acc,
+        gradient_clip_val=1.0,
     )
 
-    model = BertPretrain(
-        vocab_size=tokenizer.get_vocab_size(),
-        padding_idx=tokenizer.get_pad_token_id(),
-    )
-
+    # Train the model
     trainer.fit(
         model=model,
         train_dataloaders=train_loader,
         val_dataloaders=val_loader,
+        ckpt_path=latest_checkpoint if latest_checkpoint else None,
     )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    # project configuration
     parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Random seed for reproducibility",
+        "--model-type",
+        type=str,
+        required=True,
+        help="Model type: 'cehr_bert' or 'cehr_bigbird'",
     )
     parser.add_argument(
-        "--resume",
-        action="store_true",
-        help="Flag to resume training from a checkpoint",
+        "--exp-name",
+        type=str,
+        required=True,
+        help="Path to model config file",
     )
     parser.add_argument(
-        "--data_dir",
+        "--label-name",
+        type=str,
+        required=True,
+        help="Name of the label column",
+    )
+    parser.add_argument(
+        "--workspace-name",
+        type=str,
+        default=None,
+        help="Name of the Wandb workspace",
+    )
+    parser.add_argument(
+        "--config-dir",
+        type=str,
+        default="models/configs",
+        help="Path to model config file",
+    )
+
+    # data-related arguments
+    parser.add_argument(
+        "--data-dir",
         type=str,
         default="data_files",
         help="Path to the data directory",
     )
     parser.add_argument(
-        "--finetune_size",
-        type=float,
-        default=0.1,
-        help="Finetune dataset size for splitting the data",
+        "--sequence-file",
+        type=str,
+        default="patient_sequences_2048_labeled.parquet",
+        help="Path to the patient sequence file",
     )
     parser.add_argument(
-        "--val_size",
+        "--id-file",
+        type=str,
+        default="dataset_2048_mortality_1month.pkl",
+        help="Path to the patient id file",
+    )
+    parser.add_argument(
+        "--vocab-dir",
+        type=str,
+        default="data_files/vocab",
+        help="Path to the vocabulary directory of json files",
+    )
+    parser.add_argument(
+        "--val-size",
         type=float,
         default=0.1,
         help="Validation set size for splitting the data",
     )
+
+    # checkpointing and loggig arguments
     parser.add_argument(
-        "--max_len",
-        type=int,
-        default=512,
-        help="Maximum length of the sequence",
-    )
-    parser.add_argument(
-        "--mask_prob",
-        type=float,
-        default=0.15,
-        help="Probability of masking the token",
-    )
-    parser.add_argument(
-        "--batch_size",
-        type=int,
-        default=32,
-        help="Batch size for training",
-    )
-    parser.add_argument(
-        "--num_workers",
-        type=int,
-        default=4,
-        help="Number of workers for training",
-    )
-    parser.add_argument(
-        "--checkpoint_dir",
+        "--checkpoint-dir",
         type=str,
-        default="checkpoints/pretraining",
-        help="Path to the training checkpoint",
+        default="checkpoints",
+        help="Path to the checkpoint directory",
     )
     parser.add_argument(
-        "--log_dir",
+        "--log-dir",
         type=str,
         default="logs",
         help="Path to the log directory",
     )
     parser.add_argument(
-        "--gpus",
-        type=int,
-        default=2,
-        help="Number of gpus for training",
-    )
-    parser.add_argument(
-        "--max_epochs",
-        type=int,
-        default=50,
-        help="Number of epochs for training",
+        "--checkpoint-path",
+        type=str,
+        default=None,
+        help="Checkpoint to resume training from",
     )
     parser.add_argument(
         "--log_every_n_steps",
@@ -217,12 +245,33 @@ if __name__ == "__main__":
         default=10,
         help="Number of steps to log the training",
     )
+
+    # Other arguments
     parser.add_argument(
-        "--checkpoint_path",
-        type=str,
-        default=None,
-        help="Checkpoint to resume training from",
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducibility",
     )
 
     args = parser.parse_args()
-    main(args)
+
+    if args.model_type not in ["cehr_bert", "cehr_bigbird"]:
+        print("Invalid model type. Choose 'cehr_bert' or 'cehr_bigbird'.")
+        sys.exit(1)
+
+    args.checkpoint_dir = os.path.join(args.checkpoint_dir, args.exp_name)
+    os.makedirs(args.checkpoint_dir, exist_ok=True)
+    os.makedirs(args.log_dir, exist_ok=True)
+
+    config = load_config(args.config_dir, args.model_type)
+
+    train_config = config["train"]
+    for key, value in train_config.items():
+        if not hasattr(args, key) or getattr(args, key) is None:
+            setattr(args, key, value)
+
+    model_config = config["model"]
+    args.max_len = model_config["max_seq_length"]
+
+    main(args, model_config)
