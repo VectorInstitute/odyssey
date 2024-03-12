@@ -10,7 +10,6 @@ import torch
 from lightning.pytorch.loggers import WandbLogger
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.strategies.ddp import DDPStrategy
-from pytorch_lightning.strategies import DeepSpeedStrategy
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 
