@@ -304,7 +304,10 @@ class BigBirdFinetune(pl.LightningModule):
         """Forward pass for the model."""
         concept_ids, type_ids, time_stamps, ages, visit_orders, visit_segments = inputs
         self.model.bert.embeddings.cache_input(
-            time_stamps, ages, visit_orders, visit_segments
+            time_stamps,
+            ages,
+            visit_orders,
+            visit_segments,
         )
 
         if attention_mask is None:
