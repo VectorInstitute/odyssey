@@ -17,7 +17,9 @@ from tqdm import tqdm
 
 
 def _save_to_csv(
-    data: List[Dict[str, Any]], columns: List[str], save_path: str
+    data: List[Dict[str, Any]],
+    columns: List[str],
+    save_path: str,
 ) -> None:
     """Save the DataFrame to a csv file.
 
@@ -100,8 +102,8 @@ class FHIRDataCollector:
                 }
                 buffer.append(patient_data)
                 if len(buffer) >= self.buffer_size:
-                    buffer = []
                     _save_to_csv(buffer, patient_cols, save_path)
+                    buffer = []
             if buffer:
                 _save_to_csv(buffer, patient_cols, save_path)
 
@@ -164,9 +166,8 @@ class FHIRDataCollector:
                 }
                 buffer.append(e_data)
                 if len(buffer) >= self.buffer_size:
-                    buffer = []
                     _save_to_csv(buffer, encounter_cols, save_path)
-
+                    buffer = []
             if buffer:
                 _save_to_csv(buffer, encounter_cols, save_path)
 
@@ -239,9 +240,8 @@ class FHIRDataCollector:
                 }
                 buffer.append(m_data)
                 if len(buffer) >= self.buffer_size:
-                    buffer = []
                     _save_to_csv(buffer, procedure_cols, save_path)
-
+                    buffer = []
             if buffer:
                 _save_to_csv(buffer, procedure_cols, save_path)
 
@@ -332,9 +332,8 @@ class FHIRDataCollector:
                 }
                 buffer.append(m_data)
                 if len(buffer) >= self.buffer_size:
-                    buffer = []
                     _save_to_csv(buffer, medication_cols, save_path)
-
+                    buffer = []
             if buffer:
                 _save_to_csv(buffer, medication_cols, save_path)
 
@@ -427,9 +426,8 @@ class FHIRDataCollector:
                 }
                 buffer.append(m_data)
                 if len(buffer) >= self.buffer_size:
-                    buffer = []
                     _save_to_csv(buffer, lab_cols, save_path)
-
+                    buffer = []
             if buffer:
                 _save_to_csv(buffer, lab_cols, save_path)
 
