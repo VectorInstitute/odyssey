@@ -198,9 +198,9 @@ class BigBirdEmbeddingsForCEHR(nn.Module):
         self.token_type_embeddings = nn.Embedding(
             config.type_vocab_size, config.hidden_size
         )
-        self.visit_order_embeddings = nn.Embedding(
-            config.max_position_embeddings, config.hidden_size
-        )
+        # self.visit_order_embeddings = nn.Embedding(
+        #     config.max_position_embeddings, config.hidden_size
+        # )
         self.time_embeddings = TimeEmbeddingLayer(
             embedding_size=time_embeddings_size, is_time_delta=True
         )
