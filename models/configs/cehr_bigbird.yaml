@@ -27,15 +27,15 @@ train:
   acc: 8
   mask_prob: 0.15
   persistent_workers: True
-  pin_memory: True
+  pin_memory: False
 
 finetune:
   batch_size: 26
-  num_workers: 2
+  num_workers: 3
   gpus: 1
   nodes: 1
   max_epochs: 10
-  acc: 1
+  acc: 5
   patience: 5
   persistent_workers: True
   pin_memory: False
