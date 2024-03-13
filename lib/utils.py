@@ -31,13 +31,6 @@ def seed_everything(seed: int) -> None:
     pl.seed_everything(seed)
 
 
-def get_latest_checkpoint(checkpoint_dir: str) -> Any:
-    """Return the most recent checkpointed file to resume training from."""
-    if checkpoint_dir:
-        list_of_files = glob.glob(join(checkpoint_dir, "last*.ckpt"))
-        return max(list_of_files, key=os.path.getctime) if list_of_files else None
-
-
 def load_pretrain_data(
     data_dir: str,
     sequence_file: str,
@@ -65,7 +58,7 @@ def load_finetune_data(
     sequence_file: str,
     id_file: str,
     valid_scheme: str,
-    num_finetune_patients: int,
+    num_finetune_patients: str,
 ) -> pd.DataFrame:
     """Load the finetuning data."""
     sequence_path = join(data_dir, sequence_file)
@@ -83,7 +76,7 @@ def load_finetune_data(
 
     fine_tune = data.loc[
         data["patient_id"].isin(
-            patient_ids["valid"][valid_scheme][num_finetune_patients],
+            patient_ids["finetune"][valid_scheme][num_finetune_patients],
         )
     ]
     fine_test = data.loc[data["patient_id"].isin(patient_ids["test"])]
