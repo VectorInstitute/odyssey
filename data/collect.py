@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 
 import numpy as np
 import pandas as pd
+from fhir.resources.condition import Condition
 from fhir.resources.encounter import Encounter
 from fhir.resources.medication import Medication
 from fhir.resources.medicationrequest import MedicationRequest
@@ -543,6 +544,144 @@ class FHIRDataCollector:
         with open(self.vocab_dir + "/lab_vocab.json", "w") as f:
             json.dump(lab_vocab_binned, f)
 
+    def get_condition_data(self) -> None:
+        """Get condition data from the database and save to a csv file."""
+        try:
+            patients = pd.read_csv(self.csv_dir + "/inpatient.csv")
+        except FileNotFoundError:
+            print("Patients file not found. Please run get_encounter_data() first.")
+            return
+
+        condition_table = Table(
+            "condition",
+            self.metadata,
+            autoload_with=self.engine,
+            schema=self.schema,
+        )
+
+        condition_cols = [
+            "patient_id",
+            "length",
+            "encounter_conditions",
+        ]
+        save_path = os.path.join(self.csv_dir, "conditions.csv")
+        condition_vocab = set()
+        condition_counts = {}
+        condition_systems = {}
+        buffer = []
+
+        with self.engine.connect() as connection:
+            for _, patient_id in tqdm(
+                patients["patient_id"].items(),
+                desc="Processing patients",
+                unit="patient",
+            ):
+                patient_conditions_counted = set()
+                query = select(condition_table.c.fhir).where(
+                    condition_table.c.patient_id == patient_id,
+                )
+
+                results = connection.execute(query).fetchall()
+                encounter_conditions = {}
+
+                for row in results:
+                    cond = Condition(row[0])
+                    if cond.encounter is None or cond.code is None:
+                        continue
+
+                    encounter_id = cond.encounter.reference.split("/")[-1]
+                    code = cond.code.coding[0].code
+                    if encounter_id not in encounter_conditions:
+                        encounter_conditions[encounter_id] = []
+                    encounter_conditions[encounter_id].append(code)
+
+                    display = cond.code.coding[0].display
+
+                    condition_vocab.add(code)
+
+                    if code not in condition_systems:
+                        condition_systems[code] = cond.code.coding[0].system
+
+                    if code not in patient_conditions_counted:
+                        if code in condition_counts:
+                            condition_counts[code]["count"] += 1
+                        else:
+                            condition_counts[code] = {"count": 1, "display": display}
+                        patient_conditions_counted.add(code)
+
+                m_data = {
+                    "patient_id": patient_id,
+                    "length": sum(
+                        len(value) for value in encounter_conditions.values()
+                    ),
+                    "encounter_conditions": encounter_conditions,
+                }
+                buffer.append(m_data)
+                if len(buffer) >= self.buffer_size:
+                    df_buffer = pd.DataFrame(buffer, columns=condition_cols)
+                    buffer = []
+                    df_buffer.to_csv(
+                        save_path,
+                        mode="a",
+                        header=(not os.path.exists(save_path)),
+                        index=False,
+                    )
+
+            if buffer:
+                df_buffer = pd.DataFrame(buffer, columns=condition_cols)
+                df_buffer.to_csv(
+                    save_path,
+                    mode="a",
+                    header=(not os.path.exists(save_path)),
+                    index=False,
+                )
+
+        with open(self.vocab_dir + "/condition_vocab.json", "w") as f:
+            json.dump(list(condition_vocab), f)
+
+        sorted_conditions = sorted(
+            condition_counts.items(),
+            key=lambda x: x[1]["count"],
+            reverse=True,
+        )
+        sorted_dict = {code: details for code, details in sorted_conditions}
+        with open(self.vocab_dir + "/condition_counts.json", "w") as f:
+            json.dump(sorted_dict, f)
+
+        with open(self.vocab_dir + "/condition_systems.json", "w") as f:
+            json.dump(condition_systems, f)
+
+    def group_conditions(self) -> None:
+        """Group conditions into categories."""
+        with open(self.vocab_dir + "/condition_counts.json", "r") as file:
+            data = json.load(file)
+
+        with open(self.vocab_dir + "/condition_systems.json", "r") as file:
+            systems = json.load(file)
+
+        grouped_data = {}
+        for code, info in data.items():
+            prefix = code[:3]
+            icd_version = systems[code][-1]
+
+            group_key = f"{prefix}_10" if icd_version == "0" else f"{prefix}_9"
+
+            if group_key not in grouped_data:
+                grouped_data[group_key] = {"total_count": 0}
+            grouped_data[group_key]["total_count"] += info["count"]
+            grouped_data[group_key][f"{code}_count"] = info["count"]
+
+        sorted_grouped_data = dict(
+            sorted(
+                grouped_data.items(),
+                key=lambda x: x[1]["total_count"],
+                reverse=True,
+            ),
+        )
+
+        with open(self.vocab_dir + "condition_categories.json", "w") as file:
+            json.dump(sorted_grouped_data, file, indent=4)
+
 
 if __name__ == "__main__":
     collector = FHIRDataCollector(
@@ -558,3 +697,5 @@ if __name__ == "__main__":
     collector.get_lab_data()
     collector.filter_lab_data()
     collector.process_lab_values()
+    collector.get_condition_data()
+    collector.group_conditions()
