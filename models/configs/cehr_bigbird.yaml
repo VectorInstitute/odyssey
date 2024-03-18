@@ -15,7 +15,7 @@ model:
 
 model_finetune:
   num_labels: 2
-  learning_rate: 5.e-5
+  learning_rate: 5.e-5  # -> 5.e-6
   classifier_dropout: 0.1
 
 train:
@@ -32,10 +32,10 @@ train:
 finetune:
   batch_size: 26
   num_workers: 3
-  gpus: 1
+  gpus: 2
   nodes: 1
-  max_epochs: 10
-  acc: 5
+  max_epochs: 10  # -> 5
+  acc: 1  # -> 1
   patience: 5
   persistent_workers: True
   pin_memory: False

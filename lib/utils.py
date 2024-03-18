@@ -1,4 +1,8 @@
-"""Utility functions for the model training and finetuning."""
+""""
+File: utils.py
+---------------
+Includes defined constants and helper functions.
+"""
 
 import glob
 import os
