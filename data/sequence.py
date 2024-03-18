@@ -545,8 +545,8 @@ class SequenceGenerator:
             encounter_index = encounter_row["encounter_ids"].index(encounter_id)
             start_time = encounter_row["starts"][encounter_index]
             start_time = parser.parse(start_time)
-            event_time = parser.parse(event_time)
-            elapsed_time = round((event_time - start_time).total_seconds() / 3600, 2)
+            event_time_ = parser.parse(event_time)
+            elapsed_time = round((event_time_ - start_time).total_seconds() / 3600, 2)
             elapsed_times.append(elapsed_time)
         row["elapsed_time"] = elapsed_times
         return row

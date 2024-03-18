@@ -37,6 +37,8 @@ def get_latest_checkpoint(checkpoint_dir: str) -> Any:
         list_of_files = glob.glob(join(checkpoint_dir, "last*.ckpt"))
         return max(list_of_files, key=os.path.getctime) if list_of_files else None
 
+    return None
+
 
 def load_pretrain_data(
     data_dir: str,

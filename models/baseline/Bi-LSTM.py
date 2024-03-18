@@ -21,13 +21,13 @@ from torch.optim.lr_scheduler import ExponentialLR
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-
-ROOT = "/fs01/home/afallah/odyssey/odyssey"
-os.chdir(ROOT)
-
 from models.big_bird_cehr.data import FinetuneDataset
 from models.big_bird_cehr.embeddings import Embeddings
 from models.big_bird_cehr.tokenizer import HuggingFaceConceptTokenizer
+
+
+ROOT = "/fs01/home/afallah/odyssey/odyssey"
+os.chdir(ROOT)
 
 
 DATA_ROOT = f"{ROOT}/data/slurm_data/512/one_month"
@@ -162,7 +162,7 @@ class BiLSTMModel(nn.Module):
 
     @staticmethod
     def get_balanced_accuracy(outputs: torch.Tensor, labels: torch.Tensor) -> Any:
-        """Return the balanced accuracy metric by comparing outputs to labels"""
+        """Return the balanced accuracy metric by comparing outputs to labels."""
         predictions = torch.round(sigmoid(outputs))
         predictions = predictions.detach().cpu().numpy()
         labels = labels.detach().cpu().numpy()

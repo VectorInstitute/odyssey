@@ -271,8 +271,10 @@ class BigBirdEmbeddingsForCEHR(nn.Module):
         visit_orders: torch.Tensor,
         visit_segments: torch.Tensor,
     ) -> None:
-        """Cache values for time_stamps, ages, visit_orders & visit_segments inside the class object.
+        """Cache values for time_stamps, ages, visit_orders & visit_segments.
+
         These values will be used by the forward pass to change the final embedding.
+
         """
         self.time_stamps = time_stamps
         self.ages = ages

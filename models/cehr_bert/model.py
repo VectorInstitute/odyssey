@@ -1,3 +1,5 @@
+"""CEHR-BERT model."""
+
 from typing import Optional, Tuple, Union
 
 import pytorch_lightning as pl
@@ -89,7 +91,7 @@ class BertPretrain(pl.LightningModule):
         self.post_init()
 
     def _init_weights(self, module) -> None:
-        """Initialize the weights"""
+        """Initialize the weights."""
         if isinstance(module, nn.Linear):
             module.weight.data.normal_(mean=0.0, std=self.bert_config.initializer_range)
             if module.bias is not None:
@@ -103,11 +105,12 @@ class BertPretrain(pl.LightningModule):
             module.weight.data.fill_(1.0)
 
     def post_init(self) -> None:
+        """Apply post initialization."""
         self.apply(self._init_weights)
 
     def forward(
         self,
-        input: Tuple[
+        input_: Tuple[
             torch.Tensor,
             torch.Tensor,
             torch.Tensor,
@@ -122,7 +125,7 @@ class BertPretrain(pl.LightningModule):
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple[torch.Tensor, ...], MaskedLMOutput]:
         """Forward pass for the model."""
-        concept_ids, type_ids, time_stamps, ages, visit_orders, visit_segments = input
+        concept_ids, type_ids, time_stamps, ages, visit_orders, visit_segments = input_
         embedding_output = self.embeddings(
             concept_ids,
             type_ids,
@@ -166,8 +169,8 @@ class BertPretrain(pl.LightningModule):
         )
 
     def training_step(self, batch, batch_idx) -> torch.Tensor:
-        """Training step."""
-        input = (
+        """Compute training step."""
+        input_ = (
             batch["concept_ids"],
             batch["type_ids"],
             batch["time_stamps"],
@@ -178,7 +181,7 @@ class BertPretrain(pl.LightningModule):
         labels = batch["labels"]
         attention_mask = batch["attention_mask"]
         loss = self(
-            input,
+            input_,
             attention_mask=attention_mask,
             labels=labels,
             return_dict=True,
@@ -187,8 +190,8 @@ class BertPretrain(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx) -> torch.Tensor:
-        """Validation step."""
-        input = (
+        """Compute validation step."""
+        input_ = (
             batch["concept_ids"],
             batch["type_ids"],
             batch["time_stamps"],
@@ -199,7 +202,7 @@ class BertPretrain(pl.LightningModule):
         labels = batch["labels"]
         attention_mask = batch["attention_mask"]
         loss = self(
-            input,
+            input_,
             attention_mask=attention_mask,
             labels=labels,
             return_dict=True,
@@ -281,11 +284,12 @@ class BertFinetune(pl.LightningModule):
             module.weight.data.fill_(1.0)
 
     def post_init(self):
+        """Apply post initialization."""
         self.apply(self._init_weights)
 
     def forward(
         self,
-        input: Tuple[
+        input_: Tuple[
             torch.Tensor,
             torch.Tensor,
             torch.Tensor,
@@ -301,9 +305,9 @@ class BertFinetune(pl.LightningModule):
     ) -> Union[Tuple[torch.Tensor, ...], SequenceClassifierOutput]:
         """Forward pass for the model."""
         if attention_mask is None:
-            attention_mask = torch.ones_like(input[0])
+            attention_mask = torch.ones_like(input_[0])
         outputs = self.pretrained_model(
-            input,
+            input_,
             attention_mask=attention_mask,
             output_attentions=True,
             output_hidden_states=True,
@@ -332,8 +336,8 @@ class BertFinetune(pl.LightningModule):
         )
 
     def training_step(self, batch, batch_idx):
-        """Training step."""
-        input = (
+        """Compute training step."""
+        input_ = (
             batch["concept_ids"],
             batch["type_ids"],
             batch["time_stamps"],
@@ -344,7 +348,7 @@ class BertFinetune(pl.LightningModule):
         labels = batch["labels"]
         attention_mask = batch["attention_mask"]
         loss = self(
-            input,
+            input_,
             attention_mask=attention_mask,
             labels=labels,
             return_dict=True,
@@ -353,8 +357,8 @@ class BertFinetune(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        """Validation step."""
-        input = (
+        """Compute validation step."""
+        input_ = (
             batch["concept_ids"],
             batch["type_ids"],
             batch["time_stamps"],
@@ -365,7 +369,7 @@ class BertFinetune(pl.LightningModule):
         labels = batch["labels"]
         attention_mask = batch["attention_mask"]
         loss = self(
-            input,
+            input_,
             attention_mask=attention_mask,
             labels=labels,
             return_dict=True,
@@ -374,8 +378,8 @@ class BertFinetune(pl.LightningModule):
         return loss
 
     def test_step(self, batch, batch_idx):
-        """Test step."""
-        input = (
+        """Compute test step."""
+        input_ = (
             batch["concept_ids"],
             batch["type_ids"],
             batch["time_stamps"],
@@ -386,7 +390,7 @@ class BertFinetune(pl.LightningModule):
         labels = batch["labels"]
         attention_mask = batch["attention_mask"]
         outputs = self(
-            input,
+            input_,
             attention_mask=attention_mask,
             labels=labels,
             return_dict=True,

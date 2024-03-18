@@ -1,3 +1,5 @@
+"""Embedding modules."""
+
 import math
 
 import torch
@@ -19,7 +21,7 @@ class TimeEmbeddingLayer(nn.Module):
         nn.init.xavier_uniform_(self.phi)
 
     def forward(self, time_stamps: torch.Tensor) -> torch.Tensor:
-        """Applies time embedding to the input time stamps."""
+        """Apply time embedding to the input time stamps."""
         if self.is_time_delta:
             # If the time_stamps represent time deltas, we calculate the deltas.
             # This is equivalent to the difference between consecutive elements.
@@ -48,7 +50,7 @@ class VisitEmbedding(nn.Module):
         self.embedding = nn.Embedding(self.visit_order_size, self.embedding_size)
 
     def forward(self, visit_segments: torch.Tensor) -> torch.Tensor:
-        """Applies visit embedding to the input visit segments."""
+        """Apply visit embedding to the input visit segments."""
         return self.embedding(visit_segments)
 
 
@@ -69,7 +71,7 @@ class ConceptEmbedding(nn.Module):
         )
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        """Applies concept embedding to the input concepts."""
+        """Apply concept embedding to the input concepts."""
         return self.embedding(inputs)
 
 
@@ -95,7 +97,7 @@ class PositionalEmbedding(nn.Module):
         self.register_buffer("pe", pe)
 
     def forward(self, visit_orders: torch.Tensor) -> torch.Tensor:
-        """Applies positional embedding to the input visit orders."""
+        """Apply positional embedding to the input visit orders."""
         first_visit_concept_orders = visit_orders[:, 0:1]
         normalized_visit_orders = torch.clamp(
             visit_orders - first_visit_concept_orders,
@@ -157,7 +159,7 @@ class Embeddings(nn.Module):
         visit_orders: torch.Tensor,
         visit_segments: torch.Tensor,
     ) -> torch.Tensor:
-        """Applies embeddings to the input features."""
+        """Apply embeddings to the input features."""
         concept_embed = self.concept_embedding(concept_ids)
         type_embed = self.token_type_embeddings(type_ids)
         time_embed = self.time_embedding(time_stamps)
@@ -169,6 +171,5 @@ class Embeddings(nn.Module):
         embeddings = self.tanh(self.scale_back_concat_layer(embeddings))
         embeddings = embeddings + type_embed + positional_embed + visit_segment_embed
         embeddings = self.LayerNorm(embeddings)
-        embeddings = self.dropout(embeddings)
 
-        return embeddings
+        return self.dropout(embeddings)
