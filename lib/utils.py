@@ -1,10 +1,9 @@
-""""
+""" "
 File: utils.py
 ---------------
 Includes defined constants and helper functions.
 """
 
-import glob
 import os
 import pickle
 import uuid
