@@ -12,10 +12,12 @@ model:
   num_iterations: 10
   increase_factor: 2
   dropout_prob: 0.1
+
 model_finetune:
   num_labels: 2
-  learning_rate: 5.e-5
+  learning_rate: 5.e-5  # -> 5.e-6
   classifier_dropout: 0.1
+
 train:
   batch_size: 26
   num_workers: 3
@@ -25,14 +27,15 @@ train:
   acc: 8
   mask_prob: 0.15
   persistent_workers: True
-  pin_memory: True
+  pin_memory: False
+
 finetune:
   batch_size: 26
-  num_workers: 2
-  gpus: 1
+  num_workers: 3
+  gpus: 2
   nodes: 1
-  max_epochs: 5
-  acc: 8
+  max_epochs: 10  # -> 5
+  acc: 1  # -> 1
   patience: 5
   persistent_workers: True
-  pin_memory: True
+  pin_memory: False
