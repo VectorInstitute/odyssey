@@ -35,7 +35,7 @@ def load_finetuned_model(
         pre_model_config: Optional[Dict[str, Any]] = None,
         fine_model_config: Optional[Dict[str, Any]] = None,
         device: Optional[torch.device] = None,
-): -> torch.Module
+) -> torch.nn.Module:
     """
     Return a loaded finetuned model from model_path, using tokenizer information.
     If config arguments are not provided, the default configs built into the
@@ -60,28 +60,28 @@ def load_finetuned_model(
     pretrained_model = BigBirdPretrain(
         vocab_size=tokenizer.get_vocab_size(),
         padding_idx=tokenizer.get_pad_token_id(),
-        **pre_model_config,
+        **(pre_model_config or {}),
     )
 
     model = BigBirdFinetune(
         pretrained_model=pretrained_model,
-        **fine_model_config,
+        **(fine_model_config or {}),
     )
 
     # Load the weights using model_path directory
-    state_dict = torch.load(model_path)["state_dict"]
+    state_dict = torch.load(model_path, map_location=device)["state_dict"]
     model.load_state_dict(state_dict)
     model.to(device)
     model.eval()
+    
+    return model
 
-   return model
 
-
-def get_prediction(
+def predict_patient_outcomes(
         patient: Dict[str, torch.Tensor],
-        model: torch.Module,
+        model: torch.nn.Module,
         device: Optional[torch.device] = None
-) -> Any
+) -> Any:
     """
     Return model output predictions on given patient data.
     
