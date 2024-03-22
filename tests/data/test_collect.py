@@ -3,9 +3,8 @@
 import os
 import shutil
 from unittest import TestCase
-from fhir.resources.patient import Patient
 
-from data.collect import FHIRDataCollector, PATIENT, DATA_COLLECTION_CONFIG
+from data.collect import DATA_COLLECTION_CONFIG, PATIENT, FHIRDataCollector
 
 
 class TestFHIRDataCollector(TestCase):
@@ -31,7 +30,7 @@ class TestFHIRDataCollector(TestCase):
         buffer = []
         save_path = os.path.join(
             self.save_dir,
-            "test.csv"
+            "test.csv",
         )
         for i in range(15):
             dummy_data = {
@@ -49,4 +48,3 @@ class TestFHIRDataCollector(TestCase):
             )
         self.assertTrue(os.path.exists(save_path))
         self.assertEqual(len(buffer), 5)
-
