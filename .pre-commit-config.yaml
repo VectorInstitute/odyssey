@@ -33,8 +33,11 @@ repos:
       types: [python]
       exclude: "tests"
 
-        #   - repo: https://github.com/nbQA-dev/nbQA
-        #     rev: 1.7.1
-        #     hooks:
-        #     - id: nbqa-ruff
-        #       args: [--fix, --exit-non-zero-on-fix]
+  - repo: local
+    hooks:
+    - id: pytest
+      name: pytest
+      entry: python3 -m pytest -m "not integration_test"
+      language: system
+      pass_filenames: false
+      always_run: true
