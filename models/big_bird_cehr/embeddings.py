@@ -1,9 +1,4 @@
-"""
-File: embeddings.py.
-
-Custom embedding class that is both compatible with a HuggingFace implementation
-of BigBird transformer and the defined Datasets by data.py
-"""
+"""Embedding layers for the models."""
 
 import math
 from typing import Any, Optional
@@ -227,7 +222,8 @@ class BigBirdEmbeddingsForCEHR(nn.Module):
             embedding_size=config.hidden_size,
         )
         self.scale_back_concat_layer = nn.Linear(
-            config.hidden_size + 2 * time_embeddings_size, config.hidden_size
+            config.hidden_size + 2 * time_embeddings_size,
+            config.hidden_size,
         )
 
         self.time_stamps: Optional[torch.Tensor] = None
@@ -243,7 +239,9 @@ class BigBirdEmbeddingsForCEHR(nn.Module):
 
         # position_ids (1, len position emb) is contiguous in memory.
         self.position_embedding_type = getattr(
-            config, "position_embedding_type", "absolute"
+            config,
+            "position_embedding_type",
+            "absolute",
         )
         self.register_buffer(
             "position_ids",
@@ -297,7 +295,8 @@ class BigBirdEmbeddingsForCEHR(nn.Module):
 
         if position_ids is None:
             position_ids = self.position_ids[
-                :, past_key_values_length : seq_length + past_key_values_length
+                :,
+                past_key_values_length : seq_length + past_key_values_length,
             ]
 
         # Setting the token_type_ids to the registered buffer in constructor
@@ -305,12 +304,15 @@ class BigBirdEmbeddingsForCEHR(nn.Module):
             if hasattr(self, "token_type_ids"):
                 buffered_token_type_ids = self.token_type_ids[:, :seq_length]
                 buffered_token_type_ids_expanded = buffered_token_type_ids.expand(
-                    input_shape[0], seq_length
+                    input_shape[0],
+                    seq_length,
                 )
                 token_type_ids = buffered_token_type_ids_expanded
             else:
                 token_type_ids = torch.zeros(
-                    input_shape, dtype=torch.long, device=self.position_ids.device
+                    input_shape,
+                    dtype=torch.long,
+                    device=self.position_ids.device,
                 )
 
         if inputs_embeds is None:
@@ -329,7 +331,8 @@ class BigBirdEmbeddingsForCEHR(nn.Module):
         token_type_embeds = self.token_type_embeddings(token_type_ids)
 
         inputs_embeds = torch.cat(
-            (inputs_embeds, time_stamps_embeds, ages_embeds), dim=-1
+            (inputs_embeds, time_stamps_embeds, ages_embeds),
+            dim=-1,
         )
         inputs_embeds = self.tanh(self.scale_back_concat_layer(inputs_embeds))
         embeddings = inputs_embeds + token_type_embeds
