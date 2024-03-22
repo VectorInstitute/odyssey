@@ -1,8 +1,4 @@
-"""
-File: prediction.py
---------------------
-Includes helper functions to load model and make predictions.
-"""
+"""Prediction module for loading and running BigBird models on patient data."""
 
 from typing import Any, Dict, Optional
 
@@ -19,20 +15,24 @@ def load_finetuned_model(
     fine_model_config: Optional[Dict[str, Any]] = None,
     device: Optional[torch.device] = None,
 ) -> torch.nn.Module:
-    """
+    """Load a finetuned model from model_path using tokenizer information.
+
     Return a loaded finetuned model from model_path, using tokenizer information.
     If config arguments are not provided, the default configs built into the
     PyTorch classes are used.
 
-    Args:
-        model_path: Path to the finetuned model to load
-        tokenizer: Loaded tokenizer object
-        pre_model_config: Optional config to override default values of a pretrained model
-        fine_model_config: Optional config to override default values of a finetuned model
-        device: CUDA device. By default, GPU is used
+    Parameters
+    ----------
+    model_path: Path to the finetuned model to load
+    tokenizer: Loaded tokenizer object
+    pre_model_config: Optional config to override default values of a pretrained model
+    fine_model_config: Optional config to override default values of a finetuned model
+    device: CUDA device. By default, GPU is used
 
-    Return:
+    Returns
+    -------
         The loaded PyTorch model
+
     """
     # Load GPU or CPU device
     if not device:
@@ -93,10 +93,9 @@ def predict_patient_outcomes(
 
     # Get model output predictions
     model.to(device)
-    output = model(
+
+    return model(
         inputs=patient_inputs,
         attention_mask=patient_attention_mask,
         labels=patient_labels,
     )
-
-    return output
