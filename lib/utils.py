@@ -1,8 +1,4 @@
-""" "
-File: utils.py
----------------
-Includes defined constants and helper functions.
-"""
+"""Utility functions for the model."""
 
 import os
 import pickle
