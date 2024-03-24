@@ -241,7 +241,7 @@ class BigBirdFinetune(pl.LightningModule):
         self.config = pretrained_model.config
         self.config.num_labels = self.num_labels
         self.config.classifier_dropout = self.classifier_dropout
-        self.config.problem_type = 'single_label_classification'
+        self.config.problem_type = 'multi_label_classification'
 
         self.model = BigBirdForSequenceClassification(config=self.config)
         self.post_init()

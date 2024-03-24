@@ -17,7 +17,6 @@ from torch.utils.data import DataLoader
 from lib.data import PretrainDataset
 from lib.tokenizer import ConceptTokenizer
 from lib.utils import (
-    get_latest_checkpoint,
     get_run_id,
     load_config,
     load_pretrain_data,
@@ -39,14 +38,14 @@ def main(args: Dict[str, Any], model_config: Dict[str, Any]) -> None:
         args.sequence_file,
         args.id_file,
     )
-    pre_data.rename(columns={args.label_name: "label"}, inplace=True)
+    # pre_data.rename(columns={args.label_name: "label"}, inplace=True)
 
     # Split data
     pre_train, pre_val = train_test_split(
         pre_data,
         test_size=args.val_size,
         random_state=args.seed,
-        stratify=pre_data["label"],
+        # stratify=pre_data["label"],
     )
 
     # Train Tokenizer
@@ -113,9 +112,7 @@ def main(args: Dict[str, Any], model_config: Dict[str, Any]) -> None:
             **model_config,
         )
 
-    latest_checkpoint = get_latest_checkpoint(args.checkpoint_dir)
-
-    run_id = get_run_id(args.checkpoint_dir, retrieve=(latest_checkpoint is not None))
+    run_id = get_run_id(args.checkpoint_dir)
 
     wandb_logger = WandbLogger(
         project=args.exp_name,
@@ -150,7 +147,7 @@ def main(args: Dict[str, Any], model_config: Dict[str, Any]) -> None:
         model=model,
         train_dataloaders=train_loader,
         val_dataloaders=val_loader,
-        ckpt_path=latest_checkpoint,
+        ckpt_path=args.resume_checkpoint,
     )
 
 
