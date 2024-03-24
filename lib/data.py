@@ -1,8 +1,4 @@
-"""
-data.py.
-
-Create custom pretrain and finetune PyTorch Dataset objects for MIMIC-IV FHIR dataset.
-"""
+"""Data module for pretraining and finetuning the model."""
 
 from typing import Any, Dict, List, Tuple, Union
 
@@ -10,11 +6,35 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-from .tokenizer import ConceptTokenizer
+from lib.tokenizer import ConceptTokenizer
 
 
 class PretrainDataset(Dataset):
-    """Dataset for pretraining the model."""
+    """Dataset for pretraining the model.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        The input data containing sequences to be tokenized and masked.
+    tokenizer : ConceptTokenizer
+        An instance of the ConceptTokenizer class used for tokenizing sequences.
+    max_len : int, optional
+        The maximum length of the tokenized sequences, by default 2048.
+    mask_prob : float, optional
+        The probability of masking a token in the sequence, by default 0.15.
+
+    Attributes
+    ----------
+    data : pd.DataFrame
+        Stores the input data.
+    tokenizer : ConceptTokenizer
+        Tokenizer used for tokenizing sequences.
+    max_len : int
+        Maximum length of the tokenized sequences.
+    mask_prob : float
+        Probability of masking a token in the sequence.
+
+    """
 
     def __init__(
         self,
@@ -25,7 +45,6 @@ class PretrainDataset(Dataset):
     ):
         """Initiate the class."""
         super(PretrainDataset, self).__init__()
-
         self.data = data
         self.tokenizer = tokenizer
         self.max_len = max_len
@@ -36,13 +55,36 @@ class PretrainDataset(Dataset):
         return len(self.data)
 
     def tokenize_data(self, sequence: Union[str, List[str]]) -> Any:
-        """Tokenize the sequence and return input_ids and attention mask."""
+        """Tokenize the sequence and return input_ids and attention mask.
+
+        Parameters
+        ----------
+        sequence : Union[str, List[str]]
+            The sequence to be tokenized.
+
+        Returns
+        -------
+        Any
+            A dictionary containing input_ids and attention_mask.
+
+        """
         return self.tokenizer(sequence, max_length=self.max_len)
 
     def mask_tokens(self, sequence: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Mask the tokens in the sequence using vectorized operations."""
-        mask_token_id = self.tokenizer.get_mask_token_id()
+        """Mask the tokens in the sequence using vectorized operations.
 
+        Parameters
+        ----------
+        sequence : torch.Tensor
+            The sequence of tokens to be masked.
+
+        Returns
+        -------
+        Tuple[torch.Tensor, torch.Tensor]
+            A tuple containing masked sequence and labels.
+
+        """
+        mask_token_id = self.tokenizer.get_mask_token_id()
         masked_sequence = sequence.clone()
 
         # Ignore [PAD], [UNK], [MASK] tokens
@@ -67,7 +109,6 @@ class PretrainDataset(Dataset):
             dtype=torch.long,
         )
         masked_sequence[randomized] = random_idx[randomized]
-
         labels = torch.where(selected, sequence, -100)
 
         return masked_sequence, labels
@@ -75,8 +116,17 @@ class PretrainDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get data at corresponding index.
 
-        Return it as a dictionary including
-        all different token sequences along with attention mask and labels.
+        Parameters
+        ----------
+        idx : int
+            The index of the data to be retrieved.
+
+        Returns
+        -------
+        Dict[str, torch.Tensor]
+            A dictionary containing all different token sequences along with
+            attention mask and labels.
+
         """
         data = self.data.iloc[idx]
         tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
@@ -110,7 +160,27 @@ class PretrainDataset(Dataset):
 
 
 class FinetuneDataset(Dataset):
-    """Dataset for finetuning the model."""
+    """Dataset for finetuning the model.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        The input data containing sequences to be tokenized and masked.
+    tokenizer : ConceptTokenizer
+        An instance of the ConceptTokenizer class used for tokenizing sequences.
+    max_len : int, optional
+        The maximum length of the tokenized sequences, by default 2048.
+
+    Attributes
+    ----------
+    data : pd.DataFrame
+        Stores the input data.
+    tokenizer : ConceptTokenizer
+        Tokenizer used for tokenizing sequences.
+    max_len : int
+        Maximum length of the tokenized sequences.
+
+    """
 
     def __init__(
         self,
@@ -120,7 +190,6 @@ class FinetuneDataset(Dataset):
     ):
         """Initiate the class."""
         super(FinetuneDataset, self).__init__()
-
         self.data = data
         self.tokenizer = tokenizer
         self.max_len = max_len
@@ -130,14 +199,35 @@ class FinetuneDataset(Dataset):
         return len(self.data)
 
     def tokenize_data(self, sequence: Union[str, List[str]]) -> Any:
-        """Tokenize the sequence and return input_ids and attention mask."""
+        """Tokenize the sequence and return input_ids and attention mask.
+
+        Parameters
+        ----------
+        sequence : Union[str, List[str]]
+            The sequence to be tokenized.
+
+        Returns
+        -------
+        Any
+            A dictionary containing input_ids and attention_mask.
+
+        """
         return self.tokenizer(sequence, max_length=self.max_len)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get data at corresponding index.
 
-        Return it as a dictionary including
-        all different token sequences along with attention mask and labels.
+        Parameters
+        ----------
+        idx : int
+            The index of the data to be retrieved.
+
+        Returns
+        -------
+        Dict[str, torch.Tensor]
+            A dictionary containing all different token sequences along with
+            attention mask and labels.
+
         """
         data = self.data.iloc[idx]
         tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
