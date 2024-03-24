@@ -4,25 +4,26 @@ File: model.py.
 Implement BigBird using HuggingFace for pretraining and finetuning.
 """
 
-from typing import Optional, Sequence, Union, Any, List, Tuple, Dict, Set
-
-import torch
-import torch.nn as nn
-from torch.nn import CrossEntropyLoss
-
-import torch.optim as optim
-from torch.optim import AdamW
-from torch.optim.lr_scheduler import LinearLR, SequentialLR
-
-from transformers import BertConfig, BigBirdConfig
-from transformers.modeling_outputs import MaskedLMOutput, SequenceClassifierOutput
-from transformers.models.bert.modeling_bert import BertPooler
-from transformers.models.big_bird.modeling_big_bird import BigBirdForMaskedLM, BigBirdForSequenceClassification
+from typing import Any, Dict, Optional, Tuple, Union
 
 import pytorch_lightning as pl
-
-from sklearn.metrics import (accuracy_score, f1_score,
-                             precision_score, recall_score, roc_auc_score)
+import torch
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
+from torch import nn, optim
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import LinearLR, SequentialLR
+from transformers import BigBirdConfig
+from transformers.modeling_outputs import MaskedLMOutput, SequenceClassifierOutput
+from transformers.models.big_bird.modeling_big_bird import (
+    BigBirdForMaskedLM,
+    BigBirdForSequenceClassification,
+)
 
 from .embeddings import BigBirdEmbeddingsForCEHR
 
@@ -31,22 +32,22 @@ class BigBirdPretrain(pl.LightningModule):
     """BigBird model for pretraining."""
 
     def __init__(
-            self,
-            vocab_size: int,
-            embedding_size: int = 768,
-            time_embeddings_size: int = 32,
-            visit_order_size: int = 3,
-            type_vocab_size: int = 9,
-            max_seq_length: int = 2048,
-            depth: int = 6,
-            num_heads: int = 12,
-            intermediate_size: int = 3072,
-            learning_rate: float = 5e-5,
-            eta_min: float = 1e-8,
-            num_iterations: int = 10,
-            increase_factor: float = 2,
-            dropout_prob: float = 0.1,
-            padding_idx: int = 1,
+        self,
+        vocab_size: int,
+        embedding_size: int = 768,
+        time_embeddings_size: int = 32,
+        visit_order_size: int = 3,
+        type_vocab_size: int = 9,
+        max_seq_length: int = 2048,
+        depth: int = 6,
+        num_heads: int = 12,
+        intermediate_size: int = 3072,
+        learning_rate: float = 5e-5,
+        eta_min: float = 1e-8,
+        num_iterations: int = 10,
+        increase_factor: float = 2,
+        dropout_prob: float = 0.1,
+        padding_idx: int = 1,
     ):
         super().__init__()
 
@@ -77,14 +78,14 @@ class BigBirdPretrain(pl.LightningModule):
             attention_probs_dropout_prob=self.dropout_prob,
             max_position_embeddings=self.max_seq_length,
             is_decoder=False,
-            pad_token_id=padding_idx
+            pad_token_id=padding_idx,
         )
 
         # BigBirdForMaskedLM
         self.embeddings = BigBirdEmbeddingsForCEHR(
             config=self.config,
             time_embeddings_size=self.time_embeddings_size,
-            visit_order_size=self.visit_order_size
+            visit_order_size=self.visit_order_size,
         )
 
         self.model = BigBirdForMaskedLM(config=self.config)
@@ -94,7 +95,7 @@ class BigBirdPretrain(pl.LightningModule):
         self.post_init()
 
     def _init_weights(self, module: torch.nn.Module) -> None:
-        """ Initialize the weights. """
+        """Initialize the weights."""
         if isinstance(module, nn.Linear):
             module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
             if module.bias is not None:
@@ -108,22 +109,26 @@ class BigBirdPretrain(pl.LightningModule):
             module.weight.data.fill_(1.0)
 
     def post_init(self) -> None:
-        """ Apply weight initialization. """
+        """Apply weight initialization."""
         self.apply(self._init_weights)
 
     def forward(
-            self,
-            inputs: Tuple[
-                torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
-            ],
-            attention_mask: Optional[torch.Tensor] = None,
-            labels: Optional[torch.Tensor] = None,
-            output_attentions: Optional[bool] = False,
-            output_hidden_states: Optional[bool] = False,
-            return_dict: Optional[bool] = True,
+        self,
+        inputs: Tuple[
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+        ],
+        attention_mask: Optional[torch.Tensor] = None,
+        labels: Optional[torch.Tensor] = None,
+        output_attentions: Optional[bool] = False,
+        output_hidden_states: Optional[bool] = False,
+        return_dict: Optional[bool] = True,
     ) -> Union[Tuple[torch.Tensor, ...], MaskedLMOutput]:
         """Forward pass for the model."""
-
         concept_ids, type_ids, time_stamps, ages, visit_orders, visit_segments = inputs
         self.embeddings.cache_input(time_stamps, ages, visit_orders, visit_segments)
 
@@ -141,7 +146,7 @@ class BigBirdPretrain(pl.LightningModule):
         )
 
     def training_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
-        """ Train model on training dataset. """
+        """Train model on training dataset."""
         inputs = (
             batch["concept_ids"],
             batch["type_ids"],
@@ -156,19 +161,22 @@ class BigBirdPretrain(pl.LightningModule):
         # This is not necessary but makes sure we use the right attention
         self.model.bert.set_attention_type("block_sparse")
         loss = self(
-            inputs, attention_mask=attention_mask, labels=labels, return_dict=True
+            inputs,
+            attention_mask=attention_mask,
+            labels=labels,
+            return_dict=True,
         ).loss
 
         (current_lr,) = self.lr_schedulers().get_last_lr()
         self.log_dict(
             dictionary={"train_loss": loss, "lr": current_lr},
             on_step=True,
-            prog_bar=True
+            prog_bar=True,
         )
         return loss
 
     def validation_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
-        """ Evaluate model on validation dataset. """
+        """Evaluate model on validation dataset."""
         inputs = (
             batch["concept_ids"],
             batch["type_ids"],
@@ -183,7 +191,10 @@ class BigBirdPretrain(pl.LightningModule):
         # This is not necessary but makes sure we use the right attention
         self.model.bert.set_attention_type("block_sparse")
         loss = self(
-            inputs, attention_mask=attention_mask, labels=labels, return_dict=True
+            inputs,
+            attention_mask=attention_mask,
+            labels=labels,
+            return_dict=True,
         ).loss
 
         (current_lr,) = self.lr_schedulers().get_last_lr()
@@ -191,14 +202,17 @@ class BigBirdPretrain(pl.LightningModule):
             dictionary={"val_loss": loss, "lr": current_lr},
             on_step=True,
             prog_bar=True,
-            sync_dist=True
+            sync_dist=True,
         )
         return loss
 
-    def configure_optimizers(self) -> Tuple[list[AdamW], list[dict[str, SequentialLR | str]]]:
+    def configure_optimizers(
+        self,
+    ) -> Tuple[list[AdamW], list[dict[str, SequentialLR | str]]]:
         """Configure optimizers and learning rate scheduler."""
         optimizer = optim.AdamW(
-            self.parameters(), lr=self.learning_rate
+            self.parameters(),
+            lr=self.learning_rate,
         )
 
         n_steps = self.trainer.estimated_stepping_batches
@@ -206,10 +220,16 @@ class BigBirdPretrain(pl.LightningModule):
         n_decay_steps = int(0.9 * n_steps)
 
         warmup = LinearLR(
-            optimizer, start_factor=0.01, end_factor=1.0, total_iters=n_warmup_steps
+            optimizer,
+            start_factor=0.01,
+            end_factor=1.0,
+            total_iters=n_warmup_steps,
         )
         decay = LinearLR(
-            optimizer, start_factor=1.0, end_factor=0.01, total_iters=n_decay_steps
+            optimizer,
+            start_factor=1.0,
+            end_factor=0.01,
+            total_iters=n_decay_steps,
         )
 
         scheduler = SequentialLR(
@@ -225,12 +245,12 @@ class BigBirdFinetune(pl.LightningModule):
     """BigBird model for fine-tuning."""
 
     def __init__(
-            self,
-            pretrained_model: BigBirdPretrain,
-            problem_type: str = 'single_label_classification',
-            num_labels: int = 2,
-            learning_rate: float = 5e-5,
-            classifier_dropout: float = 0.1,
+        self,
+        pretrained_model: BigBirdPretrain,
+        problem_type: str = "single_label_classification",
+        num_labels: int = 2,
+        learning_rate: float = 5e-5,
+        classifier_dropout: float = 0.1,
     ):
         super().__init__()
 
@@ -265,22 +285,28 @@ class BigBirdFinetune(pl.LightningModule):
             module.weight.data.fill_(1.0)
 
     def post_init(self) -> None:
-        """ Apply weight initialization. """
+        """Apply weight initialization."""
         self.apply(self._init_weights)
 
     def forward(
-            self,
-            inputs: Tuple[
-                torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
-            ],
-            attention_mask: Optional[torch.Tensor] = None,
-            labels: Optional[torch.Tensor] = None,
-            return_dict: Optional[bool] = True,
+        self,
+        inputs: Tuple[
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+        ],
+        attention_mask: Optional[torch.Tensor] = None,
+        labels: Optional[torch.Tensor] = None,
+        return_dict: Optional[bool] = True,
     ) -> Union[Tuple[torch.Tensor, ...], SequenceClassifierOutput]:
         """Forward pass for the model."""
-
         concept_ids, type_ids, time_stamps, ages, visit_orders, visit_segments = inputs
-        self.model.bert.embeddings.cache_input(time_stamps, ages, visit_orders, visit_segments)
+        self.model.bert.embeddings.cache_input(
+            time_stamps, ages, visit_orders, visit_segments
+        )
 
         if attention_mask is None:
             attention_mask = torch.ones_like(concept_ids)
@@ -296,7 +322,7 @@ class BigBirdFinetune(pl.LightningModule):
         )
 
     def training_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
-        """ Train model on training dataset. """
+        """Train model on training dataset."""
         inputs = (
             batch["concept_ids"],
             batch["type_ids"],
@@ -311,19 +337,22 @@ class BigBirdFinetune(pl.LightningModule):
         # This is not necessary but makes sure we use the right attention
         self.model.bert.set_attention_type("block_sparse")
         loss = self(
-            inputs, attention_mask=attention_mask, labels=labels, return_dict=True
+            inputs,
+            attention_mask=attention_mask,
+            labels=labels,
+            return_dict=True,
         )[0]
 
         (current_lr,) = self.lr_schedulers().get_last_lr()
         self.log_dict(
             dictionary={"train_loss": loss, "lr": current_lr},
             on_step=True,
-            prog_bar=True
+            prog_bar=True,
         )
         return loss
 
     def validation_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
-        """ Evaluate model on validation dataset. """
+        """Evaluate model on validation dataset."""
         inputs = (
             batch["concept_ids"],
             batch["type_ids"],
@@ -338,7 +367,10 @@ class BigBirdFinetune(pl.LightningModule):
         # This is not necessary but makes sure we use the right attention
         self.model.bert.set_attention_type("block_sparse")
         loss = self(
-            inputs, attention_mask=attention_mask, labels=labels, return_dict=True
+            inputs,
+            attention_mask=attention_mask,
+            labels=labels,
+            return_dict=True,
         )[0]
 
         (current_lr,) = self.lr_schedulers().get_last_lr()
@@ -346,7 +378,7 @@ class BigBirdFinetune(pl.LightningModule):
             dictionary={"val_loss": loss, "lr": current_lr},
             on_step=True,
             prog_bar=True,
-            sync_dist=True
+            sync_dist=True,
         )
         return loss
 
@@ -366,7 +398,10 @@ class BigBirdFinetune(pl.LightningModule):
         # This is not necessary but makes sure we use the right attention
         self.model.bert.set_attention_type("block_sparse")
         outputs = self(
-            inputs, attention_mask=attention_mask, labels=labels, return_dict=True
+            inputs,
+            attention_mask=attention_mask,
+            labels=labels,
+            return_dict=True,
         )
 
         loss = outputs[0]
@@ -381,21 +416,24 @@ class BigBirdFinetune(pl.LightningModule):
 
     def on_test_epoch_end(self) -> Any:
         """Evaluate after the test epoch."""
-        labels = torch.cat([x['labels'] for x in self.test_outputs]).cpu()
-        preds = torch.cat([x['preds'] for x in self.test_outputs]).cpu()
-        loss = torch.stack([x['loss'] for x in self.test_outputs]).mean().cpu()
-        self.log('test_loss', loss)
-        self.log('test_acc', accuracy_score(labels, preds))
-        self.log('test_f1', f1_score(labels, preds))
-        self.log('test_auc', roc_auc_score(labels, preds))
-        self.log('test_precision', precision_score(labels, preds))
-        self.log('test_recall', recall_score(labels, preds))
+        labels = torch.cat([x["labels"] for x in self.test_outputs]).cpu()
+        preds = torch.cat([x["preds"] for x in self.test_outputs]).cpu()
+        loss = torch.stack([x["loss"] for x in self.test_outputs]).mean().cpu()
+        self.log("test_loss", loss)
+        self.log("test_acc", accuracy_score(labels, preds))
+        self.log("test_f1", f1_score(labels, preds))
+        self.log("test_auc", roc_auc_score(labels, preds))
+        self.log("test_precision", precision_score(labels, preds))
+        self.log("test_recall", recall_score(labels, preds))
         return loss
 
-    def configure_optimizers(self) -> Tuple[list[AdamW], list[dict[str, SequentialLR | str]]]:
+    def configure_optimizers(
+        self,
+    ) -> Tuple[list[AdamW], list[dict[str, SequentialLR | str]]]:
         """Configure optimizers and learning rate scheduler."""
         optimizer = optim.AdamW(
-            self.parameters(), lr=self.learning_rate
+            self.parameters(),
+            lr=self.learning_rate,
         )
 
         n_steps = self.trainer.estimated_stepping_batches
@@ -403,10 +441,16 @@ class BigBirdFinetune(pl.LightningModule):
         n_decay_steps = int(0.9 * n_steps)
 
         warmup = LinearLR(
-            optimizer, start_factor=0.01, end_factor=1.0, total_iters=n_warmup_steps
+            optimizer,
+            start_factor=0.01,
+            end_factor=1.0,
+            total_iters=n_warmup_steps,
         )
         decay = LinearLR(
-            optimizer, start_factor=1.0, end_factor=0.01, total_iters=n_decay_steps
+            optimizer,
+            start_factor=1.0,
+            end_factor=0.01,
+            total_iters=n_decay_steps,
         )
 
         scheduler = SequentialLR(
