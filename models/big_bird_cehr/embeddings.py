@@ -198,9 +198,9 @@ class BigBirdEmbeddingsForCEHR(nn.Module):
         self.token_type_embeddings = nn.Embedding(
             config.type_vocab_size, config.hidden_size
         )
-        # self.visit_order_embeddings = nn.Embedding(
-        #     config.max_position_embeddings, config.hidden_size
-        # )
+        self.visit_order_embeddings = nn.Embedding(
+            config.max_position_embeddings, config.hidden_size
+        )
         self.time_embeddings = TimeEmbeddingLayer(
             embedding_size=time_embeddings_size, is_time_delta=True
         )
@@ -295,7 +295,7 @@ class BigBirdEmbeddingsForCEHR(nn.Module):
         time_stamps_embeds = self.time_embeddings(self.time_stamps)
         ages_embeds = self.age_embeddings(self.ages)
         visit_segments_embeds = self.visit_segment_embeddings(self.visit_segments)
-        # visit_order_embeds = self.visit_order_embeddings(self.visit_orders)
+        visit_order_embeds = self.visit_order_embeddings(self.visit_orders)
 
         position_embeds = self.position_embeddings(position_ids)
         token_type_embeds = self.token_type_embeddings(token_type_ids)
@@ -304,7 +304,7 @@ class BigBirdEmbeddingsForCEHR(nn.Module):
         inputs_embeds = self.tanh(self.scale_back_concat_layer(inputs_embeds))
         embeddings = inputs_embeds + token_type_embeds
         embeddings += position_embeds
-        # embeddings += visit_order_embeds
+        embeddings += visit_order_embeds
         embeddings += visit_segments_embeds
 
         embeddings = self.dropout(embeddings)
