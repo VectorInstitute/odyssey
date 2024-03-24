@@ -208,7 +208,8 @@ class BigBirdEmbeddingsForCEHR(nn.Module):
             config.hidden_size,
         )
         self.visit_order_embeddings = nn.Embedding(
-            config.max_position_embeddings, config.hidden_size
+            config.max_position_embeddings,
+            config.hidden_size,
         )
         self.time_embeddings = TimeEmbeddingLayer(
             embedding_size=time_embeddings_size,
