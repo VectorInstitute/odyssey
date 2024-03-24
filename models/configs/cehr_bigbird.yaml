@@ -15,7 +15,8 @@ model:
 
 model_finetune:
   num_labels: 20
-  learning_rate: 5.e-5  # -> 5.e-6
+  problem_type: 'multi_label_classification'
+  learning_rate: 5.e-5
   classifier_dropout: 0.1
 
 train:
@@ -34,8 +35,8 @@ finetune:
   num_workers: 3
   gpus: 2
   nodes: 1
-  max_epochs: 5  # -> 5
-  acc: 1  # -> 1
+  max_epochs: 5
+  acc: 1
   patience: 5
   persistent_workers: True
   pin_memory: False

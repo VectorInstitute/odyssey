@@ -227,6 +227,7 @@ class BigBirdFinetune(pl.LightningModule):
     def __init__(
             self,
             pretrained_model: BigBirdPretrain,
+            problem_type: str = 'single_label_classification',
             num_labels: int = 2,
             learning_rate: float = 5e-5,
             classifier_dropout: float = 0.1,
@@ -241,7 +242,7 @@ class BigBirdFinetune(pl.LightningModule):
         self.config = pretrained_model.config
         self.config.num_labels = self.num_labels
         self.config.classifier_dropout = self.classifier_dropout
-        self.config.problem_type = 'multi_label_classification'
+        self.config.problem_type = problem_type
 
         self.model = BigBirdForSequenceClassification(config=self.config)
         self.post_init()
