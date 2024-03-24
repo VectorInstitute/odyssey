@@ -20,12 +20,12 @@ model_finetune:
   classifier_dropout: 0.1
 
 train:
-  batch_size: 26
-  num_workers: 3
+  batch_size: 32 # 34
+  num_workers: 5
   gpus: 4
   nodes: 1
-  max_epochs: 10
-  acc: 8
+  max_epochs: 15
+  acc: 1
   mask_prob: 0.15
   persistent_workers: True
   pin_memory: False

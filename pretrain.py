@@ -38,14 +38,12 @@ def main(args: Dict[str, Any], model_config: Dict[str, Any]) -> None:
         args.sequence_file,
         args.id_file,
     )
-    # pre_data.rename(columns={args.label_name: "label"}, inplace=True)
 
     # Split data
     pre_train, pre_val = train_test_split(
         pre_data,
         test_size=args.val_size,
         random_state=args.seed,
-        # stratify=pre_data["label"],
     )
 
     # Train Tokenizer
@@ -127,8 +125,8 @@ def main(args: Dict[str, Any], model_config: Dict[str, Any]) -> None:
         accelerator="gpu",
         num_nodes=args.nodes,
         devices=args.gpus,
-        strategy=DDPStrategy(find_unused_parameters=True) if args.gpus > 1 else "auto",
-        precision="16-mixed",
+        strategy=DDPStrategy(find_unused_parameters=True) if args.gpus > 1 else "auto", # DeepSpeedStrategy(stage=2, offload_optimizer=False)
+        precision=16,
         check_val_every_n_epoch=1,
         max_epochs=args.max_epochs,
         callbacks=callbacks,
@@ -157,20 +155,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model-type",
         type=str,
-        required=True,
+        default='cehr_bigbird',
         help="Model type: 'cehr_bert' or 'cehr_bigbird'",
     )
     parser.add_argument(
         "--exp-name",
         type=str,
-        required=True,
+        default='pretrain_with_conditions',
         help="Path to model config file",
-    )
-    parser.add_argument(
-        "--label-name",
-        type=str,
-        required=True,
-        help="Name of the label column",
     )
     parser.add_argument(
         "--workspace-name",
@@ -189,25 +181,25 @@ if __name__ == "__main__":
     parser.add_argument(
         "--data-dir",
         type=str,
-        default="data_files",
+        default="data/bigbird_data",
         help="Path to the data directory",
     )
     parser.add_argument(
         "--sequence-file",
         type=str,
-        default="patient_sequences_2048_labeled.parquet",
+        default="patient_sequences/patient_sequences_2048_with_conditions.parquet",
         help="Path to the patient sequence file",
     )
     parser.add_argument(
         "--id-file",
         type=str,
-        default="dataset_2048_mortality_1month.pkl",
+        default="patient_id_dict/sample_pretrain_test_patient_ids_with_conditions.pkl",
         help="Path to the patient id file",
     )
     parser.add_argument(
         "--vocab-dir",
         type=str,
-        default="data_files/vocab",
+        default="data/vocab",
         help="Path to the vocabulary directory of json files",
     )
     parser.add_argument(
@@ -221,21 +213,22 @@ if __name__ == "__main__":
     parser.add_argument(
         "--checkpoint-dir",
         type=str,
-        default="checkpoints",
+        default="checkpoints/bigbird_pretrain_with_conditions",
         help="Path to the checkpoint directory",
     )
     parser.add_argument(
-        "--log-dir",
+        "--log_dir",
         type=str,
         default="logs",
         help="Path to the log directory",
     )
     parser.add_argument(
-        "--checkpoint-path",
+        "--resume_checkpoint",
         type=str,
         default=None,
-        help="Checkpoint to resume training from",
+        help="Checkpoint to resume finetuning from",
     )
+
     parser.add_argument(
         "--log_every_n_steps",
         type=int,

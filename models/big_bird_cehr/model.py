@@ -13,6 +13,7 @@ from torch.nn import CrossEntropyLoss
 import torch.optim as optim
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LinearLR, SequentialLR
+from torch.cuda.amp import autocast
 
 from transformers import BertConfig, BigBirdConfig
 from transformers.modeling_outputs import MaskedLMOutput, SequenceClassifierOutput
@@ -20,6 +21,8 @@ from transformers.models.bert.modeling_bert import BertPooler
 from transformers.models.big_bird.modeling_big_bird import BigBirdForMaskedLM, BigBirdForSequenceClassification
 
 import pytorch_lightning as pl
+from deepspeed.ops.adam import DeepSpeedCPUAdam
+
 
 from sklearn.metrics import (accuracy_score, f1_score,
                              precision_score, recall_score, roc_auc_score)
@@ -155,9 +158,11 @@ class BigBirdPretrain(pl.LightningModule):
 
         # This is not necessary but makes sure we use the right attention
         self.model.bert.set_attention_type("block_sparse")
-        loss = self(
-            inputs, attention_mask=attention_mask, labels=labels, return_dict=True
-        ).loss
+
+        with autocast():
+            loss = self(
+                inputs, attention_mask=attention_mask, labels=labels, return_dict=True
+            ).loss
 
         (current_lr,) = self.lr_schedulers().get_last_lr()
         self.log_dict(
@@ -182,9 +187,11 @@ class BigBirdPretrain(pl.LightningModule):
 
         # This is not necessary but makes sure we use the right attention
         self.model.bert.set_attention_type("block_sparse")
-        loss = self(
-            inputs, attention_mask=attention_mask, labels=labels, return_dict=True
-        ).loss
+
+        with autocast():
+            loss = self(
+                inputs, attention_mask=attention_mask, labels=labels, return_dict=True
+            ).loss
 
         (current_lr,) = self.lr_schedulers().get_last_lr()
         self.log_dict(
@@ -195,11 +202,14 @@ class BigBirdPretrain(pl.LightningModule):
         )
         return loss
 
-    def configure_optimizers(self) -> Tuple[list[AdamW], list[dict[str, SequentialLR | str]]]:
+    def configure_optimizers(self) -> Tuple[list[Any], list[dict[str, SequentialLR | str]]]:
         """Configure optimizers and learning rate scheduler."""
         optimizer = optim.AdamW(
             self.parameters(), lr=self.learning_rate
         )
+        # optimizer = DeepSpeedCPUAdam(
+        #     self.parameters(), lr=self.learning_rate, adamw_mode=True
+        # )
 
         n_steps = self.trainer.estimated_stepping_batches
         n_warmup_steps = int(0.1 * n_steps)
