@@ -382,6 +382,7 @@ class BigBirdFinetune(pl.LightningModule):
         loss = outputs[0]
         logits = outputs[1]
         preds = torch.argmax(logits, dim=1)
+
         log = {"loss": loss, "preds": preds, "labels": labels}
 
         # Append the outputs to the instance attribute
@@ -394,12 +395,17 @@ class BigBirdFinetune(pl.LightningModule):
         labels = torch.cat([x['labels'] for x in self.test_outputs]).cpu()
         preds = torch.cat([x['preds'] for x in self.test_outputs]).cpu()
         loss = torch.stack([x['loss'] for x in self.test_outputs]).mean().cpu()
+
+        # Update the saved outputs to include all concatanted batches
+        self.test_outputs = {"loss": loss, "preds": preds, "labels": labels}
+
         self.log('test_loss', loss)
         self.log('test_acc', accuracy_score(labels, preds))
         self.log('test_f1', f1_score(labels, preds))
         self.log('test_auc', roc_auc_score(labels, preds))
         self.log('test_precision', precision_score(labels, preds))
         self.log('test_recall', recall_score(labels, preds))
+
         return loss
 
     def configure_optimizers(self) -> Tuple[list[AdamW], list[dict[str, SequentialLR | str]]]:
