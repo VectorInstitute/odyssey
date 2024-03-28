@@ -17,9 +17,9 @@ from torch.optim.lr_scheduler import ExponentialLR
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-from odyssey.models.big_bird_cehr.data import FinetuneDataset
-from odyssey.models.big_bird_cehr.embeddings import Embeddings
-from odyssey.models.big_bird_cehr.tokenizer import HuggingFaceConceptTokenizer
+from odyssey.data.dataset import FinetuneDataset
+from odyssey.models.cehr_big_bird.embeddings import Embeddings
+from odyssey.models.cehr_big_bird.tokenizer import HuggingFaceConceptTokenizer
 
 
 ROOT = "/fs01/home/afallah/odyssey/odyssey"

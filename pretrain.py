@@ -15,8 +15,8 @@ from torch.utils.data import DataLoader
 
 from odyssey.data.dataset import PretrainDataset
 from odyssey.data.tokenizer import ConceptTokenizer
-from odyssey.models.cehr_big_bird.model import BigBirdPretrain
 from odyssey.models.cehr_bert.model import BertPretrain
+from odyssey.models.cehr_big_bird.model import BigBirdPretrain
 from odyssey.models.utils import (
     get_run_id,
     load_config,
@@ -37,14 +37,14 @@ def main(args: Dict[str, Any], model_config: Dict[str, Any]) -> None:
         args.sequence_file,
         args.id_file,
     )
-    # pre_data.rename(columns={args.label_name: "label"}, inplace=True)
+    # pre_data.rename(columns={args.label_name: "label"}, inplace=True)  # noqa: ERA001
 
     # Split data
     pre_train, pre_val = train_test_split(
         pre_data,
         test_size=args.val_size,
         random_state=args.seed,
-        # stratify=pre_data["label"],
+        # stratify=pre_data["label"],  # noqa: ERA001
     )
 
     # Train Tokenizer

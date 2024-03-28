@@ -4,7 +4,7 @@ from typing import Any, Dict, Optional
 
 import torch
 
-from odyssey.models.big_bird_cehr.model import BigBirdFinetune, BigBirdPretrain
+from odyssey.models.cehr_big_bird.model import BigBirdFinetune, BigBirdPretrain
 from odyssey.tokenizer import ConceptTokenizer
 
 
@@ -25,14 +25,19 @@ def load_finetuned_model(
     ----------
     model_path: str
         Path to the finetuned model to load
-    tokenizer: Loaded tokenizer object
-    pre_model_config: Optional config to override default values of a pretrained model
-    fine_model_config: Optional config to override default values of a finetuned model
-    device: CUDA device. By default, GPU is used
+    tokenizer: ConceptTokenizer
+        Loaded tokenizer object
+    pre_model_config: Dict[str, Any], optional
+        Optional config to override default values of a pretrained model
+    fine_model_config: Dict[str, Any], optional
+        Optional config to override default values of a finetuned model
+    device: torch.device, optional
+        CUDA device. By default, GPU is used
 
     Returns
     -------
-        The loaded PyTorch model
+    torch.nn.Module
+        Finetuned model loaded from model_path
 
     """
     # Load GPU or CPU device
@@ -65,16 +70,22 @@ def predict_patient_outcomes(
     model: torch.nn.Module,
     device: Optional[torch.device] = None,
 ) -> Any:
-    """
-    Return model output predictions on given patient data.
+    """Compute model output predictions on given patient data.
 
-    Args:
-        patient: Dictionary of tokenized patient information
-        model: Finetuned or pretrained PyTorch model
-        device: CUDA device. By default, GPU is used
+    Parameters
+    ----------
+    patient: Dict[str, torch.Tensor]
+        Patient data as a dictionary of tensors
+    model: torch.nn.Module
+        Model to use for prediction
+    device: torch.device, optional
+        CUDA device. By default, GPU is used
 
-    Return:
-        Outputs of model predictions on given patient data
+    Returns
+    -------
+    Any
+        Model output predictions on the given patient data
+
     """
     # Load GPU or CPU device
     if not device:
