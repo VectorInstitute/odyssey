@@ -1,6 +1,7 @@
 """Collect data from the FHIR database and save to csv files."""
 
 import json
+import logging
 import os
 from ast import literal_eval
 from typing import Any, Dict, List, Optional
@@ -16,6 +17,13 @@ from fhir.resources.patient import Patient
 from fhir.resources.procedure import Procedure
 from sqlalchemy import MetaData, Table, create_engine, select
 from tqdm import tqdm
+
+from odyssey.utils.log import setup_logging
+
+
+# Logging.
+LOGGER = logging.getLogger(__name__)
+setup_logging(print_level="INFO", logger=LOGGER)
 
 
 PATIENT = "patient"
@@ -212,7 +220,8 @@ class FHIRDataCollector:
         )
         buffer = []
         results = self.execute_query(DATA_COLLECTION_CONFIG[PATIENT]["table_name"])
-        for p in tqdm(results, desc="Processing patients", unit=PATIENT):
+        LOGGER.info("Fetching patient data ...")
+        for p in tqdm(results, desc="Processing patients", unit="patients"):
             patient = Patient(p)
             patient_data = {
                 "patient_id": patient.id,
@@ -239,7 +248,7 @@ class FHIRDataCollector:
     def get_encounter_data(self) -> None:
         """Get encounter data from the database and save to a csv file."""
         try:
-            patients = pd.read_csv(self.csv_dir + "/patients.csv")
+            patients = pd.read_csv(os.path.join(self.csv_dir, "patients.csv"))
         except FileNotFoundError:
             print("Patients file not found. Please run get_patient_data() first.")
             return
@@ -249,10 +258,11 @@ class FHIRDataCollector:
         )
         buffer = []
         outpatient_ids = []
+        LOGGER.info("Fetching encounter data ...")
         for _, patient_id in tqdm(
             patients["patient_id"].items(),
             desc="Processing patients",
-            unit="patient",
+            unit="patients",
         ):
             results = self.execute_query(
                 DATA_COLLECTION_CONFIG[ENCOUNTER]["table_name"],
@@ -295,12 +305,12 @@ class FHIRDataCollector:
             flush=True,
         )
         patients = patients[~patients["patient_id"].isin(outpatient_ids)]
-        patients.to_csv(self.csv_dir + "/inpatient.csv", index=False)
+        patients.to_csv(os.path.join(self.csv_dir, "inpatient.csv"), index=False)
 
     def get_procedure_data(self) -> None:
         """Get procedure data from the database and save to a csv file."""
         try:
-            patients = pd.read_csv(self.csv_dir + "/inpatient.csv")
+            patients = pd.read_csv(os.path.join(self.csv_dir, "inpatient.csv"))
         except FileNotFoundError:
             print(
                 "Encounters (inpatient) file not found. Please run get_encounter_data() first.",
@@ -312,10 +322,11 @@ class FHIRDataCollector:
         )
         procedure_vocab = set()
         buffer = []
+        LOGGER.info("Fetching procedure data ...")
         for _, patient_id in tqdm(
             patients["patient_id"].items(),
             desc="Processing patients",
-            unit="patient",
+            unit="patients",
         ):
             results = self.execute_query("procedure", patient_id)
             proc_codes = []
@@ -358,13 +369,13 @@ class FHIRDataCollector:
             save_path,
             flush=True,
         )
-        with open(self.vocab_dir + "/procedure_vocab.json", "w") as f:
+        with open(os.path.join(self.vocab_dir, "procedure_vocab.json"), "w") as f:
             json.dump(list(procedure_vocab), f)
 
     def get_medication_data(self) -> None:
         """Get medication data from the database and save to a csv file."""
         try:
-            patients = pd.read_csv(self.csv_dir + "/inpatient.csv")
+            patients = pd.read_csv(os.path.join(self.csv_dir, "inpatient.csv"))
         except FileNotFoundError:
             print("Patients file not found. Please run get_encounter_data() first.")
             return
@@ -377,11 +388,12 @@ class FHIRDataCollector:
         save_path = os.path.join(self.csv_dir, "med_requests.csv")
         med_vocab = set()
         buffer = []
+        LOGGER.info("Fetching medication data ...")
         with self.engine.connect() as connection:
             for _, patient_id in tqdm(
                 patients["patient_id"].items(),
                 desc="Processing patients",
-                unit="patient",
+                unit="patients",
             ):
                 results = self.execute_query(
                     DATA_COLLECTION_CONFIG[MEDICATION]["table_name"],
@@ -437,13 +449,13 @@ class FHIRDataCollector:
             save_path,
             flush=True,
         )
-        with open(self.vocab_dir + "/med_vocab.json", "w") as f:
+        with open(os.path.join(self.vocab_dir, "med_vocab.json"), "w") as f:
             json.dump(list(med_vocab), f)
 
     def get_lab_data(self) -> None:
         """Get lab data from the database and save to a csv file."""
         try:
-            patients = pd.read_csv(self.csv_dir + "/inpatient.csv")
+            patients = pd.read_csv(os.path.join(self.csv_dir, "inpatient.csv"))
         except FileNotFoundError:
             print("Patients file not found. Please run get_encounter_data() first.")
             return
@@ -451,10 +463,11 @@ class FHIRDataCollector:
         lab_vocab = set()
         all_units = {}
         buffer = []
+        LOGGER.info("Fetching lab data ...")
         for _, patient_id in tqdm(
             patients["patient_id"].items(),
             desc="Processing patients",
-            unit="patient",
+            unit="patients",
         ):
             results = self.execute_query(
                 DATA_COLLECTION_CONFIG[LAB]["table_name"],
@@ -506,10 +519,10 @@ class FHIRDataCollector:
             save_path,
             flush=True,
         )
-        with open(self.vocab_dir + "/lab_vocab.json", "w") as f:
+        with open(os.path.join(self.vocab_dir, "lab_vocab.json"), "w") as f:
             json.dump(list(lab_vocab), f)
         all_units = {k: list(v) for k, v in all_units.items()}
-        with open(self.vocab_dir + "/lab_units.json", "w") as f:
+        with open(os.path.join(self.vocab_dir, "lab_units.json"), "w") as f:
             json.dump(all_units, f)
 
     def filter_lab_data(
@@ -517,20 +530,21 @@ class FHIRDataCollector:
     ) -> None:
         """Filter out lab codes that have more than one units."""
         try:
-            labs = pd.read_csv(self.csv_dir + "/labs.csv")
-            with open(self.vocab_dir + "/lab_vocab.json", "r") as f:
+            labs = pd.read_csv(os.path.join(self.csv_dir, "labs.csv"))
+            with open(os.path.join(self.vocab_dir, "lab_vocab.json"), "r") as f:
                 lab_vocab = json.load(f)
-            with open(self.vocab_dir + "/lab_units.json", "r") as f:
+            with open(os.path.join(self.vocab_dir, "lab_units.json"), "r") as f:
                 lab_units = json.load(f)
         except FileNotFoundError:
             print("Labs file not found. Please run get_lab_data() first.")
             return
+        LOGGER.info("Filtering lab data ...")
         for code, units in lab_units.items():
             if len(units) > 1:
                 lab_vocab.remove(code)
         labs = labs.apply(lambda x: filter_lab_codes(x, lab_vocab), axis=1)
-        labs.to_csv(self.csv_dir + "/filtered_labs.csv", index=False)
-        with open(self.vocab_dir + "/lab_vocab.json", "w") as f:
+        labs.to_csv(os.path.join(self.csv_dir, "filtered_labs.csv"), index=False)
+        with open(os.path.join(self.vocab_dir, "lab_vocab.json"), "w") as f:
             json.dump(list(lab_vocab), f)
 
     def process_lab_values(self, num_bins: int = 5) -> None:
@@ -540,10 +554,11 @@ class FHIRDataCollector:
         ----------
         num_bins : int, optional
             number of bins, by default 5
+
         """
         try:
-            labs = pd.read_csv(self.csv_dir + "/filtered_labs.csv")
-            with open(self.vocab_dir + "/lab_vocab.json", "r") as f:
+            labs = pd.read_csv(os.path.join(self.csv_dir, "filtered_labs.csv"))
+            with open(os.path.join(self.vocab_dir, "lab_vocab.json"), "r") as f:
                 lab_vocab = json.load(f)
         except FileNotFoundError:
             print("Labs file not found. Please run get_lab_data() first.")
@@ -565,6 +580,7 @@ class FHIRDataCollector:
             row["binned_values"] = binned_values
             return row
 
+        LOGGER.info("Processing lab values ...")
         labs = labs.apply(apply_eval, axis=1)
         quantile_bins = {}
         for code in lab_vocab:
@@ -582,19 +598,19 @@ class FHIRDataCollector:
             ).categories
 
         labs = labs.apply(assign_to_quantile_bins, axis=1)
-        labs.to_csv(self.csv_dir + "/processed_labs.csv", index=False)
+        labs.to_csv(os.path.join(self.csv_dir, "processed_labs.csv"), index=False)
 
         lab_vocab_binned = []
         lab_vocab_binned.extend(
             [f"{code}_{i}" for code in lab_vocab for i in range(num_bins)],
         )
-        with open(self.vocab_dir + "/lab_vocab.json", "w") as f:
+        with open(os.path.join(self.vocab_dir + "lab_vocab.json"), "w") as f:
             json.dump(lab_vocab_binned, f)
 
     def get_condition_data(self) -> None:
         """Get condition data from the database and save to a csv file."""
         try:
-            patients = pd.read_csv(self.csv_dir + "/inpatient.csv")
+            patients = pd.read_csv(os.path.join(self.csv_dir, "inpatient.csv"))
         except FileNotFoundError:
             print("Patients file not found. Please run get_encounter_data() first.")
             return
@@ -603,10 +619,11 @@ class FHIRDataCollector:
         condition_counts = {}
         condition_systems = {}
         buffer = []
+        LOGGER.info("Fetching condition data ...")
         for _, patient_id in tqdm(
             patients["patient_id"].items(),
             desc="Processing patients",
-            unit="patient",
+            unit="patients",
         ):
             patient_conditions_counted = set()
             results = self.execute_query(
@@ -650,7 +667,7 @@ class FHIRDataCollector:
             save_path,
             flush=True,
         )
-        with open(self.vocab_dir + "/condition_vocab.json", "w") as f:
+        with open(os.path.join(self.vocab_dir, "condition_vocab.json"), "w") as f:
             json.dump(list(condition_vocab), f)
         sorted_conditions = sorted(
             condition_counts.items(),
@@ -658,18 +675,18 @@ class FHIRDataCollector:
             reverse=True,
         )
         sorted_dict = dict(sorted_conditions)
-        with open(self.vocab_dir + "/condition_counts.json", "w") as f:
+        with open(os.path.join(self.vocab_dir, "condition_counts.json"), "w") as f:
             json.dump(sorted_dict, f)
-
-        with open(self.vocab_dir + "/condition_systems.json", "w") as f:
+        with open(os.path.join(self.vocab_dir, "condition_systems.json"), "w") as f:
             json.dump(condition_systems, f)
 
     def group_conditions(self) -> None:
         """Group conditions into categories."""
-        with open(self.vocab_dir + "/condition_counts.json", "r") as file:
+        with open(os.path.join(self.vocab_dir, "condition_counts.json"), "r") as file:
             data = json.load(file)
-        with open(self.vocab_dir + "/condition_systems.json", "r") as file:
+        with open(os.path.join(self.vocab_dir, "condition_systems.json"), "r") as file:
             systems = json.load(file)
+        LOGGER.info("Grouping conditions ...")
         grouped_data = {}
         for code, info in data.items():
             prefix = code[:3]
@@ -686,7 +703,10 @@ class FHIRDataCollector:
                 reverse=True,
             ),
         )
-        with open(self.vocab_dir + "condition_categories.json", "w") as file:
+        with open(
+            os.path.join(self.vocab_dir, "condition_categories.json"),
+            "w",
+        ) as file:
             json.dump(sorted_grouped_data, file, indent=4)
 
 

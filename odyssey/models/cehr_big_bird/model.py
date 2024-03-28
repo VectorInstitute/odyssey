@@ -1,8 +1,4 @@
-"""
-File: model.py.
-
-Implement BigBird using HuggingFace for pretraining and finetuning.
-"""
+"""Big Bird transformer model."""
 
 from typing import Any, Dict, Optional, Tuple, Union
 
@@ -25,7 +21,7 @@ from transformers.models.big_bird.modeling_big_bird import (
     BigBirdForSequenceClassification,
 )
 
-from .embeddings import BigBirdEmbeddingsForCEHR
+from odyssey.models.cehr_big_bird.embeddings import BigBirdEmbeddingsForCEHR
 
 
 class BigBirdPretrain(pl.LightningModule):
@@ -305,7 +301,10 @@ class BigBirdFinetune(pl.LightningModule):
         """Forward pass for the model."""
         concept_ids, type_ids, time_stamps, ages, visit_orders, visit_segments = inputs
         self.model.bert.embeddings.cache_input(
-            time_stamps, ages, visit_orders, visit_segments
+            time_stamps,
+            ages,
+            visit_orders,
+            visit_segments,
         )
 
         if attention_mask is None:

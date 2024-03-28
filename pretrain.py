@@ -13,16 +13,16 @@ from pytorch_lightning.strategies.ddp import DDPStrategy
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 
-from lib.data import PretrainDataset
-from lib.tokenizer import ConceptTokenizer
-from lib.utils import (
+from odyssey.data.dataset import PretrainDataset
+from odyssey.data.tokenizer import ConceptTokenizer
+from odyssey.models.cehr_big_bird.model import BigBirdPretrain
+from odyssey.models.cehr_bert.model import BertPretrain
+from odyssey.models.utils import (
     get_run_id,
     load_config,
     load_pretrain_data,
     seed_everything,
 )
-from models.big_bird_cehr.model import BigBirdPretrain
-from models.cehr_bert.model import BertPretrain
 
 
 def main(args: Dict[str, Any], model_config: Dict[str, Any]) -> None:
