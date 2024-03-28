@@ -19,8 +19,8 @@ from torch.utils.data import DataLoader
 
 from odyssey.data.dataset import FinetuneDataset
 from odyssey.data.tokenizer import ConceptTokenizer
-from odyssey.models.cehr_big_bird.model import BigBirdFinetune, BigBirdPretrain
 from odyssey.models.cehr_bert.model import BertFinetune, BertPretrain
+from odyssey.models.cehr_big_bird.model import BigBirdFinetune, BigBirdPretrain
 from odyssey.models.utils import (
     get_latest_checkpoint,
     get_run_id,
