@@ -17,17 +17,17 @@ from pytorch_lightning.strategies.ddp import DDPStrategy
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 
-from lib.data import FinetuneDataset
-from lib.tokenizer import ConceptTokenizer
-from lib.utils import (
+from odyssey.data.dataset import FinetuneDataset
+from odyssey.data.tokenizer import ConceptTokenizer
+from odyssey.models.cehr_big_bird.model import BigBirdFinetune, BigBirdPretrain
+from odyssey.models.cehr_bert.model import BertFinetune, BertPretrain
+from odyssey.models.utils import (
     get_latest_checkpoint,
     get_run_id,
     load_config,
     load_finetune_data,
     seed_everything,
 )
-from models.big_bird_cehr.model import BigBirdFinetune, BigBirdPretrain
-from models.cehr_bert.model import BertFinetune, BertPretrain
 
 
 def main(

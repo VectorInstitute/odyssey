@@ -22,7 +22,7 @@ from transformers.models.bert.modeling_bert import (
     BertPooler,
 )
 
-from .embeddings import Embeddings
+from odyssey.models.cehr_bert.embeddings import Embeddings
 
 
 class BertPretrain(pl.LightningModule):

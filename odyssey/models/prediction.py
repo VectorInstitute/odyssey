@@ -4,8 +4,8 @@ from typing import Any, Dict, Optional
 
 import torch
 
-from lib.tokenizer import ConceptTokenizer
-from models.big_bird_cehr.model import BigBirdFinetune, BigBirdPretrain
+from odyssey.models.big_bird_cehr.model import BigBirdFinetune, BigBirdPretrain
+from odyssey.tokenizer import ConceptTokenizer
 
 
 def load_finetuned_model(
@@ -23,7 +23,8 @@ def load_finetuned_model(
 
     Parameters
     ----------
-    model_path: Path to the finetuned model to load
+    model_path: str
+        Path to the finetuned model to load
     tokenizer: Loaded tokenizer object
     pre_model_config: Optional config to override default values of a pretrained model
     fine_model_config: Optional config to override default values of a finetuned model
