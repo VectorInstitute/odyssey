@@ -24,7 +24,7 @@ class TestFHIRDataCollector(TestCase):
             buffer_size=10,
         )
 
-    def tearDown(self) -> None:  # noqa: N802
+    def tearDown(self) -> None:
         """Tear down FHIRDataCollector."""
         if os.path.exists(self.save_dir):
             shutil.rmtree(self.save_dir)
