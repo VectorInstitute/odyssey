@@ -1,8 +1,4 @@
-"""
-File: Bi-LSTM.ipynb.
-
-Code to train and evaluate a bi-directional LSTM model on MIMIC-IV FHIR dataset.
-"""
+"""Bi-directional LSTM model implementation."""
 
 import os
 import sys
@@ -21,9 +17,9 @@ from torch.optim.lr_scheduler import ExponentialLR
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-from models.big_bird_cehr.data import FinetuneDataset
-from models.big_bird_cehr.embeddings import Embeddings
-from models.big_bird_cehr.tokenizer import HuggingFaceConceptTokenizer
+from odyssey.models.big_bird_cehr.data import FinetuneDataset
+from odyssey.models.big_bird_cehr.embeddings import Embeddings
+from odyssey.models.big_bird_cehr.tokenizer import HuggingFaceConceptTokenizer
 
 
 ROOT = "/fs01/home/afallah/odyssey/odyssey"

@@ -6,7 +6,7 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-from lib.tokenizer import ConceptTokenizer
+from odyssey.data.tokenizer import ConceptTokenizer
 
 
 class PretrainDataset(Dataset):
