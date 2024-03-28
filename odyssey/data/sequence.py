@@ -1,14 +1,22 @@
 """Create patient sequences from the events dataframes."""
 
-import ast
 import json
+import logging
 import os
+import time
+from ast import literal_eval
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd
 from dateutil import parser
+from odyssey.utils.log import setup_logging
+
+
+# Logging.
+LOGGER = logging.getLogger(__name__)
+setup_logging(print_level="INFO", logger=LOGGER)
 
 
 class SequenceGenerator:
@@ -160,13 +168,13 @@ class SequenceGenerator:
         -------
         pd.DataFrame
         """
-        proc_encounters = set(eval(procedure_row["encounter_ids"]))
-        med_encounters = set(eval(medication_row["encounter_ids"]))
-        lab_encounters = set(eval(lab_row["encounter_ids"]))
+        proc_encounters = set(literal_eval(procedure_row["encounter_ids"]))
+        med_encounters = set(literal_eval(medication_row["encounter_ids"]))
+        lab_encounters = set(literal_eval(lab_row["encounter_ids"]))
         valid_encounters = proc_encounters.union(med_encounters, lab_encounters)
 
         for c_name in ["encounter_ids", "starts", "ends"]:
-            encounter_row[c_name] = eval(encounter_row[c_name])
+            encounter_row[c_name] = literal_eval(encounter_row[c_name])
         encounter_ids = encounter_row["encounter_ids"]
         encounter_starts = encounter_row["starts"]
         encounter_ends = encounter_row["ends"]
@@ -348,13 +356,13 @@ class SequenceGenerator:
                 "lab_values",
                 "lab_units",
             ]:
-                row[name] = eval(row[name])
+                row[name] = literal_eval(row[name])
         elif concept_name == "med":
             for name in ["encounter_ids", "med_dates", "med_codes"]:
-                row[name] = eval(row[name])
+                row[name] = literal_eval(row[name])
         elif concept_name == "proc":
             for name in ["encounter_ids", "proc_dates", "proc_codes"]:
-                row[name] = eval(row[name])
+                row[name] = literal_eval(row[name])
         if row["length"] == 0:
             return row
         dates = []
@@ -743,7 +751,7 @@ class SequenceGenerator:
         death_code = death_date - last_code_date
 
         if death_code.days < 0:
-            print("after death events", row["patient_id"])
+            LOGGER.info(f"After death events {row['patient_id']}")
             self.after_death_events.append(row["patient_id"])
 
         row["deceased"] = 1
@@ -978,163 +986,153 @@ class SequenceGenerator:
             f"{self.data_dir}/conditions.csv",
         ]
         rounds = 0
+        more_chunks = True
         readers = [pd.read_csv(path, chunksize=chunksize) for path in file_paths]
-        while True:
+        while more_chunks:
             try:
-                # read dataframes
-                if rounds <= 8:
-                    dataframes = [
-                        next(reader).reset_index(drop=True) for reader in readers
-                    ]
-                    rounds += 1
-                    continue
                 dataframes = [next(reader).reset_index(drop=True) for reader in readers]
-                patients, encounters, procedures, medications, labs, conditions = (
-                    dataframes
-                )
-
-                ## process encounters
-                # keep valid encounters
-                encounters = encounters.apply(
-                    lambda row: self._get_valid_encounters(
-                        row,
-                        procedures.iloc[row.name],
-                        medications.iloc[row.name],
-                        labs.iloc[row.name],
-                    ),
-                    axis=1,
-                )
-                # keep valid rows with at least one encounter
-                valid_indices = encounters[encounters["length"] > 0].index
-                encounters = encounters.loc[valid_indices].reset_index(drop=True)
-                patients = patients.loc[valid_indices].reset_index(drop=True)
-                # sort encounters by start time
-                encounters = encounters.apply(self._sort_encounters, axis=1)
-                # get ages of the patients at the time of the encounters
-                encounters = encounters.apply(
-                    lambda row: self._get_encounters_age(row, patients.iloc[row.name]),
-                    axis=1,
-                )
-                # get time of the encounters in weeks with respect to a reference time
-                encounters = encounters.apply(
-                    lambda row: self._get_encounters_time(row),
-                    axis=1,
-                )
-                # calculate intervals between encounters
-                encounters = encounters.apply(self._calculate_intervals, axis=1)
-                ## process events
-                # keep valid rows and edit the datetimes of the events
-                # procedures
-                procedures = procedures.loc[valid_indices].reset_index(drop=True)
-                procedures = procedures.apply(
-                    lambda row: self._edit_datetimes(
-                        row,
-                        encounters.iloc[row.name],
-                        "proc",
-                    ),
-                    axis=1,
-                )
-                # medications
-                medications = medications.loc[valid_indices].reset_index(drop=True)
-                medications = medications.apply(
-                    lambda row: self._edit_datetimes(
-                        row,
-                        encounters.iloc[row.name],
-                        "med",
-                    ),
-                    axis=1,
-                )
-                # labs
-                labs = labs.loc[valid_indices].reset_index(drop=True)
-                labs = labs.apply(
-                    lambda row: self._edit_datetimes(
-                        row,
-                        encounters.iloc[row.name],
-                        "lab",
-                    ),
-                    axis=1,
-                )
-                # conditions
-                conditions = conditions.loc[valid_indices].reset_index(drop=True)
-                conditions["encounter_conditions"] = conditions[
-                    "encounter_conditions"
-                ].apply(ast.literal_eval)
-
-                # combine events
-                combined_events = self._concat_concepts(
-                    procedures,
-                    medications,
-                    labs,
-                    encounters,
-                    conditions=conditions if condition_per_encounter else None,
-                )
-                # filter patients based on min_events
-                combined_events = combined_events[
-                    combined_events["length"] > min_events
-                ]
-                # add elapsed time after admission for all events
-                combined_events = combined_events.apply(
-                    lambda row: self._time_after_admission(
-                        row,
-                        encounters.iloc[row.name],
-                    ),
-                    axis=1,
-                )
-                # add special tokens to the events
-                combined_events = combined_events.apply(
-                    lambda row: self._add_tokens(row, encounters.iloc[row.name]),
-                    axis=1,
-                )
-                # filter patients based on min_visits
-                combined_events = combined_events[
-                    combined_events["num_visits"] > min_visits
-                ]
-                # get mortality label
-                combined_events = combined_events.apply(
-                    lambda row: self._get_mortality_label(
-                        row,
-                        patients.iloc[row.name],
-                        encounters.iloc[row.name],
-                    ),
-                    axis=1,
-                )
-                combined_events = combined_events[
-                    ~combined_events["patient_id"].isin(self.after_death_events)
-                ]
-                combined_events = combined_events.apply(
-                    lambda row: self._truncate_or_pad(row, pad_events=pad_events),
-                    axis=1,
-                )
-                # get condition label for common and rare conditions
-                combined_events = combined_events.apply(
-                    lambda row: self._get_condition_label(
-                        row,
-                        conditions.iloc[row.name],
-                    ),
-                    axis=1,
-                )
-                # drop rows with nan values for events if any
-                combined_events = combined_events.dropna(
-                    subset=[f"event_tokens_{self.max_seq_length}"],
-                )
-                # save the combined events
-                combined_events_all = combined_events[self.get_all_column_names]
-                combined_events_max = combined_events[self.get_max_column_names]
-
-                combined_events_all.to_parquet(
-                    self.all_dir + f"/patient_sequences_{rounds}.parquet",
-                    engine="pyarrow",
-                )
-                combined_events_max.to_parquet(
-                    self.max_dir
-                    + f"/patient_sequences_{self.max_seq_length}_{rounds}.parquet",
-                    engine="pyarrow",
-                )
-                print(f"Round {rounds} done")
-                rounds += 1
-
             except StopIteration:
+                more_chunks = False
                 break
+            patients, encounters, procedures, medications, labs, conditions = dataframes
+            ## Process encounters
+            # Keep valid encounters
+            encounters = encounters.apply(
+                lambda row: self._get_valid_encounters(
+                    row,
+                    procedures.iloc[row.name],
+                    medications.iloc[row.name],
+                    labs.iloc[row.name],
+                ),
+                axis=1,
+            )
+            # keep valid rows with at least one encounter
+            start = time.time()
+            valid_indices = encounters[encounters["length"] > 0].index
+            encounters = encounters.loc[valid_indices].reset_index(drop=True)
+            patients = patients.loc[valid_indices].reset_index(drop=True)
+            # sort encounters by start time
+            encounters = encounters.apply(self._sort_encounters, axis=1)
+            # get ages of the patients at the time of the encounters
+            encounters = encounters.apply(
+                lambda row: self._get_encounters_age(row, patients.iloc[row.name]),
+                axis=1,
+            )
+            # get time of the encounters in weeks with respect to a reference time
+            encounters = encounters.apply(
+                lambda row: self._get_encounters_time(row),
+                axis=1,
+            )
+            # calculate intervals between encounters
+            encounters = encounters.apply(self._calculate_intervals, axis=1)
+            ## process events
+            # keep valid rows and edit the datetimes of the events
+            # procedures
+            procedures = procedures.loc[valid_indices].reset_index(drop=True)
+            procedures = procedures.apply(
+                lambda row: self._edit_datetimes(
+                    row,
+                    encounters.iloc[row.name],
+                    "proc",
+                ),
+                axis=1,
+            )
+            # medications
+            medications = medications.loc[valid_indices].reset_index(drop=True)
+            medications = medications.apply(
+                lambda row: self._edit_datetimes(
+                    row,
+                    encounters.iloc[row.name],
+                    "med",
+                ),
+                axis=1,
+            )
+            # labs
+            labs = labs.loc[valid_indices].reset_index(drop=True)
+            labs = labs.apply(
+                lambda row: self._edit_datetimes(
+                    row,
+                    encounters.iloc[row.name],
+                    "lab",
+                ),
+                axis=1,
+            )
+            # conditions
+            conditions = conditions.loc[valid_indices].reset_index(drop=True)
+            conditions["encounter_conditions"] = conditions[
+                "encounter_conditions"
+            ].apply(literal_eval)
+
+            # combine events
+            combined_events = self._concat_concepts(
+                procedures,
+                medications,
+                labs,
+                encounters,
+                conditions=conditions if condition_per_encounter else None,
+            )
+            # filter patients based on min_events
+            combined_events = combined_events[combined_events["length"] > min_events]
+            # add elapsed time after admission for all events
+            combined_events = combined_events.apply(
+                lambda row: self._time_after_admission(
+                    row,
+                    encounters.iloc[row.name],
+                ),
+                axis=1,
+            )
+            # add special tokens to the events
+            combined_events = combined_events.apply(
+                lambda row: self._add_tokens(row, encounters.iloc[row.name]),
+                axis=1,
+            )
+            # filter patients based on min_visits
+            combined_events = combined_events[
+                combined_events["num_visits"] > min_visits
+            ]
+            # get mortality label
+            combined_events = combined_events.apply(
+                lambda row: self._get_mortality_label(
+                    row,
+                    patients.iloc[row.name],
+                    encounters.iloc[row.name],
+                ),
+                axis=1,
+            )
+            combined_events = combined_events[
+                ~combined_events["patient_id"].isin(self.after_death_events)
+            ]
+            combined_events = combined_events.apply(
+                lambda row: self._truncate_or_pad(row, pad_events=pad_events),
+                axis=1,
+            )
+            # get condition label for common and rare conditions
+            combined_events = combined_events.apply(
+                lambda row: self._get_condition_label(
+                    row,
+                    conditions.iloc[row.name],
+                ),
+                axis=1,
+            )
+            # drop rows with nan values for events if any
+            combined_events = combined_events.dropna(
+                subset=[f"event_tokens_{self.max_seq_length}"],
+            )
+            # save the combined events
+            combined_events_all = combined_events[self.get_all_column_names]
+            combined_events_max = combined_events[self.get_max_column_names]
+
+            combined_events_all.to_parquet(
+                self.all_dir + f"/patient_sequences_{rounds}.parquet",
+                engine="pyarrow",
+            )
+            combined_events_max.to_parquet(
+                self.max_dir
+                + f"/patient_sequences_{self.max_seq_length}_{rounds}.parquet",
+                engine="pyarrow",
+            )
+            LOGGER.info(f"Round {rounds} done")
+            rounds += 1
 
     def reapply_truncation(
         self,
@@ -1176,9 +1174,9 @@ class SequenceGenerator:
 if __name__ == "__main__":
     generator = SequenceGenerator(
         max_seq_length=2048,
-        data_dir="/mnt/data/odyssey/mimiciv_fhir/csv_files",
-        json_dir="/mnt/data/odyssey/mimiciv_fhir/json_files",
-        save_dir="/mnt/data/odyssey/mimiciv_fhir/parquet_files",
+        data_dir="/mnt/data/odyssey/mimiciv_fhir1/csv_files",
+        json_dir="/mnt/data/odyssey/mimiciv_fhir1/vocab",
+        save_dir="/mnt/data/odyssey/mimiciv_fhir1/parquet_files",
     )
     generator.create_patient_sequence(
         chunksize=20000,

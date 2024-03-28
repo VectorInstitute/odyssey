@@ -4,7 +4,11 @@ import os
 import shutil
 from unittest import TestCase
 
-from data.collect import DATA_COLLECTION_CONFIG, PATIENT, FHIRDataCollector
+from odyssey.data.mimiciv.collect import (
+    DATA_COLLECTION_CONFIG,
+    PATIENT,
+    FHIRDataCollector,
+)
 
 
 class TestFHIRDataCollector(TestCase):
@@ -20,7 +24,7 @@ class TestFHIRDataCollector(TestCase):
             buffer_size=10,
         )
 
-    def tearDown(self) -> None:
+    def tearDown(self) -> None:  # noqa: N802
         """Tear down FHIRDataCollector."""
         if os.path.exists(self.save_dir):
             shutil.rmtree(self.save_dir)
