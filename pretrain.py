@@ -25,7 +25,7 @@ from odyssey.models.utils import (
 )
 
 
-def main(args: Dict[str, Any], model_config: Dict[str, Any]) -> None:
+def main(args: argparse.Namespace, model_config: Dict[str, Any]) -> None:
     """Train the model."""
     seed_everything(args.seed)
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
