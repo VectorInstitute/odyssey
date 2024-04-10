@@ -6,6 +6,8 @@ Implement BigBird using HuggingFace for pretraining and finetuning.
 
 from typing import Optional, Sequence, Union, Any, List, Tuple, Dict, Set
 
+import numpy as np
+
 import torch
 import torch.nn as nn
 from torch.nn import CrossEntropyLoss
@@ -296,14 +298,15 @@ class BigBirdFinetune(pl.LightningModule):
             attention_mask = torch.ones_like(concept_ids)
 
         return self.model(
-            input_ids=concept_ids,
-            attention_mask=attention_mask,
-            token_type_ids=type_ids,
-            labels=labels,
-            output_attentions=True,
-            output_hidden_states=True,
-            return_dict=return_dict,
-        )
+                input_ids=concept_ids,
+                attention_mask=attention_mask,
+                token_type_ids=type_ids,
+                labels=labels,
+                output_attentions=True,
+                output_hidden_states=True,
+                return_dict=return_dict,
+            )
+
 
     def training_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
         """ Train model on training dataset. """
@@ -383,7 +386,7 @@ class BigBirdFinetune(pl.LightningModule):
         logits = outputs[1]
         preds = torch.argmax(logits, dim=1)
 
-        log = {"loss": loss, "preds": preds, "labels": labels}
+        log = {"loss": loss, "preds": preds, "labels": labels, "logits": logits}
 
         # Append the outputs to the instance attribute
         self.test_outputs.append(log)
@@ -395,16 +398,32 @@ class BigBirdFinetune(pl.LightningModule):
         labels = torch.cat([x['labels'] for x in self.test_outputs]).cpu()
         preds = torch.cat([x['preds'] for x in self.test_outputs]).cpu()
         loss = torch.stack([x['loss'] for x in self.test_outputs]).mean().cpu()
+        logits = torch.cat([x['logits'] for x in self.test_outputs]).cpu()
+        preds_one_hot = np.eye(labels.shape[1])[preds]
 
         # Update the saved outputs to include all concatanted batches
-        self.test_outputs = {"loss": loss, "preds": preds, "labels": labels}
+        self.test_outputs = {"loss": loss, "preds": preds, "labels": labels, "logits": logits}
+
+        if self.problem_type == 'multi_label_classification':
+            accuracy = accuracy_score(labels, preds_one_hot)
+            f1 = f1_score(labels, preds_one_hot, average='micro')
+            auc = roc_auc_score(labels, preds_one_hot, average='micro')
+            precision = precision_score(labels, preds_one_hot, average='micro')
+            recall = recall_score(labels, preds_one_hot, average='micro')
+
+        else:  # single_label_classification
+            accuracy = accuracy_score(labels, preds)
+            f1 = f1_score(labels, preds)
+            auc = roc_auc_score(labels, preds)
+            precision = precision_score(labels, preds)
+            recall = recall_score(labels, preds)
 
         self.log('test_loss', loss)
-        self.log('test_acc', accuracy_score(labels, preds))
-        self.log('test_f1', f1_score(labels, preds))
-        self.log('test_auc', roc_auc_score(labels, preds))
-        self.log('test_precision', precision_score(labels, preds))
-        self.log('test_recall', recall_score(labels, preds))
+        self.log('test_acc', accuracy)
+        self.log('test_f1', f1)
+        self.log('test_auc', auc)
+        self.log('test_precision', precision)
+        self.log('test_recall', recall)
 
         return loss
 
@@ -432,3 +451,9 @@ class BigBirdFinetune(pl.LightningModule):
         )
 
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
+
+    # def on_save_checkpoint(self, checkpoint):
+    #     checkpoint['test_outputs'] = self.test_outputs
+
+    # def on_load_checkpoint(self, checkpoint):
+    #     self.test_outputs = checkpoint.get('test_outputs')
