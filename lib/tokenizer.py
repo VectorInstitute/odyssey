@@ -46,6 +46,8 @@ class ConceptTokenizer:
             + [f"[W_{i}]" for i in range(0, 4)]
             + [f"[M_{i}]" for i in range(0, 13)]
             + ["[LT]"]
+            + ["[MOR]", "[LOS]", "[REA]"]
+            + [f"[C_{i}]" for i in range(0, 20)]
         )
 
         self.tokenizer_object = tokenizer_object
