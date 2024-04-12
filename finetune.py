@@ -6,9 +6,10 @@ import sys
 from typing import Any, Dict
 
 import numpy as np
-import pytorch_lightning as pl
 import torch
-from torch.utils.data import Subset
+from torch.utils.data import DataLoader
+
+import pytorch_lightning as pl
 from lightning.pytorch.loggers import WandbLogger
 from pytorch_lightning.callbacks import (
     EarlyStopping,
@@ -18,7 +19,6 @@ from pytorch_lightning.callbacks import (
 from pytorch_lightning.strategies.ddp import DDPStrategy
 from sklearn.model_selection import train_test_split
 from skmultilearn.model_selection import iterative_train_test_split
-from torch.utils.data import DataLoader
 
 from lib.data import FinetuneDataset
 from lib.tokenizer import ConceptTokenizer
@@ -38,6 +38,7 @@ def main(
     fine_model_config: Dict[str, Any],
 ) -> None:
     """Train the model."""
+
     # Setup environment
     seed_everything(args.seed)
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
@@ -56,8 +57,8 @@ def main(
     fine_tune.rename(columns={args.label_name: "label"}, inplace=True)
     fine_test.rename(columns={args.label_name: "label"}, inplace=True)
 
-    # Split data
-    if args.num_labels == 2:
+    # Split data in a stratified way based on problem type
+    if args.num_labels == 2:    # Binary classification
         fine_train, fine_val = train_test_split(
             fine_tune,
             test_size=args.val_size,
@@ -65,7 +66,7 @@ def main(
             stratify=fine_tune["label"],
         )
     
-    else:
+    else:   # Multi label classfication
         fine_train_ids, _, fine_val_ids, _ = iterative_train_test_split(
             X=fine_tune['patient_id'].to_numpy().reshape(-1, 1),
             y=np.array(fine_tune["label"].values.tolist()),
