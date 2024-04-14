@@ -155,13 +155,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model-type",
         type=str,
-        default='cehr_bigbird',
+        required=True,
         help="Model type: 'cehr_bert' or 'cehr_bigbird'",
     )
     parser.add_argument(
         "--exp-name",
         type=str,
-        default='pretrain_with_conditions',
+        required=True,
         help="Path to model config file",
     )
     parser.add_argument(
@@ -173,7 +173,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--config-dir",
         type=str,
-        default="models/configs",
+        required=True,
         help="Path to model config file",
     )
 
@@ -181,25 +181,25 @@ if __name__ == "__main__":
     parser.add_argument(
         "--data-dir",
         type=str,
-        default="data/bigbird_data",
+        required=True,
         help="Path to the data directory",
     )
     parser.add_argument(
         "--sequence-file",
         type=str,
-        default="patient_sequences/patient_sequences_2048_with_conditions.parquet",
+        required=True,
         help="Path to the patient sequence file",
     )
     parser.add_argument(
         "--id-file",
         type=str,
-        default="patient_id_dict/sample_pretrain_test_patient_ids_with_conditions.pkl",
+        required=True,
         help="Path to the patient id file",
     )
     parser.add_argument(
         "--vocab-dir",
         type=str,
-        default="data/vocab",
+        required=True,
         help="Path to the vocabulary directory of json files",
     )
     parser.add_argument(
@@ -213,7 +213,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--checkpoint-dir",
         type=str,
-        default="checkpoints/bigbird_pretrain_with_conditions",
+        required=True,
         help="Path to the checkpoint directory",
     )
     parser.add_argument(
@@ -226,9 +226,8 @@ if __name__ == "__main__":
         "--resume_checkpoint",
         type=str,
         default=None,
-        help="Checkpoint to resume finetuning from",
+        help="Checkpoint to resume pretraining from",
     )
-
     parser.add_argument(
         "--log_every_n_steps",
         type=int,
