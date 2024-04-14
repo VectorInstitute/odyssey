@@ -107,3 +107,16 @@ def get_run_id(
         with open(run_id_path, "w") as file:
             file.write(run_id)
     return run_id
+
+
+def save_object_to_disk(obj: Any, save_path: str) -> None:
+    """
+    Save an object to disk using pickle.
+    
+    Args:
+        obj: Any. The object to be saved.
+        save_path: str. The path to save the object to.
+    """
+    with open(save_path, 'wb') as f:
+        pickle.dump(obj, f)
+        print(f'File saved to disk: {save_path}')
