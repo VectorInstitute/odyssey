@@ -230,8 +230,9 @@ class FinetuneMultiDataset(Dataset):
         # Precompute indices for quick mapping in __getitem__ that exclude missing labels.
         # This helps in filtering out entries where the label is missing for the specified tasks.
         self.index_mapper = []
+        self.data.reset_index(drop=True, inplace=True)
 
-        for patient in self.data.itertuples():  # Iterate over each patient record in the DataFrame.
+        for patient in self.data.itertuples():
             index = patient.Index
 
             for task in self.tasks:
@@ -240,9 +241,9 @@ class FinetuneMultiDataset(Dataset):
                 if getattr(patient, label_col) == self.nan_indicator:
                     continue  # Skip this task for the current patient if the label is missing.
                 else:
-                    label = getattr(patient, label_col)  # Get the label value for the current task.
+                    label = getattr(patient, label_col)
 
-                # Check for the existence of a task-specific cutoff in the data, else use nan_indicator.
+                # Check for the existence of a task-specific cutoff in the data, else use None.
                 if f'cutoff_{task}' in self.data.columns:
                     cutoff = getattr(patient, f'cutoff_{task}')
                 else:
@@ -262,13 +263,13 @@ class FinetuneMultiDataset(Dataset):
         return self.tokenizer(sequence, max_length=self.max_len)
     
 
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
         """Get data at corresponding index.
 
         Return it as a dictionary including
         all different token sequences along with attention mask and labels.
         """
-        index, task, labels, cutoff = self.index_mapper[idx]
+        index, task, labels, cutoff = self.index_mapper[idx]  
         data = self.data.iloc[index]
 
         # Swap the first token with the task token.
@@ -305,5 +306,4 @@ class FinetuneMultiDataset(Dataset):
             "labels": labels,
             "attention_mask": attention_mask,
             "task": task,
-            "patient_id": data['patient_id'],
         }
