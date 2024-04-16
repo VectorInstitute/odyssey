@@ -8,14 +8,6 @@ from typing import Any, Dict
 import numpy as np
 import pytorch_lightning as pl
 import torch
-from lib.data import FinetuneDataset, FinetuneMultiDataset
-from lib.tokenizer import ConceptTokenizer
-from lib.utils import (
-    get_run_id,
-    load_config,
-    load_finetune_data,
-    seed_everything,
-)
 from lightning.pytorch.loggers import WandbLogger
 from pytorch_lightning.callbacks import (
     EarlyStopping,
@@ -27,8 +19,16 @@ from sklearn.model_selection import train_test_split
 from skmultilearn.model_selection import iterative_train_test_split
 from torch.utils.data import DataLoader
 
+from odyssey.data.dataset import FinetuneDataset, FinetuneMultiDataset
+from odyssey.data.tokenizer import ConceptTokenizer
 from odyssey.models.cehr_bert.model import BertFinetune, BertPretrain
 from odyssey.models.cehr_big_bird.model import BigBirdFinetune, BigBirdPretrain
+from odyssey.models.utils import (
+    get_run_id,
+    load_config,
+    load_finetune_data,
+    seed_everything,
+)
 
 
 def main(

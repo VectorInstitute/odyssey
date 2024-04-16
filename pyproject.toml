@@ -27,6 +27,8 @@ pyarrow = "^15.0.1"
 plotly = "^5.7.0"
 tokenizers = "^0.15.2"
 transformers = "^4.39.3"
+captum = "^0.7.0"
+scikit-multilearn = "^0.2.0"
 
 [tool.poetry.group.test]
 optional = true
