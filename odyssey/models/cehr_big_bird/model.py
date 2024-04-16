@@ -452,6 +452,7 @@ class BigBirdFinetune(pl.LightningModule):
             auc = roc_auc_score(labels, preds)
             precision = precision_score(labels, preds)
             recall = recall_score(labels, preds)
+        
         self.log("test_loss", loss)
         self.log("test_acc", accuracy)
         self.log("test_f1", f1)

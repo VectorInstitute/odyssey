@@ -152,6 +152,7 @@ def main(args: argparse.Namespace, model_config: Dict[str, Any]) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    
     # project configuration
     parser.add_argument(
         "--model-type",
