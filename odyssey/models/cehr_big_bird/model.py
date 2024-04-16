@@ -1,10 +1,9 @@
-"""Big Bird transformer model."""
+"""BigBird transformer model."""
 
 from typing import Any, Dict, Optional, Tuple, Union
 
 import numpy as np
 import pytorch_lightning as pl
-import torch
 from sklearn.metrics import (
     accuracy_score,
     f1_score,
@@ -12,6 +11,8 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
+
+import torch
 from torch import nn, optim
 from torch.cuda.amp import autocast
 from torch.optim import AdamW
@@ -23,7 +24,7 @@ from transformers.models.big_bird.modeling_big_bird import (
     BigBirdForSequenceClassification,
 )
 
-from odyssey.models.cehr_big_bird.embeddings import BigBirdEmbeddingsForCEHR
+from odyssey.models.embeddings import BigBirdEmbeddingsForCEHR
 
 
 class BigBirdPretrain(pl.LightningModule):
