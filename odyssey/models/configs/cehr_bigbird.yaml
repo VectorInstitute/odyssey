@@ -14,28 +14,26 @@ model:
   dropout_prob: 0.1
 
 model_finetune:
-  num_labels: 20
-  problem_type: 'multi_label_classification'
   learning_rate: 5.e-5
   classifier_dropout: 0.1
 
 train:
-  batch_size: 26
-  num_workers: 3
+  batch_size: 32
+  num_workers: 5
   gpus: 4
   nodes: 1
-  max_epochs: 10
-  acc: 8
+  max_epochs: 15
+  acc: 1
   mask_prob: 0.15
   persistent_workers: True
   pin_memory: False
 
 finetune:
   batch_size: 26
-  num_workers: 3
-  gpus: 2
+  num_workers: 6
+  gpus: 4
   nodes: 1
-  max_epochs: 5
+  max_epochs: 3
   acc: 1
   patience: 5
   persistent_workers: True
