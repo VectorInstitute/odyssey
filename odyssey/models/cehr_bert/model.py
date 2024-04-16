@@ -22,7 +22,7 @@ from transformers.models.bert.modeling_bert import (
     BertPooler,
 )
 
-from odyssey.models.cehr_bert.embeddings import Embeddings
+from odyssey.models.embeddings import BERTEmbeddingsForCEHR
 
 
 class BertPretrain(pl.LightningModule):
@@ -75,7 +75,7 @@ class BertPretrain(pl.LightningModule):
         )
         # BertForMaskedLM
         ## BertModel
-        self.embeddings = Embeddings(
+        self.embeddings = BERTEmbeddingsForCEHR(
             vocab_size=self.vocab_size,
             embedding_size=self.embedding_size,
             time_embedding_size=self.time_embeddings_size,
