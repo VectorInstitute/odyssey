@@ -1,4 +1,9 @@
-"""Finetune the pre-trained model."""
+"""
+File: finetune.py
+--------------------
+Finetune the pre-trained model for various downstream tasks, 
+compatible with both single-label and multi-label classification.
+"""
 
 import argparse
 import os
@@ -20,7 +25,7 @@ from pytorch_lightning.strategies.ddp import DDPStrategy
 from sklearn.model_selection import train_test_split
 from skmultilearn.model_selection import iterative_train_test_split
 
-from lib.data import FinetuneDataset
+from lib.data import FinetuneDataset, FinetuneMultiDataset
 from lib.tokenizer import ConceptTokenizer
 from lib.utils import (
     get_run_id,
@@ -28,6 +33,7 @@ from lib.utils import (
     load_finetune_data,
     seed_everything,
 )
+
 from models.big_bird_cehr.model import BigBirdFinetune, BigBirdPretrain
 from models.cehr_bert.model import BertFinetune, BertPretrain
 
@@ -54,50 +60,85 @@ def main(
         args.num_finetune_patients,
     )
 
-    fine_tune.rename(columns={args.label_name: "label"}, inplace=True)
-    fine_test.rename(columns={args.label_name: "label"}, inplace=True)
+    # Split data based on model type
+    if not args.is_multi_model:
+        fine_tune.rename(columns={args.label_name: "label"}, inplace=True)
+        fine_test.rename(columns={args.label_name: "label"}, inplace=True)
 
-    # Split data in a stratified way based on problem type
-    if args.num_labels == 2:    # Binary classification
+        # Split data in a stratified way based on problem type
+        if args.num_labels == 2:    # Binary classification
+            fine_train, fine_val = train_test_split(
+                fine_tune,
+                test_size=args.val_size,
+                random_state=args.seed,
+                stratify=fine_tune["label"],
+            )
+        
+        else:   # Multi label classfication
+            fine_train_ids, _, fine_val_ids, _ = iterative_train_test_split(
+                X=fine_tune['patient_id'].to_numpy().reshape(-1, 1),
+                y=np.array(fine_tune["label"].values.tolist()),
+                test_size=args.val_size
+            )
+            
+            fine_train = fine_tune[fine_tune['patient_id'].isin(fine_train_ids.flatten().tolist())]
+            fine_val = fine_tune[fine_tune['patient_id'].isin(fine_val_ids.flatten().tolist())]
+    
+    else:
         fine_train, fine_val = train_test_split(
             fine_tune,
             test_size=args.val_size,
             random_state=args.seed,
-            stratify=fine_tune["label"],
         )
-    
-    else:   # Multi label classfication
-        fine_train_ids, _, fine_val_ids, _ = iterative_train_test_split(
-            X=fine_tune['patient_id'].to_numpy().reshape(-1, 1),
-            y=np.array(fine_tune["label"].values.tolist()),
-            test_size=args.val_size
-        )
-        
-        fine_train = fine_tune[fine_tune['patient_id'].isin(fine_train_ids.flatten().tolist())]
-        fine_val = fine_tune[fine_tune['patient_id'].isin(fine_val_ids.flatten().tolist())]
 
     # Train Tokenizer
     tokenizer = ConceptTokenizer(data_dir=args.vocab_dir)
     tokenizer.fit_on_vocab()
 
-    # Load datasets
-    train_dataset = FinetuneDataset(
-        data=fine_train,
-        tokenizer=tokenizer,
-        max_len=args.max_len,
-    )
+    # Load datasets based on model type
+    if args.is_multi_model:
+        train_dataset = FinetuneMultiDataset(
+            data=fine_train,
+            tokenizer=tokenizer,
+            tasks=args.tasks,
+            balance_guide=args.balance_guide,
+            max_len=args.max_len,
+        )
 
-    val_dataset = FinetuneDataset(
-        data=fine_val,
-        tokenizer=tokenizer,
-        max_len=args.max_len,
-    )
+        val_dataset = FinetuneMultiDataset(
+            data=fine_val,
+            tokenizer=tokenizer,
+            tasks=args.tasks,
+            balance_guide=args.balance_guide,
+            max_len=args.max_len,
+        )
 
-    test_dataset = FinetuneDataset(
-        data=fine_test,
-        tokenizer=tokenizer,
-        max_len=args.max_len,
-    )
+        test_dataset = FinetuneMultiDataset(
+            data=fine_test,
+            tokenizer=tokenizer,
+            tasks=args.tasks,
+            balance_guide=None,
+            max_len=args.max_len,
+        )
+
+    else:
+        train_dataset = FinetuneDataset(
+            data=fine_train,
+            tokenizer=tokenizer,
+            max_len=args.max_len,
+        )
+
+        val_dataset = FinetuneDataset(
+            data=fine_val,
+            tokenizer=tokenizer,
+            max_len=args.max_len,
+        )
+
+        test_dataset = FinetuneDataset(
+            data=fine_test,
+            tokenizer=tokenizer,
+            max_len=args.max_len,
+        )
 
     train_loader = DataLoader(
         train_dataset,
@@ -223,7 +264,7 @@ def main(
     
     # Save test predictions
     if args.test_output_dir:
-        torch.save(model.test_outputs, args.test_output_dir)
+        torch.save(model.test_outputs, f'{args.test_output_dir}/test_outputs_{run_id}.pt')
 
 
 if __name__ == "__main__":
@@ -250,7 +291,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--label-name",
         type=str,
-        required=True,
         help="Name of the label column",
     )
     parser.add_argument(
@@ -262,15 +302,21 @@ if __name__ == "__main__":
     parser.add_argument(
         "--config-dir",
         type=str,
-        default="models/configs",
+        required=True,
         help="Path to model config file",
+    )
+    parser.add_argument(
+        "--is-multi-model",
+        type=bool,
+        default=False,
+        help="Is the model a multimodel like multibird or not",
     )
 
     # data-related arguments
     parser.add_argument(
         "--data-dir",
         type=str,
-        default="data/bigbird_data",
+        required=True,
         help="Path to the data directory",
     )
     parser.add_argument(
@@ -288,7 +334,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--vocab-dir",
         type=str,
-        default="data/vocab",
+        required=True,
         help="Path to the vocabulary directory of json files",
     )
     parser.add_argument(
@@ -321,6 +367,18 @@ if __name__ == "__main__":
         required=True,
         help="Define the number of labels",
     )
+    parser.add_argument(
+        "--tasks",
+        type=str,
+        default=None,
+        help="Define the finetune tasks for multi model",
+    )
+    parser.add_argument(
+        "--balance_guide",
+        type=str,
+        default=None,
+        help="Define the positive label ratios for label balancing",
+    )
 
     # checkpointing and logging arguments
     parser.add_argument(
@@ -345,9 +403,8 @@ if __name__ == "__main__":
         "--test_output_dir",
         type=str,
         default=None,
-        help="Path to the checkpoint directory",
+        help="Path to saved test outputs",
     )
-
     parser.add_argument(
         "--log_every_n_steps",
         type=int,
@@ -369,6 +426,7 @@ if __name__ == "__main__":
         help="Random seed for reproducibility",
     )
 
+    # Process arguments
     args = parser.parse_args()
 
     if args.model_type not in ["cehr_bert", "cehr_bigbird"]:
@@ -376,8 +434,11 @@ if __name__ == "__main__":
         sys.exit(1)
 
     args.checkpoint_dir = os.path.join(args.checkpoint_dir, args.exp_name)
+    args.test_output_dir = os.path.join(args.test_output_dir, args.exp_name)
+
     os.makedirs(args.checkpoint_dir, exist_ok=True)
     os.makedirs(args.log_dir, exist_ok=True)
+    os.makedirs(args.test_output_dir, exist_ok=True)
 
     config = load_config(args.config_dir, args.model_type)
 
@@ -388,6 +449,14 @@ if __name__ == "__main__":
 
     pre_model_config = config["model"]
     args.max_len = pre_model_config["max_seq_length"]
+
+    # Process the tasks and balance guide arguments
+    args.tasks = args.tasks.strip().split(' ')
+    args.balance_guide = {
+        task: float(ratio)
+        for task, ratio in (pair.strip().split('=')
+                            for pair in args.balance_guide.split(','))
+    }
 
     fine_model_config = config["model_finetune"]
 

@@ -1,4 +1,9 @@
-"""Train the model."""
+"""
+File: pretrain.py
+--------------------
+Pretrain the transformer model using Masked Language Modeling,
+compatibale with both BERT and BigBird architectures.
+"""
 
 import argparse
 import os
