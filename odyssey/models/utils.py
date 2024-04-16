@@ -2,6 +2,7 @@
 
 import os
 import pickle
+import random
 import uuid
 from os.path import join
 from typing import Any
@@ -44,6 +45,7 @@ def seed_everything(seed: int) -> None:
         Seed value to use
 
     """
+    random.seed(seed)
     torch.manual_seed(seed)
     np.random.seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -177,3 +179,19 @@ def get_run_id(
         with open(run_id_path, "w") as file:
             file.write(run_id)
     return run_id
+
+
+def save_object_to_disk(obj: Any, save_path: str) -> None:
+    """Save an object to disk using pickle.
+
+    Parameters
+    ----------
+    obj: Any
+        Object to save
+    save_path: str
+        Path to save the object
+
+    """
+    with open(save_path, "wb") as f:
+        pickle.dump(obj, f)
+        print(f"File saved to disk: {save_path}")
