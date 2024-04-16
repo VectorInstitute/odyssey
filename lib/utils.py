@@ -11,6 +11,7 @@ import uuid
 from os.path import join
 from typing import Any
 
+import random
 import numpy as np
 import pandas as pd
 import pytorch_lightning as pl
@@ -27,6 +28,7 @@ def load_config(config_dir: str, model_type: str) -> Any:
 
 def seed_everything(seed: int) -> None:
     """Seed all components of the model."""
+    random.seed(seed)
     torch.manual_seed(seed)
     np.random.seed(seed)
     torch.cuda.manual_seed_all(seed)
