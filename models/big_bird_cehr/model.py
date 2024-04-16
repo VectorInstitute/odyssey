@@ -329,10 +329,9 @@ class BigBirdFinetune(pl.LightningModule):
         self.model.bert.set_attention_type("block_sparse")
 
         # Ensure use of mixed precision
-        with autocast():
-            loss = self(
-                inputs, attention_mask=attention_mask, labels=labels, return_dict=True
-            ).loss
+        loss = self(
+            inputs, attention_mask=attention_mask, labels=labels, return_dict=True
+        ).loss
 
         (current_lr,) = self.lr_schedulers().get_last_lr()
         self.log_dict(
@@ -359,10 +358,9 @@ class BigBirdFinetune(pl.LightningModule):
         self.model.bert.set_attention_type("block_sparse")
         
         # Ensure use of mixed precision
-        with autocast():
-            loss = self(
-                inputs, attention_mask=attention_mask, labels=labels, return_dict=True
-            ).loss
+        loss = self(
+            inputs, attention_mask=attention_mask, labels=labels, return_dict=True
+        ).loss
 
         (current_lr,) = self.lr_schedulers().get_last_lr()
         self.log_dict(
@@ -390,10 +388,9 @@ class BigBirdFinetune(pl.LightningModule):
         self.model.bert.set_attention_type("block_sparse")
         
         # Ensure use of mixed precision
-        with autocast():
-            outputs = self(
-                inputs, attention_mask=attention_mask, labels=labels, return_dict=True
-            )
+        outputs = self(
+            inputs, attention_mask=attention_mask, labels=labels, return_dict=True
+        )
 
         loss = outputs[0]
         logits = outputs[1]
