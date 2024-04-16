@@ -1,16 +1,22 @@
 """
 data.py.
-
+----------
 Create custom pretrain and finetune PyTorch Dataset objects for MIMIC-IV FHIR dataset.
 """
 
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, List, Tuple, Union, Optional
+
+import random
 
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
 from .tokenizer import ConceptTokenizer, truncate_and_pad
+
+TASK_INDEX = 1
+LABEL_INDEX = 2
+CUTOFF_INDEX = 3
 
 
 class PretrainDataset(Dataset):
@@ -204,6 +210,7 @@ class FinetuneMultiDataset(Dataset):
         data: pd.DataFrame,
         tokenizer: ConceptTokenizer,
         tasks: List[str],
+        balance_guide: Optional[Dict[str, float]] = None,
         max_len: int = 2048,
         nan_indicator: int = -1
     ):
@@ -214,6 +221,7 @@ class FinetuneMultiDataset(Dataset):
             data (pd.DataFrame): DataFrame containing the patient data.
             tokenizer (ConceptTokenizer): The tokenizer to be used for encoding sequences.
             tasks (List[str]): A list of tasks (labels) that need to be predicted.
+            balance_guide (Dict[str, float]): A dictionary containing the desired positive ratios for each task.
             max_len (int): Maximum length of the tokenized sequences.
             nan_indicator (int): Value used to represent missing labels in the dataset.
 
@@ -224,12 +232,13 @@ class FinetuneMultiDataset(Dataset):
         self.data = data
         self.tokenizer = tokenizer
         self.tasks = tasks  # List of tasks for which the model is being finetuned.
+        self.balance_guide = balance_guide
         self.max_len = max_len
         self.nan_indicator = nan_indicator  # Value used to indicate missing data in labels.
 
         # Precompute indices for quick mapping in __getitem__ that exclude missing labels.
         # This helps in filtering out entries where the label is missing for the specified tasks.
-        self.index_mapper = []
+        self.task_to_index = {task: [] for task in self.tasks}
         self.data.reset_index(drop=True, inplace=True)
 
         for patient in self.data.itertuples():
@@ -250,17 +259,22 @@ class FinetuneMultiDataset(Dataset):
                     cutoff = None
                 
                 # Append a tuple containing the necessary information for training to index_mapper.
-                self.index_mapper.append((index, task, label, cutoff))
+                datapoint = (index, task, label, cutoff)
+                self.task_to_index[task].append(datapoint)
+
+        # Balance labels for specified tasks
+        if self.balance_guide:
+            for task in self.balance_guide.keys():
+                self.balance_labels(task=task, positive_ratio=self.balance_guide[task])
+
+        # Create a list of all datapoints to be used by __getitem__
+        self.index_mapper = [datapoints for task_data in self.task_to_index.values() for datapoints in task_data]
+        del self.task_to_index
 
 
     def __len__(self) -> int:
         """Return the length of dataset."""
         return len(self.index_mapper)
-
-
-    def tokenize_data(self, sequence: Union[str, List[str]]) -> Any:
-        """Tokenize the sequence and return input_ids and attention mask."""
-        return self.tokenizer(sequence, max_length=self.max_len)
     
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
@@ -307,3 +321,38 @@ class FinetuneMultiDataset(Dataset):
             "attention_mask": attention_mask,
             "task": task,
         }
+
+
+    def tokenize_data(self, sequence: Union[str, List[str]]) -> Any:
+        """Tokenize the sequence and return input_ids and attention mask."""
+        return self.tokenizer(sequence, max_length=self.max_len)
+    
+
+    def balance_labels(self, task: str, positive_ratio: float) -> None:
+        """
+        This function modifies the dataset to ensure that the ratio of positive samples
+        to the total number of samples matches the specified positive_ratio, while keeping
+        all positive data points.
+
+        Args:
+            data (list of tuples): The dataset to be modified. Each tuple is of the form (index, task, label, cutoff).
+            positive_ratio (float): The desired ratio of positive samples in the dataset.
+
+        Returns:
+            none, the datapoints are modified in place.
+        """
+        # Separate positive and negative datapoints
+        datapoints = self.task_to_index[task]
+        positives = [data for data in datapoints if data[LABEL_INDEX] == 1]
+        negatives = [data for data in datapoints if data[LABEL_INDEX] == 0]
+
+        # Calculate the total number of samples needed to achieve the desired positive ratio
+        num_positives = len(positives)
+        total_needed = int(num_positives / positive_ratio) - num_positives
+        num_negatives_to_keep = min(len(negatives), total_needed)
+
+        # Randomly select the negatives to keep
+        negatives_kept = random.sample(negatives, num_negatives_to_keep)
+
+        # Combine the kept negatives with all positives
+        self.task_to_index[task] = positives + negatives_kept
