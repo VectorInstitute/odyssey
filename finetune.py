@@ -191,7 +191,9 @@ def main(
             problem_type=args.problem_type,
             **fine_model_config,
         )
+
     run_id = get_run_id(args.checkpoint_dir)
+
     wandb_logger = WandbLogger(
         project=args.exp_name,
         save_dir=args.log_dir,
@@ -199,6 +201,7 @@ def main(
         id=run_id,
         resume="allow",
     )
+
     # Setup PyTorchLightning trainer
     trainer = pl.Trainer(
         accelerator="gpu",
@@ -217,6 +220,7 @@ def main(
         accumulate_grad_batches=args.acc,
         gradient_clip_val=1.0,
     )
+
     # Train the model
     trainer.fit(
         model=model,
@@ -224,6 +228,7 @@ def main(
         val_dataloaders=val_loader,
         ckpt_path=args.resume_checkpoint,
     )
+
     # Test the model
     if args.test_last:
         trainer.test(
@@ -246,6 +251,7 @@ def main(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    
     # project configuration
     parser.add_argument(
         "--model-type",
@@ -288,6 +294,7 @@ if __name__ == "__main__":
         default=False,
         help="Is the model a multimodel like multibird or not",
     )
+
     # data-related arguments
     parser.add_argument(
         "--data-dir",
@@ -355,6 +362,7 @@ if __name__ == "__main__":
         default=None,
         help="Define the positive label ratios for label balancing",
     )
+
     # checkpointing and logging arguments
     parser.add_argument(
         "--checkpoint-dir",
@@ -386,6 +394,7 @@ if __name__ == "__main__":
         default=10,
         help="Number of steps to log the training",
     )
+
     # other arguments
     parser.add_argument(
         "--test-last",
@@ -421,6 +430,7 @@ if __name__ == "__main__":
 
     pre_model_config = config["model"]
     args.max_len = pre_model_config["max_seq_length"]
+
     # Process the tasks and balance guide arguments
     args.tasks = args.tasks.strip().split(" ")
     args.balance_guide = {
