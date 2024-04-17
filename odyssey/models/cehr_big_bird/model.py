@@ -1,9 +1,9 @@
-"""Big Bird transformer model."""
+"""BigBird transformer model."""
 
 from typing import Any, Dict, Optional, Tuple, Union
 
+import numpy as np
 import pytorch_lightning as pl
-import torch
 from sklearn.metrics import (
     accuracy_score,
     f1_score,
@@ -11,7 +11,10 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
+
+import torch
 from torch import nn, optim
+from torch.cuda.amp import autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LinearLR, SequentialLR
 from transformers import BigBirdConfig
@@ -21,7 +24,7 @@ from transformers.models.big_bird.modeling_big_bird import (
     BigBirdForSequenceClassification,
 )
 
-from odyssey.models.cehr_big_bird.embeddings import BigBirdEmbeddingsForCEHR
+from odyssey.models.embeddings import BigBirdEmbeddingsForCEHR
 
 
 class BigBirdPretrain(pl.LightningModule):
@@ -156,12 +159,14 @@ class BigBirdPretrain(pl.LightningModule):
 
         # This is not necessary but makes sure we use the right attention
         self.model.bert.set_attention_type("block_sparse")
-        loss = self(
-            inputs,
-            attention_mask=attention_mask,
-            labels=labels,
-            return_dict=True,
-        ).loss
+        # Ensure use of mixed precision
+        with autocast():
+            loss = self(
+                inputs,
+                attention_mask=attention_mask,
+                labels=labels,
+                return_dict=True,
+            ).loss
 
         (current_lr,) = self.lr_schedulers().get_last_lr()
         self.log_dict(
@@ -204,12 +209,16 @@ class BigBirdPretrain(pl.LightningModule):
 
     def configure_optimizers(
         self,
-    ) -> Tuple[list[AdamW], list[dict[str, SequentialLR | str]]]:
+    ) -> Tuple[list[Any], list[dict[str, SequentialLR | str]]]:
         """Configure optimizers and learning rate scheduler."""
         optimizer = optim.AdamW(
             self.parameters(),
             lr=self.learning_rate,
         )
+        # Change optimizer if DeepSpeed strategy is used
+        # optimizer = DeepSpeedCPUAdam(
+        #     self.parameters(), lr=self.learning_rate, adamw_mode=True
+        # )
 
         n_steps = self.trainer.estimated_stepping_batches
         n_warmup_steps = int(0.1 * n_steps)
@@ -335,12 +344,13 @@ class BigBirdFinetune(pl.LightningModule):
 
         # This is not necessary but makes sure we use the right attention
         self.model.bert.set_attention_type("block_sparse")
+        # Ensure use of mixed precision
         loss = self(
             inputs,
             attention_mask=attention_mask,
             labels=labels,
             return_dict=True,
-        )[0]
+        ).loss
 
         (current_lr,) = self.lr_schedulers().get_last_lr()
         self.log_dict(
@@ -365,12 +375,13 @@ class BigBirdFinetune(pl.LightningModule):
 
         # This is not necessary but makes sure we use the right attention
         self.model.bert.set_attention_type("block_sparse")
+        # Ensure use of mixed precision
         loss = self(
             inputs,
             attention_mask=attention_mask,
             labels=labels,
             return_dict=True,
-        )[0]
+        ).loss
 
         (current_lr,) = self.lr_schedulers().get_last_lr()
         self.log_dict(
@@ -406,7 +417,7 @@ class BigBirdFinetune(pl.LightningModule):
         loss = outputs[0]
         logits = outputs[1]
         preds = torch.argmax(logits, dim=1)
-        log = {"loss": loss, "preds": preds, "labels": labels}
+        log = {"loss": loss, "preds": preds, "labels": labels, "logits": logits}
 
         # Append the outputs to the instance attribute
         self.test_outputs.append(log)
@@ -418,12 +429,38 @@ class BigBirdFinetune(pl.LightningModule):
         labels = torch.cat([x["labels"] for x in self.test_outputs]).cpu()
         preds = torch.cat([x["preds"] for x in self.test_outputs]).cpu()
         loss = torch.stack([x["loss"] for x in self.test_outputs]).mean().cpu()
+        logits = torch.cat([x["logits"] for x in self.test_outputs]).cpu()
+        preds_one_hot = np.eye(labels.shape[1])[preds]
+
+        # Update the saved outputs to include all concatanted batches
+        self.test_outputs = {
+            "loss": loss,
+            "preds": preds,
+            "labels": labels,
+            "logits": logits,
+        }
+
+        if self.problem_type == "multi_label_classification":
+            accuracy = accuracy_score(labels, preds_one_hot)
+            f1 = f1_score(labels, preds_one_hot, average="micro")
+            auc = roc_auc_score(labels, preds_one_hot, average="micro")
+            precision = precision_score(labels, preds_one_hot, average="micro")
+            recall = recall_score(labels, preds_one_hot, average="micro")
+
+        else:  # single_label_classification
+            accuracy = accuracy_score(labels, preds)
+            f1 = f1_score(labels, preds)
+            auc = roc_auc_score(labels, preds)
+            precision = precision_score(labels, preds)
+            recall = recall_score(labels, preds)
+        
         self.log("test_loss", loss)
-        self.log("test_acc", accuracy_score(labels, preds))
-        self.log("test_f1", f1_score(labels, preds))
-        self.log("test_auc", roc_auc_score(labels, preds))
-        self.log("test_precision", precision_score(labels, preds))
-        self.log("test_recall", recall_score(labels, preds))
+        self.log("test_acc", accuracy)
+        self.log("test_f1", f1)
+        self.log("test_auc", auc)
+        self.log("test_precision", precision)
+        self.log("test_recall", recall)
+
         return loss
 
     def configure_optimizers(

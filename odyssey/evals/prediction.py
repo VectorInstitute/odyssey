@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 import torch
 
 from odyssey.models.cehr_big_bird.model import BigBirdFinetune, BigBirdPretrain
-from odyssey.tokenizer import ConceptTokenizer
+from odyssey.data.tokenizer import ConceptTokenizer
 
 
 def load_finetuned_model(
