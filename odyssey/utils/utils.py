@@ -1,8 +1,4 @@
-"""
-File: utils.py
----------------
-General utility functions and constants for the project.
-"""
+"""General utility functions and constants for the project."""
 
 from typing import Any
 

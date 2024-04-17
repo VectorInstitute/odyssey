@@ -1,8 +1,4 @@
-"""
-File: embeddings.py
----------------------
-Embedding layers for the models.
-"""
+"""Embedding layers for the models."""
 
 import math
 from typing import Any, Optional
