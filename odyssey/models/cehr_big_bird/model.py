@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional, Tuple, Union
 
 import numpy as np
 import pytorch_lightning as pl
+import torch
 from sklearn.metrics import (
     accuracy_score,
     f1_score,
@@ -11,8 +12,6 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
-
-import torch
 from torch import nn, optim
 from torch.cuda.amp import autocast
 from torch.optim import AdamW
@@ -453,7 +452,7 @@ class BigBirdFinetune(pl.LightningModule):
             auc = roc_auc_score(labels, preds)
             precision = precision_score(labels, preds)
             recall = recall_score(labels, preds)
-        
+
         self.log("test_loss", loss)
         self.log("test_acc", accuracy)
         self.log("test_f1", f1)

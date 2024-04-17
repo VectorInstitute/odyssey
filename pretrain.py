@@ -13,7 +13,6 @@ from pytorch_lightning.strategies.ddp import DDPStrategy
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 
-from odyssey.utils.utils import seed_everything
 from odyssey.data.dataset import PretrainDataset
 from odyssey.data.tokenizer import ConceptTokenizer
 from odyssey.models.cehr_bert.model import BertPretrain
@@ -23,6 +22,7 @@ from odyssey.models.model_utils import (
     load_config,
     load_pretrain_data,
 )
+from odyssey.utils.utils import seed_everything
 
 
 def main(args: argparse.Namespace, model_config: Dict[str, Any]) -> None:
@@ -152,7 +152,7 @@ def main(args: argparse.Namespace, model_config: Dict[str, Any]) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    
+
     # project configuration
     parser.add_argument(
         "--model-type",

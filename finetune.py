@@ -19,7 +19,6 @@ from sklearn.model_selection import train_test_split
 from skmultilearn.model_selection import iterative_train_test_split
 from torch.utils.data import DataLoader
 
-from odyssey.utils.utils import seed_everything
 from odyssey.data.dataset import FinetuneDataset, FinetuneMultiDataset
 from odyssey.data.tokenizer import ConceptTokenizer
 from odyssey.models.cehr_bert.model import BertFinetune, BertPretrain
@@ -29,6 +28,7 @@ from odyssey.models.model_utils import (
     load_config,
     load_finetune_data,
 )
+from odyssey.utils.utils import seed_everything
 
 
 def main(
@@ -251,7 +251,7 @@ def main(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    
+
     # project configuration
     parser.add_argument(
         "--model-type",

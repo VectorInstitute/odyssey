@@ -18,8 +18,8 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 from odyssey.data.dataset import FinetuneDataset
-from odyssey.models.cehr_big_bird.embeddings import Embeddings
 from odyssey.data.tokenizer import HuggingFaceConceptTokenizer
+from odyssey.models.cehr_big_bird.embeddings import Embeddings
 
 
 ROOT = "/fs01/home/afallah/odyssey/odyssey"
