@@ -80,7 +80,7 @@ class ConceptEmbedding(nn.Module):
 class PositionalEmbedding(nn.Module):
     """Positional embedding layer."""
 
-    def __init__(self, embedding_size: int, max_len: int = 2048):
+    def __init__(self, embedding_size: int, max_len: int):
         super().__init__()
 
         # Compute the positional encodings once in log space.
@@ -109,7 +109,7 @@ class PositionalEmbedding(nn.Module):
         return self.pe[normalized_visit_orders]
 
 
-class Embeddings(nn.Module):
+class BERTEmbeddingsForCEHR(nn.Module):
     """Embeddings for CEHR-BERT."""
 
     def __init__(
@@ -178,6 +178,7 @@ class Embeddings(nn.Module):
         embeddings = self.tanh(self.scale_back_concat_layer(embeddings))
         embeddings = embeddings + type_embed + positional_embed + visit_segment_embed
         embeddings = self.LayerNorm(embeddings)
+
         return self.dropout(embeddings)
 
 

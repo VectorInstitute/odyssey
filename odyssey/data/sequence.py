@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Union
 import numpy as np
 import pandas as pd
 from dateutil import parser
+
 from odyssey.utils.log import setup_logging
 
 

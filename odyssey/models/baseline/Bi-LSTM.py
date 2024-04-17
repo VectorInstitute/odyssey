@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 from odyssey.data.dataset import FinetuneDataset
 from odyssey.models.cehr_big_bird.embeddings import Embeddings
-from odyssey.models.cehr_big_bird.tokenizer import HuggingFaceConceptTokenizer
+from odyssey.data.tokenizer import HuggingFaceConceptTokenizer
 
 
 ROOT = "/fs01/home/afallah/odyssey/odyssey"
