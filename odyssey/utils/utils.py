@@ -1,13 +1,12 @@
 """General utility functions and constants for the project."""
 
-from typing import Any
-
 import pickle
 import random
+from typing import Any
 
 import numpy as np
-import torch
 import pytorch_lightning as pl
+import torch
 
 
 def seed_everything(seed: int) -> None:
