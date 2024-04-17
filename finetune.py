@@ -416,7 +416,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     args.checkpoint_dir = os.path.join(args.checkpoint_dir, args.exp_name)
-    args.test_output_dir = os.path.join(args.test_output_dir, args.exp_name)
+    args.test_output_dir = os.path.join(args.checkpoint_dir, args.test_output_dir)
 
     os.makedirs(args.checkpoint_dir, exist_ok=True)
     os.makedirs(args.log_dir, exist_ok=True)
