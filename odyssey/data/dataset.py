@@ -281,6 +281,11 @@ class FinetuneDataset(Dataset):
             "attention_mask": attention_mask,
         }
 
+    def __iter__(self) -> Any:
+        """Return an iterator over the dataset."""
+        for i in range(len(self)):
+            yield self[i]
+
 
 class FinetuneMultiDataset(Dataset):
     """Dataset for finetuning the model on multi dataset.
@@ -408,7 +413,7 @@ class FinetuneMultiDataset(Dataset):
         data = self.data.iloc[index]
 
         # Swap the first token with the task token.
-        data["event_tokens_2048"][0] = self.tokenizer.task_to_token(task)
+        data[f"event_tokens_{self.max_len}"][0] = self.tokenizer.task_to_token(task)
 
         # Truncate and pad the data to the specified cutoff.
         data = truncate_and_pad(data, cutoff, self.max_len)
