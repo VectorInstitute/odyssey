@@ -432,8 +432,6 @@ class BigBirdFinetune(pl.LightningModule):
 
         # Update the saved outputs to include all concatanted batches
         self.test_outputs = {
-            "loss": loss,
-            "preds": preds,
             "labels": labels,
             "logits": logits,
         }
