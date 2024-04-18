@@ -31,7 +31,7 @@ train:
 finetune:
   batch_size: 26
   num_workers: 6
-  gpus: 4
+  gpus: 1
   nodes: 1
   max_epochs: 3
   acc: 1
