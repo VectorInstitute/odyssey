@@ -37,11 +37,13 @@ def main(
     fine_model_config: Dict[str, Any],
 ) -> None:
     """Train the model."""
+
     # Setup environment
     seed_everything(args.seed)
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
     torch.cuda.empty_cache()
     torch.set_float32_matmul_precision("medium")
+
     # Load data
     fine_tune, fine_test = load_finetune_data(
         args.data_dir,
@@ -50,10 +52,12 @@ def main(
         args.valid_scheme,
         args.num_finetune_patients,
     )
+
     # Split data based on model type
     if not args.is_multi_model:
         fine_tune.rename(columns={args.label_name: "label"}, inplace=True)
         fine_test.rename(columns={args.label_name: "label"}, inplace=True)
+
         # Split data in a stratified way based on problem type
         if args.num_labels == 2:  # Binary classification
             fine_train, fine_val = train_test_split(
@@ -62,6 +66,7 @@ def main(
                 random_state=args.seed,
                 stratify=fine_tune["label"],
             )
+        
         else:  # Multi label classfication
             fine_train_ids, _, fine_val_ids, _ = iterative_train_test_split(
                 X=fine_tune["patient_id"].to_numpy().reshape(-1, 1),
@@ -108,6 +113,7 @@ def main(
             balance_guide=None,
             max_len=args.max_len,
         )
+    
     else:
         train_dataset = FinetuneDataset(
             data=fine_train,
@@ -124,6 +130,7 @@ def main(
             tokenizer=tokenizer,
             max_len=args.max_len,
         )
+    
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -144,6 +151,7 @@ def main(
         num_workers=args.num_workers,
         pin_memory=args.pin_memory,
     )
+
     callbacks = [
         ModelCheckpoint(
             monitor="val_loss",
@@ -177,6 +185,7 @@ def main(
             pretrained_model=pretrained_model,
             **fine_model_config,
         )
+    
     elif args.model_type == "cehr_bigbird":
         pretrained_model = BigBirdPretrain(
             vocab_size=tokenizer.get_vocab_size(),
