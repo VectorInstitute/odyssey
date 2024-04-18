@@ -20,20 +20,20 @@ def truncate_and_pad(
     """Truncate and pad the input row to the maximum length.
 
     This function assumes the presence of the following columns in row:
-    - f'event_tokens_{max_len}'
-    - f'type_tokens_{max_len}'
-    - f'age_tokens_{max_len}'
-    - f'time_tokens_{max_len}'
-    - f'visit_tokens_{max_len}'
-    - f'position_tokens_{max_len}'
-    - f'elapsed_tokens_{max_len}'
+    - 'event_tokens_{max_len}'
+    - 'type_tokens_{max_len}'
+    - 'age_tokens_{max_len}'
+    - 'time_tokens_{max_len}'
+    - 'visit_tokens_{max_len}'
+    - 'position_tokens_{max_len}'
+    - 'elapsed_tokens_{max_len}'
 
     Parameters
     ----------
     row: pd.Series
         The input row.
     cutoff: Optional[int]
-        The cutoff length. Will be set to length of f'event_tokens_{max_len}' if None.
+        The cutoff length. Will be set to length of 'event_tokens_{max_len}' if None.
     max_len: int
         The maximum length to pad to.
 
@@ -50,6 +50,7 @@ def truncate_and_pad(
         cutoff = min(max_len, len(row[f"event_tokens_{max_len}"]))
 
     row[f"event_tokens_{max_len}"] = row[f"event_tokens_{max_len}"][:cutoff]
+    
     row[f"type_tokens_{max_len}"] = np.pad(
         row[f"type_tokens_{max_len}"][:cutoff],
         (0, max_len - cutoff),
@@ -142,8 +143,12 @@ class ConceptTokenizer:
         tokenizer_object: Optional[Tokenizer] = None,
         tokenizer: Optional[PreTrainedTokenizerFast] = None,
     ) -> None:
-        self.mask_token = mask_token
         self.pad_token = pad_token
+        self.mask_token = mask_token
+        self.start_token = start_token
+        self.end_token = end_token
+        self.class_token = class_token
+        self.reg_token = reg_token
         self.unknown_token = unknown_token
         self.task_tokens = ["[MOR_1M]", "[LOS_1W]", "[REA_1M]"] + [
             f"[C{i}]" for i in range(0, 5)
@@ -178,7 +183,7 @@ class ConceptTokenizer:
         self.first_token_index: Optional[int] = None
         self.last_token_index: Optional[int] = None
 
-    def fit_on_vocab(self) -> None:
+    def fit_on_vocab(self, with_tasks: bool = True) -> None:
         """Fit the tokenizer on the vocabulary."""
         # Create dictionary of all possible medical concepts
         self.token_type_vocab["special_tokens"] = self.special_tokens
@@ -190,12 +195,13 @@ class ConceptTokenizer:
                 vocab_type = file.split("/")[-1].split(".")[0]
                 self.token_type_vocab[vocab_type] = vocab
 
-        self.token_type_vocab["task_tokens"] = self.task_tokens
+        if with_tasks:
+            self.special_tokens += self.task_tokens
+            self.token_type_vocab["task_tokens"] = self.task_tokens
 
         # Create the tokenizer dictionary
         tokens = list(chain.from_iterable(list(self.token_type_vocab.values())))
         self.tokenizer_vocab = {token: i for i, token in enumerate(tokens)}
-        self.special_tokens += self.task_tokens
 
         # Create the tokenizer object
         self.tokenizer_object = Tokenizer(
@@ -445,7 +451,7 @@ class ConceptTokenizer:
 
         return self.special_token_ids
 
-    def save_tokenizer_to_disk(self, save_dir: str) -> None:
+    def save(self, save_dir: str) -> None:
         """Save the tokenizer object to disk as a JSON file.
 
         Parameters
@@ -454,7 +460,68 @@ class ConceptTokenizer:
             Directory to save the tokenizer.
 
         """
-        self.tokenizer.save(path=save_dir)
+        os.makedirs(save_dir, exist_ok=True)
+        tokenizer_config = {
+            "pad_token": self.pad_token,
+            "mask_token": self.mask_token,
+            "unknown_token": self.unknown_token,
+            "start_token": self.start_token,
+            "end_token": self.end_token,
+            "class_token": self.class_token,
+            "reg_token": self.reg_token,
+            "special_tokens": self.special_tokens,
+            "tokenizer_vocab": self.tokenizer_vocab,
+            "token_type_vocab": self.token_type_vocab,
+            "data_dir": self.data_dir,
+        }
+        save_path = os.path.join(save_dir, "tokenizer.json")
+        with open(save_path, "w") as file:
+            json.dump(tokenizer_config, file, indent=4)
+
+    @classmethod
+    def load(cls, load_path: str) -> "ConceptTokenizer":
+        """
+        Load the tokenizer configuration from a file.
+
+        Parameters
+        ----------
+        load_path : str
+            The path from where the tokenizer configuration will be loaded.
+
+        Returns
+        -------
+        ConceptTokenizer
+            An instance of ConceptTokenizer initialized with the loaded configuration.
+        """
+        with open(load_path, "r") as file:
+            tokenizer_config = json.load(file)
+
+        tokenizer = cls(
+            pad_token=tokenizer_config["pad_token"],
+            mask_token=tokenizer_config["mask_token"],
+            unknown_token=tokenizer_config["unknown_token"],
+            start_token=tokenizer_config.get("start_token", "[VS]"),
+            end_token=tokenizer_config.get("end_token", "[VE]"),
+            class_token=tokenizer_config.get("class_token", "[CLS]"),
+            reg_token=tokenizer_config.get("reg_token", "[REG]"),
+            data_dir=tokenizer_config.get("data_dir", "data_files"),
+        )
+
+        tokenizer.special_tokens = tokenizer_config["special_tokens"]
+        tokenizer.tokenizer_vocab = tokenizer_config["tokenizer_vocab"]
+        tokenizer.token_type_vocab = tokenizer_config["token_type_vocab"]
+
+        tokenizer.tokenizer_object = Tokenizer(
+            models.WordPiece(
+                vocab=tokenizer.tokenizer_vocab,
+                unk_token=tokenizer.unknown_token,
+                max_input_chars_per_word=1000,
+            ),
+        )
+        tokenizer.tokenizer_object.pre_tokenizer = pre_tokenizers.WhitespaceSplit()
+        tokenizer.tokenizer = tokenizer.create_tokenizer(tokenizer.tokenizer_object)
+
+        return tokenizer
 
     def create_task_to_token_dict(self) -> Dict[str, str]:
         """Create a dictionary mapping each task to its respective special token.
