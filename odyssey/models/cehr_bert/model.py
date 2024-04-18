@@ -1,6 +1,6 @@
 """CEHR-BERT model."""
 
-from typing import Optional, Tuple, Union
+from typing import Any, Optional, Sequence, Tuple, Union
 
 import pytorch_lightning as pl
 import torch
@@ -13,7 +13,7 @@ from sklearn.metrics import (
 )
 from torch import nn, optim
 from torch.nn import CrossEntropyLoss
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, LinearLR, SequentialLR
 from transformers import BertConfig
 from transformers.modeling_outputs import MaskedLMOutput, SequenceClassifierOutput
 from transformers.models.bert.modeling_bert import (
@@ -30,10 +30,10 @@ class BertPretrain(pl.LightningModule):
 
     def __init__(
         self,
-        vocab_size,
+        vocab_size: int,
         embedding_size: int = 768,
         time_embeddings_size: int = 32,
-        type_vocab_size: int = 8,
+        type_vocab_size: int = 9,
         max_seq_length: int = 512,
         depth: int = 5,
         num_heads: int = 8,
@@ -44,6 +44,7 @@ class BertPretrain(pl.LightningModule):
         increase_factor: float = 2,
         dropout_prob: float = 0.1,
         padding_idx: int = 1,
+        use_adamw: bool = True,
     ):
         super().__init__()
 
@@ -61,6 +62,7 @@ class BertPretrain(pl.LightningModule):
         self.increase_factor = increase_factor
         self.dropout_prob = dropout_prob
         self.padding_idx = padding_idx
+        self.use_adamw = use_adamw
 
         self.bert_config = BertConfig(
             vocab_size=self.vocab_size,
@@ -72,25 +74,25 @@ class BertPretrain(pl.LightningModule):
             attention_probs_dropout_prob=self.dropout_prob,
             max_position_embeddings=self.max_seq_length,
             is_decoder=False,
+            pad_token_id=self.padding_idx,
         )
         # BertForMaskedLM
         ## BertModel
         self.embeddings = BERTEmbeddingsForCEHR(
             vocab_size=self.vocab_size,
             embedding_size=self.embedding_size,
-            time_embedding_size=self.time_embeddings_size,
+            time_embeddings_size=self.time_embeddings_size,
             type_vocab_size=self.type_vocab_size,
             max_len=self.max_seq_length,
             padding_idx=self.padding_idx,
         )
         self.encoder = BertEncoder(self.bert_config)
-        self.pooler = BertPooler(self.bert_config)
         ## MLMHEAD
         self.cls = BertOnlyMLMHead(self.bert_config)
         # Initialize weights and apply final processing
         self.post_init()
 
-    def _init_weights(self, module) -> None:
+    def _init_weights(self, module: nn.Module) -> None:
         """Initialize the weights."""
         if isinstance(module, nn.Linear):
             module.weight.data.normal_(mean=0.0, std=self.bert_config.initializer_range)
@@ -168,7 +170,7 @@ class BertPretrain(pl.LightningModule):
             attentions=encoder_outputs.attentions,
         )
 
-    def training_step(self, batch, batch_idx) -> torch.Tensor:
+    def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         """Compute training step."""
         input_ = (
             batch["concept_ids"],
@@ -189,7 +191,7 @@ class BertPretrain(pl.LightningModule):
         self.log("train_loss", loss)
         return loss
 
-    def validation_step(self, batch, batch_idx) -> torch.Tensor:
+    def validation_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         """Compute validation step."""
         input_ = (
             batch["concept_ids"],
@@ -210,19 +212,51 @@ class BertPretrain(pl.LightningModule):
         self.log("val_loss", loss, sync_dist=True)
         return loss
 
-    def configure_optimizers(self) -> dict:
+    def configure_optimizers(self) -> Tuple[Sequence[optim.Optimizer], Sequence[Any]]:
         """Configure optimizers and learning rate scheduler."""
+        if self.use_adamw:
+            optimizer = optim.AdamW(
+                self.parameters(),
+                lr=self.learning_rate,
+            )
+
+            n_steps = self.trainer.estimated_stepping_batches
+            n_warmup_steps = int(0.1 * n_steps)
+            n_decay_steps = int(0.9 * n_steps)
+
+            warmup = LinearLR(
+                optimizer,
+                start_factor=0.01,
+                end_factor=1.0,
+                total_iters=n_warmup_steps,
+            )
+
+            linear_decay = LinearLR(
+                optimizer,
+                start_factor=1.0,
+                end_factor=0.01,
+                total_iters=n_decay_steps,
+            )
+
+            scheduler = SequentialLR(
+                optimizer=optimizer,
+                schedulers=[warmup, linear_decay],
+                milestones=[n_warmup_steps],
+            )
+
+            return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
+
         optimizer = optim.Adam(
             self.parameters(),
             lr=self.learning_rate,
-        )  # ADIBQ WHY IS THIS NOT ADAMW
+        )
         scheduler = CosineAnnealingWarmRestarts(
             optimizer,
             T_0=self.num_iterations,
             T_mult=self.increase_factor,
             eta_min=self.eta_min,
         )
-        return {"optimizer": optimizer, "lr_scheduler": scheduler}
+        return [optimizer], [{"scheduler": scheduler}]
 
 
 class BertFinetune(pl.LightningModule):
@@ -239,6 +273,7 @@ class BertFinetune(pl.LightningModule):
         eta_min: float = 1e-8,
         num_iterations: int = 10,
         increase_factor: float = 2,
+        use_adamw: bool = True,
     ):
         super().__init__()
         self.num_labels = num_labels
@@ -247,6 +282,7 @@ class BertFinetune(pl.LightningModule):
         self.eta_min = eta_min
         self.num_iterations = num_iterations
         self.increase_factor = increase_factor
+        self.use_adamw = use_adamw
 
         self.config = BertConfig(
             num_labels=num_labels,
@@ -269,7 +305,9 @@ class BertFinetune(pl.LightningModule):
         self.post_init()
         self.pretrained_model = pretrained_model
 
-    def _init_weights(self, module):
+        self.test_outputs = []
+
+    def _init_weights(self, module: nn.Module):
         """Initialize the weights."""
         if isinstance(module, nn.Linear):
             module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
@@ -335,7 +373,7 @@ class BertFinetune(pl.LightningModule):
             attentions=outputs.attentions,
         )
 
-    def training_step(self, batch, batch_idx):
+    def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         """Compute training step."""
         input_ = (
             batch["concept_ids"],
@@ -356,7 +394,7 @@ class BertFinetune(pl.LightningModule):
         self.log("train_loss", loss)
         return loss
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         """Compute validation step."""
         input_ = (
             batch["concept_ids"],
@@ -377,7 +415,7 @@ class BertFinetune(pl.LightningModule):
         self.log("val_loss", loss)
         return loss
 
-    def test_step(self, batch, batch_idx):
+    def test_step(self, batch: torch.Tensor, batch_idx: int):
         """Compute test step."""
         input_ = (
             batch["concept_ids"],
@@ -398,13 +436,15 @@ class BertFinetune(pl.LightningModule):
         loss = outputs[0]
         logits = outputs[1]
         preds = torch.argmax(logits, dim=1)
-        return {"loss": loss, "preds": preds, "labels": labels}
+        log = {"loss": loss, "preds": preds, "labels": labels}
+        self.test_outputs.append(log)
+        return log
 
-    def test_epoch_end(self, outputs):
-        """Evaluate after the test epoch."""
-        labels = torch.cat([x["labels"] for x in outputs]).cpu()
-        preds = torch.cat([x["preds"] for x in outputs]).cpu()
-        loss = torch.stack([x["loss"] for x in outputs]).mean().cpu()
+    def on_test_epoch_end(self):
+        """Compute metrics on test set."""
+        labels = torch.cat([x["labels"] for x in self.test_outputs]).cpu()
+        preds = torch.cat([x["preds"] for x in self.test_outputs]).cpu()
+        loss = torch.stack([x["loss"] for x in self.test_outputs]).mean().cpu()
         self.log("test_loss", loss)
         self.log("test_acc", accuracy_score(labels, preds))
         self.log("test_f1", f1_score(labels, preds))
@@ -413,8 +453,39 @@ class BertFinetune(pl.LightningModule):
         self.log("test_recall", recall_score(labels, preds))
         return loss
 
-    def configure_optimizers(self):
+    def configure_optimizers(self) -> Tuple[Sequence[optim.Optimizer], Sequence[Any]]:
         """Configure optimizers and learning rate scheduler."""
+        if self.use_adamw:
+            optimizer = optim.AdamW(
+                self.parameters(),
+                lr=self.learning_rate,
+            )
+
+            n_steps = self.trainer.estimated_stepping_batches
+            n_warmup_steps = int(0.1 * n_steps)
+            n_decay_steps = int(0.9 * n_steps)
+
+            warmup = LinearLR(
+                optimizer,
+                start_factor=0.01,
+                end_factor=1.0,
+                total_iters=n_warmup_steps,
+            )
+
+            linear_decay = LinearLR(
+                optimizer,
+                start_factor=1.0,
+                end_factor=0.01,
+                total_iters=n_decay_steps,
+            )
+
+            scheduler = SequentialLR(
+                optimizer=optimizer,
+                schedulers=[warmup, linear_decay],
+                milestones=[n_warmup_steps],
+            )
+            return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
+
         optimizer = optim.Adam(self.parameters(), lr=self.learning_rate)
         scheduler = CosineAnnealingWarmRestarts(
             optimizer,
@@ -422,4 +493,4 @@ class BertFinetune(pl.LightningModule):
             T_mult=self.increase_factor,
             eta_min=self.eta_min,
         )
-        return {"optimizer": optimizer, "lr_scheduler": scheduler}
+        return [optimizer], [{"scheduler": scheduler}]
