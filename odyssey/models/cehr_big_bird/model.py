@@ -429,17 +429,15 @@ class BigBirdFinetune(pl.LightningModule):
         preds = torch.cat([x["preds"] for x in self.test_outputs]).cpu()
         loss = torch.stack([x["loss"] for x in self.test_outputs]).mean().cpu()
         logits = torch.cat([x["logits"] for x in self.test_outputs]).cpu()
-        preds_one_hot = np.eye(labels.shape[1])[preds]
 
         # Update the saved outputs to include all concatanted batches
         self.test_outputs = {
-            "loss": loss,
-            "preds": preds,
             "labels": labels,
             "logits": logits,
         }
 
-        if self.problem_type == "multi_label_classification":
+        if self.config.problem_type == "multi_label_classification":
+            preds_one_hot = np.eye(labels.shape[1])[preds]
             accuracy = accuracy_score(labels, preds_one_hot)
             f1 = f1_score(labels, preds_one_hot, average="micro")
             auc = roc_auc_score(labels, preds_one_hot, average="micro")
