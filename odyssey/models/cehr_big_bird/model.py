@@ -438,7 +438,7 @@ class BigBirdFinetune(pl.LightningModule):
             "logits": logits,
         }
 
-        if self.problem_type == "multi_label_classification":
+        if self.config.problem_type == "multi_label_classification":
             preds_one_hot = np.eye(labels.shape[1])[preds]
             accuracy = accuracy_score(labels, preds_one_hot)
             f1 = f1_score(labels, preds_one_hot, average="micro")
