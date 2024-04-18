@@ -117,14 +117,16 @@ class BERTEmbeddingsForCEHR(nn.Module):
         vocab_size: int,
         embedding_size: int = 128,
         time_embeddings_size: int = 16,
-        type_vocab_size: int = 8,
+        type_vocab_size: int = 9,
         visit_order_size: int = 3,
-        max_len: int = 2048,
+        max_len: int = 512,
         layer_norm_eps: float = 1e-12,
         dropout_prob: float = 0.1,
         padding_idx: int = 1,
     ):
         super().__init__()
+        self.max_len = max_len
+        self.padding_idx = padding_idx
         self.concept_embedding = ConceptEmbedding(
             num_embeddings=vocab_size,
             embedding_size=embedding_size,
@@ -174,9 +176,26 @@ class BERTEmbeddingsForCEHR(nn.Module):
         positional_embed = self.positional_embedding(visit_orders)
         visit_segment_embed = self.visit_embedding(visit_segments)
 
+        order_sequence_all = torch.arange(
+            self.max_len, device=concept_ids.device
+        ).expand_as(concept_ids)
+        padding_mask = concept_ids == self.padding_idx
+        order_sequence = torch.where(
+            padding_mask,
+            torch.tensor(self.max_len, device=concept_ids.device),
+            order_sequence_all,
+        )
+        global_position_embed = self.positional_embedding(order_sequence)
+
         embeddings = torch.cat((concept_embed, time_embed, age_embed), dim=-1)
         embeddings = self.tanh(self.scale_back_concat_layer(embeddings))
-        embeddings = embeddings + type_embed + positional_embed + visit_segment_embed
+        embeddings = (
+            embeddings
+            + type_embed
+            + positional_embed
+            + visit_segment_embed
+            + global_position_embed
+        )
         embeddings = self.LayerNorm(embeddings)
 
         return self.dropout(embeddings)
