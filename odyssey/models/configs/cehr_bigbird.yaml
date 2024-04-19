@@ -29,12 +29,12 @@ train:
   pin_memory: False
 
 finetune:
-  batch_size: 26
-  num_workers: 6
-  gpus: 4
+  batch_size: 3 #26
+  num_workers: 0 #6
+  gpus: 1 #4
   nodes: 1
   max_epochs: 6 #3
   acc: 1
   patience: 5
-  persistent_workers: True
+  persistent_workers: False #True
   pin_memory: False
