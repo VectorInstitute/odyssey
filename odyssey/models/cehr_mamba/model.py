@@ -158,6 +158,7 @@ class BigBirdPretrain(pl.LightningModule):
 
         # This is not necessary but makes sure we use the right attention
         self.model.bert.set_attention_type("block_sparse")
+
         # Ensure use of mixed precision
         with autocast():
             loss = self(
@@ -308,6 +309,7 @@ class BigBirdFinetune(pl.LightningModule):
     ) -> Union[Tuple[torch.Tensor, ...], SequenceClassifierOutput]:
         """Forward pass for the model."""
         concept_ids, type_ids, time_stamps, ages, visit_orders, visit_segments = inputs
+        
         self.model.bert.embeddings.cache_input(
             time_stamps,
             ages,
@@ -343,6 +345,7 @@ class BigBirdFinetune(pl.LightningModule):
 
         # This is not necessary but makes sure we use the right attention
         self.model.bert.set_attention_type("block_sparse")
+
         # Ensure use of mixed precision
         loss = self(
             inputs,
@@ -374,6 +377,7 @@ class BigBirdFinetune(pl.LightningModule):
 
         # This is not necessary but makes sure we use the right attention
         self.model.bert.set_attention_type("block_sparse")
+        
         # Ensure use of mixed precision
         loss = self(
             inputs,
