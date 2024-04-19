@@ -300,7 +300,6 @@ class BigBirdEmbeddingsForCEHR(nn.Module):
             Visit orders of the input data.
         visit_segments : torch.Tensor
             Visit segments of the input data.
-
         """
         self.time_stamps = time_stamps
         self.ages = ages
