@@ -127,7 +127,7 @@ class ConceptTokenizer:
         Tokenizer object.
     tokenizer_object: Tokenizer
         Tokenizer object.
-
+    
     """
 
     def __init__(
@@ -150,6 +150,7 @@ class ConceptTokenizer:
         self.class_token = class_token
         self.reg_token = reg_token
         self.unknown_token = unknown_token
+
         self.task_tokens = ["[MOR_1M]", "[LOS_1W]", "[REA_1M]"] + [
             f"[C{i}]" for i in range(0, 5)
         ]
@@ -157,6 +158,7 @@ class ConceptTokenizer:
             f"c{i}" for i in range(5)
         ]
         self.task2token = self.create_task_to_token_dict()
+
         self.special_tokens = (
             [
                 pad_token,
@@ -196,12 +198,15 @@ class ConceptTokenizer:
                 self.token_type_vocab[vocab_type] = vocab
 
         if with_tasks:
-            self.special_tokens += self.task_tokens
             self.token_type_vocab["task_tokens"] = self.task_tokens
 
         # Create the tokenizer dictionary
         tokens = list(chain.from_iterable(list(self.token_type_vocab.values())))
         self.tokenizer_vocab = {token: i for i, token in enumerate(tokens)}
+
+        # Update special tokens after tokenizr is created
+        if with_tasks:
+            self.special_tokens += self.task_tokens
 
         # Create the tokenizer object
         self.tokenizer_object = Tokenizer(
