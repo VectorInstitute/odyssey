@@ -37,7 +37,6 @@ def main(
     fine_model_config: Dict[str, Any],
 ) -> None:
     """Train the model."""
-
     # Setup environment
     seed_everything(args.seed)
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
@@ -66,7 +65,7 @@ def main(
                 random_state=args.seed,
                 stratify=fine_tune["label"],
             )
-        
+
         else:  # Multi label classfication
             fine_train_ids, _, fine_val_ids, _ = iterative_train_test_split(
                 X=fine_tune["patient_id"].to_numpy().reshape(-1, 1),
@@ -113,7 +112,7 @@ def main(
             balance_guide=None,
             max_len=args.max_len,
         )
-    
+
     else:
         train_dataset = FinetuneDataset(
             data=fine_train,
@@ -130,7 +129,7 @@ def main(
             tokenizer=tokenizer,
             max_len=args.max_len,
         )
-    
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -185,7 +184,7 @@ def main(
             pretrained_model=pretrained_model,
             **fine_model_config,
         )
-    
+
     elif args.model_type == "cehr_bigbird":
         pretrained_model = BigBirdPretrain(
             vocab_size=tokenizer.get_vocab_size(),
