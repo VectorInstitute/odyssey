@@ -546,7 +546,7 @@ def get_finetune_split(
     task: str,
     patient_ids_dict: Dict[str, Any],
 ) -> Dict[str, Dict[str, List[str]]]:
-    """Split the dataset into training and cross-finetuneation sets
+    """Split the dataset into training and cross-finetuneation sets.
 
     Using k-fold cross-finetuneation while ensuring balanced label distribution
     in each fold, the function saves the resulting dictionary to disk.
