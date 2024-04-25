@@ -202,3 +202,32 @@ stdbuf -oL -eL srun python3 finetune.py  \
                 --num_labels 2 \
                 --checkpoint-dir checkpoints/bigbird_finetune_with_condition
 ```
+
+
+## Bi-LSTM
+```
+#!/bin/bash
+#SBATCH --job-name=baseline_lstm
+#SBATCH --gres=gpu:1
+#SBATCH --qos=normal
+#SBATCH --time=6:00:00
+#SBATCH -c 30
+#SBATCH --mem=32G
+#SBATCH --ntasks=1
+#SBATCH --output=/h/afallah/odyssey/slurm/baseline_lstm-%j.out
+#SBATCH --error=/h/afallah/odyssey/slurm/baseline_lstm-%j.err
+
+#module --ignore_cache load cuda-11.8
+#module load anaconda/3.10
+#source activate light
+
+source /h/afallah/light/bin/activate
+
+cd /h/afallah/odyssey/slurm
+
+export CUBLAS_WORKSPACE_CONFIG=:4096:2
+export NCCL_DEBUG=INFO
+export PYTHONFAULTHANDLER=1
+
+stdbuf -oL -eL srun python3 Bi-LSTM.py
+```
