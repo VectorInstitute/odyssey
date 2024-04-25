@@ -79,6 +79,41 @@ stdbuf -oL -eL srun python3 finetune.py  \
 ```
 
 
+## BigBird - Pretrain
+```
+#!/bin/bash
+#SBATCH --job-name=bigbird_pretrain
+#SBATCH --gres=gpu:4
+#SBATCH --qos a100_amritk
+#SBATCH -p a100
+#SBATCH -c 24
+#SBATCH --time=23:00:00
+#SBATCH --mem=200G
+#SBATCH --output=/h/afallah/odyssey/multibird_a100-%j.out
+#SBATCH --error=/h/afallah/odyssey/multibird_a100-%j.err
+#SBATCH --no-requeue
+
+source /h/afallah/light/bin/activate
+
+cd /h/afallah/odyssey/odyssey
+
+export CUBLAS_WORKSPACE_CONFIG=:4096:2
+export NCCL_DEBUG=INFO
+export PYTHONFAULTHANDLER=1
+
+stdbuf -oL -eL srun python3 pretrain.py  \
+                --model-type cehr_bigbird \
+                --exp-name bigbird_pretrain \
+                --config-dir models/configs \
+                --data-dir data/bigbird_data \
+                --sequence-file patient_sequences/patient_sequences_2048.parquet \
+                --id-file patient_id_dict/dataset_2048_pretrain.pkl \
+                --vocab-dir data/vocab \
+                --val-size 0.1 \
+                --checkpoint-dir checkpoints/bigbird_pretrain
+```
+
+
 ## BigBird - Finetune Mortality
 ```
 #!/bin/bash
