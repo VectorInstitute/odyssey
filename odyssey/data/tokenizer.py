@@ -50,7 +50,7 @@ def truncate_and_pad(
         cutoff = min(max_len, len(row[f"event_tokens_{max_len}"]))
 
     row[f"event_tokens_{max_len}"] = row[f"event_tokens_{max_len}"][:cutoff]
-    
+
     row[f"type_tokens_{max_len}"] = np.pad(
         row[f"type_tokens_{max_len}"][:cutoff],
         (0, max_len - cutoff),
