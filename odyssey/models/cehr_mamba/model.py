@@ -21,6 +21,7 @@ class MambaPretrain(pl.LightningModule):
         self,
         vocab_size: int,
         embedding_size: int = 768,
+        max_seq_length: int = 2048,
         state_size: int = 16,
         num_hidden_layers: int = 32,
         expand: int = 2,
@@ -34,6 +35,7 @@ class MambaPretrain(pl.LightningModule):
 
         self.vocab_size = vocab_size
         self.embedding_size = embedding_size
+        self.max_seq_length = max_seq_length
         self.state_size = state_size
         self.num_hidden_layers = num_hidden_layers
         self.expand = expand
@@ -66,7 +68,7 @@ class MambaPretrain(pl.LightningModule):
         return_dict: Optional[bool] = True,
     ) -> Union[Tuple[torch.Tensor, ...], MambaCausalLMOutput]:
         """Forward pass for the model."""
-        if not labels:
+        if labels == None:
             labels = input_ids
 
         return self.model(
