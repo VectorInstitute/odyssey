@@ -33,8 +33,8 @@ finetune:
   num_workers: 6
   gpus: 4
   nodes: 1
-  max_epochs: 6 #3
+  max_epochs: 5 #3
   acc: 1
-  patience: 5
+  patience: 10
   persistent_workers: True
   pin_memory: False
