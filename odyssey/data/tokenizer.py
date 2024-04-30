@@ -416,6 +416,17 @@ class ConceptTokenizer:
 
         """
         return len(self.tokenizer)
+    
+    def get_class_token_id(self) -> int:
+        """Return the token id of CLS token.
+
+        Returns
+        -------
+        int
+            Token id of CLS token.
+
+        """
+        return self.token_to_id(self.class_token)
 
     def get_pad_token_id(self) -> int:
         """Return the token id of PAD token.
