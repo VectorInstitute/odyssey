@@ -146,7 +146,7 @@ def main(args: argparse.Namespace, model_config: Dict[str, Any]) -> None:
         strategy=DDPStrategy(find_unused_parameters=True)
         if args.gpus > 1
         else "auto",  # DeepSpeedStrategy(stage=2, offload_optimizer=False)
-        precision="16",
+        precision="16-mixed",
         check_val_every_n_epoch=1,
         max_epochs=args.max_epochs,
         callbacks=callbacks,
