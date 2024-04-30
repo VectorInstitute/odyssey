@@ -266,8 +266,8 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if args.model_type not in ["cehr_bert", "cehr_bigbird"]:
-        print("Invalid model type. Choose 'cehr_bert' or 'cehr_bigbird'.")
+    if args.model_type not in ["cehr_bert", "cehr_bigbird", "cehr_mamba"]:
+        print("Invalid model type. Choose 'cehr_bert' or 'cehr_bigbird' or 'cehr_mamba'.")
         sys.exit(1)
 
     args.checkpoint_dir = os.path.join(args.checkpoint_dir, args.exp_name)

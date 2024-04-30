@@ -13,6 +13,7 @@ import yaml
 from odyssey.data.tokenizer import ConceptTokenizer
 from odyssey.models.cehr_bert.model import BertFinetune, BertPretrain
 from odyssey.models.cehr_big_bird.model import BigBirdFinetune, BigBirdPretrain
+from odyssey.models.cehr_mamba.model import MambaPretrain
 
 
 def load_config(config_dir: str, model_type: str) -> Any:

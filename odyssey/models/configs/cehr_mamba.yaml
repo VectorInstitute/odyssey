@@ -6,6 +6,7 @@ model:
   conv_kernel: 4
   dropout_prob: 0.1
   learning_rate: 5.e-5
+  max_seq_length: 2048
 
 model_finetune:
   learning_rate: 5.e-5
@@ -13,12 +14,12 @@ model_finetune:
 
 train:
   batch_size: 32
-  num_workers: 0 #4
+  num_workers: 3
   gpus: 1
   nodes: 1
   max_epochs: 15
   acc: 1
-  persistent_workers: False #True
+  persistent_workers: True
   pin_memory: False
 
 finetune:
