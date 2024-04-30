@@ -13,9 +13,9 @@ model_finetune:
   classifier_dropout: 0.1
 
 train:
-  batch_size: 32
-  num_workers: 3
-  gpus: 1
+  batch_size: 44 #32
+  num_workers: 5
+  gpus: 4
   nodes: 1
   max_epochs: 15
   acc: 1
