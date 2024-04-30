@@ -25,7 +25,7 @@ setup_logging(print_level="INFO", logger=LOGGER)
 
 
 def main(
-    args: Dict[str, Any],
+    args: argparse.Namespace,
     pre_model_config: Dict[str, Any],
     fine_model_config: Dict[str, Any],
 ) -> None:

@@ -1,14 +1,15 @@
-"""Process patient sequences to be usable by model based on task and spilt into trian-test-finetune."""
+"""Process patient sequences based on task and split into train-test-finetune."""
 
 import random
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from skmultilearn.model_selection import iterative_train_test_split
 
-from odyssey.utils.utils import seed_everything, save_object_to_disk 
+from odyssey.utils.utils import save_object_to_disk, seed_everything
+
 
 SEED = 23
 seed_everything(seed=SEED)
@@ -17,30 +18,43 @@ seed_everything(seed=SEED)
 def filter_by_num_visit(dataset: pd.DataFrame, minimum_num_visits: int) -> pd.DataFrame:
     """Filter the patients based on num_visits threshold.
 
-    Args:
-        dataset (pd.DataFrame): The input dataset.
-        minimum_num_visits (int): The threshold num_visits
+    Parameters
+    ----------
+    dataset: pd.DataFrame
+        The input dataset.
+    minimum_num_visits: int
+        The threshold number of visits.
 
     Returns
     -------
-        pd.DataFrame: The filtered dataset.
+    pd.DataFrame
+        The filtered dataset.
+
     """
     filtered_dataset = dataset.loc[dataset["num_visits"] >= minimum_num_visits]
     filtered_dataset.reset_index(drop=True, inplace=True)
     return filtered_dataset
 
 
-def filter_by_length_of_stay(dataset: pd.DataFrame, threshold: int = 1, max_len: int = 2048) -> pd.DataFrame:
+def filter_by_length_of_stay(
+    dataset: pd.DataFrame, threshold: int = 1, max_len: int = 2048
+) -> pd.DataFrame:
     """Filter the patients based on length of stay threshold.
 
-    Args:
-        dataset (pd.DataFrame): The input dataset.
-        minimum_num_visits (int): The threshold length of stay
-        max_len (int): The maximum length of the sequence.
+    Parameters
+    ----------
+    dataset: pd.DataFrame
+        The input dataset.
+    threshold: int
+        The threshold length of stay.
+    max_len: int
+        The maximum length of the sequence.
 
     Returns
     -------
-        pd.DataFrame: The filtered dataset.
+    pd.DataFrame
+        The filtered dataset.
+
     """
     filtered_dataset = dataset.loc[dataset["length_of_stay"] >= threshold]
 
@@ -60,13 +74,18 @@ def filter_by_length_of_stay(dataset: pd.DataFrame, threshold: int = 1, max_len:
 def get_last_occurence_index(seq: List[str], target: str) -> int:
     """Return the index of the last occurrence of target in seq.
 
-    Args:
-        seq (List[str]): The input sequence.
-        target (str): The target string to find.
+    Parameters
+    ----------
+    seq: List[str]
+        The input sequence.
+    target: str
+        The target token.
 
     Returns
     -------
-        int: The index of the last occurrence of target in seq.
+    int
+        The index of the last occurrence of target in seq.
+
     """
     return len(seq) - (seq[::-1].index(target) + 1)
 
@@ -74,13 +93,18 @@ def get_last_occurence_index(seq: List[str], target: str) -> int:
 def check_readmission_label(row: pd.Series, max_len: int = 2048) -> int:
     """Check if the label indicates readmission within one month.
 
-    Args:
-        row (pd.Series): The input row.
-        max_len (int): The maximum length of the sequence.
+    Parameters
+    ----------
+    row: pd.Series
+        The input row.
+    max_len: int
+        The maximum length of the sequence.
 
     Returns
     -------
-        bool: True if readmission label is present, False otherwise.
+    int
+        The readmission label.
+
     """
     last_vs_index = row["last_VS_index"]
     return int(
@@ -92,29 +116,42 @@ def check_readmission_label(row: pd.Series, max_len: int = 2048) -> int:
 def get_length_of_stay(row: pd.Series) -> pd.Series:
     """Determine the length of a given visit.
 
-    Args:
-        row (pd.Series): The input row.
+    Parameters
+    ----------
+    row: pd.Series
+        The input row.
 
     Returns
     -------
-        pd.Series: The preprocessed row.
+    float
+        The length of stay in days.
+
     """
     admission_time = row["last_VS_index"] + 1
     discharge_time = row["last_VE_index"] - 1
     return (discharge_time - admission_time) / 24
 
 
-def get_visit_cutoff_at_threshold(row: pd.Series, threshold: int = 24, max_len: int = 2048) -> int:
-    """Get the index of the first event token of last visit that occurs after threshold hours.
+def get_visit_cutoff_at_threshold(
+    row: pd.Series, threshold: int = 24, max_len: int = 2048
+) -> int:
+    """Get the index of the first event token of last visit that cutoff at threshold.
 
-    Args:
-        row (pd.Series): The input row.
-        threshold (int): The number of hours to consider.
-        max_len (int): The maximum length of the sequence.
+    Parameters
+    ----------
+    row: pd.Series
+        The input row.
+    threshold: int
+        The threshold length of stay.
+    max_len: int
+        The maximum length of the sequence.
 
     Returns
     -------
-        cutoff_index (int): The corrosponding cutoff index.
+    int
+        The index of the first event token of last visit that occurs
+        after threshold hours.
+
     """
     last_vs_index = row["last_VS_index"]
     last_ve_index = row["last_VE_index"]
@@ -133,14 +170,20 @@ def process_length_of_stay_dataset(
 ) -> pd.DataFrame:
     """Process the length of stay dataset to extract required features.
 
-    Args:
-        dataset (pd.DataFrame): The input dataset.
-        threshold (int): The threshold length of stay.
-        max_len (int): The maximum length of the sequence.
+    Parameters
+    ----------
+    dataset: pd.DataFrame
+        The input dataset.
+    threshold: int
+        The threshold length of stay.
+    max_len: int
+        The maximum length of the sequence.
 
     Returns
     -------
-        pd.DataFrame: The processed dataset.
+    pd.DataFrame
+        The processed dataset.
+
     """
     dataset["last_VS_index"] = dataset[f"event_tokens_{max_len}"].transform(
         lambda seq: get_last_occurence_index(list(seq), "[VS]"),
@@ -165,12 +208,16 @@ def process_length_of_stay_dataset(
 def process_condition_dataset(dataset: pd.DataFrame) -> pd.DataFrame:
     """Process the condition dataset to extract required features.
 
-    Args:
-        dataset (pd.DataFrame): The input condition dataset.
+    Parameters
+    ----------
+    dataset: pd.DataFrame
+        The input dataset.
 
     Returns
     -------
-        pd.DataFrame: The processed condition dataset.
+    pd.DataFrame
+        The processed dataset.
+
     """
     dataset["all_conditions"] = dataset.apply(
         lambda row: np.concatenate(
@@ -186,12 +233,16 @@ def process_condition_dataset(dataset: pd.DataFrame) -> pd.DataFrame:
 def process_mortality_dataset(dataset: pd.DataFrame) -> pd.DataFrame:
     """Process the mortality dataset to extract required features.
 
-    Args:
-        dataset (pd.DataFrame): The input mortality dataset.
+    Parameters
+    ----------
+    dataset: pd.DataFrame
+        The input dataset.
 
     Returns
     -------
-        pd.DataFrame: The processed mortality dataset.
+    pd.DataFrame
+        The processed dataset.
+
     """
     dataset["label_mortality_2weeks"] = (
         (dataset["death_after_start"] >= 0) & (dataset["death_after_end"] <= 15)
@@ -204,17 +255,24 @@ def process_mortality_dataset(dataset: pd.DataFrame) -> pd.DataFrame:
     return dataset
 
 
-def process_readmission_dataset(dataset: pd.DataFrame, max_len: int = 2048) -> pd.DataFrame:
+def process_readmission_dataset(
+    dataset: pd.DataFrame, max_len: int = 2048
+) -> pd.DataFrame:
     """Process the readmission dataset to extract required features.
 
-    Args:
-        dataset (pd.DataFrame): The input dataset.
+    Parameters
+    ----------
+    dataset: pd.DataFrame
+        The input dataset.
+    max_len: int
+        The maximum length of the sequence.
 
     Returns
     -------
-        pd.DataFrame: The processed dataset.
-    """
+    pd.DataFrame
+        The processed dataset.
 
+    """
     dataset = filter_by_num_visit(dataset.copy(), minimum_num_visits=2)
 
     dataset["last_VS_index"] = dataset[f"event_tokens_{max_len}"].transform(
@@ -230,23 +288,29 @@ def process_readmission_dataset(dataset: pd.DataFrame, max_len: int = 2048) -> p
 
 
 def process_multi_dataset(
-        datasets: Dict[str, pd.DataFrame],
-        max_len: int = 2048,
-        num_conditions: int = 20,
-        nan_indicator: int = -1
-    ) -> pd.DataFrame:
-    """
-    Process the multi-task dataset by merging the original dataset with the other datasets.
+    datasets: Dict[str, pd.DataFrame],
+    max_len: int = 2048,
+    num_conditions: int = 20,
+    nan_indicator: int = -1,
+) -> pd.DataFrame:
+    """Process the multi-task dataset by merging the original dataset with others.
 
-    Args:
-        datasets (Dict): Dictionary mapping each task to its respective dataframe
-        max_len (int): The maximum length of the sequence
-        num_conditions (int): The number of conditions
-        nan_indicator (int): The indicator for NaN values in dataframe
+    Parameters
+    ----------
+    datasets: Dict[str, pd.DataFrame]
+        The input datasets.
+    max_len: int
+        The maximum length of the sequence.
+    num_conditions: int
+        The number of conditions.
+    nan_indicator: int
+        The indicator for NaN values.
 
     Returns
     -------
-        pd.DataFrame: The processed multi-task dataset
+    pd.DataFrame
+        The processed dataset.
+
     """
     # Merging datasets on 'patient_id'
     multi_dataset = datasets["original"].merge(
@@ -335,19 +399,29 @@ def stratified_train_test_split(
     return_test: Optional[bool] = False,
     seed: int = SEED,
 ) -> List[str]:
-    """Split the given dataset into training and testing sets
-    using iterative stratification on given multi-label target.
+    """Split the given dataset into training and testing sets.
 
-    Args:
-        dataset (pd.DataFrame): The input dataset.
-        target (str): The target column for stratification.
-        test_size (float): The size of the test set.
-        return_test (bool): Whether to return the test set only.
-        seed (int): The random seed for reproducibility.
+    The dataset is stratified using iterative stratification on given multi-label
+    target.
+
+    Parameters
+    ----------
+    dataset: pd.DataFrame
+        The input dataset.
+    target: str
+        The target column for stratification.
+    test_size: float
+        The size of the test set.
+    return_test: Optional[bool]
+        Whether to return the test set only.
+    seed: int
+        The random seed for reproducibility.
 
     Returns
     -------
-        List[str]: The patients ids for training and/or testing set.
+    List[str]
+        The patient ids for the training or testing set.
+
     """
     # Convert all_conditions into a format suitable for multi-label stratification
     Y = np.array(dataset[target].values.tolist())
@@ -376,34 +450,38 @@ def stratified_train_test_split(
 
     if return_test:
         return X_test
-    else:
-        return X_train, X_test
+
+    return X_train, X_test
 
 
 def sample_balanced_subset(
-    dataset: pd.DataFrame,
-    target: str,
-    sample_size: int,
-    seed: int = SEED
+    dataset: pd.DataFrame, target: str, sample_size: int, seed: int = SEED
 ) -> List[str]:
     """Sample a subset of dataset with balanced target labels.
 
-    Args:
-        dataset (pd.DataFrame): The input dataset.
-        target (str): The target column for sampling.
-        sample_size (int): The size of the sample.
-        seed (int): The random seed for reproducibility.
+    Parameters
+    ----------
+    dataset: pd.DataFrame
+        The input dataset.
+    target: str
+        The target column for stratification.
+    sample_size: int
+        The size of the sample.
+    seed: int
+        The random seed for reproducibility.
 
     Returns
     -------
-        List[str]: The patient ids for the sampled set.
+    List[str]
+        The patient ids for the balanced sample.
+
     """
     # Sampling positive and negative patients
-    pos_patients = dataset[dataset[target] == True].sample(
+    pos_patients = dataset[dataset[target] == True].sample(  # noqa: E712
         n=sample_size // 2,
         random_state=seed,
     )
-    neg_patients = dataset[dataset[target] == False].sample(
+    neg_patients = dataset[dataset[target] == False].sample(  # noqa: E712
         n=sample_size // 2,
         random_state=seed,
     )
@@ -421,19 +499,28 @@ def get_pretrain_test_split(
     dataset: pd.DataFrame,
     stratify_target: Optional[str] = None,
     test_size: float = 0.15,
-    seed: int = SEED
+    seed: int = SEED,
 ) -> Tuple[List[str], List[str]]:
-    """Split dataset into pretrain and test set. Stratify on a given target column if needed.
+    """Split dataset into pretrain and test set.
 
-    Args:
-        dataset (pd.DataFrame): The input dataset.
-        stratify_target (str): The target column for stratification.
-        test_size (int): The size of the test set.
-        seed (int): The random seed for reproducibility.
+    The dataset is stratified on a given target column if needed.
+
+    Parameters
+    ----------
+    dataset: pd.DataFrame
+        The input dataset.
+    stratify_target: Optional[str]
+        The target column for stratification.
+    test_size: float
+        The size of the test set.
+    seed: int
+        The random seed for reproducibility.
 
     Returns
     -------
-        Tuple[List[str], List[str]]: The patient ids for the pretrain and test set.
+    Tuple[List[str], List[str]]
+        The patient ids for the pretrain and test set.
+
     """
     if stratify_target:
         pretrain_ids, test_ids = stratified_train_test_split(
@@ -459,17 +546,25 @@ def get_finetune_split(
     task: str,
     patient_ids_dict: Dict[str, Any],
 ) -> Dict[str, Dict[str, List[str]]]:
-    """Split the dataset into training and cross-finetuneation sets using k-fold cross-finetuneation
-    while ensuring balanced label distribution in each fold. Saves the resulting dictionary to disk.
+    """Split the dataset into training and cross-finetuneation sets.
 
-    Args:
-        task_config (Any): A dictionray containing the task-specific configuration.
-        task (str): The task name. Must be one of the keys in the task_config dictionary.
-        patient_ids_dict (Dict[str, Any]): A dictionary containing the patient ids for each split.
+    Using k-fold cross-finetuneation while ensuring balanced label distribution
+    in each fold, the function saves the resulting dictionary to disk.
+
+    Parameters
+    ----------
+    task_config: Any
+        The task configuration.
+    task: str
+        The task name.
+    patient_ids_dict: Dict[str, Any]
+        The dictionary containing patient ids for different splits.
 
     Returns
     -------
-        Dict[str, Dict[str, List[str]]]: The updated patient_ids_dict.
+    Dict[str, Dict[str, List[str]]]
+        The dictionary containing patient ids for different splits.
+
     """
     # Extract task-specific configuration
     dataset = task_config[task]["dataset"].copy()
@@ -484,7 +579,6 @@ def get_finetune_split(
 
     # Few-shot finetune patient ids
     for finetune_num in finetune_sizes:
-
         if split_mode == "single_label_balanced":
             finetune_ids = sample_balanced_subset(
                 dataset,
@@ -492,10 +586,7 @@ def get_finetune_split(
                 sample_size=finetune_num,
             )
 
-        elif (
-            split_mode == "single_label_stratified"
-            or split_mode == "multi_label_stratified"
-        ):
+        elif split_mode in {"single_label_stratified", "multi_label_stratified"}:
             finetune_ids = stratified_train_test_split(
                 dataset,
                 target=label_col,
