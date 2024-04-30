@@ -163,12 +163,12 @@ def main(
             dirpath=args.checkpoint_dir,
         ),
         LearningRateMonitor(logging_interval="step"),
-        EarlyStopping(
-            monitor="val_loss",
-            patience=args.patience,
-            verbose=True,
-            mode="min",
-        ),
+        # EarlyStopping(
+        #     monitor="val_loss",
+        #     patience=args.patience,
+        #     verbose=True,
+        #     mode="min",
+        # ),
     ]
 
     # Create model
