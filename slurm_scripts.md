@@ -4,12 +4,12 @@
 ```
 #!/bin/bash
 #SBATCH --job-name=mamba_pretrain
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:4
 #SBATCH --qos a100_amritk
 #SBATCH -p a100
-#SBATCH -c 4
+#SBATCH -c 24
 #SBATCH --time=23:00:00
-#SBATCH --mem=32G
+#SBATCH --mem=200G
 #SBATCH --output=/h/afallah/odyssey/mamba_pretrain_a100-%j.out
 #SBATCH --error=/h/afallah/odyssey/mamba_pretrain_a100-%j.err
 #SBATCH --no-requeue
@@ -27,8 +27,8 @@ stdbuf -oL -eL srun python3 pretrain.py  \
                 --exp-name mamba_pretrain \
                 --config-dir odyssey/models/configs \
                 --data-dir odyssey/data/bigbird_data \
-                --sequence-file patient_sequences_2048_debug.parquet \
-                --id-file dataset_2048_multi.pkl \
+                --sequence-file patient_sequences/patient_sequences_2048.parquet \
+                --id-file patient_id_dict/dataset_2048_multi.pkl \
                 --vocab-dir odyssey/data/vocab \
                 --val-size 0.1 \
                 --checkpoint-dir checkpoints
