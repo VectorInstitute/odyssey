@@ -127,7 +127,7 @@ class ConceptTokenizer:
         Tokenizer object.
     tokenizer_object: Tokenizer
         Tokenizer object.
-    
+
     """
 
     def __init__(
@@ -416,7 +416,7 @@ class ConceptTokenizer:
 
         """
         return len(self.tokenizer)
-    
+
     def get_class_token_id(self) -> int:
         """Return the token id of CLS token.
 

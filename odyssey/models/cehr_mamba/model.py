@@ -1,17 +1,14 @@
 """Mamba model."""
 
-from typing import Any, Dict, List, Tuple, Optional, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
-import numpy as np
 import pytorch_lightning as pl
-
 import torch
-from torch import nn, optim
+from torch import optim
 from torch.cuda.amp import autocast
 from torch.optim.lr_scheduler import LinearLR, SequentialLR
-
 from transformers import MambaConfig, MambaForCausalLM
-from transformers.models.mamba.modeling_mamba import MambaCausalLMOutput 
+from transformers.models.mamba.modeling_mamba import MambaCausalLMOutput
 
 
 class MambaPretrain(pl.LightningModule):
@@ -58,7 +55,6 @@ class MambaPretrain(pl.LightningModule):
         )
 
         self.model = MambaForCausalLM(config=self.config)
-
 
     def forward(
         self,
