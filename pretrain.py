@@ -5,18 +5,19 @@ import os
 import sys
 from typing import Any, Dict
 
-import pytorch_lightning as pl
 import torch
+import pytorch_lightning as pl
 from lightning.pytorch.loggers import WandbLogger
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.strategies.ddp import DDPStrategy
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 
-from odyssey.data.dataset import PretrainDataset
+from odyssey.data.dataset import PretrainDataset, PretrainDatasetDecoder
 from odyssey.data.tokenizer import ConceptTokenizer
 from odyssey.models.cehr_bert.model import BertPretrain
 from odyssey.models.cehr_big_bird.model import BigBirdPretrain
+from odyssey.models.cehr_mamba.model import MambaPretrain
 from odyssey.models.model_utils import (
     get_run_id,
     load_config,
@@ -50,19 +51,31 @@ def main(args: argparse.Namespace, model_config: Dict[str, Any]) -> None:
     tokenizer.fit_on_vocab()
 
     # Load datasets
-    train_dataset = PretrainDataset(
-        data=pre_train,
-        tokenizer=tokenizer,
-        max_len=args.max_len,
-        mask_prob=args.mask_prob,
-    )
-
-    val_dataset = PretrainDataset(
-        data=pre_val,
-        tokenizer=tokenizer,
-        max_len=args.max_len,
-        mask_prob=args.mask_prob,
-    )
+    if args.model_type == 'cehr_mamba':  # Decoder model
+        train_dataset = PretrainDatasetDecoder(
+            data=pre_train,
+            tokenizer=tokenizer,
+            max_len=args.max_len,
+        )
+        val_dataset = PretrainDatasetDecoder(
+            data=pre_val,
+            tokenizer=tokenizer,
+            max_len=args.max_len,
+        )    
+    
+    else:
+        train_dataset = PretrainDataset(
+            data=pre_train,
+            tokenizer=tokenizer,
+            max_len=args.max_len,
+            mask_prob=args.mask_prob,
+        )
+        val_dataset = PretrainDataset(
+            data=pre_val,
+            tokenizer=tokenizer,
+            max_len=args.max_len,
+            mask_prob=args.mask_prob,
+        )
 
     train_loader = DataLoader(
         train_dataset,
@@ -72,7 +85,6 @@ def main(args: argparse.Namespace, model_config: Dict[str, Any]) -> None:
         shuffle=True,
         pin_memory=args.pin_memory,
     )
-
     val_loader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
@@ -106,6 +118,13 @@ def main(args: argparse.Namespace, model_config: Dict[str, Any]) -> None:
         model = BigBirdPretrain(
             vocab_size=tokenizer.get_vocab_size(),
             padding_idx=tokenizer.get_pad_token_id(),
+            **model_config,
+        )
+    elif args.model_type == "cehr_mamba":
+        model = MambaPretrain(
+            vocab_size=tokenizer.get_vocab_size(),
+            padding_idx=tokenizer.get_pad_token_id(),
+            cls_idx=tokenizer.get_class_token_id(),
             **model_config,
         )
 
@@ -158,7 +177,7 @@ if __name__ == "__main__":
         "--model-type",
         type=str,
         required=True,
-        help="Model type: 'cehr_bert' or 'cehr_bigbird'",
+        help="Model type: 'cehr_bert' or 'cehr_bigbird' or 'cehr_mamba'",
     )
     parser.add_argument(
         "--exp-name",
