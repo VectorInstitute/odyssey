@@ -39,7 +39,6 @@ class PretrainDataset(Dataset):
         Maximum length of the tokenized sequences.
     mask_prob : float
         Probability of masking a token in the sequence.
-
     """
 
     def __init__(
@@ -170,6 +169,95 @@ class PretrainDataset(Dataset):
             "visit_segments": visit_tokens,
             "labels": labels,
             "attention_mask": attention_mask,
+        }
+
+
+class PretrainDatasetDecoder(Dataset):
+    """Dataset for pretraining a decoder-based model (e.g. Mamba)
+    using the next token prediction task.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        The input data containing sequences to be tokenized and masked.
+    tokenizer : ConceptTokenizer
+        An instance of the ConceptTokenizer class used for tokenizing sequences.
+    max_len : int, optional
+        The maximum length of the tokenized sequences, by default 2048.
+
+    Attributes
+    ----------
+    data : pd.DataFrame
+        Stores the input data.
+    tokenizer : ConceptTokenizer
+        Tokenizer used for tokenizing sequences.
+    max_len : int
+        Maximum length of the tokenized sequences.
+    """
+
+    def __init__(
+        self,
+        data: pd.DataFrame,
+        tokenizer: ConceptTokenizer,
+        max_len: int = 2048,
+    ):
+        """Initiate the class."""
+        super().__init__()
+        self.data = data
+        self.tokenizer = tokenizer
+        self.max_len = max_len
+
+        # Find the cutoff column in the data if it exists.
+        for column in self.data.columns:
+            if "cutoff" in column:
+                self.cutoff_col = column
+            else:
+                self.cutoff_col = None
+
+    def __len__(self) -> int:
+        """Return the length of the dataset."""
+        return len(self.data)
+
+    def tokenize_data(self, sequence: Union[str, List[str]]) -> Any:
+        """Tokenize the sequence and return input_ids and attention mask.
+
+        Parameters
+        ----------
+        sequence : Union[str, List[str]]
+            The sequence to be tokenized.
+
+        Returns
+        -------
+        Any
+            A dictionary containing input_ids and attention_mask.
+
+        """
+        return self.tokenizer(sequence, max_length=self.max_len)
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        """Get data at corresponding index.
+
+        Parameters
+        ----------
+        idx : int
+            The index of the data to be retrieved.
+
+        Returns
+        -------
+        Dict[str, torch.Tensor]
+            A dictionary containing all different token sequences along with
+            attention mask and labels.
+
+        """
+        data = self.data.iloc[idx]
+        cutoff = data[self.cutoff_col] if self.cutoff_col else None
+        data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
+        tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
+        concept_ids = tokenized_input["input_ids"].squeeze()
+
+        return {
+            "concept_ids": concept_ids,
+            "labels": concept_ids,
         }
 
 
