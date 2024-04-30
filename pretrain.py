@@ -5,8 +5,8 @@ import os
 import sys
 from typing import Any, Dict
 
-import torch
 import pytorch_lightning as pl
+import torch
 from lightning.pytorch.loggers import WandbLogger
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.strategies.ddp import DDPStrategy
@@ -51,7 +51,7 @@ def main(args: argparse.Namespace, model_config: Dict[str, Any]) -> None:
     tokenizer.fit_on_vocab()
 
     # Load datasets
-    if args.model_type == 'cehr_mamba':  # Decoder model
+    if args.model_type == "cehr_mamba":  # Decoder model
         train_dataset = PretrainDatasetDecoder(
             data=pre_train,
             tokenizer=tokenizer,
@@ -61,8 +61,8 @@ def main(args: argparse.Namespace, model_config: Dict[str, Any]) -> None:
             data=pre_val,
             tokenizer=tokenizer,
             max_len=args.max_len,
-        )    
-    
+        )
+
     else:
         train_dataset = PretrainDataset(
             data=pre_train,
@@ -267,7 +267,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.model_type not in ["cehr_bert", "cehr_bigbird", "cehr_mamba"]:
-        print("Invalid model type. Choose 'cehr_bert' or 'cehr_bigbird' or 'cehr_mamba'.")
+        print(
+            "Invalid model type. Choose 'cehr_bert' or 'cehr_bigbird' or 'cehr_mamba'."
+        )
         sys.exit(1)
 
     args.checkpoint_dir = os.path.join(args.checkpoint_dir, args.exp_name)
