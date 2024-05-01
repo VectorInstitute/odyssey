@@ -51,7 +51,7 @@ def main(args: argparse.Namespace, model_config: Dict[str, Any]) -> None:
     tokenizer.fit_on_vocab()
 
     # Load datasets
-    if args.model_type == "cehr_mamba":  # Decoder model
+    if args.is_decoder:  # e.g. Mamba
         train_dataset = PretrainDatasetDecoder(
             data=pre_train,
             tokenizer=tokenizer,
@@ -196,6 +196,12 @@ if __name__ == "__main__":
         type=str,
         required=True,
         help="Path to model config file",
+    )
+    parser.add_argument(
+        "--is-decoder",
+        type=bool,
+        default=False,
+        help="Is the model a decoder (e.g. Mamba) or not",
     )
 
     # data-related arguments
