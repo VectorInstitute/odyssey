@@ -1,5 +1,6 @@
 """Utilities following HuggingFace style for Mamba models."""
 
+from dataclasses import dataclass
 from typing import Optional, Tuple, Union
 
 import torch
@@ -19,7 +20,6 @@ from transformers.utils import (
     add_start_docstrings_to_model_forward,
     replace_return_docstrings,
 )
-from dataclasses import dataclass
 
 
 _CONFIG_FOR_DOC = "MambaConfig"
@@ -105,7 +105,8 @@ class MambaForSequenceClassification(MambaPreTrainedModel):
             config.num_labels - 1]`. If `config.num_labels == 1` a regression loss is computed (Mean-Square loss), If
             `config.num_labels > 1` a classification loss is computed (Cross-Entropy).
 
-        Returns:
+        Returns
+        -------
         """
         sequence_outputs = self.backbone(
             input_ids,
