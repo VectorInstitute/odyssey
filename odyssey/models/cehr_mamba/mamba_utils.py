@@ -17,9 +17,9 @@ from transformers.utils import (
     ModelOutput,
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
-    dataclass,
     replace_return_docstrings,
 )
+from dataclasses import dataclass
 
 
 _CONFIG_FOR_DOC = "MambaConfig"
@@ -104,6 +104,8 @@ class MambaForSequenceClassification(MambaPreTrainedModel):
             Labels for computing the sequence classification/regression loss. Indices should be in `[0, ...,
             config.num_labels - 1]`. If `config.num_labels == 1` a regression loss is computed (Mean-Square loss), If
             `config.num_labels > 1` a classification loss is computed (Cross-Entropy).
+
+        Returns:
         """
         sequence_outputs = self.backbone(
             input_ids,
