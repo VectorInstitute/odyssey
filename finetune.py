@@ -19,10 +19,11 @@ from sklearn.model_selection import train_test_split
 from skmultilearn.model_selection import iterative_train_test_split
 from torch.utils.data import DataLoader
 
-from odyssey.data.dataset import FinetuneDataset, FinetuneMultiDataset
+from odyssey.data.dataset import FinetuneDataset, FinetuneMultiDataset, FinetuneDatasetDecoder
 from odyssey.data.tokenizer import ConceptTokenizer
 from odyssey.models.cehr_bert.model import BertFinetune, BertPretrain
 from odyssey.models.cehr_big_bird.model import BigBirdFinetune, BigBirdPretrain
+from odyssey.models.cehr_mamba.model import MambaFinetune, MambaPretrain
 from odyssey.models.model_utils import (
     get_run_id,
     load_config,
@@ -90,7 +91,30 @@ def main(
     tokenizer.fit_on_vocab(with_tasks=args.is_multi_model)
 
     # Load datasets based on model type
-    if args.is_multi_model:
+    if args.is_decoder:
+        train_dataset = FinetuneDatasetDecoder(
+            data=fine_train,
+            tokenizer=tokenizer,
+            tasks=args.tasks,
+            balance_guide=args.balance_guide,
+            max_len=args.max_len,
+        )
+        val_dataset = FinetuneDatasetDecoder(
+            data=fine_val,
+            tokenizer=tokenizer,
+            tasks=args.tasks,
+            balance_guide=args.balance_guide,
+            max_len=args.max_len,
+        )
+        test_dataset = FinetuneDatasetDecoder(
+            data=fine_test,
+            tokenizer=tokenizer,
+            tasks=args.tasks,
+            balance_guide=None,
+            max_len=args.max_len,
+        )
+
+    elif args.is_multi_model:
         train_dataset = FinetuneMultiDataset(
             data=fine_train,
             tokenizer=tokenizer,
@@ -192,8 +216,22 @@ def main(
             **pre_model_config,
         )
         pretrained_model.load_state_dict(torch.load(args.pretrained_path)["state_dict"])
-
         model = BigBirdFinetune(
+            pretrained_model=pretrained_model,
+            num_labels=args.num_labels,
+            problem_type=args.problem_type,
+            **fine_model_config,
+        )
+    
+    elif args.model_type == "cehr_mamba":
+        pretrained_model = MambaPretrain(
+            vocab_size=tokenizer.get_vocab_size(),
+            padding_idx=tokenizer.get_pad_token_id(),
+            cls_idx=tokenizer.get_class_token_id(),
+            **pre_model_config,
+        )
+        pretrained_model.load_state_dict(torch.load(args.pretrained_path)["state_dict"])
+        model = MambaFinetune(
             pretrained_model=pretrained_model,
             num_labels=args.num_labels,
             problem_type=args.problem_type,
@@ -265,7 +303,7 @@ if __name__ == "__main__":
         "--model-type",
         type=str,
         required=True,
-        help="Model type: 'cehr_bert' or 'cehr_bigbird'",
+        help="Model type: 'cehr_bert' or 'cehr_bigbird', or 'cehr_mamba'",
     )
     parser.add_argument(
         "--exp-name",
@@ -301,6 +339,12 @@ if __name__ == "__main__":
         type=bool,
         default=False,
         help="Is the model a multimodel like multibird or not",
+    )
+    parser.add_argument(
+        "--is-decoder",
+        type=bool,
+        default=False,
+        help="Is the model a decoder (e.g. Mamba) or not",
     )
 
     # data-related arguments
@@ -419,8 +463,8 @@ if __name__ == "__main__":
 
     # Process arguments
     args = parser.parse_args()
-    if args.model_type not in ["cehr_bert", "cehr_bigbird"]:
-        print("Invalid model type. Choose 'cehr_bert' or 'cehr_bigbird'.")
+    if args.model_type not in ["cehr_bert", "cehr_bigbird", "cehr_mamba"]:
+        print("Invalid model type. Choose 'cehr_bert' or 'cehr_bigbird' or 'cehr_mamba'.")
         sys.exit(1)
 
     args.checkpoint_dir = os.path.join(args.checkpoint_dir, args.exp_name)
