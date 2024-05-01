@@ -87,7 +87,7 @@ def main(
 
     # Train Tokenizer
     tokenizer = ConceptTokenizer(data_dir=args.vocab_dir)
-    tokenizer.fit_on_vocab()
+    tokenizer.fit_on_vocab(with_tasks=args.is_multi_model)
 
     # Load datasets based on model type
     if args.is_multi_model:
