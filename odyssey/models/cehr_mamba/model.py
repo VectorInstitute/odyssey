@@ -2,13 +2,26 @@
 
 from typing import Any, Dict, Optional, Tuple, Union
 
+import numpy as np
 import pytorch_lightning as pl
+
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
+
 import torch
-from torch import optim
+from torch import nn
 from torch.cuda.amp import autocast
+from torch.optim import AdamW
 from torch.optim.lr_scheduler import LinearLR, SequentialLR
-from transformers import MambaConfig, MambaForCausalLM
-from transformers.models.mamba.modeling_mamba import MambaCausalLMOutput
+from transformers import MambaConfig
+
+from transformers.models.mamba.modeling_mamba import MambaForCausalLM, MambaCausalLMOutput
+from odyssey.models.cehr_mamba.mamba_utils import MambaForSequenceClassification, MambaSequenceClassifierOutput
 
 
 class MambaPretrain(pl.LightningModule):
@@ -64,7 +77,7 @@ class MambaPretrain(pl.LightningModule):
         return_dict: Optional[bool] = True,
     ) -> Union[Tuple[torch.Tensor, ...], MambaCausalLMOutput]:
         """Forward pass for the model."""
-        if labels == None:
+        if labels is None:
             labels = input_ids
 
         return self.model(
@@ -122,7 +135,208 @@ class MambaPretrain(pl.LightningModule):
         self,
     ) -> Tuple[list[Any], list[dict[str, SequentialLR | str]]]:
         """Configure optimizers and learning rate scheduler."""
-        optimizer = optim.AdamW(
+        optimizer = AdamW(
+            self.parameters(),
+            lr=self.learning_rate,
+        )
+
+        n_steps = self.trainer.estimated_stepping_batches
+        n_warmup_steps = int(0.1 * n_steps)
+        n_decay_steps = int(0.9 * n_steps)
+
+        warmup = LinearLR(
+            optimizer,
+            start_factor=0.01,
+            end_factor=1.0,
+            total_iters=n_warmup_steps,
+        )
+        decay = LinearLR(
+            optimizer,
+            start_factor=1.0,
+            end_factor=0.01,
+            total_iters=n_decay_steps,
+        )
+        scheduler = SequentialLR(
+            optimizer=optimizer,
+            schedulers=[warmup, decay],
+            milestones=[n_warmup_steps],
+        )
+
+        return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
+
+
+class MambaFinetune(pl.LightningModule):
+    """Mamba model for fine-tuning."""
+
+    def __init__(
+        self,
+        pretrained_model: MambaPretrain,
+        problem_type: str = "single_label_classification",
+        num_labels: int = 2,
+        learning_rate: float = 5e-5,
+        classifier_dropout: float = 0.1,
+    ):
+        super().__init__()
+
+        self.num_labels = num_labels
+        self.learning_rate = learning_rate
+        self.classifier_dropout = classifier_dropout
+        self.test_outputs = []
+
+        self.config = pretrained_model.config
+        self.config.num_labels = self.num_labels
+        self.config.classifier_dropout = self.classifier_dropout
+        self.config.problem_type = problem_type
+
+        self.model = MambaForSequenceClassification(config=self.config)
+        # self.post_init()
+
+        self.pretrained_model = pretrained_model
+        self.model.backbone = self.pretrained_model.model.backbone
+
+    def _init_weights(self, module: torch.nn.Module) -> None:
+        """Initialize the weights."""
+        if isinstance(module, nn.Linear):
+            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+            if module.bias is not None:
+                module.bias.data.zero_()
+        elif isinstance(module, nn.Embedding):
+            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+            if module.padding_idx is not None:
+                module.weight.data[module.padding_idx].zero_()
+        elif isinstance(module, nn.LayerNorm):
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
+
+    def post_init(self) -> None:
+        """Apply weight initialization."""
+        self.apply(self._init_weights)
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        labels: Optional[torch.Tensor] = None,
+        output_hidden_states: Optional[bool] = False,
+        return_dict: Optional[bool] = True,
+    ) -> Union[Tuple[torch.Tensor, ...], MambaSequenceClassifierOutput]:
+        """Forward pass for the model."""
+        return self.model(
+            input_ids=input_ids,
+            labels=labels,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+        
+    
+    def training_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
+        """Train model on training dataset."""
+        concept_ids = batch["concept_ids"]
+        labels = batch["labels"]
+
+        # Ensure use of mixed precision
+        with autocast():
+            loss = self(
+                input_ids=concept_ids,
+                labels=labels,
+                return_dict=True,
+            ).loss
+
+        (current_lr,) = self.lr_schedulers().get_last_lr()
+        self.log_dict(
+            dictionary={"train_loss": loss, "lr": current_lr},
+            on_step=True,
+            prog_bar=True,
+        )
+
+        return loss
+
+    def validation_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
+        """Evaluate model on validation dataset."""
+        concept_ids = batch["concept_ids"]
+        labels = batch["labels"]
+
+        # Ensure use of mixed precision
+        with autocast():
+            loss = self(
+                input_ids=concept_ids,
+                labels=labels,
+                return_dict=True,
+            ).loss
+
+        (current_lr,) = self.lr_schedulers().get_last_lr()
+        self.log_dict(
+            dictionary={"val_loss": loss, "lr": current_lr},
+            on_step=True,
+            prog_bar=True,
+        )
+
+        return loss
+
+    def test_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
+        """Test step."""
+        concept_ids = batch["concept_ids"]
+        labels = batch["labels"]
+
+        # Ensure use of mixed precision
+        with autocast():
+            outputs = self(
+                input_ids=concept_ids,
+                labels=labels,
+                return_dict=True,
+            )
+        
+        loss = outputs[0]
+        logits = outputs[1]
+        preds = torch.argmax(logits, dim=1)
+        log = {"loss": loss, "preds": preds, "labels": labels, "logits": logits}
+
+        # Append the outputs to the instance attribute
+        self.test_outputs.append(log)
+
+        return log
+
+    def on_test_epoch_end(self) -> Any:
+        """Evaluate after the test epoch."""
+        labels = torch.cat([x["labels"] for x in self.test_outputs]).cpu()
+        preds = torch.cat([x["preds"] for x in self.test_outputs]).cpu()
+        loss = torch.stack([x["loss"] for x in self.test_outputs]).mean().cpu()
+        logits = torch.cat([x["logits"] for x in self.test_outputs]).cpu()
+
+        # Update the saved outputs to include all concatanted batches
+        self.test_outputs = {
+            "labels": labels,
+            "logits": logits,
+        }
+
+        if self.config.problem_type == "multi_label_classification":
+            preds_one_hot = np.eye(labels.shape[1])[preds]
+            accuracy = accuracy_score(labels, preds_one_hot)
+            f1 = f1_score(labels, preds_one_hot, average="micro")
+            auc = roc_auc_score(labels, preds_one_hot, average="micro")
+            precision = precision_score(labels, preds_one_hot, average="micro")
+            recall = recall_score(labels, preds_one_hot, average="micro")
+
+        else:  # single_label_classification
+            accuracy = accuracy_score(labels, preds)
+            f1 = f1_score(labels, preds)
+            auc = roc_auc_score(labels, preds)
+            precision = precision_score(labels, preds)
+            recall = recall_score(labels, preds)
+
+        self.log("test_loss", loss)
+        self.log("test_acc", accuracy)
+        self.log("test_f1", f1)
+        self.log("test_auc", auc)
+        self.log("test_precision", precision)
+        self.log("test_recall", recall)
+
+        return loss
+
+    def configure_optimizers(
+        self,
+    ) -> Tuple[list[Any], list[dict[str, SequentialLR | str]]]:
+        """Configure optimizers and learning rate scheduler."""
+        optimizer = AdamW(
             self.parameters(),
             lr=self.learning_rate,
         )
