@@ -4,7 +4,7 @@ from typing import Any, Dict, Optional, Tuple, Union
 
 import numpy as np
 import pytorch_lightning as pl
-
+import torch
 from sklearn.metrics import (
     accuracy_score,
     f1_score,
@@ -12,16 +12,20 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
-
-import torch
 from torch import nn
 from torch.cuda.amp import autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LinearLR, SequentialLR
 from transformers import MambaConfig
+from transformers.models.mamba.modeling_mamba import (
+    MambaCausalLMOutput,
+    MambaForCausalLM,
+)
 
-from transformers.models.mamba.modeling_mamba import MambaForCausalLM, MambaCausalLMOutput
-from odyssey.models.cehr_mamba.mamba_utils import MambaForSequenceClassification, MambaSequenceClassifierOutput
+from odyssey.models.cehr_mamba.mamba_utils import (
+    MambaForSequenceClassification,
+    MambaSequenceClassifierOutput,
+)
 
 
 class MambaPretrain(pl.LightningModule):
@@ -226,8 +230,7 @@ class MambaFinetune(pl.LightningModule):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
-        
-    
+
     def training_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
         """Train model on training dataset."""
         concept_ids = batch["concept_ids"]
@@ -284,7 +287,7 @@ class MambaFinetune(pl.LightningModule):
                 labels=labels,
                 return_dict=True,
             )
-        
+
         loss = outputs[0]
         logits = outputs[1]
         preds = torch.argmax(logits, dim=1)
