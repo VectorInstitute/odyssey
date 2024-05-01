@@ -1,8 +1,8 @@
 """Finetune the pre-trained model."""
 
+import argparse
 import os
 import sys
-import argparse
 from typing import Any, Dict
 
 import numpy as np
