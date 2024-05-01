@@ -24,6 +24,7 @@ export PYTHONFAULTHANDLER=1
 
 stdbuf -oL -eL srun python3 pretrain.py  \
                 --model-type cehr_mamba \
+                --is_decoder True
                 --exp-name mamba_pretrain \
                 --config-dir odyssey/models/configs \
                 --data-dir odyssey/data/bigbird_data \
@@ -145,6 +146,51 @@ stdbuf -oL -eL srun python3 pretrain.py  \
                 --vocab-dir data/vocab \
                 --val-size 0.1 \
                 --checkpoint-dir checkpoints/bigbird_pretrain
+```
+
+
+## Mamba - Finetune Multidataset
+```
+#!/bin/bash
+#SBATCH --job-name=mamba_finetune
+#SBATCH --gres=gpu:4
+#SBATCH --qos a100_amritk
+#SBATCH -p a100
+#SBATCH -c 24
+#SBATCH --time=23:59:00
+#SBATCH --mem=200G
+#SBATCH --output=/h/afallah/odyssey/mamba_finetune-%j.out
+#SBATCH --error=/h/afallah/odyssey/mamba_finetune-%j.err
+#SBATCH --no-requeue
+
+source /h/afallah/light/bin/activate
+
+cd /h/afallah/odyssey/odyssey
+
+export CUBLAS_WORKSPACE_CONFIG=:4096:2
+export NCCL_DEBUG=INFO
+export PYTHONFAULTHANDLER=1
+
+stdbuf -oL -eL srun python3 finetune.py  \
+                --model-type cehr_mamba \
+                --is-multi-model True \
+                --is-decoder True \
+                --exp-name mamba_finetune \
+                --pretrained-path checkpoints/mamba_pretrain/best.ckpt \
+                --config-dir odyssey/models/configs \
+                --data-dir odyssey/data/bigbird_data \
+                --sequence-file patient_sequences_2048_multi.parquet \
+                --id-file dataset_2048_multi.pkl \
+                --vocab-dir odyssey/data/vocab \
+                --val-size 0.15 \
+                --valid_scheme few_shot \
+                --num_finetune_patients all \
+                --problem_type single_label_classification \
+                --num_labels 2 \
+                --checkpoint-dir checkpoints \
+                --test_output_dir test_outputs \
+                --tasks "mortality_1month los_1week c0 c1 c2" \
+                --balance_guide "mortality_1month=0.5, los_1week=0.5"
 ```
 
 
