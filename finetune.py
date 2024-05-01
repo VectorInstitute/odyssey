@@ -19,7 +19,11 @@ from sklearn.model_selection import train_test_split
 from skmultilearn.model_selection import iterative_train_test_split
 from torch.utils.data import DataLoader
 
-from odyssey.data.dataset import FinetuneDataset, FinetuneMultiDataset, FinetuneDatasetDecoder
+from odyssey.data.dataset import (
+    FinetuneDataset,
+    FinetuneDatasetDecoder,
+    FinetuneMultiDataset,
+)
 from odyssey.data.tokenizer import ConceptTokenizer
 from odyssey.models.cehr_bert.model import BertFinetune, BertPretrain
 from odyssey.models.cehr_big_bird.model import BigBirdFinetune, BigBirdPretrain
@@ -222,7 +226,7 @@ def main(
             problem_type=args.problem_type,
             **fine_model_config,
         )
-    
+
     elif args.model_type == "cehr_mamba":
         pretrained_model = MambaPretrain(
             vocab_size=tokenizer.get_vocab_size(),
@@ -464,7 +468,9 @@ if __name__ == "__main__":
     # Process arguments
     args = parser.parse_args()
     if args.model_type not in ["cehr_bert", "cehr_bigbird", "cehr_mamba"]:
-        print("Invalid model type. Choose 'cehr_bert' or 'cehr_bigbird' or 'cehr_mamba'.")
+        print(
+            "Invalid model type. Choose 'cehr_bert' or 'cehr_bigbird' or 'cehr_mamba'."
+        )
         sys.exit(1)
 
     args.checkpoint_dir = os.path.join(args.checkpoint_dir, args.exp_name)
