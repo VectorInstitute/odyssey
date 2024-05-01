@@ -172,6 +172,7 @@ class BigBirdPretrain(pl.LightningModule):
             dictionary={"train_loss": loss, "lr": current_lr},
             on_step=True,
             prog_bar=True,
+            sync_dist=True
         )
         return loss
 
@@ -356,6 +357,7 @@ class BigBirdFinetune(pl.LightningModule):
             dictionary={"train_loss": loss, "lr": current_lr},
             on_step=True,
             prog_bar=True,
+            sync_dist=True
         )
         return loss
 
