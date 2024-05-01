@@ -1,27 +1,23 @@
 """Utilities following HuggingFace style for Mamba models."""
 
-from typing import Any, Dict, List, Optional, Set, Union, Tuple
+from typing import Optional, Tuple, Union
 
 import torch
 from torch import nn
-from torch.nn import MSELoss, CrossEntropyLoss, BCEWithLogitsLoss
-
-from transformers import (
-    MambaModel,
-    MambaPreTrainedModel
-)
+from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
+from transformers import MambaModel, MambaPreTrainedModel
 from transformers.activations import ACT2FN
 from transformers.models.mamba.modeling_mamba import (
+    MAMBA_INPUTS_DOCSTRING,
+    MAMBA_START_DOCSTRING,
     MambaModel,
     MambaPreTrainedModel,
-    MAMBA_START_DOCSTRING,
-    MAMBA_INPUTS_DOCSTRING,
 )
 from transformers.utils import (
     ModelOutput,
-    dataclass,
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
+    dataclass,
     replace_return_docstrings,
 )
 
@@ -45,6 +41,7 @@ class MambaSequenceClassifierOutput(ModelOutput):
 
             Hidden-states of the model at the output of each layer plus the optional initial embedding outputs.
     """
+
     loss: Optional[torch.FloatTensor] = None
     logits: torch.FloatTensor = None
     hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
@@ -61,7 +58,7 @@ class MambaClassificationHead(nn.Module):
         self.config = config
 
     def forward(self, features, **kwargs):
-        x = features    # Pooling is done by the forward pass
+        x = features  # Pooling is done by the forward pass
         x = self.dropout(x)
         x = self.dense(x)
         x = ACT2FN[self.config.hidden_act](x)
@@ -88,8 +85,12 @@ class MambaForSequenceClassification(MambaPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @add_start_docstrings_to_model_forward(MAMBA_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
-    @replace_return_docstrings(output_type=MambaSequenceClassifierOutput, config_class=_CONFIG_FOR_DOC)
+    @add_start_docstrings_to_model_forward(
+        MAMBA_INPUTS_DOCSTRING.format("batch_size, sequence_length")
+    )
+    @replace_return_docstrings(
+        output_type=MambaSequenceClassifierOutput, config_class=_CONFIG_FOR_DOC
+    )
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -112,11 +113,14 @@ class MambaForSequenceClassification(MambaPreTrainedModel):
         )
         last_hidden_states = sequence_outputs[0]
         batch_size = last_hidden_states.shape[0]
-        
+
         # Pool the hidden states for the last tokens before padding to use for classification
-        last_token_indexes = torch.eq(input_ids, self.config.pad_token_id).int().argmax(-1) - 1
+        last_token_indexes = (
+            torch.eq(input_ids, self.config.pad_token_id).int().argmax(-1) - 1
+        )
         pooled_last_hidden_states = last_hidden_states[
-            torch.arange(batch_size, device=last_hidden_states.device), last_token_indexes
+            torch.arange(batch_size, device=last_hidden_states.device),
+            last_token_indexes,
         ]
 
         logits = self.classifier(pooled_last_hidden_states)
@@ -126,7 +130,9 @@ class MambaForSequenceClassification(MambaPreTrainedModel):
             if self.config.problem_type is None:
                 if self.num_labels == 1:
                     self.config.problem_type = "regression"
-                elif self.num_labels > 1 and (labels.dtype == torch.long or labels.dtype == torch.int):
+                elif self.num_labels > 1 and (
+                    labels.dtype == torch.long or labels.dtype == torch.int
+                ):
                     self.config.problem_type = "single_label_classification"
                 else:
                     self.config.problem_type = "multi_label_classification"

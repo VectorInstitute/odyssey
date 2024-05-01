@@ -719,11 +719,7 @@ class FinetuneDatasetDecoder(Dataset):
         concept_ids = tokenized_input["input_ids"].squeeze()
         labels = torch.tensor(labels)
 
-        return {
-            "concept_ids": concept_ids,
-            "labels": labels,
-            "task": task
-        }
+        return {"concept_ids": concept_ids, "labels": labels, "task": task}
 
     def tokenize_data(self, sequence: Union[str, List[str]]) -> Any:
         """Tokenize the sequence and return input_ids and attention mask.
