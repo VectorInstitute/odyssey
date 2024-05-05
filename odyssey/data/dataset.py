@@ -233,7 +233,7 @@ class PretrainDatasetDecoder(Dataset):
 
         """
         return self.tokenizer(sequence, max_length=self.max_len)
-
+    
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get data at corresponding index.
 
@@ -255,8 +255,25 @@ class PretrainDatasetDecoder(Dataset):
         tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
         concept_ids = tokenized_input["input_ids"].squeeze()
 
+        type_tokens = data[f"type_tokens_{self.max_len}"]
+        age_tokens = data[f"age_tokens_{self.max_len}"]
+        time_tokens = data[f"time_tokens_{self.max_len}"]
+        visit_tokens = data[f"visit_tokens_{self.max_len}"]
+        position_tokens = data[f"position_tokens_{self.max_len}"]
+
+        type_tokens = torch.tensor(type_tokens)
+        age_tokens = torch.tensor(age_tokens)
+        time_tokens = torch.tensor(time_tokens)
+        visit_tokens = torch.tensor(visit_tokens)
+        position_tokens = torch.tensor(position_tokens)
+
         return {
             "concept_ids": concept_ids,
+            "type_ids": type_tokens,
+            "ages": age_tokens,
+            "time_stamps": time_tokens,
+            "visit_orders": position_tokens,
+            "visit_segments": visit_tokens,
             "labels": concept_ids,
         }
 
