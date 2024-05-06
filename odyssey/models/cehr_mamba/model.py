@@ -174,7 +174,7 @@ class MambaPretrain(pl.LightningModule):
             sync_dist=True,
         )
         return loss
-        
+
     def validation_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
         """Evaluate model on validation dataset."""
         inputs = (
