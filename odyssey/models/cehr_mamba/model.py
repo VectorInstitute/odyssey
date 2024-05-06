@@ -312,6 +312,7 @@ class MambaFinetune(pl.LightningModule):
         )
 
         return self.model(
+            input_ids=concept_ids,
             inputs_embeds=inputs_embeds,
             labels=labels,
             output_hidden_states=output_hidden_states,
