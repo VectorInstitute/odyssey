@@ -233,7 +233,7 @@ class PretrainDatasetDecoder(Dataset):
 
         """
         return self.tokenizer(sequence, max_length=self.max_len)
-    
+
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get data at corresponding index.
 
