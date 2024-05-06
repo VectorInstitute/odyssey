@@ -108,12 +108,20 @@ class MambaForSequenceClassification(MambaPreTrainedModel):
         Returns
         -------
         """
-        sequence_outputs = self.backbone(
-            input_ids,
-            inputs_embeds=inputs_embeds,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )
+        if inputs_embeds is not None:
+            sequence_outputs = self.backbone(
+                input_ids=None,
+                inputs_embeds=inputs_embeds,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
+        else:
+            sequence_outputs = self.backbone(
+                input_ids=input_ids,
+                inputs_embeds=None,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
         last_hidden_states = sequence_outputs[0]
         batch_size = last_hidden_states.shape[0]
 
