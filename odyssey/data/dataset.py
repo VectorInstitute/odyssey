@@ -251,12 +251,33 @@ class PretrainDatasetDecoder(Dataset):
         """
         data = self.data.iloc[idx]
         cutoff = data[self.cutoff_col] if self.cutoff_col else None
-        data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
+
+        # Truncate and pad the data to the specified cutoff.
+        data = truncate_and_pad(data, cutoff, self.max_len)
+
+        # Prepare model input
         tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
         concept_ids = tokenized_input["input_ids"].squeeze()
 
+        type_tokens = data[f"type_tokens_{self.max_len}"]
+        age_tokens = data[f"age_tokens_{self.max_len}"]
+        time_tokens = data[f"time_tokens_{self.max_len}"]
+        visit_tokens = data[f"visit_tokens_{self.max_len}"]
+        position_tokens = data[f"position_tokens_{self.max_len}"]
+
+        type_tokens = torch.tensor(type_tokens)
+        age_tokens = torch.tensor(age_tokens)
+        time_tokens = torch.tensor(time_tokens)
+        visit_tokens = torch.tensor(visit_tokens)
+        position_tokens = torch.tensor(position_tokens)
+
         return {
             "concept_ids": concept_ids,
+            "type_ids": type_tokens,
+            "ages": age_tokens,
+            "time_stamps": time_tokens,
+            "visit_orders": position_tokens,
+            "visit_segments": visit_tokens,
             "labels": concept_ids,
         }
 
@@ -691,6 +712,22 @@ class FinetuneDatasetDecoder(Dataset):
         """Return the length of dataset."""
         return len(self.index_mapper)
 
+    def tokenize_data(self, sequence: Union[str, List[str]]) -> Any:
+        """Tokenize the sequence and return input_ids and attention mask.
+
+        Parameters
+        ----------
+        sequence : Union[str, List[str]]
+            The sequence to be tokenized.
+
+        Returns
+        -------
+        Any
+            A dictionary containing input_ids and attention_mask.
+
+        """
+        return self.tokenizer(sequence, max_length=self.max_len)
+
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         """Get data at corresponding index.
 
@@ -717,25 +754,30 @@ class FinetuneDatasetDecoder(Dataset):
         # Prepare model input
         tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
         concept_ids = tokenized_input["input_ids"].squeeze()
+
+        type_tokens = data[f"type_tokens_{self.max_len}"]
+        age_tokens = data[f"age_tokens_{self.max_len}"]
+        time_tokens = data[f"time_tokens_{self.max_len}"]
+        visit_tokens = data[f"visit_tokens_{self.max_len}"]
+        position_tokens = data[f"position_tokens_{self.max_len}"]
+
+        type_tokens = torch.tensor(type_tokens)
+        age_tokens = torch.tensor(age_tokens)
+        time_tokens = torch.tensor(time_tokens)
+        visit_tokens = torch.tensor(visit_tokens)
+        position_tokens = torch.tensor(position_tokens)
         labels = torch.tensor(labels)
 
-        return {"concept_ids": concept_ids, "labels": labels, "task": task}
-
-    def tokenize_data(self, sequence: Union[str, List[str]]) -> Any:
-        """Tokenize the sequence and return input_ids and attention mask.
-
-        Parameters
-        ----------
-        sequence : Union[str, List[str]]
-            The sequence to be tokenized.
-
-        Returns
-        -------
-        Any
-            A dictionary containing input_ids and attention_mask.
-
-        """
-        return self.tokenizer(sequence, max_length=self.max_len)
+        return {
+            "concept_ids": concept_ids,
+            "type_ids": type_tokens,
+            "ages": age_tokens,
+            "time_stamps": time_tokens,
+            "visit_orders": position_tokens,
+            "visit_segments": visit_tokens,
+            "labels": labels,
+            "task": task,
+        }
 
     def balance_labels(self, task: str, positive_ratio: float) -> None:
         """Balance the labels for the specified task in the dataset.

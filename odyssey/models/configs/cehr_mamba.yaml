@@ -1,19 +1,23 @@
 model:
   embedding_size: 768
+  time_embeddings_size: 32
+  visit_order_size: 3
+  type_vocab_size: 9
+  max_seq_length: 2048
+  max_num_visits: 512
   state_size: 16
   num_hidden_layers: 32
   expand: 2
   conv_kernel: 4
   dropout_prob: 0.1
   learning_rate: 5.e-5
-  max_seq_length: 2048
 
 model_finetune:
   learning_rate: 5.e-5
   classifier_dropout: 0.1
 
 train:
-  batch_size: 44 #32
+  batch_size: 44
   num_workers: 5
   gpus: 4
   nodes: 1
@@ -24,10 +28,10 @@ train:
 
 finetune:
   batch_size: 64 #26
-  num_workers: 6
+  num_workers: 5
   gpus: 4
   nodes: 1
-  max_epochs: 5 #3
+  max_epochs: 3
   acc: 1
   patience: 10
   persistent_workers: True

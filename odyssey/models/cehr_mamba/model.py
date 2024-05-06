@@ -26,6 +26,7 @@ from odyssey.models.cehr_mamba.mamba_utils import (
     MambaForSequenceClassification,
     MambaSequenceClassifierOutput,
 )
+from odyssey.models.embeddings import MambaEmbeddingsForCEHR
 
 
 class MambaPretrain(pl.LightningModule):
@@ -35,6 +36,10 @@ class MambaPretrain(pl.LightningModule):
         self,
         vocab_size: int,
         embedding_size: int = 768,
+        time_embeddings_size: int = 32,
+        visit_order_size: int = 3,
+        type_vocab_size: int = 9,
+        max_num_visits: int = 512,
         max_seq_length: int = 2048,
         state_size: int = 16,
         num_hidden_layers: int = 32,
@@ -49,6 +54,10 @@ class MambaPretrain(pl.LightningModule):
 
         self.vocab_size = vocab_size
         self.embedding_size = embedding_size
+        self.time_embeddings_size = time_embeddings_size
+        self.visit_order_size = visit_order_size
+        self.type_vocab_size = type_vocab_size
+        self.max_num_visits = max_num_visits
         self.max_seq_length = max_seq_length
         self.state_size = state_size
         self.num_hidden_layers = num_hidden_layers
@@ -70,22 +79,68 @@ class MambaPretrain(pl.LightningModule):
             bos_token_id=self.cls_idx,
             eos_token_id=self.padding_idx,
         )
+        self.embeddings = MambaEmbeddingsForCEHR(
+            config=self.config,
+            type_vocab_size=self.type_vocab_size,
+            max_num_visits=self.max_num_visits,
+            time_embeddings_size=self.time_embeddings_size,
+            visit_order_size=self.visit_order_size,
+            hidden_dropout_prob=self.dropout_prob,
+        )
+        # Initialize weights and apply final processing
+        self.post_init()
 
+        # Mamba has its own initialization
         self.model = MambaForCausalLM(config=self.config)
+
+    def _init_weights(self, module: torch.nn.Module) -> None:
+        """Initialize the weights."""
+        if isinstance(module, nn.Linear):
+            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+            if module.bias is not None:
+                module.bias.data.zero_()
+        elif isinstance(module, nn.Embedding):
+            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+            if module.padding_idx is not None:
+                module.weight.data[module.padding_idx].zero_()
+        elif isinstance(module, nn.LayerNorm):
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
+
+    def post_init(self) -> None:
+        """Apply weight initialization."""
+        self.apply(self._init_weights)
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        inputs: Tuple[
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+        ],
         labels: Optional[torch.Tensor] = None,
         output_hidden_states: Optional[bool] = False,
         return_dict: Optional[bool] = True,
     ) -> Union[Tuple[torch.Tensor, ...], MambaCausalLMOutput]:
         """Forward pass for the model."""
+        concept_ids, type_ids, time_stamps, ages, visit_orders, visit_segments = inputs
+        inputs_embeds = self.embeddings(
+            input_ids=concept_ids,
+            token_type_ids_batch=type_ids,
+            time_stamps=time_stamps,
+            ages=ages,
+            visit_orders=visit_orders,
+            visit_segments=visit_segments,
+        )
+
         if labels is None:
-            labels = input_ids
+            labels = concept_ids
 
         return self.model(
-            input_ids=input_ids,
+            inputs_embeds=inputs_embeds,
             labels=labels,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
@@ -93,13 +148,20 @@ class MambaPretrain(pl.LightningModule):
 
     def training_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
         """Train model on training dataset."""
-        concept_ids = batch["concept_ids"]
+        inputs = (
+            batch["concept_ids"],
+            batch["type_ids"],
+            batch["time_stamps"],
+            batch["ages"],
+            batch["visit_orders"],
+            batch["visit_segments"],
+        )
         labels = batch["labels"]
 
         # Ensure use of mixed precision
         with autocast():
             loss = self(
-                input_ids=concept_ids,
+                inputs,
                 labels=labels,
                 return_dict=True,
             ).loss
@@ -111,18 +173,24 @@ class MambaPretrain(pl.LightningModule):
             prog_bar=True,
             sync_dist=True,
         )
-
         return loss
 
     def validation_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
         """Evaluate model on validation dataset."""
-        concept_ids = batch["concept_ids"]
+        inputs = (
+            batch["concept_ids"],
+            batch["type_ids"],
+            batch["time_stamps"],
+            batch["ages"],
+            batch["visit_orders"],
+            batch["visit_segments"],
+        )
         labels = batch["labels"]
 
         # Ensure use of mixed precision
         with autocast():
             loss = self(
-                input_ids=concept_ids,
+                inputs,
                 labels=labels,
                 return_dict=True,
             ).loss
@@ -197,6 +265,7 @@ class MambaFinetune(pl.LightningModule):
         # self.post_init()
 
         self.pretrained_model = pretrained_model
+        self.embeddings = self.pretrained_model.embeddings
         self.model.backbone = self.pretrained_model.model.backbone
 
     def _init_weights(self, module: torch.nn.Module) -> None:
@@ -219,14 +288,32 @@ class MambaFinetune(pl.LightningModule):
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        inputs: Tuple[
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+        ],
         labels: Optional[torch.Tensor] = None,
         output_hidden_states: Optional[bool] = False,
         return_dict: Optional[bool] = True,
     ) -> Union[Tuple[torch.Tensor, ...], MambaSequenceClassifierOutput]:
         """Forward pass for the model."""
+        concept_ids, type_ids, time_stamps, ages, visit_orders, visit_segments = inputs
+        inputs_embeds = self.embeddings(
+            input_ids=concept_ids,
+            token_type_ids_batch=type_ids,
+            time_stamps=time_stamps,
+            ages=ages,
+            visit_orders=visit_orders,
+            visit_segments=visit_segments,
+        )
+
         return self.model(
-            input_ids=input_ids,
+            input_ids=concept_ids,
+            inputs_embeds=inputs_embeds,
             labels=labels,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
@@ -234,13 +321,20 @@ class MambaFinetune(pl.LightningModule):
 
     def training_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
         """Train model on training dataset."""
-        concept_ids = batch["concept_ids"]
+        inputs = (
+            batch["concept_ids"],
+            batch["type_ids"],
+            batch["time_stamps"],
+            batch["ages"],
+            batch["visit_orders"],
+            batch["visit_segments"],
+        )
         labels = batch["labels"]
 
         # Ensure use of mixed precision
         with autocast():
             loss = self(
-                input_ids=concept_ids,
+                inputs,
                 labels=labels,
                 return_dict=True,
             ).loss
@@ -257,13 +351,20 @@ class MambaFinetune(pl.LightningModule):
 
     def validation_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
         """Evaluate model on validation dataset."""
-        concept_ids = batch["concept_ids"]
+        inputs = (
+            batch["concept_ids"],
+            batch["type_ids"],
+            batch["time_stamps"],
+            batch["ages"],
+            batch["visit_orders"],
+            batch["visit_segments"],
+        )
         labels = batch["labels"]
 
         # Ensure use of mixed precision
         with autocast():
             loss = self(
-                input_ids=concept_ids,
+                inputs,
                 labels=labels,
                 return_dict=True,
             ).loss
@@ -280,13 +381,20 @@ class MambaFinetune(pl.LightningModule):
 
     def test_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
         """Test step."""
-        concept_ids = batch["concept_ids"]
+        inputs = (
+            batch["concept_ids"],
+            batch["type_ids"],
+            batch["time_stamps"],
+            batch["ages"],
+            batch["visit_orders"],
+            batch["visit_segments"],
+        )
         labels = batch["labels"]
 
         # Ensure use of mixed precision
         with autocast():
             outputs = self(
-                input_ids=concept_ids,
+                inputs,
                 labels=labels,
                 return_dict=True,
             )
