@@ -105,7 +105,8 @@ class MambaForSequenceClassification(MambaPreTrainedModel):
             config.num_labels - 1]`. If `config.num_labels == 1` a regression loss is computed (Mean-Square loss), If
             `config.num_labels > 1` a classification loss is computed (Cross-Entropy).
 
-        Returns:
+        Returns
+        -------
         """
         if inputs_embeds is not None:
             sequence_outputs = self.backbone(
