@@ -711,7 +711,7 @@ class FinetuneDatasetDecoder(Dataset):
     def __len__(self) -> int:
         """Return the length of dataset."""
         return len(self.index_mapper)
-    
+
     def tokenize_data(self, sequence: Union[str, List[str]]) -> Any:
         """Tokenize the sequence and return input_ids and attention mask.
 
@@ -776,7 +776,7 @@ class FinetuneDatasetDecoder(Dataset):
             "visit_orders": position_tokens,
             "visit_segments": visit_tokens,
             "labels": labels,
-            "task": task
+            "task": task,
         }
 
     def balance_labels(self, task: str, positive_ratio: float) -> None:
