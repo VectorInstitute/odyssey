@@ -5,6 +5,7 @@ import logging
 import os
 import time
 from ast import literal_eval
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
@@ -12,6 +13,24 @@ import numpy as np
 import pandas as pd
 from dateutil import parser
 
+from odyssey.data.constants import (
+    CLASS,
+    CLASS_TOKEN,
+    LAB,
+    MASK_TOKEN,
+    MED,
+    PAD,
+    PAD_TOKEN,
+    PROC,
+    REGISTER,
+    REGISTER_TOKEN,
+    TIME_DELTA,
+    UNKNOWN_TOKEN,
+    VISIT_END,
+    VISIT_END_TOKEN,
+    VISIT_START,
+    VISIT_START_TOKEN,
+)
 from odyssey.utils.log import setup_logging
 
 
@@ -20,33 +39,136 @@ LOGGER = logging.getLogger(__name__)
 setup_logging(print_level="INFO", logger=LOGGER)
 
 
+def _to_list(input_value: Union[np.ndarray, List]) -> Any:
+    """Convert the input value to a list if it is an instance of numpy array.
+
+    Parameters
+    ----------
+    input_value : Union[np.ndarray, List]
+        Input value
+
+    Returns
+    -------
+    Any
+        Converted value
+
+    """
+    return input_value.tolist() if isinstance(input_value, np.ndarray) else input_value
+
+
+@dataclass
+class TokenConfig:
+    """Token configuration for the patient sequences.
+
+    Parameters
+    ----------
+    pad_token : str, optional
+        Padding token, by default "[PAD]"
+    mask_token : str, optional
+        Mask token, by default "[MASK]"
+    visit_start_token : str, optional
+        Visit start token, by default "[VS]"
+    visit_end_token : str, optional
+        Visit end token, by default "[VE]"
+    class_token : str, optional
+        Class token, by default "[CLS]"
+    register_token : str, optional
+        Register token, by default "[REG]"
+    unknown_token : str, optional
+        Unknown token, by default "[UNK]"
+    time_delta_tokens : List[str], optional
+        Time delta tokens, by default field(default_factory=lambda: (
+            [f"[W_{i}]" for i in range(0, 4)]
+            + [f"[M_{i}]" for i in range(0, 13)]
+            + ["[LT]"]
+        ))
+
+    """
+
+    pad_token: str = PAD_TOKEN
+    mask_token: str = MASK_TOKEN
+    visit_start_token: str = VISIT_START_TOKEN
+    visit_end_token: str = VISIT_END_TOKEN
+    class_token: str = CLASS_TOKEN
+    register_token: str = REGISTER_TOKEN
+    unknown_token: str = UNKNOWN_TOKEN
+    time_delta_tokens: List[str] = field(
+        default_factory=lambda: (
+            [f"[W_{i}]" for i in range(0, 4)]
+            + [f"[M_{i}]" for i in range(0, 13)]
+            + ["[LT]"]
+        )
+    )
+    token_type_mapping: Dict[str, int] = field(
+        default_factory=lambda: {
+            PAD: 0,
+            CLASS: 1,
+            VISIT_START: 2,
+            VISIT_END: 3,
+            TIME_DELTA: 4,
+            LAB: 5,
+            MED: 6,
+            PROC: 7,
+            REGISTER: 8,
+        }
+    )
+
+    @property
+    def special_tokens(self) -> List[str]:
+        """Get the special tokens."""
+        return [
+            self.pad_token,
+            self.mask_token,
+            self.visit_start_token,
+            self.visit_end_token,
+            self.class_token,
+            self.register_token,
+            self.unknown_token,
+        ] + self.time_delta_tokens
+
+
+class TokenGenerator:
+    """Generate tokens for the patient sequences.
+
+    Parameters
+    ----------
+    max_seq_length : int
+        Maximum sequence length
+    token_config : TokenConfig, optional
+        Token configuration, by default TokenConfig()
+    reference_time : str, optional
+        Reference time, by default "2020-01-01 00:00:00"
+
+    """
+
+    def __init__(
+        self,
+        max_seq_length: int,
+        token_config: TokenConfig,
+        reference_time: str = "2020-01-01 00:00:00",
+    ):
+        """Initialize the token generator."""
+        self.max_seq_length = max_seq_length
+        self.token_config = token_config
+        self.reference_time = parser.parse(reference_time)
+
+
+class EncounterProcessor:
+    """Process Patient Encounters."""
+
+
 class SequenceGenerator:
     """Generate patient sequences from the events dataframes."""
 
     def __init__(
         self,
         max_seq_length: int,
-        pad_token: str = "[PAD]",
-        mask_token: str = "[MASK]",
-        start_token: str = "[VS]",
-        end_token: str = "[VE]",
-        class_token: str = "[CLS]",
-        register_token: str = "[REG]",
-        unknown_token: str = "[UNK]",
-        reference_time: str = "2020-01-01 00:00:00",
         data_dir: str = "data_files",
         json_dir: str = "json_files",
         save_dir: str = "data_files",
     ):
         self.max_seq_length = max_seq_length
-        self.pad_token = pad_token
-        self.mask_token = mask_token
-        self.start_token = start_token
-        self.end_token = end_token
-        self.class_token = class_token
-        self.register_token = register_token
-        self.unknown_token = unknown_token
-        self.reference_time = parser.parse(reference_time)
+        self.token_generator = TokenGenerator(max_seq_length, TokenConfig())
         self.data_dir = data_dir
         self.json_dir = json_dir
         self.max_dir = os.path.join(save_dir, str(self.max_seq_length))
@@ -55,43 +177,6 @@ class SequenceGenerator:
 
         os.makedirs(self.max_dir, exist_ok=True)
         os.makedirs(self.all_dir, exist_ok=True)
-
-    @property
-    def time_delta_tokens(self) -> List[str]:
-        """Get the time delta tokens."""
-        return (
-            [f"[W_{i}]" for i in range(0, 4)]
-            + [f"[M_{i}]" for i in range(0, 13)]
-            + ["[LT]"]
-        )
-
-    @property
-    def special_tokens(self) -> List[str]:
-        """Get the special tokens."""
-        return [
-            self.pad_token,
-            self.mask_token,
-            self.start_token,
-            self.end_token,
-            self.class_token,
-            self.register_token,
-            self.unknown_token,
-        ] + self.time_delta_tokens
-
-    @property
-    def get_token_type_dict(self) -> Dict[str, int]:
-        """Get the token type dictionary."""
-        return {
-            "pad": 0,
-            "class": 1,
-            "start": 2,
-            "end": 3,
-            "time": 4,
-            "lab": 5,
-            "med": 6,
-            "proc": 7,
-            "reg": 8,
-        }
 
     @property
     def get_max_column_names(self) -> List[str]:
@@ -136,13 +221,6 @@ class SequenceGenerator:
             "common_conditions",
             "rare_conditions",
         ]
-
-    @staticmethod
-    def to_list(input_value: Union[np.ndarray, List]) -> Any:
-        """Convert the input value to a list if it is an instance of numpy array."""
-        return (
-            input_value.tolist() if isinstance(input_value, np.ndarray) else input_value
-        )
 
     def _get_valid_encounters(
         self,
@@ -838,13 +916,13 @@ class SequenceGenerator:
         pd.Series
             Updated row with truncated or padded sequence
         """
-        sequence = self.to_list(row["event_tokens"])
-        t_type = self.to_list(row["type_tokens"])
-        age = self.to_list(row["age_tokens"])
-        time = self.to_list(row["time_tokens"])
-        visit = self.to_list(row["visit_tokens"])
-        position = self.to_list(row["position_tokens"])
-        elapsed = self.to_list(row["elapsed_tokens"])
+        sequence = _to_list(row["event_tokens"])
+        t_type = _to_list(row["type_tokens"])
+        age = _to_list(row["age_tokens"])
+        time = _to_list(row["time_tokens"])
+        visit = _to_list(row["visit_tokens"])
+        position = _to_list(row["position_tokens"])
+        elapsed = _to_list(row["elapsed_tokens"])
         seq_length = row["token_length"]
         truncated = False
         padded_length = 0

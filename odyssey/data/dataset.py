@@ -173,8 +173,9 @@ class PretrainDataset(Dataset):
 
 
 class PretrainDatasetDecoder(Dataset):
-    """Dataset for pretraining a decoder-based model (e.g. Mamba)
-    using the next token prediction task.
+    """Dataset for pretraining a decoder-based model (e.g. Mamba).
+
+    The decoder is trained using the next token prediction task.
 
     Parameters
     ----------
@@ -193,6 +194,7 @@ class PretrainDatasetDecoder(Dataset):
         Tokenizer used for tokenizing sequences.
     max_len : int
         Maximum length of the tokenized sequences.
+
     """
 
     def __init__(
