@@ -152,9 +152,65 @@ class TokenGenerator:
         self.token_config = token_config
         self.reference_time = parser.parse(reference_time)
 
+    def add_tokens(self, events, encounters):
+        # Add special tokens to the events
+        pass
+
+    def truncate_or_pad(self, events, pad_events=False):
+        # Truncate or pad the sequence to max_seq_length
+        pass
+
 
 class EncounterProcessor:
-    """Process Patient Encounters."""
+    def __init__(self, data_dir, json_dir):
+        self.data_dir = data_dir
+        self.json_dir = json_dir
+
+    def load_data(self, file_paths):
+        # Load data from CSV files
+        pass
+
+    def validate_encounters(self, encounters, procedures, medications, labs):
+        # Validate and filter encounters
+        pass
+
+    def sort_encounters(self, encounters):
+        # Sort encounters by start time
+        pass
+
+    def calculate_patient_ages(self, encounters, patients):
+        # Calculate patient ages at the time of encounters
+        pass
+
+    def calculate_encounter_times(self, encounters):
+        # Calculate time of encounters in weeks with respect to a reference time
+        pass
+
+
+class LabelAssigner:
+    """Assign labels to the patient sequences."""
+
+    def __init__(self, json_dir):
+        self.json_dir = json_dir
+
+    def assign_mortality_label(self, events, patients, encounters):
+        # Assign mortality labels based on patient death information
+        pass
+
+    def assign_condition_labels(self, events, conditions):
+        # Assign labels for common and rare conditions
+        pass
+
+
+class SequenceSaver:
+    """Save patient sequences to disk."""
+
+    def __init__(self, save_dir):
+        self.save_dir = save_dir
+
+    def save_sequences(self, sequences, round_number):
+        # Save sequences to disk
+        pass
 
 
 class SequenceGenerator:
@@ -169,6 +225,7 @@ class SequenceGenerator:
     ):
         self.max_seq_length = max_seq_length
         self.token_generator = TokenGenerator(max_seq_length, TokenConfig())
+        self.encounter_processor = EncounterProcessor(data_dir, json_dir)
         self.data_dir = data_dir
         self.json_dir = json_dir
         self.max_dir = os.path.join(save_dir, str(self.max_seq_length))
