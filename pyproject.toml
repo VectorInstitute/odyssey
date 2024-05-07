@@ -36,7 +36,6 @@ optional = true
 [tool.poetry.group.test.dependencies]
 pytest = "^7.1.1"
 pre-commit = "^2.17.0"
-black = "^22.1.0"
 pytest-cov = "^3.0.0"
 codecov = "^2.1.13"
 nbstripout = "^0.6.1"
