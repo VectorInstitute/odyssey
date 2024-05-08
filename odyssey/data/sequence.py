@@ -134,10 +134,10 @@ class TokenGenerator:
     ----------
     max_seq_length : int
         Maximum sequence length
-    token_config : TokenConfig, optional
+    token_config : TokenConfig
         Token configuration, by default TokenConfig()
-    reference_time : str, optional
-        Reference time, by default "2020-01-01 00:00:00"
+    reference_time : str
+        Reference time
 
     """
 
@@ -145,7 +145,7 @@ class TokenGenerator:
         self,
         max_seq_length: int,
         token_config: TokenConfig,
-        reference_time: str = "2020-01-01 00:00:00",
+        reference_time: str,
     ):
         """Initialize the token generator."""
         self.max_seq_length = max_seq_length
@@ -187,6 +187,23 @@ class EncounterProcessor:
         pass
 
 
+class EventProcessor:
+    """Process events dataframes."""
+
+    def __init__(self, token_config):
+        self.token_config = token_config
+
+    def edit_event_datetimes(self, events, encounters):
+        # Edit the datetimes of events to fit within the encounter time frame
+        pass
+
+    def combine_events(
+        self, procedures, medications, labs, encounters, conditions=None
+    ):
+        # Combine events from different concepts
+        pass
+
+
 class LabelAssigner:
     """Assign labels to the patient sequences."""
 
@@ -224,7 +241,10 @@ class SequenceGenerator:
         save_dir: str = "data_files",
     ):
         self.max_seq_length = max_seq_length
-        self.token_generator = TokenGenerator(max_seq_length, TokenConfig())
+        self.token_config = TokenConfig()
+        self.token_generator = TokenGenerator(
+            max_seq_length, self.token_config, reference_time="2020-01-01 00:00:00"
+        )
         self.encounter_processor = EncounterProcessor(data_dir, json_dir)
         self.data_dir = data_dir
         self.json_dir = json_dir
@@ -399,7 +419,9 @@ class SequenceGenerator:
             Updated row with encounter times
         """
         first_encounter = parser.parse(encounter_row["starts"][0]).replace(tzinfo=None)
-        initial_value = (first_encounter - self.reference_time).days // 7
+        initial_value = (
+            first_encounter - self.token_generator.reference_time
+        ).days // 7
         ages = encounter_row["ages"]
         time_values = [initial_value + (age - ages[0]) * 53 for age in ages]
         encounter_row["times"] = time_values
@@ -611,9 +633,15 @@ class SequenceGenerator:
             lab_bins = labs.iloc[i]["binned_values"]
             lab_codes = [f"{el1}_{el2}" for el1, el2 in zip(lab_codes, lab_bins)]
 
-            proc_type_ids = [self.get_token_type_dict["proc"]] * len(proc_codes)
-            med_type_ids = [self.get_token_type_dict["med"]] * len(med_codes)
-            lab_type_ids = [self.get_token_type_dict["lab"]] * len(lab_codes)
+            proc_type_ids = [self.token_config.token_type_mapping.get(PROC)] * len(
+                proc_codes
+            )
+            med_type_ids = [self.token_config.token_type_mapping.get(MED)] * len(
+                med_codes
+            )
+            lab_type_ids = [self.token_config.token_type_mapping.get(LAB)] * len(
+                lab_codes
+            )
 
             proc_dates = procedures.iloc[i]["proc_dates"]
             med_dates = medications.iloc[i]["med_dates"]
@@ -734,8 +762,8 @@ class SequenceGenerator:
         age_mapping = dict(zip(ecounters, encounter_row["ages"]))
         time_mapping = dict(zip(ecounters, encounter_row["times"]))
 
-        event_tokens = [self.class_token]
-        type_tokens = [self.get_token_type_dict["class"]]
+        event_tokens = [self.token_config.class_token]
+        type_tokens = [self.token_config.token_type_mapping.get(CLASS)]
         age_tokens = [0]
         time_tokens = [0]
         visit_segments = [0]
@@ -760,8 +788,10 @@ class SequenceGenerator:
             if is_different_encounter and (has_no_equal or is_not_equal):
                 if prev_encounter is not None:
                     # Adding Visit End Token
-                    event_tokens.append(self.end_token)
-                    type_tokens.append(self.get_token_type_dict["end"])
+                    event_tokens.append(self.token_config.visit_end_token)
+                    type_tokens.append(
+                        self.token_config.token_type_mapping.get(VISIT_END)
+                    )
                     age_tokens.append(age_mapping[prev_encounter])
                     time_tokens.append(time_mapping[prev_encounter])
                     visit_segments.append(segment_value)
@@ -769,8 +799,10 @@ class SequenceGenerator:
                     elapsed_tokens.append(-2)
 
                     # Adding Register Token
-                    event_tokens.append(self.register_token)
-                    type_tokens.append(self.get_token_type_dict["reg"])
+                    event_tokens.append(self.token_config.register_token)
+                    type_tokens.append(
+                        self.token_config.token_type_mapping.get(REGISTER)
+                    )
                     age_tokens.append(age_mapping[prev_encounter])
                     time_tokens.append(time_mapping[prev_encounter])
                     visit_segments.append(segment_value)
@@ -779,7 +811,9 @@ class SequenceGenerator:
 
                     # Adding interval token
                     event_tokens.append(intervals[event_encounter])
-                    type_tokens.append(self.get_token_type_dict["time"])
+                    type_tokens.append(
+                        self.token_config.token_type_mapping.get(TIME_DELTA)
+                    )
                     age_tokens.append(0)
                     time_tokens.append(0)
                     visit_segments.append(0)
@@ -787,8 +821,10 @@ class SequenceGenerator:
                     elapsed_tokens.append(-2)
 
                 # Adding Visit Start Token
-                event_tokens.append(self.start_token)
-                type_tokens.append(self.get_token_type_dict["start"])
+                event_tokens.append(self.token_config.visit_start_token)
+                type_tokens.append(
+                    self.token_config.token_type_mapping.get(VISIT_START)
+                )
                 age_tokens.append(age_mapping[event_encounter])
                 time_tokens.append(time_mapping[event_encounter])
                 elapsed_tokens.append(-1)
@@ -811,8 +847,8 @@ class SequenceGenerator:
             prev_encounter = event_encounter
 
         # Adding Visit End Token
-        event_tokens.append(self.end_token)
-        type_tokens.append(self.get_token_type_dict["end"])
+        event_tokens.append(self.token_config.visit_end_token)
+        type_tokens.append(self.token_config.token_type_mapping.get(VISIT_END))
         age_tokens.append(age_mapping[event_encounter])
         time_tokens.append(time_mapping[event_encounter])
         visit_segments.append(segment_value)
@@ -820,8 +856,8 @@ class SequenceGenerator:
         elapsed_tokens.append(-2)
 
         # Adding Register Token
-        event_tokens.append(self.register_token)
-        type_tokens.append(self.get_token_type_dict["reg"])
+        event_tokens.append(self.token_config.register_token)
+        type_tokens.append(self.token_config.token_type_mapping.get(REGISTER))
         age_tokens.append(age_mapping[event_encounter])
         time_tokens.append(time_mapping[event_encounter])
         visit_segments.append(segment_value)
@@ -941,7 +977,7 @@ class SequenceGenerator:
         position_tokens = []
         token = 0
         for i in range(len(event_tokens)):
-            if event_tokens[i] == self.start_token:
+            if event_tokens[i] == self.token_config.visit_start_token:
                 token = token + 1
             position_tokens.append(token)
         return position_tokens
@@ -951,7 +987,7 @@ class SequenceGenerator:
         visit_segments = [0]
         segment = 1
         for i in range(1, len(event_tokens)):
-            if event_tokens[i] == self.start_token:
+            if event_tokens[i] == self.token_config.visit_start_token:
                 segment = 1 if segment == 2 else 2
             visit_segments.append(segment)
         return visit_segments
@@ -1000,20 +1036,21 @@ class SequenceGenerator:
             start_index = int(seq_length - self.max_seq_length) + 2
             end_index = int(seq_length)
 
-            if sequence[start_index] == self.end_token:
+            if sequence[start_index] == self.token_config.visit_end_token:
                 start_index += 3
-            elif sequence[start_index] == self.register_token:
+            elif sequence[start_index] == self.token_config.register_token:
                 start_index += 2
             elif sequence[start_index].startswith(("[W_", "[M_", "[LT")):
                 start_index += 1
 
-            if sequence[start_index] != self.start_token:
-                new_sequence = [self.class_token, self.start_token] + sequence[
-                    start_index:end_index
-                ]
+            if sequence[start_index] != self.token_config.visit_start_token:
+                new_sequence = [
+                    self.token_config.class_token,
+                    self.token_config.visit_start_token,
+                ] + sequence[start_index:end_index]
                 new_type = [
-                    self.get_token_type_dict["class"],
-                    self.get_token_type_dict["start"],
+                    self.token_config.token_type_mapping.get(CLASS),
+                    self.token_config.token_type_mapping.get(VISIT_START),
                 ] + t_type[start_index:end_index]
                 new_age = [0, age[start_index]] + age[start_index:end_index]
                 new_time = [0, time[start_index]] + time[start_index:end_index]
@@ -1021,8 +1058,10 @@ class SequenceGenerator:
                 new_position = self._create_postition_tokens(new_sequence)
                 new_elasped = [-2, -1] + elapsed[start_index:end_index]
             else:
-                new_sequence = [self.class_token] + sequence[start_index:end_index]
-                new_type = [self.get_token_type_dict["class"]] + t_type[
+                new_sequence = [self.token_config.class_token] + sequence[
+                    start_index:end_index
+                ]
+                new_type = [self.token_config.token_type_mapping.get(CLASS)] + t_type[
                     start_index:end_index
                 ]
                 new_age = [0] + age[start_index:end_index]
@@ -1046,7 +1085,7 @@ class SequenceGenerator:
                 if pad_events:
                     row[f"event_tokens_{self.max_seq_length}"] = (
                         row[f"event_tokens_{self.max_seq_length}"]
-                        + [self.pad_token] * padded_length
+                        + [self.token_config.pad_token] * padded_length
                     )
                 else:
                     # padding will be done in the tokenizer
@@ -1056,7 +1095,7 @@ class SequenceGenerator:
 
                 row[f"type_tokens_{self.max_seq_length}"] = (
                     row[f"type_tokens_{self.max_seq_length}"]
-                    + [self.get_token_type_dict["pad"]] * padded_length
+                    + [self.token_config.token_type_mapping.get(PAD)] * padded_length
                 )
                 row[f"age_tokens_{self.max_seq_length}"] = (
                     row[f"age_tokens_{self.max_seq_length}"] + [0] * padded_length
@@ -1073,14 +1112,15 @@ class SequenceGenerator:
             else:
                 if pad_events:
                     row[f"event_tokens_{self.max_seq_length}"] = (
-                        sequence + [self.pad_token] * padded_length
+                        sequence + [self.token_config.pad_token] * padded_length
                     )
                 else:
                     # padding will be done in the tokenizer
                     row[f"event_tokens_{self.max_seq_length}"] = sequence
 
                 row[f"type_tokens_{self.max_seq_length}"] = (
-                    t_type + [self.get_token_type_dict["pad"]] * padded_length
+                    t_type
+                    + [self.token_config.token_type_mapping.get(PAD)] * padded_length
                 )
                 row[f"age_tokens_{self.max_seq_length}"] = age + [0] * padded_length
                 row[f"time_tokens_{self.max_seq_length}"] = time + [0] * padded_length
@@ -1315,7 +1355,7 @@ if __name__ == "__main__":
         save_dir="/mnt/data/odyssey/mimiciv_fhir1/parquet_files",
     )
     generator.create_patient_sequence(
-        chunksize=20000,
+        chunksize=20,
         min_events=10,
         min_visits=0,
     )
