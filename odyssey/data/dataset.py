@@ -497,7 +497,6 @@ class FinetuneMultiDataset(Dataset):
             for task_data in self.task_to_index.values()
             for datapoints in task_data
         ]
-        del self.task_to_index
 
     def __len__(self) -> int:
         """Return the length of dataset."""
