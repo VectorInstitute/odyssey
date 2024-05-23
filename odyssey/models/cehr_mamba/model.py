@@ -262,7 +262,6 @@ class MambaFinetune(pl.LightningModule):
         self.config.problem_type = problem_type
 
         self.model = MambaForSequenceClassification(config=self.config)
-        # self.post_init()
 
         self.pretrained_model = pretrained_model
         self.embeddings = self.pretrained_model.embeddings
