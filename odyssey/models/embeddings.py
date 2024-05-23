@@ -490,6 +490,5 @@ class MambaEmbeddingsForCEHR(nn.Module):
         embeddings += visit_segments_embeds
 
         embeddings = self.dropout(embeddings)
-        embeddings = self.LayerNorm(embeddings)
 
-        return embeddings
+        return self.LayerNorm(embeddings)
