@@ -439,7 +439,7 @@ def stratified_train_test_split(
         )
 
     else:
-        X_train, y_train, X_test, y_test = iterative_train_test_split(
+        X_train, y_train, X_test, _ = iterative_train_test_split(
             inputs,
             labels,
             test_size=test_size,
