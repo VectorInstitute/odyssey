@@ -430,7 +430,7 @@ def stratified_train_test_split(
 
     # Perform stratified split
     if is_single_label:
-        X_train, X_test, y_train, _ = train_test_split(
+        X_train, X_test, _, _ = train_test_split(
             inputs,
             labels,
             stratify=labels,
@@ -439,7 +439,7 @@ def stratified_train_test_split(
         )
 
     else:
-        X_train, y_train, X_test, _ = iterative_train_test_split(
+        X_train, _, X_test, _ = iterative_train_test_split(
             inputs,
             labels,
             test_size=test_size,
