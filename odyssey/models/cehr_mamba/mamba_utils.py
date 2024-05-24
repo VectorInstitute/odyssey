@@ -24,6 +24,9 @@ from transformers.utils import (
 _CONFIG_FOR_DOC = "MambaConfig"
 
 
+# ruff: noqa: W505,D205,D101,PLR0912
+
+
 @dataclass
 class MambaSequenceClassifierOutput(ModelOutput):
     """

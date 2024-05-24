@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 import os
 import time
 from ast import literal_eval
@@ -153,37 +154,40 @@ class TokenGenerator:
         self.reference_time = parser.parse(reference_time)
 
     def add_tokens(self, events, encounters):
-        # Add special tokens to the events
+        """Add tokens to the events."""
         pass
 
     def truncate_or_pad(self, events, pad_events=False):
-        # Truncate or pad the sequence to max_seq_length
+        """Truncate or pad the events."""
         pass
 
 
 class EncounterProcessor:
+    """Encounter processor for the patient sequences."""
+
     def __init__(self, data_dir, json_dir):
+        """Initialize the encounter processor."""
         self.data_dir = data_dir
         self.json_dir = json_dir
 
     def load_data(self, file_paths):
-        # Load data from CSV files
+        """Load the data from the file paths."""
         pass
 
     def validate_encounters(self, encounters, procedures, medications, labs):
-        # Validate and filter encounters
+        """Validate and filter encounters based on the events."""
         pass
 
     def sort_encounters(self, encounters):
-        # Sort encounters by start time
+        """Sort encounters by start time."""
         pass
 
     def calculate_patient_ages(self, encounters, patients):
-        # Calculate patient ages at the time of encounters
+        """Calculate patient ages at the time of encounters."""
         pass
 
     def calculate_encounter_times(self, encounters):
-        # Calculate time of encounters in weeks with respect to a reference time
+        """Calculate time of encounters in weeks with respect to a reference time."""
         pass
 
 
@@ -194,13 +198,13 @@ class EventProcessor:
         self.token_config = token_config
 
     def edit_event_datetimes(self, events, encounters):
-        # Edit the datetimes of events to fit within the encounter time frame
+        """Edit the datetimes of events to fit within the encounter time frame."""
         pass
 
     def combine_events(
         self, procedures, medications, labs, encounters, conditions=None
     ):
-        # Combine events from different concepts
+        """Combine events from different concepts."""
         pass
 
 
@@ -211,11 +215,11 @@ class LabelAssigner:
         self.json_dir = json_dir
 
     def assign_mortality_label(self, events, patients, encounters):
-        # Assign mortality labels based on patient death information
+        """Assign mortality labels based on patient death information."""
         pass
 
     def assign_condition_labels(self, events, conditions):
-        # Assign labels for common and rare conditions
+        """Assign labels for common and rare conditions."""
         pass
 
 
@@ -223,10 +227,11 @@ class SequenceSaver:
     """Save patient sequences to disk."""
 
     def __init__(self, save_dir):
+        """Initialize the sequence saver."""
         self.save_dir = save_dir
 
     def save_sequences(self, sequences, round_number):
-        # Save sequences to disk
+        """Save the patient sequences to disk."""
         pass
 
 
@@ -908,7 +913,7 @@ class SequenceGenerator:
             Updated row with mortality label
         """
         death_date = patient_row["deceasedDateTime"]
-        if death_date is np.nan:
+        if not isinstance(death_date, str) and math.isnan(float(death_date)):
             row["deceased"] = 0
             return row
         death_date = datetime.strptime(death_date, "%Y-%m-%d").date()
@@ -1295,8 +1300,12 @@ class SequenceGenerator:
                 subset=[f"event_tokens_{self.max_seq_length}"],
             )
             # save the combined events
-            combined_events_all = combined_events[self.get_all_column_names]
-            combined_events_max = combined_events[self.get_max_column_names]
+            combined_events_all = combined_events.loc[
+                :, combined_events.columns.intersection(self.get_all_column_names)
+            ]
+            combined_events_max = combined_events.loc[
+                :, combined_events.columns.intersection(self.get_max_column_names)
+            ]
 
             combined_events_all.to_parquet(
                 self.all_dir + f"/patient_sequences_{rounds}.parquet",
@@ -1355,7 +1364,7 @@ if __name__ == "__main__":
         save_dir="/mnt/data/odyssey/mimiciv_fhir1/parquet_files",
     )
     generator.create_patient_sequence(
-        chunksize=20,
+        chunksize=10,
         min_events=10,
         min_visits=0,
     )
