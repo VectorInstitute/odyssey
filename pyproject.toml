@@ -30,7 +30,6 @@ transformers = "^4.39.3"
 captum = "^0.7.0"
 scikit-multilearn = "^0.2.0"
 numpy = "^1.26.4"
-swifter = "^1.4.0"
 
 [tool.poetry.group.test]
 optional = true
