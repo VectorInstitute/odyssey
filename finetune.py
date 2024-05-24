@@ -36,7 +36,7 @@ from odyssey.models.model_utils import (
 from odyssey.utils.utils import seed_everything
 
 
-def main(
+def main(  # noqa: PLR0912, PLR0915
     args: argparse.Namespace,
     pre_model_config: Dict[str, Any],
     fine_model_config: Dict[str, Any],
