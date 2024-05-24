@@ -1,4 +1,4 @@
-<div style="text-align:center;">
+<div>
     <img src="https://github.com/VectorInstitute/odyssey/assets/90617686/34ecf262-e455-4866-a870-300433d09bfe" width="50%">
 </div>
 
