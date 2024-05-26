@@ -46,7 +46,7 @@ def _to_list(input_value: Union[np.ndarray, List]) -> Any:
     Parameters
     ----------
     input_value : Union[np.ndarray, List]
-        Input value
+        Input value.
 
     Returns
     -------
@@ -55,6 +55,48 @@ def _to_list(input_value: Union[np.ndarray, List]) -> Any:
 
     """
     return input_value.tolist() if isinstance(input_value, np.ndarray) else input_value
+
+
+@dataclass
+class EventData:
+    """Event data for the patient sequences.
+
+    Parameters
+    ----------
+    event_type : str
+        Event type, e.g. procedures, medications, labs.
+    data : pd.DataFrame
+        Dataframe with the event data, one row per patient.
+
+    """
+
+    event_type: str
+    data: pd.DataFrame
+
+
+@dataclass
+class PatientData:
+    """Patient data for the patient sequences.
+
+    Each dataframe has one row per patient.
+
+    Parameters
+    ----------
+    patients: pd.DataFrame
+        Patients dataframe.
+    encounters: pd.DataFrame
+        Encounters dataframe.
+    conditions: pd.DataFrame
+        Conditions dataframe.
+    events: Dict[str, EventData]
+        Event dataframes.
+
+    """
+
+    patients: pd.DataFrame
+    encounters: pd.DataFrame
+    conditions: pd.DataFrame
+    events: Dict[str, EventData]
 
 
 @dataclass
@@ -168,9 +210,7 @@ class EncounterProcessor:
     def validate_encounters(
         self,
         encounter_row: pd.Series,
-        procedure_row: pd.Series,
-        medication_row: pd.Series,
-        lab_row: pd.Series,
+        **events_row: pd.Series,
     ) -> pd.Series:
         """Identify valid encounters based on the events.
 
@@ -178,12 +218,7 @@ class EncounterProcessor:
         ----------
         encounter_row : pd.Series
             A single row from the encounters DataFrame.
-        procedure_row : pd.Series
-            A single row from the procedures DataFrame.
-        medication_row : pd.Series
-            A single row from the medications DataFrame.
-        lab_row : pd.Series
-            A single row from the labs DataFrame.
+        event_row : pd.Series
 
         Returns
         -------
@@ -191,17 +226,16 @@ class EncounterProcessor:
             Valid encounters.
 
         """
-        proc_encounters = set(literal_eval(procedure_row["encounter_ids"]))
-        med_encounters = set(literal_eval(medication_row["encounter_ids"]))
-        lab_encounters = set(literal_eval(lab_row["encounter_ids"]))
-        valid_encounters = proc_encounters.union(med_encounters, lab_encounters)
-
+        encounter_ids = []
+        for _, event_row in events_row.items():
+            event_encounter_ids = set(literal_eval(event_row["encounter_ids"]))
+            encounter_ids.append(event_encounter_ids)
+        valid_encounters = set.union(*encounter_ids)
         for col in ["encounter_ids", "starts", "ends"]:
             encounter_row[col] = literal_eval(encounter_row[col])
         encounter_ids = encounter_row["encounter_ids"]
         encounter_starts = encounter_row["starts"]
         encounter_ends = encounter_row["ends"]
-
         filtered_ids = [eid for eid in encounter_ids if eid in valid_encounters]
         filtered_starts = [
             start
@@ -213,7 +247,6 @@ class EncounterProcessor:
             for eid, end in zip(encounter_ids, encounter_ends)
             if eid in valid_encounters
         ]
-
         encounter_row["encounter_ids"] = filtered_ids
         encounter_row["starts"] = filtered_starts
         encounter_row["ends"] = filtered_ends
@@ -352,20 +385,251 @@ class EncounterProcessor:
 
 
 class EventProcessor:
-    """Process events dataframes."""
+    """Process events dataframes.
 
-    def __init__(self, token_config):
+    Parameters
+    ----------
+    token_config : TokenConfig
+        Token configuration
+
+    """
+
+    def __init__(self, token_config: TokenConfig):
+        """Initialize the event processor."""
         self.token_config = token_config
 
-    def edit_event_datetimes(self, events, encounters):
-        """Edit the datetimes of events to fit within the encounter time frame."""
-        pass
+    def edit_event_datetimes(
+        self,
+        row: pd.Series,
+        encounter_row: pd.Series,
+        concept_name: str,
+    ) -> pd.Series:
+        """Edit the datetimes of events to fit within the encounter time frame.
+
+        Parameters
+        ----------
+        row : pd.Series
+            Events row
+        encounter_row : pd.Series
+            Encounter row
+        concept_name : str
+            Name of the event concept
+
+        Returns
+        -------
+        pd.Series
+            Updated row with edited datetimes
+
+        """
+        if concept_name == LAB:
+            for name in [
+                "encounter_ids",
+                "lab_dates",
+                "lab_codes",
+                "binned_values",
+                "lab_values",
+                "lab_units",
+            ]:
+                row[name] = literal_eval(row[name])
+        elif concept_name == MED:
+            for name in ["encounter_ids", "med_dates", "med_codes"]:
+                row[name] = literal_eval(row[name])
+        elif concept_name == PROC:
+            for name in ["encounter_ids", "proc_dates", "proc_codes"]:
+                row[name] = literal_eval(row[name])
+        if row["length"] == 0:
+            return row
+        dates = []
+        date_column = f"{concept_name}_dates"
+        for i, date in enumerate(row[date_column]):
+            encounter_index = encounter_row["encounter_ids"].index(
+                row["encounter_ids"][i],
+            )
+            encounter_start = encounter_row["starts"][encounter_index]
+            encounter_end = encounter_row["ends"][encounter_index]
+            start_parsed = parser.parse(encounter_start)
+            end_parsed = parser.parse(encounter_end)
+            date_parsed = parser.parse(date)
+            enc_date = date
+            if date_parsed < start_parsed:
+                enc_date = encounter_start
+            elif date_parsed > end_parsed:
+                enc_date = encounter_end
+            dates.append(enc_date)
+        row[date_column] = dates
+
+        return row
+
+    def _update_encounter_order(
+        self,
+        encounter_order: Dict[str, int],
+        eq_encounters: Dict[str, List[str]],
+    ) -> Dict[str, int]:
+        """Update the encounter order based on the equal encounters."""
+        if eq_encounters == {}:
+            return encounter_order
+        visited = set()
+        for encounter, eq_encs in eq_encounters.items():
+            if encounter in encounter_order:
+                for eq_enc in eq_encs:
+                    if eq_enc in visited:
+                        continue
+                    new_order = min(
+                        encounter_order[eq_enc],
+                        encounter_order[encounter],
+                    )
+                    encounter_order[eq_enc] = new_order
+                    encounter_order[encounter] = new_order
+                    visited.add(encounter)
+
+        return encounter_order
+
+    def _concat_conditions(
+        self,
+        encounter_conditions: Dict[str, List[str]],
+        encounter_order: Dict[str, int],
+    ) -> Dict[int, List[str]]:
+        """Concatenate the conditions of the encounters using the encounter order."""
+        order_groups = {}
+        for encounter, order in encounter_order.items():
+            if order not in order_groups:
+                order_groups[order] = [encounter]
+            else:
+                order_groups[order].append(encounter)
+
+        concatenated_conditions = {}
+        for order, encounters in order_groups.items():
+            all_conditions = []
+            for encounter in encounters:
+                all_conditions.extend(encounter_conditions.get(encounter, []))
+            concatenated_conditions[order] = all_conditions
+
+        return concatenated_conditions
+
+    def calculate_time_after_admission(
+        self,
+        row: pd.Series,
+        encounter_row: pd.Series,
+    ) -> pd.Series:
+        """Calculate the time of the events after the admission."""
+        elapsed_times = []
+        for event_time, encounter_id in zip(row["proc_dates"], row["encounter_ids"]):
+            encounter_index = encounter_row["encounter_ids"].index(encounter_id)
+            start_time = encounter_row["starts"][encounter_index]
+            start_time = parser.parse(start_time)
+            event_time_ = parser.parse(event_time)
+            elapsed_time = round((event_time_ - start_time).total_seconds() / 3600, 2)
+            elapsed_times.append(elapsed_time)
+        row["elapsed_time"] = elapsed_times
+
+        return row
 
     def combine_events(
-        self, procedures, medications, labs, encounters, conditions=None
-    ):
-        """Combine events from different concepts."""
-        pass
+        self,
+        patient_data: PatientData,
+    ) -> pd.DataFrame:
+        """Combine the events of different concepts.
+
+        Parameters
+        ----------
+        patient_data : PatientData
+            Patient data
+
+        Returns
+        -------
+        pd.DataFrame
+            Combined events
+
+        """
+        procedures = patient_data.events[PROC].data
+        procedures["type_ids"] = [None] * len(procedures)
+        if patient_data.conditions is not None:
+            procedures["encounter_conditions"] = [None] * len(procedures)
+
+        for i in range(len(procedures)):
+            proc_codes = procedures.iloc[i]["proc_codes"]
+            proc_codes = [code.upper() for code in proc_codes]
+
+            med_codes = patient_data.events[MED].data.iloc[i]["med_codes"]
+            med_codes = [code.upper() for code in med_codes]
+
+            lab_codes = patient_data.events[LAB].data.iloc[i]["lab_codes"]
+            lab_codes = [code.upper() for code in lab_codes]
+            lab_bins = patient_data.events[LAB].data.iloc[i]["binned_values"]
+            lab_codes = [f"{el1}_{el2}" for el1, el2 in zip(lab_codes, lab_bins)]
+
+            proc_type_ids = [self.token_config.token_type_mapping.get(PROC)] * len(
+                proc_codes
+            )
+            med_type_ids = [self.token_config.token_type_mapping.get(MED)] * len(
+                med_codes
+            )
+            lab_type_ids = [self.token_config.token_type_mapping.get(LAB)] * len(
+                lab_codes
+            )
+            proc_dates = procedures.iloc[i]["proc_dates"]
+            med_dates = patient_data.events[MED].data.iloc[i]["med_dates"]
+            lab_dates = patient_data.events[LAB].data.iloc[i]["lab_dates"]
+
+            proc_encounters = procedures.iloc[i]["encounter_ids"]
+            med_encounters = patient_data.events[MED].data.iloc[i]["encounter_ids"]
+            lab_encounters = patient_data.events[LAB].data.iloc[i]["encounter_ids"]
+
+            combined_codes = proc_codes + med_codes + lab_codes
+            combined_dates = proc_dates + med_dates + lab_dates
+            combined_encounters = proc_encounters + med_encounters + lab_encounters
+            combined_type_ids = proc_type_ids + med_type_ids + lab_type_ids
+
+            encounter_order = {
+                encounter: i
+                for i, encounter in enumerate(
+                    patient_data.encounters.iloc[i]["encounter_ids"]
+                )
+            }
+
+            combined = sorted(
+                zip(
+                    combined_dates,
+                    combined_codes,
+                    combined_encounters,
+                    combined_type_ids,
+                ),
+                key=lambda x: (x[0], encounter_order.get(x[2])),
+            )
+            sorted_dates, sorted_codes, sorted_encounters, sorted_type_ids = (
+                zip(*combined) if combined else ([], [], [], [])
+            )
+
+            if patient_data.conditions is not None:
+                cond_codes = patient_data.conditions.iloc[i]["encounter_conditions"]
+                # keep the conditions of the existing encounters
+                filtered_conditions = {
+                    k: v for k, v in cond_codes.items() if k in combined_encounters
+                }
+                sorted_conditions = dict(
+                    sorted(
+                        filtered_conditions.items(),
+                        key=lambda item: encounter_order.get(item[0], float("inf")),
+                    ),
+                )
+                # Concat conditions if their encounters are equal
+                encounter_order_eq = self._update_encounter_order(
+                    encounter_order,
+                    patient_data.encounters.iloc[i]["eq_encounters"],
+                )
+                concatenated_conditions = self._concat_conditions(
+                    sorted_conditions,
+                    encounter_order_eq,
+                )
+                procedures.at[i, "encounter_conditions"] = [concatenated_conditions]
+
+            procedures.at[i, "proc_dates"] = list(sorted_dates)
+            procedures.at[i, "proc_codes"] = list(sorted_codes)
+            procedures.at[i, "encounter_ids"] = list(sorted_encounters)
+            procedures.at[i, "type_ids"] = list(sorted_type_ids)
+            procedures.at[i, "length"] = len(sorted_dates)
+
+        return procedures
 
 
 class LabelAssigner:
@@ -416,6 +680,7 @@ class SequenceGenerator:
         self.all_dir = os.path.join(save_dir, "all")
 
         self.encounter_processor = EncounterProcessor()
+        self.event_processor = EventProcessor(token_config=self.token_config)
         self.after_death_events: List[str] = []
 
         os.makedirs(self.max_dir, exist_ok=True)
@@ -464,248 +729,6 @@ class SequenceGenerator:
             "common_conditions",
             "rare_conditions",
         ]
-
-    def _edit_datetimes(
-        self,
-        row: pd.Series,
-        encounter_row: pd.Series,
-        concept_name: str,
-    ) -> pd.Series:
-        """Edit the datetimes of the events.
-
-        Done so that they won't fall out of the corresponding encounter time frame.
-
-        Parameters
-        ----------
-        row : pd.Series
-            Events row
-        encounter_row : pd.Series
-            Encounter row
-        concept_name : str
-            Name of the event concept
-
-        Returns
-        -------
-        pd.Series
-            Updated row with edited datetimes
-        """
-        if concept_name == "lab":
-            for name in [
-                "encounter_ids",
-                "lab_dates",
-                "lab_codes",
-                "binned_values",
-                "lab_values",
-                "lab_units",
-            ]:
-                row[name] = literal_eval(row[name])
-        elif concept_name == "med":
-            for name in ["encounter_ids", "med_dates", "med_codes"]:
-                row[name] = literal_eval(row[name])
-        elif concept_name == "proc":
-            for name in ["encounter_ids", "proc_dates", "proc_codes"]:
-                row[name] = literal_eval(row[name])
-        if row["length"] == 0:
-            return row
-        dates = []
-        date_column = f"{concept_name}_dates"
-        for i, date in enumerate(row[date_column]):
-            encounter_index = encounter_row["encounter_ids"].index(
-                row["encounter_ids"][i],
-            )
-            encounter_start = encounter_row["starts"][encounter_index]
-            encounter_end = encounter_row["ends"][encounter_index]
-            start_parsed = parser.parse(encounter_start)
-            end_parsed = parser.parse(encounter_end)
-            date_parsed = parser.parse(date)
-
-            enc_date = date
-            if date_parsed < start_parsed:
-                enc_date = encounter_start
-            elif date_parsed > end_parsed:
-                enc_date = encounter_end
-            dates.append(enc_date)
-        row[date_column] = dates
-        return row
-
-    def _update_encounter_order(
-        self,
-        encounter_order: Dict[str, int],
-        eq_encounters: Dict[str, List[str]],
-    ) -> Dict[str, int]:
-        """Update the encounter order based on the equal encounters."""
-        if eq_encounters == {}:
-            return encounter_order
-        visited = set()
-        for encounter, eq_encs in eq_encounters.items():
-            if encounter in encounter_order:
-                for eq_enc in eq_encs:
-                    if eq_enc in visited:
-                        continue
-                    new_order = min(
-                        encounter_order[eq_enc],
-                        encounter_order[encounter],
-                    )
-                    encounter_order[eq_enc] = new_order
-                    encounter_order[encounter] = new_order
-                    visited.add(encounter)
-        return encounter_order
-
-    def _concat_conditions(
-        self,
-        encounter_conditions: Dict[str, List[str]],
-        encounter_order: Dict[str, int],
-    ) -> Dict[int, List[str]]:
-        """Concatenate the conditions of the encounters using the encounter order."""
-        order_groups = {}
-        for encounter, order in encounter_order.items():
-            if order not in order_groups:
-                order_groups[order] = [encounter]
-            else:
-                order_groups[order].append(encounter)
-
-        concatenated_conditions = {}
-        for order, encounters in order_groups.items():
-            all_conditions = []
-            for encounter in encounters:
-                all_conditions.extend(encounter_conditions.get(encounter, []))
-            concatenated_conditions[order] = all_conditions
-
-        return concatenated_conditions
-
-    def _concat_concepts(
-        self,
-        procedures: pd.DataFrame,
-        medications: pd.DataFrame,
-        labs: pd.DataFrame,
-        encounters: pd.DataFrame,
-        conditions: Optional[pd.DataFrame] = None,
-    ) -> pd.DataFrame:
-        """Concatenate the events of different concepts.
-
-        Parameters
-        ----------
-        procedures : pd.DataFrame
-            Procedures dataframe
-        medications : pd.DataFrame
-            Medications dataframe
-        labs : pd.DataFrame
-            Labs dataframe
-        encounters : pd.DataFrame
-            Encounters dataframe
-        conditions : pd.DataFrame
-            Conditions dataframe, defaults to None
-
-        Returns
-        -------
-        pd.DataFrame
-            Combined events dataframe
-        """
-        procedures["type_ids"] = [None] * len(procedures)
-        if conditions is not None:
-            procedures["encounter_conditions"] = [None] * len(procedures)
-
-        for i in range(len(procedures)):
-            proc_codes = procedures.iloc[i]["proc_codes"]
-            proc_codes = [code.upper() for code in proc_codes]
-
-            med_codes = medications.iloc[i]["med_codes"]
-            med_codes = [code.upper() for code in med_codes]
-
-            lab_codes = labs.iloc[i]["lab_codes"]
-            lab_codes = [code.upper() for code in lab_codes]
-            lab_bins = labs.iloc[i]["binned_values"]
-            lab_codes = [f"{el1}_{el2}" for el1, el2 in zip(lab_codes, lab_bins)]
-
-            proc_type_ids = [self.token_config.token_type_mapping.get(PROC)] * len(
-                proc_codes
-            )
-            med_type_ids = [self.token_config.token_type_mapping.get(MED)] * len(
-                med_codes
-            )
-            lab_type_ids = [self.token_config.token_type_mapping.get(LAB)] * len(
-                lab_codes
-            )
-
-            proc_dates = procedures.iloc[i]["proc_dates"]
-            med_dates = medications.iloc[i]["med_dates"]
-            lab_dates = labs.iloc[i]["lab_dates"]
-
-            proc_encounters = procedures.iloc[i]["encounter_ids"]
-            med_encounters = medications.iloc[i]["encounter_ids"]
-            lab_encounters = labs.iloc[i]["encounter_ids"]
-
-            combined_codes = proc_codes + med_codes + lab_codes
-            combined_dates = proc_dates + med_dates + lab_dates
-            combined_encounters = proc_encounters + med_encounters + lab_encounters
-            combined_type_ids = proc_type_ids + med_type_ids + lab_type_ids
-
-            encounter_order = {
-                encounter: i
-                for i, encounter in enumerate(encounters.iloc[i]["encounter_ids"])
-            }
-
-            combined = sorted(
-                zip(
-                    combined_dates,
-                    combined_codes,
-                    combined_encounters,
-                    combined_type_ids,
-                ),
-                key=lambda x: (x[0], encounter_order.get(x[2])),
-            )
-            sorted_dates, sorted_codes, sorted_encounters, sorted_type_ids = (
-                zip(*combined) if combined else ([], [], [], [])
-            )
-
-            if conditions is not None:
-                cond_codes = conditions.iloc[i]["encounter_conditions"]
-                # keep the conditions of the existing encounters
-                filtered_conditions = {
-                    k: v for k, v in cond_codes.items() if k in combined_encounters
-                }
-                sorted_conditions = dict(
-                    sorted(
-                        filtered_conditions.items(),
-                        key=lambda item: encounter_order.get(item[0], float("inf")),
-                    ),
-                )
-
-                # concat conditions if their encounters are equall
-                encounter_order_eq = self._update_encounter_order(
-                    encounter_order,
-                    encounters.iloc[i]["eq_encounters"],
-                )
-                concatenated_conditions = self._concat_conditions(
-                    sorted_conditions,
-                    encounter_order_eq,
-                )
-                procedures.at[i, "encounter_conditions"] = [concatenated_conditions]
-
-            procedures.at[i, "proc_dates"] = list(sorted_dates)
-            procedures.at[i, "proc_codes"] = list(sorted_codes)
-            procedures.at[i, "encounter_ids"] = list(sorted_encounters)
-            procedures.at[i, "type_ids"] = list(sorted_type_ids)
-            procedures.at[i, "length"] = len(sorted_dates)
-
-        return procedures
-
-    def _time_after_admission(
-        self,
-        row: pd.Series,
-        encounter_row: pd.Series,
-    ) -> pd.Series:
-        """Calculate the time of the events after the admission."""
-        elapsed_times = []
-        for event_time, encounter_id in zip(row["proc_dates"], row["encounter_ids"]):
-            encounter_index = encounter_row["encounter_ids"].index(encounter_id)
-            start_time = encounter_row["starts"][encounter_index]
-            start_time = parser.parse(start_time)
-            event_time_ = parser.parse(event_time)
-            elapsed_time = round((event_time_ - start_time).total_seconds() / 3600, 2)
-            elapsed_times.append(elapsed_time)
-        row["elapsed_time"] = elapsed_times
-        return row
 
     def _add_tokens(
         self,
@@ -1128,13 +1151,133 @@ class SequenceGenerator:
 
         return row
 
+    def _remove_patients_with_no_encounters(
+        self,
+        patient_data: PatientData,
+    ) -> PatientData:
+        """Filter patients with no encounters.
+
+        Parameters
+        ----------
+        patient_data : PatientData
+            Patient data
+
+        Returns
+        -------
+        PatientData
+            Updated patient data
+
+        """
+        valid_indices = patient_data.encounters[
+            patient_data.encounters["length"] > 0
+        ].index
+        patient_data.encounters = patient_data.encounters.loc[
+            valid_indices
+        ].reset_index(drop=True)
+        patient_data.patients = patient_data.patients.loc[valid_indices].reset_index(
+            drop=True
+        )
+        patient_data.conditions = patient_data.conditions.loc[
+            valid_indices
+        ].reset_index(drop=True)
+        for event_type, _ in patient_data.events.items():
+            patient_data.events[event_type].data = (
+                patient_data.events[event_type]
+                .data.loc[valid_indices]
+                .reset_index(drop=True)
+            )
+
+        return patient_data
+
+    def _process_encounters(
+        self,
+        patient_data: PatientData,
+    ) -> PatientData:
+        """Process encounters, remove patient data with no encounters.
+
+        Parameters
+        ----------
+        patient_data : PatientData
+            Patient data
+
+        Returns
+        -------
+        PatientData
+            Updated patient data
+
+        """
+        patient_data.encounters = patient_data.encounters.apply(
+            lambda row: self.encounter_processor.validate_encounters(
+                row,
+                PROC=patient_data.events[PROC].data.iloc[row.name],
+                MED=patient_data.events[MED].data.iloc[row.name],
+                LAB=patient_data.events[LAB].data.iloc[row.name],
+            ),
+            axis=1,
+        )
+        patient_data = self._remove_patients_with_no_encounters(patient_data)
+        patient_data.encounters = patient_data.encounters.apply(
+            lambda row: self.encounter_processor.sort_encounters(row),
+            axis=1,
+        )
+        patient_data.encounters = patient_data.encounters.apply(
+            lambda row: self.encounter_processor.calculate_patient_ages(
+                row,
+                patient_data.patients.iloc[row.name],
+            ),
+            axis=1,
+        )
+        patient_data.encounters = patient_data.encounters.apply(
+            lambda row: self.encounter_processor.calculate_encounter_times(
+                row,
+                self.token_generator.reference_time,
+            ),
+            axis=1,
+        )
+        patient_data.encounters = patient_data.encounters.apply(
+            lambda row: self.encounter_processor.calculate_intervals(row),
+            axis=1,
+        )
+
+        return patient_data
+
+    def _process_events(
+        self,
+        patient_data: PatientData,
+    ) -> PatientData:
+        """Process events, keep valid rows and edit the datetimes of the events.
+
+        Parameters
+        ----------
+        patient_data : PatientData
+            Patient data
+
+        Returns
+        -------
+        PatientData
+            Updated patient data
+
+        """
+        for event_type, _ in patient_data.events.items():
+            patient_data.events[event_type].data = patient_data.events[
+                event_type
+            ].data.apply(
+                lambda row: self.event_processor.edit_event_datetimes(
+                    row,
+                    patient_data.encounters.iloc[row.name],
+                    event_type,
+                ),
+                axis=1,
+            )
+
+        return patient_data
+
     def create_patient_sequence(
         self,
         chunksize: Optional[int] = None,
         min_events: int = 0,
         min_visits: int = 0,
         pad_events: bool = False,
-        condition_per_encounter: bool = False,
     ) -> None:
         """Create patient sequences and saves them as a parquet file."""
         file_paths = [
@@ -1155,108 +1298,47 @@ class SequenceGenerator:
                 more_chunks = False
                 break
             patients, encounters, procedures, medications, labs, conditions = dataframes
+            patient_data = PatientData(
+                patients=patients,
+                encounters=encounters,
+                conditions=conditions,
+                events={
+                    PROC: EventData(event_type=PROC, data=procedures),
+                    MED: EventData(event_type=MED, data=medications),
+                    LAB: EventData(event_type=LAB, data=labs),
+                },
+            )
             start_time = time.time()
-            ## Process encounters
-            # Keep valid encounters
-            encounters = encounters.apply(
-                lambda row: self.encounter_processor.validate_encounters(
-                    row,
-                    procedures.iloc[row.name],
-                    medications.iloc[row.name],
-                    labs.iloc[row.name],
-                ),
-                axis=1,
-            )
-            # keep valid rows with at least one encounter
-            valid_indices = encounters[encounters["length"] > 0].index
-            encounters = encounters.loc[valid_indices].reset_index(drop=True)
-            patients = patients.loc[valid_indices].reset_index(drop=True)
-            # sort encounters by start time
-            encounters = encounters.apply(
-                lambda row: self.encounter_processor.sort_encounters(
-                    row,
-                ),
-                axis=1,
-            )
-            # get ages of the patients at the time of the encounters
-            encounters = encounters.apply(
-                lambda row: self.encounter_processor.calculate_patient_ages(
-                    row, patients.iloc[row.name]
-                ),
-                axis=1,
-            )
-            # get time of the encounters in weeks with respect to a reference time
-            encounters = encounters.apply(
-                lambda row: self.encounter_processor.calculate_encounter_times(
-                    row,
-                    self.token_generator.reference_time,
-                ),
-                axis=1,
-            )
-            # calculate intervals between encounters
-            encounters = encounters.apply(
-                lambda row: self.encounter_processor.calculate_intervals(row),
-                axis=1,
-            )
-            ## process events
-            # keep valid rows and edit the datetimes of the events
-            # procedures
-            procedures = procedures.loc[valid_indices].reset_index(drop=True)
-            procedures = procedures.apply(
-                lambda row: self._edit_datetimes(
-                    row,
-                    encounters.iloc[row.name],
-                    "proc",
-                ),
-                axis=1,
-            )
-            # medications
-            medications = medications.loc[valid_indices].reset_index(drop=True)
-            medications = medications.apply(
-                lambda row: self._edit_datetimes(
-                    row,
-                    encounters.iloc[row.name],
-                    "med",
-                ),
-                axis=1,
-            )
-            # labs
-            labs = labs.loc[valid_indices].reset_index(drop=True)
-            labs = labs.apply(
-                lambda row: self._edit_datetimes(
-                    row,
-                    encounters.iloc[row.name],
-                    "lab",
-                ),
-                axis=1,
-            )
-            # conditions
-            conditions = conditions.loc[valid_indices].reset_index(drop=True)
-            conditions["encounter_conditions"] = conditions[
+            ## Process encounters.
+            patient_data = self._process_encounters(patient_data)
+
+            # Process events.
+            patient_data = self._process_events(patient_data)
+
+            # Conditions.
+            patient_data.conditions["encounter_conditions"] = patient_data.conditions[
                 "encounter_conditions"
             ].apply(literal_eval)
 
-            # combine events
-            combined_events = self._concat_concepts(
-                procedures,
-                medications,
-                labs,
-                encounters,
-                conditions=conditions if condition_per_encounter else None,
+            # Combine events.
+            combined_events = self.event_processor.combine_events(
+                patient_data,
             )
-            # filter patients based on min_events
+            # Filter patients based on min_events.
             combined_events = combined_events[combined_events["length"] > min_events]
             # add elapsed time after admission for all events
             combined_events = combined_events.apply(
-                lambda row: self._time_after_admission(
+                lambda row: self.event_processor.calculate_time_after_admission(
                     row,
-                    encounters.iloc[row.name],
+                    patient_data.encounters.iloc[row.name],
                 ),
                 axis=1,
             )
             # add special tokens to the events
             combined_events = combined_events.apply(
-                lambda row: self._add_tokens(row, encounters.iloc[row.name]),
+                lambda row: self._add_tokens(
+                    row, patient_data.encounters.iloc[row.name]
+                ),
                 axis=1,
             )
             # filter patients based on min_visits
@@ -1267,8 +1349,8 @@ class SequenceGenerator:
             combined_events = combined_events.apply(
                 lambda row: self._get_mortality_label(
                     row,
-                    patients.iloc[row.name],
-                    encounters.iloc[row.name],
+                    patient_data.patients.iloc[row.name],
+                    patient_data.encounters.iloc[row.name],
                 ),
                 axis=1,
             )
@@ -1283,7 +1365,7 @@ class SequenceGenerator:
             combined_events = combined_events.apply(
                 lambda row: self._get_condition_label(
                     row,
-                    conditions.iloc[row.name],
+                    patient_data.conditions.iloc[row.name],
                 ),
                 axis=1,
             )
@@ -1329,9 +1411,6 @@ class SequenceGenerator:
         pad_events : bool
             Whether to pad the events or not, defaults to False
 
-        Returns
-        -------
-        None
         """
         if isinstance(file_paths, str):
             file_paths = [file_paths]
