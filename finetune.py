@@ -213,7 +213,7 @@ def main(
             **fine_model_config,
         )
 
-    elif args.model_type == "cehr_bigbird":
+    elif args.model_type == "cehr_bigbird" or args.model_type == "cehr_multibird":
         pretrained_model = BigBirdPretrain(
             vocab_size=tokenizer.get_vocab_size(),
             padding_idx=tokenizer.get_pad_token_id(),
@@ -307,7 +307,7 @@ if __name__ == "__main__":
         "--model-type",
         type=str,
         required=True,
-        help="Model type: 'cehr_bert' or 'cehr_bigbird', or 'cehr_mamba'",
+        help="Model type: 'cehr_bert' or 'cehr_bigbird', or 'cehr_mamba', or 'cehr_multibird",
     )
     parser.add_argument(
         "--exp-name",
@@ -467,9 +467,9 @@ if __name__ == "__main__":
 
     # Process arguments
     args = parser.parse_args()
-    if args.model_type not in ["cehr_bert", "cehr_bigbird", "cehr_mamba"]:
+    if args.model_type not in ["cehr_bert", "cehr_bigbird", "cehr_mamba", "cehr_multibird"]:
         print(
-            "Invalid model type. Choose 'cehr_bert' or 'cehr_bigbird' or 'cehr_mamba'."
+            "Invalid model type. Choose 'cehr_bert' or 'cehr_bigbird', 'cehr_mamba', or 'cehr_multibird'."
         )
         sys.exit(1)
 
@@ -496,6 +496,6 @@ if __name__ == "__main__":
         for task, ratio in (
             pair.strip().split("=") for pair in args.balance_guide.split(",")
         )
-    }
+    } if args.balance_guide else None
     fine_model_config = config["model_finetune"]
     main(args, pre_model_config, fine_model_config)
