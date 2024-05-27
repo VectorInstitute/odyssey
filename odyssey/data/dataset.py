@@ -14,6 +14,15 @@ TASK_INDEX = 1
 LABEL_INDEX = 2
 CUTOFF_INDEX = 3
 
+TASK2INDEX = {
+    "mortality_1month": 0,
+    "readmission_1month": 1,
+    "los_1week": 2,
+    "c0": 3,
+    "c1": 4,
+    "c2": 5
+}
+
 
 class PretrainDataset(Dataset):
     """Dataset for pretraining the model.
@@ -623,6 +632,8 @@ class FinetuneDatasetDecoder(Dataset):
         The maximum length of the tokenized sequences, by default 2048.
     nan_indicator : int, optional
         Value used to represent missing labels in the dataset, by default -1.
+    is_single_head : bool, optional
+        Indicating if the model uses one head for all classifications or not.
 
     Attributes
     ----------
@@ -638,6 +649,8 @@ class FinetuneDatasetDecoder(Dataset):
         Maximum length of the tokenized sequences.
     nan_indicator : int
         Value used to represent missing labels in the dataset.
+    is_single_head : bool, optional
+        Indicating if the model uses one head for all classifications or not.
     task_to_index : Dict[str, List[Tuple[int, str, int, Optional[int]]]]
         A dictionary mapping each task to a list of tuples containing the
         index, task, label, and cutoff.
@@ -653,6 +666,7 @@ class FinetuneDatasetDecoder(Dataset):
         balance_guide: Optional[Dict[str, float]] = None,
         max_len: int = 2048,
         nan_indicator: int = -1,
+        is_single_head: bool = True
     ):
         """Initiate the class."""
         super().__init__()
@@ -665,6 +679,7 @@ class FinetuneDatasetDecoder(Dataset):
         self.nan_indicator = (
             nan_indicator  # Value used to indicate missing data in labels.
         )
+        self.is_single_head = is_single_head
 
         # Precompute indices for quick mapping in __getitem__ that
         # exclude missing labels.
@@ -705,7 +720,6 @@ class FinetuneDatasetDecoder(Dataset):
             for task_data in self.task_to_index.values()
             for datapoints in task_data
         ]
-        del self.task_to_index
 
     def __len__(self) -> int:
         """Return the length of dataset."""
@@ -744,8 +758,11 @@ class FinetuneDatasetDecoder(Dataset):
         data = self.data.iloc[index]
 
         # Swap the first and last token with the task token.
-        data[f"event_tokens_{self.max_len}"][0] = self.tokenizer.task_to_token(task)
-        data[f"event_tokens_{self.max_len}"][-1] = self.tokenizer.task_to_token(task)
+        if self.is_single_head:
+            data[f"event_tokens_{self.max_len}"][0] = self.tokenizer.task_to_token(task)
+            data[f"event_tokens_{self.max_len}"][-1] = self.tokenizer.task_to_token(task)
+        else:
+            data[f"event_tokens_{self.max_len}"][-1] = data[f"event_tokens_{self.max_len}"][0]
 
         # Truncate and pad the data to the specified cutoff.
         data = truncate_and_pad(data, cutoff, self.max_len)
@@ -766,6 +783,7 @@ class FinetuneDatasetDecoder(Dataset):
         visit_tokens = torch.tensor(visit_tokens)
         position_tokens = torch.tensor(position_tokens)
         labels = torch.tensor(labels)
+        task_indices = torch.tensor(TASK2INDEX[task])
 
         return {
             "concept_ids": concept_ids,
@@ -776,6 +794,7 @@ class FinetuneDatasetDecoder(Dataset):
             "visit_segments": visit_tokens,
             "labels": labels,
             "task": task,
+            "task_indices": task_indices,
         }
 
     def balance_labels(self, task: str, positive_ratio: float) -> None:
