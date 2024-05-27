@@ -1,4 +1,4 @@
-"""Prediction module for loading and running BigBird models on patient data."""
+"""Prediction module for loading and running EHR models on patient data."""
 
 from typing import Any, Dict, Optional
 
