@@ -17,7 +17,7 @@ Odyssey is a comprehensive library designed to facilitate the development, train
 
 The toolkit is structured into four main modules to streamline the development process:
 
-1. **data**: 
+1. **data**:
    - Gathers EHR datasets from HL7 FHIR resources.
    - Processes patient sequences for clinical tasks.
    - Tokenizes data and creates data splits for model training.
@@ -46,7 +46,7 @@ We welcome contributions from the community! Please open an issue. <br><br>
 If you use EHRMamba or Odyssey in your research, please cite our paper:
 ```
 @misc{fallahpour2024ehrmamba,
-      title={EHRMamba: Towards Generalizable and Scalable Foundation Models for Electronic Health Records}, 
+      title={EHRMamba: Towards Generalizable and Scalable Foundation Models for Electronic Health Records},
       author={Adibvafa Fallahpour and Mahshid Alinoori and Arash Afkanpour and Amrit Krishnan},
       year={2024},
       eprint={2405.14567},
@@ -54,4 +54,3 @@ If you use EHRMamba or Odyssey in your research, please cite our paper:
       primaryClass={cs.LG}
 }
 ```
-
