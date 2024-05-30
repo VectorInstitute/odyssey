@@ -15,6 +15,7 @@ model:
 model_finetune:
   learning_rate: 5.e-5
   classifier_dropout: 0.1
+  multi_head: False
 
 train:
   batch_size: 44
