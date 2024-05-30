@@ -1,5 +1,6 @@
 # Model Training Results
-For each task, the results of each model are provided.
+For most recent results, please check https://vectorinstitute.github.io/EHRMamba.
+The following are old results that are not used in EHRMamba paper.
 
 ## Mortality Prediction
 This is a one-month, post-hospital discharge mortality prediction task, including patients who died at most 31 days after the last visit.
