@@ -17,7 +17,7 @@ from odyssey.data.dataset import PretrainDataset, PretrainDatasetDecoder
 from odyssey.data.tokenizer import ConceptTokenizer
 from odyssey.models.cehr_bert.model import BertPretrain
 from odyssey.models.cehr_big_bird.model import BigBirdPretrain
-from odyssey.models.cehr_mamba.model import MambaPretrain
+from odyssey.models.ehr_mamba.model import MambaPretrain
 from odyssey.models.model_utils import (
     get_run_id,
     load_config,
@@ -120,7 +120,7 @@ def main(args: argparse.Namespace, model_config: Dict[str, Any]) -> None:
             padding_idx=tokenizer.get_pad_token_id(),
             **model_config,
         )
-    elif args.model_type == "cehr_mamba":
+    elif args.model_type == "ehr_mamba":
         model = MambaPretrain(
             vocab_size=tokenizer.get_vocab_size(),
             padding_idx=tokenizer.get_pad_token_id(),
@@ -177,7 +177,7 @@ if __name__ == "__main__":
         "--model-type",
         type=str,
         required=True,
-        help="Model type: 'cehr_bert' or 'cehr_bigbird' or 'cehr_mamba'",
+        help="Model type: 'cehr_bert' or 'cehr_bigbird' or 'ehr_mamba'",
     )
     parser.add_argument(
         "--exp-name",
@@ -272,9 +272,9 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if args.model_type not in ["cehr_bert", "cehr_bigbird", "cehr_mamba"]:
+    if args.model_type not in ["cehr_bert", "cehr_bigbird", "ehr_mamba"]:
         print(
-            "Invalid model type. Choose 'cehr_bert' or 'cehr_bigbird' or 'cehr_mamba'."
+            "Invalid model type. Choose 'cehr_bert' or 'cehr_bigbird' or 'ehr_mamba'."
         )
         sys.exit(1)
 

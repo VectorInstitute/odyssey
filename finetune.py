@@ -27,7 +27,7 @@ from odyssey.data.dataset import (
 from odyssey.data.tokenizer import ConceptTokenizer
 from odyssey.models.cehr_bert.model import BertFinetune, BertPretrain
 from odyssey.models.cehr_big_bird.model import BigBirdFinetune, BigBirdPretrain
-from odyssey.models.cehr_mamba.model import MambaFinetune, MambaPretrain
+from odyssey.models.ehr_mamba.model import MambaFinetune, MambaPretrain
 from odyssey.models.model_utils import (
     get_run_id,
     load_config,
@@ -227,7 +227,7 @@ def main(  # noqa: PLR0912, PLR0915
             **fine_model_config,
         )
 
-    elif args.model_type == "cehr_mamba":
+    elif args.model_type == "ehr_mamba":
         pretrained_model = MambaPretrain(
             vocab_size=tokenizer.get_vocab_size(),
             padding_idx=tokenizer.get_pad_token_id(),
@@ -307,7 +307,7 @@ if __name__ == "__main__":
         "--model-type",
         type=str,
         required=True,
-        help="Model type: 'cehr_bert' or 'cehr_bigbird', or 'cehr_mamba', or 'cehr_multibird",
+        help="Model type: 'cehr_bert' or 'cehr_bigbird', or 'ehr_mamba', or 'cehr_multibird",
     )
     parser.add_argument(
         "--exp-name",
@@ -470,11 +470,11 @@ if __name__ == "__main__":
     if args.model_type not in [
         "cehr_bert",
         "cehr_bigbird",
-        "cehr_mamba",
+        "ehr_mamba",
         "cehr_multibird",
     ]:
         print(
-            "Invalid model type. Choose 'cehr_bert' or 'cehr_bigbird', 'cehr_mamba', or 'cehr_multibird'."
+            "Invalid model type. Choose 'cehr_bert' or 'cehr_bigbird', 'ehr_mamba', or 'cehr_multibird'."
         )
         sys.exit(1)
 
