@@ -47,6 +47,9 @@ class MambaSequenceClassifierOutput(ModelOutput):
     hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
 
 
+# ==================================== SingleHead ================================================= #
+
+
 class MambaClassificationHead(nn.Module):
     """Head for sentence-level classification tasks."""
 
@@ -106,6 +109,21 @@ class MambaForSequenceClassification(MambaPreTrainedModel):
             `config.num_labels > 1` a classification loss is computed (Cross-Entropy).
 
         Returns:
+
+        Example:
+
+        ```python
+        >>> import torch
+        >>> from transformers import AutoTokenizer, MambaForSequenceClassification
+
+        >>> tokenizer = AutoTokenizer.from_pretrained("Adibvafa/EHRMamba")
+        >>> model = MambaForSequenceClassification.from_pretrained("Adibvafa/EHRMamba")
+
+        >>> labels = torch.tensor(1)
+        >>> loss = model(**inputs, labels=labels).loss
+        >>> round(loss.item(), 2)
+        2.30
+        ```
         """
         if inputs_embeds is not None:
             sequence_outputs = self.backbone(
@@ -171,9 +189,9 @@ class MambaForSequenceClassification(MambaPreTrainedModel):
         )
 
 
-# ===================================================================================== #
+# ==================================== MultiHead ================================================= #
 
-class MambaMultiTaskClassificationHead(nn.Module):
+class MambaClassificationMultiHead(nn.Module):
     def __init__(self, config, num_tasks):
         super().__init__()
         self.num_tasks = num_tasks
@@ -183,27 +201,18 @@ class MambaMultiTaskClassificationHead(nn.Module):
         return self.classifiers[task_idx](features)
 
 
-@add_start_docstrings(
-    """
-    Mamba Model with sequence classification/regression heads on top
-    (a linear layer on top of the pooled output) for multi-task scenarios.
-    """,
-    MAMBA_START_DOCSTRING,
-)
-class MambaForMultiTaskSequenceClassification(MambaPreTrainedModel):
+class MambaForMultiHeadSequenceClassification(MambaPreTrainedModel):
     def __init__(self, config, num_tasks):
         super().__init__(config)
         self.num_labels = config.num_labels
         self.config = config
         self.backbone = MambaModel(config)
-        self.classifier = MambaMultiTaskClassificationHead(config, num_tasks)
+        self.classifier = MambaClassificationMultiHead(config, num_tasks)
         self.num_tasks = num_tasks
 
         # Initialize weights and apply final processing
         self.post_init()
 
-    @add_start_docstrings_to_model_forward(MAMBA_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
-    @replace_return_docstrings(output_type=MambaSequenceClassifierOutput, config_class=_CONFIG_FOR_DOC)
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -213,7 +222,7 @@ class MambaForMultiTaskSequenceClassification(MambaPreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[MambaSequenceClassifierOutput, Tuple[torch.FloatTensor]]:
-        r"""
+        """
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
             Labels for computing the sequence classification/regression loss. Indices should be in `[0, ...,
             config.num_labels - 1]`. If `config.num_labels == 1` a regression loss is computed (Mean-Square loss), If
