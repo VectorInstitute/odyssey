@@ -22,7 +22,7 @@ from transformers.models.mamba.modeling_mamba import (
     MambaForCausalLM,
 )
 
-from odyssey.models.cehr_mamba.mamba_utils import (
+from odyssey.models.ehr_mamba.mamba_utils import (
     MambaForMultiHeadSequenceClassification,
     MambaForSequenceClassification,
     MambaSequenceClassifierOutput,
