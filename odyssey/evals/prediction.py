@@ -1,6 +1,6 @@
 """Prediction module for loading and running EHR models on patient data, both for clinical predictive tasks and EHR forecasting."""
 
-from typing import Any, Dict, Optional, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 
@@ -114,10 +114,10 @@ def predict_patient_outcomes(
 
 
 def update_patient_sequence_for_next_step(
-    patient_data: Dict[str, torch.Tensor], 
-    pad_start_idx: int, 
-    predicted_token_ids: List[int], 
-    device: torch.device
+    patient_data: Dict[str, torch.Tensor],
+    pad_start_idx: int,
+    predicted_token_ids: List[int],
+    device: torch.device,
 ) -> Dict[str, torch.Tensor]:
     """
     Update the patient sequence for the next prediction step by incorporating predicted tokens.
@@ -128,7 +128,8 @@ def update_patient_sequence_for_next_step(
         predicted_token_ids (List[int]): List of predicted token IDs so far.
         device (torch.device): The device to run the model on.
 
-    Returns:
+    Returns
+    -------
         Dict[str, torch.Tensor]: The updated input sequence prepared for the model.
     """
     updated_input = {}
@@ -136,30 +137,34 @@ def update_patient_sequence_for_next_step(
 
     for key, tensor in patient_data.items():
         # Skip keys that are not part of the input sequence
-        if key in ('task', 'labels', 'task_indices'):
+        if key in ("task", "labels", "task_indices"):
             continue
-        
+
         # Truncate the tensor to exclude padding tokens and predicted tokens
-        truncated_tensor = tensor[:pad_start_idx - num_predicted_tokens]
-        
+        truncated_tensor = tensor[: pad_start_idx - num_predicted_tokens]
+
         # Append predicted tokens to the concept_ids, or zeros for other tensor types
-        if key == 'concept_ids':
-            new_tokens = torch.tensor(predicted_token_ids, dtype=torch.long, device=device)
+        if key == "concept_ids":
+            new_tokens = torch.tensor(
+                predicted_token_ids, dtype=torch.long, device=device
+            )
             updated_tensor = torch.cat([truncated_tensor, new_tokens])
         else:
-            padding_tokens = torch.zeros(num_predicted_tokens, dtype=torch.long, device=device)
+            padding_tokens = torch.zeros(
+                num_predicted_tokens, dtype=torch.long, device=device
+            )
             updated_tensor = torch.cat([truncated_tensor, padding_tokens])
-        
+
         # Add a batch dimension and move the tensor to the appropriate device
         updated_input[key] = updated_tensor.unsqueeze(0).to(device)
-    
+
     return updated_input
 
 
 def predict_next_token(
     model: torch.nn.Module,
     input_sample: Dict[str, torch.Tensor],
-    tokenizer: ConceptTokenizer
+    tokenizer: ConceptTokenizer,
 ) -> Tuple[int, str]:
     """
     Use the model for inference to predict the next token in EHR sequence.
@@ -169,7 +174,8 @@ def predict_next_token(
         input_sample (Dict[str, torch.Tensor]): The input sample prepared for the model.
         tokenizer (ConceptTokenizer): The tokenizer used for EHR data.
 
-    Returns:
+    Returns
+    -------
         Tuple[int, str]: The predicted token ID and token.
     """
     inputs = (
@@ -182,18 +188,13 @@ def predict_next_token(
     )
 
     # Model inference
-    output = model(
-        inputs,
-        labels=None,
-        output_hidden_states=False,
-        return_dict=True
-        )
-    
+    output = model(inputs, labels=None, output_hidden_states=False, return_dict=True)
+
     # Compute probabilities and get the prediction
-    probs = torch.softmax(output['logits'][:, -1, :].squeeze(), dim=-1)
+    probs = torch.softmax(output["logits"][:, -1, :].squeeze(), dim=-1)
     prediction_id = torch.argmax(probs).item()
     prediction_token = tokenizer.id_to_token(prediction_id)
-    
+
     return prediction_id, prediction_token
 
 
@@ -202,7 +203,7 @@ def generate_predictions(
     model: torch.nn.Module,
     tokenizer: ConceptTokenizer,
     device: torch.device,
-    num_tokens: int = 10
+    num_tokens: int = 10,
 ) -> Tuple[List[int], List[str]]:
     """
     Generate predicted tokens for a patient sequence used in EHR forecasting.
@@ -215,7 +216,8 @@ def generate_predictions(
         device (torch.device): The device to run the model on (e.g., 'cuda' or 'cpu').
         num_tokens (int): Number of tokens to predict. Default is 10.
 
-    Returns:
+    Returns
+    -------
         Tuple[List[int], List[str]]: A tuple containing two lists:
                                      - predicted_token_ids: List of predicted token IDs.
                                      - predicted_tokens: List of predicted tokens.
@@ -225,24 +227,28 @@ def generate_predictions(
     model.eval()
 
     # Determine the index of the first padding token, or use the full length if no padding is present
-    if 0 in patient_data['concept_ids']:
-        pad_start_idx = patient_data['concept_ids'].index(0)
+    if 0 in patient_data["concept_ids"]:
+        pad_start_idx = patient_data["concept_ids"].index(0)
     else:
-        pad_start_idx = len(patient_data['concept_ids'])
-    
+        pad_start_idx = len(patient_data["concept_ids"])
+
     # Initialize lists to store the predicted token IDs and their corresponding tokens
     predicted_token_ids = []
     predicted_tokens = []
 
     for _ in range(num_tokens):
         # Prepare the input sample for the next prediction step by updating the patient sequence
-        input_sample = update_patient_sequence_for_next_step(patient_data, pad_start_idx, predicted_token_ids, device)
-        
+        input_sample = update_patient_sequence_for_next_step(
+            patient_data, pad_start_idx, predicted_token_ids, device
+        )
+
         # Generate the next token prediction
-        prediction_id, prediction_token = predict_next_token(model, input_sample, tokenizer)
-        
+        prediction_id, prediction_token = predict_next_token(
+            model, input_sample, tokenizer
+        )
+
         # Append the predicted token ID and token to the respective lists
         predicted_token_ids.append(prediction_id)
         predicted_tokens.append(prediction_token)
-    
+
     return predicted_token_ids, predicted_tokens

@@ -467,7 +467,12 @@ if __name__ == "__main__":
 
     # Process arguments
     args = parser.parse_args()
-    if args.model_type not in ["cehr_bert", "cehr_bigbird", "cehr_mamba", "cehr_multibird"]:
+    if args.model_type not in [
+        "cehr_bert",
+        "cehr_bigbird",
+        "cehr_mamba",
+        "cehr_multibird",
+    ]:
         print(
             "Invalid model type. Choose 'cehr_bert' or 'cehr_bigbird', 'cehr_mamba', or 'cehr_multibird'."
         )
@@ -491,11 +496,15 @@ if __name__ == "__main__":
 
     # Process the tasks and balance guide arguments
     args.tasks = args.tasks.strip().split(" ")
-    args.balance_guide = {
-        task: float(ratio)
-        for task, ratio in (
-            pair.strip().split("=") for pair in args.balance_guide.split(",")
-        )
-    } if args.balance_guide else None
+    args.balance_guide = (
+        {
+            task: float(ratio)
+            for task, ratio in (
+                pair.strip().split("=") for pair in args.balance_guide.split(",")
+            )
+        }
+        if args.balance_guide
+        else None
+    )
     fine_model_config = config["model_finetune"]
     main(args, pre_model_config, fine_model_config)
