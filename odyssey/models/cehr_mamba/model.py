@@ -23,9 +23,9 @@ from transformers.models.mamba.modeling_mamba import (
 )
 
 from odyssey.models.cehr_mamba.mamba_utils import (
+    MambaForMultiHeadSequenceClassification,
     MambaForSequenceClassification,
     MambaSequenceClassifierOutput,
-    MambaForMultiHeadSequenceClassification
 )
 from odyssey.models.embeddings import MambaEmbeddingsForCEHR
 
@@ -250,7 +250,7 @@ class MambaFinetune(pl.LightningModule):
         num_tasks: int = 6,
         learning_rate: float = 5e-5,
         classifier_dropout: float = 0.1,
-        multi_head: bool = False
+        multi_head: bool = False,
     ):
         super().__init__()
 
@@ -268,14 +268,11 @@ class MambaFinetune(pl.LightningModule):
 
         if self.multi_head:
             self.model = MambaForMultiHeadSequenceClassification(
-                config=self.config,
-                num_tasks=self.num_tasks
+                config=self.config, num_tasks=self.num_tasks
             )
         else:
-            self.model = MambaForSequenceClassification(
-                config=self.config
-            )
-    
+            self.model = MambaForSequenceClassification(config=self.config)
+
         # self.post_init()
 
         self.pretrained_model = pretrained_model
