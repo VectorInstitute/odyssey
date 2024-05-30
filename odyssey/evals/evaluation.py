@@ -1,9 +1,9 @@
 """Prediction module for evaluating model outputs."""
 
-from typing import Union, Dict
+from typing import Dict, Union
 
-import torch
 import numpy as np
+import torch
 from sklearn.metrics import (
     auc,
     average_precision_score,
@@ -17,9 +17,9 @@ from sklearn.metrics import (
 
 
 def calculate_metrics(
-    y_true: Union[np.ndarray, torch.Tensor, list], 
-    y_pred: Union[np.ndarray, torch.Tensor, list], 
-    y_prob: Union[np.ndarray, torch.Tensor, list]
+    y_true: Union[np.ndarray, torch.Tensor, list],
+    y_pred: Union[np.ndarray, torch.Tensor, list],
+    y_prob: Union[np.ndarray, torch.Tensor, list],
 ) -> Dict[str, float]:
     """
     Calculate a variety of performance metrics given true labels, predicted labels, and predicted probabilities.
