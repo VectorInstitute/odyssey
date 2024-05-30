@@ -6,7 +6,6 @@ from typing import Optional, Tuple, Union
 import torch
 from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
-from transformers import MambaModel, MambaPreTrainedModel
 from transformers.activations import ACT2FN
 from transformers.models.mamba.modeling_mamba import (
     MAMBA_INPUTS_DOCSTRING,
@@ -23,6 +22,9 @@ from transformers.utils import (
 
 
 _CONFIG_FOR_DOC = "MambaConfig"
+
+
+# ruff: noqa: W505,D205,D101,PLR0912
 
 
 @dataclass
@@ -54,6 +56,7 @@ class MambaClassificationHead(nn.Module):
     """Head for sentence-level classification tasks."""
 
     def __init__(self, config):
+        """Initialize the head."""
         super().__init__()
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         self.dropout = nn.Dropout(config.classifier_dropout)
@@ -61,13 +64,14 @@ class MambaClassificationHead(nn.Module):
         self.config = config
 
     def forward(self, features, **kwargs):
+        """Forward pass."""
         x = features  # Pooling is done by the forward pass
         x = self.dropout(x)
         x = self.dense(x)
         x = ACT2FN[self.config.hidden_act](x)
         x = self.dropout(x)
-        x = self.out_proj(x)
-        return x
+
+        return self.out_proj(x)
 
 
 @add_start_docstrings(
@@ -142,7 +146,8 @@ class MambaForSequenceClassification(MambaPreTrainedModel):
         last_hidden_states = sequence_outputs[0]
         batch_size = last_hidden_states.shape[0]
 
-        # Pool the hidden states for the last tokens before padding to use for classification
+        # Pool the hidden states for the last tokens before padding
+        # to use for classification
         last_token_indexes = (
             torch.eq(input_ids, self.config.pad_token_id).int().argmax(-1) - 1
         )
@@ -158,9 +163,7 @@ class MambaForSequenceClassification(MambaPreTrainedModel):
             if self.config.problem_type is None:
                 if self.num_labels == 1:
                     self.config.problem_type = "regression"
-                elif self.num_labels > 1 and (
-                    labels.dtype == torch.long or labels.dtype == torch.int
-                ):
+                elif self.num_labels > 1 and (labels.dtype in [torch.long, torch.int]):
                     self.config.problem_type = "single_label_classification"
                 else:
                     self.config.problem_type = "multi_label_classification"

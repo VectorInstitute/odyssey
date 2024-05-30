@@ -424,24 +424,24 @@ def stratified_train_test_split(
 
     """
     # Convert all_conditions into a format suitable for multi-label stratification
-    Y = np.array(dataset[target].values.tolist())
-    X = dataset["patient_id"].to_numpy().reshape(-1, 1)
+    labels = np.array(dataset[target].values.tolist())
+    inputs = dataset["patient_id"].to_numpy().reshape(-1, 1)
     is_single_label = type(dataset.iloc[0][target]) == np.int64
 
     # Perform stratified split
     if is_single_label:
-        X_train, X_test, y_train, y_test = train_test_split(
-            X,
-            Y,
-            stratify=Y,
+        X_train, X_test, _, _ = train_test_split(
+            inputs,
+            labels,
+            stratify=labels,
             test_size=test_size,
             random_state=seed,
         )
 
     else:
-        X_train, y_train, X_test, y_test = iterative_train_test_split(
-            X,
-            Y,
+        X_train, _, X_test, _ = iterative_train_test_split(
+            inputs,
+            labels,
             test_size=test_size,
         )
 
