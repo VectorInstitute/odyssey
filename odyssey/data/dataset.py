@@ -20,7 +20,7 @@ TASK2INDEX = {
     "los_1week": 2,
     "c0": 3,
     "c1": 4,
-    "c2": 5
+    "c2": 5,
 }
 
 
@@ -668,7 +668,7 @@ class FinetuneDatasetDecoder(Dataset):
         balance_guide: Optional[Dict[str, float]] = None,
         max_len: int = 2048,
         nan_indicator: int = -1,
-        is_single_head: bool = True
+        is_single_head: bool = True,
     ):
         """Initiate the class."""
         super().__init__()
@@ -762,9 +762,13 @@ class FinetuneDatasetDecoder(Dataset):
         # Swap the first and last token with the task token.
         if self.is_single_head:
             data[f"event_tokens_{self.max_len}"][0] = self.tokenizer.task_to_token(task)
-            data[f"event_tokens_{self.max_len}"][-1] = self.tokenizer.task_to_token(task)
+            data[f"event_tokens_{self.max_len}"][-1] = self.tokenizer.task_to_token(
+                task
+            )
         else:
-            data[f"event_tokens_{self.max_len}"][-1] = data[f"event_tokens_{self.max_len}"][0]
+            data[f"event_tokens_{self.max_len}"][-1] = data[
+                f"event_tokens_{self.max_len}"
+            ][0]
 
         # Truncate and pad the data to the specified cutoff.
         data = truncate_and_pad(data, cutoff, self.max_len)

@@ -112,8 +112,8 @@ class MambaForSequenceClassification(MambaPreTrainedModel):
             config.num_labels - 1]`. If `config.num_labels == 1` a regression loss is computed (Mean-Square loss), If
             `config.num_labels > 1` a classification loss is computed (Cross-Entropy).
 
-        Returns:
-
+        Returns
+        -------
         Example:
 
         ```python
@@ -194,11 +194,14 @@ class MambaForSequenceClassification(MambaPreTrainedModel):
 
 # ==================================== MultiHead ================================================= #
 
+
 class MambaClassificationMultiHead(nn.Module):
     def __init__(self, config, num_tasks):
         super().__init__()
         self.num_tasks = num_tasks
-        self.classifiers = nn.ModuleList([MambaClassificationHead(config) for _ in range(num_tasks)])
+        self.classifiers = nn.ModuleList(
+            [MambaClassificationHead(config) for _ in range(num_tasks)]
+        )
 
     def forward(self, features, task_idx):
         return self.classifiers[task_idx](features)
@@ -234,7 +237,8 @@ class MambaForMultiHeadSequenceClassification(MambaPreTrainedModel):
         task_indices (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
             Task indices to specify which classification head to use for each example in the batch.
 
-        Returns:
+        Returns
+        -------
         """
         if inputs_embeds is not None:
             sequence_outputs = self.backbone(
@@ -262,16 +266,22 @@ class MambaForMultiHeadSequenceClassification(MambaPreTrainedModel):
             last_token_indexes,
         ]
 
-        logits = torch.zeros(batch_size, self.num_labels, device=pooled_last_hidden_states.device)
+        logits = torch.zeros(
+            batch_size, self.num_labels, device=pooled_last_hidden_states.device
+        )
         for i in range(batch_size):
-            logits[i] = self.classifier(pooled_last_hidden_states[i], task_indices[i].item())
+            logits[i] = self.classifier(
+                pooled_last_hidden_states[i], task_indices[i].item()
+            )
 
         loss = None
         if labels is not None:
             if self.config.problem_type is None:
                 if self.num_labels == 1:
                     self.config.problem_type = "regression"
-                elif self.num_labels > 1 and (labels.dtype == torch.long or labels.dtype == torch.int):
+                elif self.num_labels > 1 and (
+                    labels.dtype == torch.long or labels.dtype == torch.int
+                ):
                     self.config.problem_type = "single_label_classification"
                 else:
                     self.config.problem_type = "multi_label_classification"
@@ -293,7 +303,9 @@ class MambaForMultiHeadSequenceClassification(MambaPreTrainedModel):
                         else:
                             loss += loss_fct(logits[i], labels[i])
                     elif self.config.problem_type == "single_label_classification":
-                        loss += loss_fct(logits[i].view(-1, self.num_labels), labels[i].view(-1))
+                        loss += loss_fct(
+                            logits[i].view(-1, self.num_labels), labels[i].view(-1)
+                        )
                     elif self.config.problem_type == "multi_label_classification":
                         loss += loss_fct(logits[i], labels[i])
                 loss /= batch_size
