@@ -218,9 +218,9 @@ class BigBirdPretrain(pl.LightningModule):
             lr=self.learning_rate,
         )
         # Change optimizer if DeepSpeed strategy is used
-        # optimizer = DeepSpeedCPUAdam(
+        # optimizer = DeepSpeedCPUAdam(  # noqa: ERA001
         #     self.parameters(), lr=self.learning_rate, adamw_mode=True
-        # )
+        # )  # noqa: ERA001
 
         n_steps = self.trainer.estimated_stepping_batches
         n_warmup_steps = int(0.1 * n_steps)
