@@ -23,6 +23,7 @@ from transformers.models.mamba.modeling_mamba import (
 )
 
 from odyssey.models.cehr_mamba.mamba_utils import (
+    MambaForMultiHeadSequenceClassification,
     MambaForSequenceClassification,
     MambaSequenceClassifierOutput,
 )
@@ -246,14 +247,18 @@ class MambaFinetune(pl.LightningModule):
         pretrained_model: MambaPretrain,
         problem_type: str = "single_label_classification",
         num_labels: int = 2,
+        num_tasks: int = 6,
         learning_rate: float = 5e-5,
         classifier_dropout: float = 0.1,
+        multi_head: bool = False,
     ):
         super().__init__()
 
         self.num_labels = num_labels
+        self.num_tasks = num_tasks
         self.learning_rate = learning_rate
         self.classifier_dropout = classifier_dropout
+        self.multi_head = multi_head
         self.test_outputs = []
 
         self.config = pretrained_model.config
@@ -261,7 +266,14 @@ class MambaFinetune(pl.LightningModule):
         self.config.classifier_dropout = self.classifier_dropout
         self.config.problem_type = problem_type
 
-        self.model = MambaForSequenceClassification(config=self.config)
+        if self.multi_head:
+            self.model = MambaForMultiHeadSequenceClassification(
+                config=self.config, num_tasks=self.num_tasks
+            )
+        else:
+            self.model = MambaForSequenceClassification(config=self.config)
+
+        # self.post_init()
 
         self.pretrained_model = pretrained_model
         self.embeddings = self.pretrained_model.embeddings
@@ -296,6 +308,7 @@ class MambaFinetune(pl.LightningModule):
             torch.Tensor,
         ],
         labels: Optional[torch.Tensor] = None,
+        task_indices: Optional[torch.Tensor] = None,
         output_hidden_states: Optional[bool] = False,
         return_dict: Optional[bool] = True,
     ) -> Union[Tuple[torch.Tensor, ...], MambaSequenceClassifierOutput]:
@@ -314,6 +327,7 @@ class MambaFinetune(pl.LightningModule):
             input_ids=concept_ids,
             inputs_embeds=inputs_embeds,
             labels=labels,
+            task_indices=task_indices,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
@@ -329,12 +343,14 @@ class MambaFinetune(pl.LightningModule):
             batch["visit_segments"],
         )
         labels = batch["labels"]
+        task_indices = batch["task_indices"]
 
         # Ensure use of mixed precision
         with autocast():
             loss = self(
                 inputs,
                 labels=labels,
+                task_indices=task_indices,
                 return_dict=True,
             ).loss
 
@@ -359,12 +375,14 @@ class MambaFinetune(pl.LightningModule):
             batch["visit_segments"],
         )
         labels = batch["labels"]
+        task_indices = batch["task_indices"]
 
         # Ensure use of mixed precision
         with autocast():
             loss = self(
                 inputs,
                 labels=labels,
+                task_indices=task_indices,
                 return_dict=True,
             ).loss
 
@@ -389,12 +407,14 @@ class MambaFinetune(pl.LightningModule):
             batch["visit_segments"],
         )
         labels = batch["labels"]
+        task_indices = batch["task_indices"]
 
         # Ensure use of mixed precision
         with autocast():
             outputs = self(
                 inputs,
                 labels=labels,
+                task_indices=task_indices,
                 return_dict=True,
             )
 

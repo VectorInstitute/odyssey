@@ -30,10 +30,10 @@ train:
 
 finetune:
   batch_size: 26
-  num_workers: 6
-  gpus: 4
+  num_workers: 3
+  gpus: 1
   nodes: 1
-  max_epochs: 4 # 3
+  max_epochs: 2 # 3
   acc: 1
   patience: 10
   persistent_workers: True
