@@ -1,6 +1,6 @@
 # Slurm Job Request Scripts
 
-## Mamba - Pretrain
+## EHRMamba - Pretrain
 ```
 #!/bin/bash
 #SBATCH --job-name=mamba_pretrain
@@ -23,13 +23,13 @@ export NCCL_DEBUG=INFO
 export PYTHONFAULTHANDLER=1
 
 stdbuf -oL -eL srun python3 pretrain.py  \
-                --model-type cehr_mamba \
-                --is_decoder True
-                --exp-name mamba_pretrain \
+                --model-type ehr_mamba \
+                --is-decoder True \
+                --exp-name mamba_pretrain_with_embeddings \
                 --config-dir odyssey/models/configs \
                 --data-dir odyssey/data/bigbird_data \
                 --sequence-file patient_sequences/patient_sequences_2048.parquet \
-                --id-file patient_id_dict/dataset_2048_multi.pkl \
+                --id-file patient_id_dict/dataset_2048_multi_v2.pkl \
                 --vocab-dir odyssey/data/vocab \
                 --val-size 0.1 \
                 --checkpoint-dir checkpoints
@@ -149,7 +149,7 @@ stdbuf -oL -eL srun python3 pretrain.py  \
 ```
 
 
-## Mamba - Finetune Multidataset
+## EHRMamba - Finetune Multidataset
 ```
 #!/bin/bash
 #SBATCH --job-name=mamba_finetune
@@ -172,25 +172,26 @@ export NCCL_DEBUG=INFO
 export PYTHONFAULTHANDLER=1
 
 stdbuf -oL -eL srun python3 finetune.py  \
-                --model-type cehr_mamba \
+		        --seed 23 \
+                --model-type ehr_mamba \
                 --is-multi-model True \
                 --is-decoder True \
-                --exp-name mamba_finetune \
-                --pretrained-path checkpoints/mamba_pretrain/best.ckpt \
+                --exp-name mamba_finetune_with_embeddings_multihead \
+                --pretrained-path checkpoints/mamba_pretrain_with_embeddings/best-v1.ckpt \
                 --config-dir odyssey/models/configs \
                 --data-dir odyssey/data/bigbird_data \
-                --sequence-file patient_sequences_2048_multi.parquet \
-                --id-file dataset_2048_multi.pkl \
+                --sequence-file patient_sequences_2048_multi_v2.parquet \
+                --id-file dataset_2048_multi_v2.pkl \
                 --vocab-dir odyssey/data/vocab \
-                --val-size 0.15 \
+                --val-size 0.1 \
                 --valid_scheme few_shot \
                 --num_finetune_patients all \
                 --problem_type single_label_classification \
                 --num_labels 2 \
                 --checkpoint-dir checkpoints \
                 --test_output_dir test_outputs \
-                --tasks "mortality_1month los_1week c0 c1 c2" \
-                --balance_guide "mortality_1month=0.5, los_1week=0.5"
+                --tasks "mortality_1month readmission_1month los_1week c0 c1 c2" \
+                --resume_checkpoint checkpoints/mamba_finetune_with_embeddings_multihead/best-v1.ckpt
 ```
 
 
