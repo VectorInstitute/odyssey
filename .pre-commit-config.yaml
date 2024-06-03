@@ -1,0 +1,62 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0  # Use the ref you want to point at
+    hooks:
+    - id: trailing-whitespace
+    - id: check-ast
+    - id: check-builtin-literals
+    - id: check-docstring-first
+    - id: check-executables-have-shebangs
+    - id: debug-statements
+    - id: end-of-file-fixer
+    - id: mixed-line-ending
+      args: [--fix=lf]
+    - id: requirements-txt-fixer
+    - id: check-yaml
+    - id: check-toml
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: 'v0.4.5'
+    hooks:
+    - id: ruff
+      args: [--fix, --exit-non-zero-on-fix]
+      types_or: [python]
+    - id: ruff-format
+      types_or: [python, jupyter]
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.10.0
+    hooks:
+    - id: mypy
+      entry: python3 -m mypy --config-file pyproject.toml
+      language: system
+      types: [python]
+      exclude: "tests"
+
+  - repo: local
+    hooks:
+    - id: pytest
+      name: pytest
+      entry: python3 -m pytest -m "not integration_test"
+      language: system
+      pass_filenames: false
+      always_run: true
+
+  - repo: local
+    hooks:
+    - id: nbstripout
+      name: nbstripout
+      language: system
+      entry: python3 -m nbstripout
+
+ci:
+    autofix_commit_msg: |
+        [pre-commit.ci] Add auto fixes from pre-commit.com hooks
+
+        for more information, see https://pre-commit.ci
+    autofix_prs: true
+    autoupdate_branch: ''
+    autoupdate_commit_msg: '[pre-commit.ci] pre-commit autoupdate'
+    autoupdate_schedule: weekly
+    skip: [pytest,nbstripout,mypy]
+    submodules: false
