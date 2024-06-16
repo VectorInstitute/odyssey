@@ -3,7 +3,7 @@
 import json
 import os
 import re
-from typing import Dict, List
+from typing import Dict, List, Union
 
 
 def get_type_id_mapping() -> Dict[int, str]:
@@ -53,7 +53,7 @@ def load_codes_dict(codes_dir: str) -> Dict[str, str]:
 
 
 def replace_sequence_items(
-    sequence: List[str],
+    sequence: List[Union[str, int]],
     mapping_dict: Dict[str, str],
 ) -> List[str]:
     """
@@ -71,6 +71,9 @@ def replace_sequence_items(
     list of str
         A new sequence with medical concept codes replaced by their names.
     """
+    if type(sequence[0]) == int:
+        sequence = [str(item) for item in sequence]
+
     new_sequence = []
     for item in sequence:
         match = re.match(r"^(.*?)(_\d)$", item)

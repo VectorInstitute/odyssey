@@ -1,6 +1,6 @@
 """Prediction module for loading and running EHR models on patient data, both for clinical predictive tasks and EHR forecasting."""
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 
@@ -117,6 +117,7 @@ def update_patient_sequence_for_next_step(
     patient_data: Dict[str, torch.Tensor],
     pad_start_idx: int,
     predicted_token_ids: List[int],
+    num_tokens: int,
     device: torch.device,
 ) -> Dict[str, torch.Tensor]:
     """
@@ -126,7 +127,9 @@ def update_patient_sequence_for_next_step(
         patient_data (Dict[str, torch.Tensor]): The original patient data containing different tensors.
         pad_start_idx (int): The index indicating the start of padding tokens in the sequence.
         predicted_token_ids (List[int]): List of predicted token IDs so far.
+        num_tokens (int): Number of tokens to predict. Default is 10.
         device (torch.device): The device to run the model on.
+        
 
     Returns
     -------
@@ -141,7 +144,7 @@ def update_patient_sequence_for_next_step(
             continue
 
         # Truncate the tensor to exclude padding tokens and predicted tokens
-        truncated_tensor = tensor[: pad_start_idx - num_predicted_tokens]
+        truncated_tensor = tensor[:pad_start_idx][:-num_tokens]
 
         # Append predicted tokens to the concept_ids, or zeros for other tensor types
         if key == "concept_ids":
@@ -199,7 +202,7 @@ def predict_next_token(
 
 
 def generate_predictions(
-    patient_data: Dict[str, torch.Tensor],
+    patient_data: Dict[str, Union[torch.Tensor, str]],
     model: torch.nn.Module,
     tokenizer: ConceptTokenizer,
     device: torch.device,
@@ -222,13 +225,16 @@ def generate_predictions(
                                      - predicted_token_ids: List of predicted token IDs.
                                      - predicted_tokens: List of predicted tokens.
     """
-    # Prepare model for inference
-    model.to(device)
+    # Prepare model and data for inference
     model.eval()
+    model.to(device)
+    patient_data = {key: value.to(device)
+                    if isinstance(value, torch.Tensor) else value
+                    for key, value in patient_data.items()}
 
     # Determine the index of the first padding token, or use the full length if no padding is present
     if 0 in patient_data["concept_ids"]:
-        pad_start_idx = patient_data["concept_ids"].index(0)
+        pad_start_idx = patient_data["concept_ids"].tolist().index(0)
     else:
         pad_start_idx = len(patient_data["concept_ids"])
 
@@ -239,7 +245,7 @@ def generate_predictions(
     for _ in range(num_tokens):
         # Prepare the input sample for the next prediction step by updating the patient sequence
         input_sample = update_patient_sequence_for_next_step(
-            patient_data, pad_start_idx, predicted_token_ids, device
+            patient_data, pad_start_idx, predicted_token_ids, num_tokens, device
         )
 
         # Generate the next token prediction
