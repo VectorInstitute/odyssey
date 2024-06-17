@@ -1,9 +1,6 @@
 """Utility functions for the interpretability module."""
 
-import json
-import os
-import re
-from typing import Dict, List, Union
+from typing import Dict
 
 
 def get_type_id_mapping() -> Dict[int, str]:
