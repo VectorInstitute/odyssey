@@ -190,7 +190,7 @@ def update_patient_sequence_for_next_step(
         predicted_token_ids (List[int]): List of predicted token IDs so far.
         num_tokens (int): Number of tokens to predict. Default is 10.
         device (torch.device): The device to run the model on.
-        
+
 
     Returns
     -------
@@ -289,9 +289,10 @@ def generate_predictions(
     # Prepare model and data for inference
     model.eval()
     model.to(device)
-    patient_data = {key: value.to(device)
-                    if isinstance(value, torch.Tensor) else value
-                    for key, value in patient_data.items()}
+    patient_data = {
+        key: value.to(device) if isinstance(value, torch.Tensor) else value
+        for key, value in patient_data.items()
+    }
 
     # Determine the index of the first padding token, or use the full length if no padding is present
     if 0 in patient_data["concept_ids"]:
