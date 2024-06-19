@@ -112,22 +112,7 @@ class MambaForSequenceClassification(MambaPreTrainedModel):
             config.num_labels - 1]`. If `config.num_labels == 1` a regression loss is computed (Mean-Square loss), If
             `config.num_labels > 1` a classification loss is computed (Cross-Entropy).
 
-        Returns
-        -------
-        Example:
-
-        ```python
-        >>> import torch
-        >>> from transformers import AutoTokenizer, MambaForSequenceClassification
-
-        >>> tokenizer = AutoTokenizer.from_pretrained("Adibvafa/EHRMamba")
-        >>> model = MambaForSequenceClassification.from_pretrained("Adibvafa/EHRMamba")
-
-        >>> labels = torch.tensor(1)
-        >>> loss = model(**inputs, labels=labels).loss
-        >>> round(loss.item(), 2)
-        2.30
-        ```
+        Returns:  # noqa: D407
         """
         if inputs_embeds is not None:
             sequence_outputs = self.backbone(
@@ -228,7 +213,7 @@ class MambaForMultiHeadSequenceClassification(MambaPreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[MambaSequenceClassifierOutput, Tuple[torch.FloatTensor]]:
-        """
+        r"""
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
             Labels for computing the sequence classification/regression loss. Indices should be in `[0, ...,
             config.num_labels - 1]`. If `config.num_labels == 1` a regression loss is computed (Mean-Square loss), If
@@ -237,8 +222,7 @@ class MambaForMultiHeadSequenceClassification(MambaPreTrainedModel):
         task_indices (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
             Task indices to specify which classification head to use for each example in the batch.
 
-        Returns
-        -------
+        Returns:  # noqa: D407
         """
         if inputs_embeds is not None:
             sequence_outputs = self.backbone(
