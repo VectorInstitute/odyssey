@@ -1,4 +1,4 @@
-"""Data module for pretraining and finetuning the model."""
+"""Data module for pretraining and finetuning models."""
 
 import random
 from abc import ABC, abstractmethod
@@ -21,6 +21,12 @@ TASK_TO_INDEX = {
     "c1": 4,
     "c2": 5,
 }
+
+
+# TODO: Make sure the order of keys in the dict is correct
+# TODO: Make sure code functionality stays the same
+# TODO: Makse sure code passes some tests
+# TODO: Make sure code is well documented
 
 
 class BaseDataset(Dataset, ABC):
