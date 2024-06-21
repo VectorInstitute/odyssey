@@ -16,8 +16,8 @@ TASK_INDEX, LABEL_INDEX, CUTOFF_INDEX = 1, 2, 3
 TASK_TO_INDEX = {
     "mortality_1month": 0,
     "readmission_1month": 1,
-    "los_1week": 2,     # Length of stay
-    "c0": 3,            # Condition 0
+    "los_1week": 2,  # Length of stay
+    "c0": 3,  # Condition 0
     "c1": 4,
     "c2": 5,
 }
@@ -41,6 +41,7 @@ class BaseDataset(Dataset, ABC):
     max_len : int, optional
         The maximum length of the tokenized sequences, by default 2048.
     """
+
     def __init__(
         self,
         data: pd.DataFrame,
@@ -50,7 +51,9 @@ class BaseDataset(Dataset, ABC):
         self.data = data
         self.tokenizer = tokenizer
         self.max_len = max_len
-        self.cutoff_col = next((col for col in self.data.columns if "cutoff" in col), None)
+        self.cutoff_col = next(
+            (col for col in self.data.columns if "cutoff" in col), None
+        )
 
     def __len__(self) -> int:
         """Return the length of the dataset."""
@@ -118,6 +121,7 @@ class TokenizationMixin:
             "visit_segments": visit_tokens,
         }
 
+
 class MaskingMixin:
     """Mixin class for masking tokens in the dataset."""
 
@@ -164,6 +168,7 @@ class MaskingMixin:
 
         return masked_sequence, labels
 
+
 class MultiTaskMixin:
     """Mixin class for handling multi-task datasets.
 
@@ -182,6 +187,7 @@ class MultiTaskMixin:
     index_mapper : List[Tuple[int, str, int, Optional[int]]]
         A list of all datapoints to be used by __getitem__.
     """
+
     def __init__(self, tasks: List[str]):
         self.tasks = tasks
         self.task_to_index = {task: [] for task in self.tasks}
@@ -236,7 +242,8 @@ class LabelBalanceMixin:
         balance_guide : Optional[Dict[str, float]]
             A dictionary containing the desired positive ratios for each task.
         """
-        if not balance_guide: return;
+        if not balance_guide:
+            return
 
         for task, positive_ratio in balance_guide.items():
             # Separate positive and negative datapoints
@@ -282,6 +289,7 @@ class PretrainDataset(BaseDataset, TokenizationMixin, MaskingMixin):
     mask_prob : float
         Probability of masking a token in the sequence.
     """
+
     def __init__(
         self,
         data: pd.DataFrame,
@@ -309,7 +317,7 @@ class PretrainDataset(BaseDataset, TokenizationMixin, MaskingMixin):
         data = self.data.iloc[idx]
         cutoff = data[self.cutoff_col] if self.cutoff_col else None
         data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
-        
+
         # Tokenize and mask the input data
         tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
         concept_tokens = tokenized_input["input_ids"].squeeze()
@@ -323,6 +331,7 @@ class PretrainDataset(BaseDataset, TokenizationMixin, MaskingMixin):
         tokens["attention_mask"] = attention_mask
 
         return tokens
+
 
 class PretrainDatasetDecoder(BaseDataset, TokenizationMixin):
     """Dataset for pretraining a decoder-based model (e.g. Mamba).
@@ -347,6 +356,7 @@ class PretrainDatasetDecoder(BaseDataset, TokenizationMixin):
     max_len : int
         Maximum length of the tokenized sequences.
     """
+
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get data at corresponding index.
 
@@ -365,13 +375,14 @@ class PretrainDatasetDecoder(BaseDataset, TokenizationMixin):
         cutoff = data[self.cutoff_col] if self.cutoff_col else None
         data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
         tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
-        
+
         # Prepare model input
         tokens = self.add_additional_tokens(data)
         tokens["concept_ids"] = tokenized_input["input_ids"].squeeze()
         tokens["labels"] = tokens["concept_ids"]
 
         return tokens
+
 
 class FinetuneDataset(BaseDataset, TokenizationMixin):
     """Dataset for finetuning the model.
@@ -394,6 +405,7 @@ class FinetuneDataset(BaseDataset, TokenizationMixin):
     max_len : int
         Maximum length of the tokenized sequences.
     """
+
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get data at corresponding index.
 
@@ -412,7 +424,7 @@ class FinetuneDataset(BaseDataset, TokenizationMixin):
         cutoff = data[self.cutoff_col] if self.cutoff_col else None
         data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
         tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
-        
+
         # Prepare model input
         tokens = self.add_additional_tokens(data)
         tokens["concept_ids"] = tokenized_input["input_ids"].squeeze()
@@ -421,7 +433,10 @@ class FinetuneDataset(BaseDataset, TokenizationMixin):
 
         return tokens
 
-class FinetuneMultiDataset(BaseDataset, TokenizationMixin, MultiTaskMixin, LabelBalanceMixin):
+
+class FinetuneMultiDataset(
+    BaseDataset, TokenizationMixin, MultiTaskMixin, LabelBalanceMixin
+):
     """Dataset for finetuning the model on multiple tasks.
 
     Parameters
@@ -460,6 +475,7 @@ class FinetuneMultiDataset(BaseDataset, TokenizationMixin, MultiTaskMixin, Label
     index_mapper : List[Tuple[int, str, int, Optional[int]]]
         A list of all datapoints to be used by __getitem__.
     """
+
     def __init__(
         self,
         data: pd.DataFrame,
@@ -511,7 +527,10 @@ class FinetuneMultiDataset(BaseDataset, TokenizationMixin, MultiTaskMixin, Label
 
         return tokens
 
-class FinetuneDatasetDecoder(BaseDataset, TokenizationMixin, MultiTaskMixin, LabelBalanceMixin):
+
+class FinetuneDatasetDecoder(
+    BaseDataset, TokenizationMixin, MultiTaskMixin, LabelBalanceMixin
+):
     """Dataset for finetuning a decoder-based model.
 
     Parameters
@@ -554,6 +573,7 @@ class FinetuneDatasetDecoder(BaseDataset, TokenizationMixin, MultiTaskMixin, Lab
     index_mapper : List[Tuple[int, str, int, Optional[int]]]
         A list of all datapoints to be used by __getitem__.
     """
+
     def __init__(
         self,
         data: pd.DataFrame,
@@ -591,17 +611,21 @@ class FinetuneDatasetDecoder(BaseDataset, TokenizationMixin, MultiTaskMixin, Lab
         """
         index, task, label, cutoff = self.index_mapper[idx]
         data = self.data.iloc[index]
-        
+
         # Swap the first and last token with the task token.
         if self.is_single_head:
             data[f"event_tokens_{self.max_len}"][0] = self.tokenizer.task_to_token(task)
-            data[f"event_tokens_{self.max_len}"][-1] = self.tokenizer.task_to_token(task)
+            data[f"event_tokens_{self.max_len}"][-1] = self.tokenizer.task_to_token(
+                task
+            )
         else:
-            data[f"event_tokens_{self.max_len}"][-1] = data[f"event_tokens_{self.max_len}"][0]
+            data[f"event_tokens_{self.max_len}"][-1] = data[
+                f"event_tokens_{self.max_len}"
+            ][0]
 
         data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
         tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
-        
+
         # Prepare model input
         tokens = self.add_additional_tokens(data)
         tokens["concept_ids"] = tokenized_input["input_ids"].squeeze()
@@ -610,41 +634,6 @@ class FinetuneDatasetDecoder(BaseDataset, TokenizationMixin, MultiTaskMixin, Lab
         tokens["task_indices"] = torch.tensor(TASK_TO_INDEX[task])
 
         return tokens
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 class PretrainDataset(Dataset):
