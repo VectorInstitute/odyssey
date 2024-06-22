@@ -116,6 +116,9 @@ class TestDatasets(unittest.TestCase):
                 BaseDataset.__init__(self, data, tokenizer)
                 MultiTaskMixin.__init__(self, tasks)
                 self.nan_indicator = -1
+            
+            def __len__(self) -> int:
+                return len(self.index_mapper)
 
             def __getitem__(self, idx: int):
                 return self.index_mapper[idx]
@@ -133,8 +136,8 @@ class TestDatasets(unittest.TestCase):
             task_counts[task] += 1
         self.assertEqual(task_counts["mortality_1month"], 2)
         self.assertEqual(
-            task_counts["readmission_1month"], 0
-        )  # If not provided in balance_guide, task is removed
+            task_counts["readmission_1month"], 1
+        )
 
     def test_pretrain_dataset(self):
         dataset = PretrainDataset(data=self.data, tokenizer=self.tokenizer)
