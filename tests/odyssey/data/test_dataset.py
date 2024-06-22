@@ -2,6 +2,7 @@
 
 import unittest
 from unittest.mock import MagicMock
+from typing import Dict, List, Tuple, Optional
 
 import pandas as pd
 import torch
@@ -22,8 +23,8 @@ from odyssey.data.tokenizer import ConceptTokenizer
 
 
 class TestDatasets(unittest.TestCase):
-    def setUp(self):
-        # Set up mock data and tokenizer
+    def setUp(self) -> None:
+        """Set up mock data and tokenizer for testing."""
         self.data = pd.DataFrame(
             {
                 "event_tokens_2048": [["token1", "token2"], ["token3", "token4"]],
@@ -52,18 +53,20 @@ class TestDatasets(unittest.TestCase):
         self.tokenizer.get_last_token_index = MagicMock(return_value=999)
         self.tokenizer.token_to_id = MagicMock(return_value=101)
 
-    def test_base_dataset(self):
+    def test_base_dataset(self) -> None:
+        """Test the BaseDataset class."""
         class DummyDataset(BaseDataset):
-            def __getitem__(self, idx: int):
+            def __getitem__(self, idx: int) -> Dict[str, str]:
                 return {"dummy_key": "dummy_value"}
 
         dataset = DummyDataset(data=self.data, tokenizer=self.tokenizer)
         self.assertEqual(len(dataset), len(self.data))
         self.assertEqual(dataset[0], {"dummy_key": "dummy_value"})
 
-    def test_tokenization_mixin(self):
+    def test_tokenization_mixin(self) -> None:
+        """Test the TokenizationMixin class."""
         class DummyDataset(BaseDataset, TokenizationMixin):
-            def __getitem__(self, idx: int):
+            def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
                 return self.add_additional_tokens(self.data.iloc[idx])
 
         dataset = DummyDataset(data=self.data, tokenizer=self.tokenizer)
@@ -79,9 +82,10 @@ class TestDatasets(unittest.TestCase):
         self.assertEqual(result["visit_orders"].size(0), 2)
         self.assertEqual(result["visit_segments"].size(0), 2)
 
-    def test_masking_mixin(self):
+    def test_masking_mixin(self) -> None:
+        """Test the MaskingMixin class."""
         class DummyDataset(BaseDataset, MaskingMixin):
-            def __getitem__(self, idx: int):
+            def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
                 return self.mask_tokens(torch.tensor([10, 20, 30]))
 
         dataset = DummyDataset(data=self.data, tokenizer=self.tokenizer)
@@ -92,14 +96,15 @@ class TestDatasets(unittest.TestCase):
         self.assertTrue((masked_sequence <= 103).all())
         self.assertTrue((labels == -100).any())
 
-    def test_multi_task_mixin(self):
+    def test_multi_task_mixin(self) -> None:
+        """Test the MultiTaskMixin class."""
         class DummyDataset(BaseDataset, MultiTaskMixin):
-            def __init__(self, data, tokenizer, tasks):
+            def __init__(self, data: pd.DataFrame, tokenizer: ConceptTokenizer, tasks: List[str]) -> None:
                 BaseDataset.__init__(self, data, tokenizer)
                 MultiTaskMixin.__init__(self, tasks)
                 self.nan_indicator = -1
 
-            def __getitem__(self, idx: int):
+            def __getitem__(self, idx: int) -> Tuple[int, str, int, Optional[int]]:
                 return self.index_mapper[idx]
 
         dataset = DummyDataset(
@@ -110,9 +115,10 @@ class TestDatasets(unittest.TestCase):
         dataset.prepare_multi_task_data()
         self.assertEqual(len(dataset.index_mapper), 3)
 
-    def test_label_balance_mixin(self):
+    def test_label_balance_mixin(self) -> None:
+        """Test the LabelBalanceMixin class."""
         class DummyDataset(BaseDataset, MultiTaskMixin, LabelBalanceMixin):
-            def __init__(self, data, tokenizer, tasks):
+            def __init__(self, data: pd.DataFrame, tokenizer: ConceptTokenizer, tasks: List[str]) -> None:
                 BaseDataset.__init__(self, data, tokenizer)
                 MultiTaskMixin.__init__(self, tasks)
                 self.nan_indicator = -1
@@ -120,7 +126,7 @@ class TestDatasets(unittest.TestCase):
             def __len__(self) -> int:
                 return len(self.index_mapper)
 
-            def __getitem__(self, idx: int):
+            def __getitem__(self, idx: int) -> Tuple[int, str, int, Optional[int]]:
                 return self.index_mapper[idx]
 
         dataset = DummyDataset(
@@ -135,11 +141,10 @@ class TestDatasets(unittest.TestCase):
             task = dataset[i][1]
             task_counts[task] += 1
         self.assertEqual(task_counts["mortality_1month"], 2)
-        self.assertEqual(
-            task_counts["readmission_1month"], 1
-        )
+        self.assertEqual(task_counts["readmission_1month"], 1)
 
-    def test_pretrain_dataset(self):
+    def test_pretrain_dataset(self) -> None:
+        """Test the PretrainDataset class."""
         dataset = PretrainDataset(data=self.data, tokenizer=self.tokenizer)
         tokens = dataset[0]
         self.assertIn("concept_ids", tokens)
@@ -149,7 +154,8 @@ class TestDatasets(unittest.TestCase):
         self.assertEqual(tokens["labels"].size(0), 2)
         self.assertEqual(tokens["attention_mask"].size(0), 2)
 
-    def test_pretrain_dataset_decoder(self):
+    def test_pretrain_dataset_decoder(self) -> None:
+        """Test the PretrainDatasetDecoder class."""
         dataset = PretrainDatasetDecoder(data=self.data, tokenizer=self.tokenizer)
         tokens = dataset[0]
         self.assertIn("concept_ids", tokens)
@@ -158,7 +164,8 @@ class TestDatasets(unittest.TestCase):
         self.assertEqual(tokens["labels"].size(0), 2)
         self.assertIs(tokens["labels"], tokens["concept_ids"])
 
-    def test_finetune_dataset(self):
+    def test_finetune_dataset(self) -> None:
+        """Test the FinetuneDataset class."""
         dataset = FinetuneDataset(data=self.data, tokenizer=self.tokenizer)
         tokens = dataset[1]
         self.assertIn("concept_ids", tokens)
@@ -168,7 +175,8 @@ class TestDatasets(unittest.TestCase):
         self.assertEqual(tokens["labels"], torch.tensor(1))
         self.assertEqual(tokens["attention_mask"].size(0), 2)
 
-    def test_finetune_multi_dataset(self):
+    def test_finetune_multi_dataset(self) -> None:
+        """Test the FinetuneMultiDataset class."""
         dataset = FinetuneMultiDataset(
             data=self.data,
             tokenizer=self.tokenizer,
@@ -183,7 +191,8 @@ class TestDatasets(unittest.TestCase):
         self.assertEqual(tokens["labels"], torch.tensor(0))
         self.assertEqual(tokens["attention_mask"].size(0), 2)
 
-    def test_finetune_dataset_decoder(self):
+    def test_finetune_dataset_decoder(self) -> None:
+        """Test the FinetuneDatasetDecoder class."""
         dataset = FinetuneDatasetDecoder(
             data=self.data,
             tokenizer=self.tokenizer,
@@ -197,11 +206,13 @@ class TestDatasets(unittest.TestCase):
         self.assertEqual(tokens["concept_ids"].size(0), 2)
         self.assertEqual(tokens["labels"], torch.tensor(0))
 
-    def test_dataset_length(self):
+    def test_dataset_length(self) -> None:
+        """Test the length of the dataset."""
         dataset = PretrainDataset(data=self.data, tokenizer=self.tokenizer)
         self.assertEqual(len(dataset), 2)
 
-    def test_multitask_balance(self):
+    def test_multitask_balance(self) -> None:
+        """Test the balancing of tasks in the dataset."""
         dataset = FinetuneMultiDataset(
             data=self.data,
             tokenizer=self.tokenizer,
