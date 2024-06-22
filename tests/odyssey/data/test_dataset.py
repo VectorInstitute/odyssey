@@ -1,8 +1,8 @@
 """Test dataset classes."""
 
 import unittest
+from typing import Dict, List, Optional, Tuple
 from unittest.mock import MagicMock
-from typing import Dict, List, Tuple, Optional
 
 import pandas as pd
 import torch
@@ -55,6 +55,7 @@ class TestDatasets(unittest.TestCase):
 
     def test_base_dataset(self) -> None:
         """Test the BaseDataset class."""
+
         class DummyDataset(BaseDataset):
             def __getitem__(self, idx: int) -> Dict[str, str]:
                 return {"dummy_key": "dummy_value"}
@@ -65,6 +66,7 @@ class TestDatasets(unittest.TestCase):
 
     def test_tokenization_mixin(self) -> None:
         """Test the TokenizationMixin class."""
+
         class DummyDataset(BaseDataset, TokenizationMixin):
             def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
                 return self.add_additional_tokens(self.data.iloc[idx])
@@ -84,6 +86,7 @@ class TestDatasets(unittest.TestCase):
 
     def test_masking_mixin(self) -> None:
         """Test the MaskingMixin class."""
+
         class DummyDataset(BaseDataset, MaskingMixin):
             def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
                 return self.mask_tokens(torch.tensor([10, 20, 30]))
@@ -98,8 +101,11 @@ class TestDatasets(unittest.TestCase):
 
     def test_multi_task_mixin(self) -> None:
         """Test the MultiTaskMixin class."""
+
         class DummyDataset(BaseDataset, MultiTaskMixin):
-            def __init__(self, data: pd.DataFrame, tokenizer: ConceptTokenizer, tasks: List[str]) -> None:
+            def __init__(
+                self, data: pd.DataFrame, tokenizer: ConceptTokenizer, tasks: List[str]
+            ) -> None:
                 BaseDataset.__init__(self, data, tokenizer)
                 MultiTaskMixin.__init__(self, tasks)
                 self.nan_indicator = -1
@@ -117,12 +123,15 @@ class TestDatasets(unittest.TestCase):
 
     def test_label_balance_mixin(self) -> None:
         """Test the LabelBalanceMixin class."""
+
         class DummyDataset(BaseDataset, MultiTaskMixin, LabelBalanceMixin):
-            def __init__(self, data: pd.DataFrame, tokenizer: ConceptTokenizer, tasks: List[str]) -> None:
+            def __init__(
+                self, data: pd.DataFrame, tokenizer: ConceptTokenizer, tasks: List[str]
+            ) -> None:
                 BaseDataset.__init__(self, data, tokenizer)
                 MultiTaskMixin.__init__(self, tasks)
                 self.nan_indicator = -1
-            
+
             def __len__(self) -> int:
                 return len(self.index_mapper)
 
