@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 
 from odyssey.data.dataset import FinetuneDataset
 from odyssey.data.tokenizer import ConceptTokenizer
-from odyssey.interp.utils import load_codes_dict, replace_sequence_items
+from odyssey.evals.prediction import load_codes_dict, replace_sequence_items
 from odyssey.models.cehr_bert.model import BertFinetune
 from odyssey.models.cehr_big_bird.model import BigBirdFinetune
 from odyssey.models.model_utils import get_model_embeddings, get_model_embeddings_list
