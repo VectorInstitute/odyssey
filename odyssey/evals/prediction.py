@@ -9,64 +9,65 @@ import torch
 
 from odyssey.data.tokenizer import ConceptTokenizer
 from odyssey.models.cehr_big_bird.model import BigBirdFinetune, BigBirdPretrain
+from odyssey.models.ehr_mamba.model import MambaPretrain
+
+import torch
+from typing import Union
+from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 
 
-def load_codes_dict(codes_dir: str) -> Dict[str, str]:
+def load_pretrained_model(
+    model_type: str,
+    tokenizer: Union[PreTrainedTokenizer, PreTrainedTokenizerFast],
+    device: torch.device,
+    model_path: str
+) -> torch.nn.Module:
     """
-    Load and merge JSON files containing medical codes and names.
+    Load a pretrained model based on the specified model type and tokenizer.
+
+    This function initializes a model of the specified type, loads its pretrained
+    weights from a checkpoint file, and prepares it for inference on the specified device.
 
     Parameters
     ----------
-    codes_dir : str
-        The directory path that contains JSON files with code mappings.
+    model_type : str
+        The type of model to load. Currently implements "mamba".
+    tokenizer : Union[PreTrainedTokenizer, PreTrainedTokenizerFast]
+        The tokenizer associated with the model, used to determine vocabulary size
+        and special token IDs.
+    device : torch.device
+        The device (CPU or GPU) on which to load the model.
+    model_path : str
+        The file path to the saved model checkpoint.
 
     Returns
     -------
-    Dict[str, str]
-        A dictionary that represents a medical concept code mapping.
+    torch.nn.Module
+        The loaded and prepared model, ready for inference.
     """
-    merged_dict = {}
-    for filename in os.listdir(codes_dir):
-        if filename.endswith(".json"):
-            filepath = os.path.join(codes_dir, filename)
-            with open(filepath, "r") as file:
-                data = json.load(file)
-                merged_dict.update(data)
-    return merged_dict
+    if model_type == "mamba":
+        model = MambaPretrain(
+            vocab_size=tokenizer.get_vocab_size(),
+            embedding_size=768,
+            state_size=16,
+            num_hidden_layers=32,
+            max_seq_length=2048,
+            padding_idx=tokenizer.get_pad_token_id(),
+            cls_idx=tokenizer.get_class_token_id(),
+        )
+    else:
+        raise ValueError(f"Unsupported model type: {model_type}")
 
+    # Load the pretrained weights
+    checkpoint = torch.load(model_path, map_location=device)
+    state_dict = checkpoint["state_dict"]
+    model.load_state_dict(state_dict)
 
-def replace_sequence_items(
-    sequence: List[Union[str, int]],
-    mapping_dict: Dict[str, str],
-) -> List[str]:
-    """
-    Replace medical concept codes in a sequence with their corresponding names if found.
+    # Set the model to evaluation mode and move it to the specified device
+    model.eval()
+    model.to(device)
 
-    Parameters
-    ----------
-    sequence : list of str
-        The original sequence of strings to be processed.
-    mapping_dict : dict
-        A dictionary mapping medical concept codes to their corresponding names.
-
-    Returns
-    -------
-    list of str
-        A new sequence with medical concept codes replaced by their names.
-    """
-    if type(sequence[0]) == int:
-        sequence = [str(item) for item in sequence]
-
-    new_sequence = []
-    for item in sequence:
-        match = re.match(r"^(.*?)(_\d)$", item)
-        if match:
-            base_part, suffix = match.groups()
-            replaced_item = mapping_dict.get(base_part, base_part) + suffix
-        else:
-            replaced_item = mapping_dict.get(item, item)
-        new_sequence.append(replaced_item)
-    return new_sequence
+    return model
 
 
 def load_finetuned_model(
