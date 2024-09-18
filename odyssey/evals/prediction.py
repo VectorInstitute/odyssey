@@ -18,7 +18,7 @@ from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 
 def load_pretrained_model(
     model_type: str,
-    tokenizer: Union[PreTrainedTokenizer, PreTrainedTokenizerFast],
+    tokenizer: ConceptTokenizer,
     device: torch.device,
     model_path: str
 ) -> torch.nn.Module:
@@ -32,7 +32,7 @@ def load_pretrained_model(
     ----------
     model_type : str
         The type of model to load. Currently implements "mamba".
-    tokenizer : Union[PreTrainedTokenizer, PreTrainedTokenizerFast]
+    tokenizer : ConceptTokenizer
         The tokenizer associated with the model, used to determine vocabulary size
         and special token IDs.
     device : torch.device
