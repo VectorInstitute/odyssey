@@ -378,7 +378,7 @@ class ConceptTokenizer:
 
         """
         if isinstance(concept_input[0], int):
-            concept_input = [self.id_to_token[token_id] for token_id in concept_input]
+            concept_input = [self.id_to_token(token_id) for token_id in concept_input]
         
         decoded_sequence = []
         for item in concept_input:
