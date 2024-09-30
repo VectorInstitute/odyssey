@@ -190,7 +190,7 @@ class ConceptTokenizer:
         """Fit the tokenizer on the vocabulary."""
         # Create dictionary of all possible medical concepts
         self.token_type_vocab["special_tokens"] = self.special_tokens
-        vocab_json_files = glob.glob(os.path.join(self.data_dir, "*_vocab.json"))
+        vocab_json_files = glob.glob(os.path.join(self.data_dir, "*vocab.json"))
 
         for file in vocab_json_files:
             with open(file, "r") as vocab_file:
@@ -650,3 +650,31 @@ class ConceptTokenizer:
 
         """
         return self.task2token[task]
+    
+    @staticmethod
+    def create_vocab_from_sequences(
+        sequences: Union[List[List[str]], pd.Series],
+        save_path: str,
+    ) -> None:
+        """Create a vocabulary from sequences and save it as a JSON file.
+
+        This static method takes a list of lists or a Pandas Series containing sequences,
+        extracts unique tokens, sorts them, and saves them in a JSON file.
+
+        Parameters
+        ----------
+        sequences : Union[List[List[str]], pd.Series]
+            List of lists or a Pandas Series containing sequences of tokens (strings).
+        save_path : str
+            The file path to save the vocabulary JSON.
+
+        """
+        # Flatten the list of lists and extract unique tokens
+        unique_tokens = sorted(set(token for sequence in sequences for token in sequence))
+
+        # Raise error if a token has space in it
+        if any(" " in token for token in unique_tokens):
+            raise ValueError("Tokens should not contain spaces.")
+
+        with open(save_path, "w") as vocab_file:
+            json.dump(unique_tokens, vocab_file, indent=4)
