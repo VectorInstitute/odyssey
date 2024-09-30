@@ -103,11 +103,11 @@ class TokenizationMixin:
         Dict[str, torch.Tensor]
             A dictionary containing tensors for each additional token type.
         """
-        type_tokens = torch.tensor(data[f"type_tokens_{self.max_len}"])
-        age_tokens = torch.tensor(data[f"age_tokens_{self.max_len}"])
-        time_tokens = torch.tensor(data[f"time_tokens_{self.max_len}"])
-        visit_tokens = torch.tensor(data[f"visit_tokens_{self.max_len}"])
-        position_tokens = torch.tensor(data[f"position_tokens_{self.max_len}"])
+        type_tokens = torch.tensor(data[f"type_tokens"])
+        age_tokens = torch.tensor(data[f"age_tokens"])
+        time_tokens = torch.tensor(data[f"time_tokens"])
+        visit_tokens = torch.tensor(data[f"visit_tokens"])
+        position_tokens = torch.tensor(data[f"position_tokens"])
 
         return {
             "type_ids": type_tokens,
@@ -315,7 +315,7 @@ class PretrainDataset(BaseDataset, TokenizationMixin, MaskingMixin):
         data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
 
         # Tokenize and mask the input data
-        tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
+        tokenized_input = self.tokenize_data(data[f"event_tokens"])
         concept_tokens = tokenized_input["input_ids"].squeeze()
         attention_mask = tokenized_input["attention_mask"].squeeze()
         masked_tokens, labels = self.mask_tokens(concept_tokens)
@@ -370,7 +370,7 @@ class PretrainDatasetDecoder(BaseDataset, TokenizationMixin):
         data = self.data.iloc[idx]
         cutoff = data[self.cutoff_col] if self.cutoff_col else None
         data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
-        tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
+        tokenized_input = self.tokenize_data(data[f"event_tokens"])
 
         # Prepare model input
         tokens = self.add_additional_tokens(data)
@@ -419,7 +419,7 @@ class FinetuneDataset(BaseDataset, TokenizationMixin):
         data = self.data.iloc[idx]
         cutoff = data[self.cutoff_col] if self.cutoff_col else None
         data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
-        tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
+        tokenized_input = self.tokenize_data(data[f"event_tokens"])
 
         # Prepare model input
         tokens = self.add_additional_tokens(data)
@@ -510,9 +510,9 @@ class FinetuneMultiDataset(
         data = self.data.iloc[index]
 
         # Swap the first token with the task token.
-        data[f"event_tokens_{self.max_len}"][0] = self.tokenizer.task_to_token(task)
+        data[f"event_tokens"][0] = self.tokenizer.task_to_token(task)
         data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
-        tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
+        tokenized_input = self.tokenize_data(data[f"event_tokens"])
 
         # Prepare model input
         tokens = self.add_additional_tokens(data)
@@ -610,17 +610,17 @@ class FinetuneDatasetDecoder(
 
         # Swap the first and last token with the task token.
         if self.is_single_head:
-            data[f"event_tokens_{self.max_len}"][0] = self.tokenizer.task_to_token(task)
-            data[f"event_tokens_{self.max_len}"][-1] = self.tokenizer.task_to_token(
+            data[f"event_tokens"][0] = self.tokenizer.task_to_token(task)
+            data[f"event_tokens"][-1] = self.tokenizer.task_to_token(
                 task
             )
         else:
-            data[f"event_tokens_{self.max_len}"][-1] = data[
-                f"event_tokens_{self.max_len}"
+            data[f"event_tokens"][-1] = data[
+                f"event_tokens"
             ][0]
 
         data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
-        tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
+        tokenized_input = self.tokenize_data(data[f"event_tokens"])
 
         # Prepare model input
         tokens = self.add_additional_tokens(data)
