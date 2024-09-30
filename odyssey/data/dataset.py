@@ -26,12 +26,12 @@ TASK_TO_INDEX = {
 
 # Mapping of additional token types to column names in the dataset
 AUGMENTED_TOKEN_MAP = {
-        "type_ids": "type_tokens",
-        "ages": "age_tokens",
-        "time_stamps": "time_tokens",
-        "visit_orders": "position_tokens",
-        "visit_segments": "visit_tokens"
-    }
+    "type_ids": "type_tokens",
+    "ages": "age_tokens",
+    "time_stamps": "time_tokens",
+    "visit_orders": "position_tokens",
+    "visit_segments": "visit_tokens",
+}
 
 
 class BaseDataset(Dataset, ABC):
@@ -99,7 +99,9 @@ class BaseDataset(Dataset, ABC):
 class AugmentedTokenizationMixin:
     """Mixin class for adding additional token types to the dataset."""
 
-    def add_additional_tokens(self, data: pd.Series, additional_token_types: List[str] = None) -> Dict[str, torch.Tensor]:
+    def add_additional_tokens(
+        self, data: pd.Series, additional_token_types: List[str] = None
+    ) -> Dict[str, torch.Tensor]:
         """Add specified additional token types to the dataset.
 
         Parameters
@@ -116,7 +118,7 @@ class AugmentedTokenizationMixin:
             A dictionary containing tensors for each specified additional token type.
         """
         if additional_token_types is None:
-            return {}   # Return an empty dictionary if no token types are specified
+            return {}  # Return an empty dictionary if no token types are specified
 
         return {
             token_name: torch.tensor(data[column_name])
@@ -370,7 +372,13 @@ class PretrainDatasetDecoder(BaseDataset, AugmentedTokenizationMixin):
         A list of additional token types to be added to the dataset, by default None.
     """
 
-    def __init__(self, data: pd.DataFrame, tokenizer: ConceptTokenizer, max_len: int = 2048, additional_token_types: List[str] = None,):
+    def __init__(
+        self,
+        data: pd.DataFrame,
+        tokenizer: ConceptTokenizer,
+        max_len: int = 2048,
+        additional_token_types: List[str] = None,
+    ):
         super().__init__(data, tokenizer, max_len)
         self.additional_token_types = additional_token_types
 
@@ -427,7 +435,13 @@ class FinetuneDataset(BaseDataset, AugmentedTokenizationMixin):
         A list of additional token types to be added to the dataset, by default None.
     """
 
-    def __init__(self, data: pd.DataFrame, tokenizer: ConceptTokenizer, max_len: int = 2048, additional_token_types: List[str] = None):
+    def __init__(
+        self,
+        data: pd.DataFrame,
+        tokenizer: ConceptTokenizer,
+        max_len: int = 2048,
+        additional_token_types: List[str] = None,
+    ):
         super().__init__(data, tokenizer, max_len)
         self.additional_token_types = additional_token_types
 
@@ -652,13 +666,9 @@ class FinetuneDatasetDecoder(
         # Swap the first and last token with the task token.
         if self.is_single_head:
             data[f"event_tokens"][0] = self.tokenizer.task_to_token(task)
-            data[f"event_tokens"][-1] = self.tokenizer.task_to_token(
-                task
-            )
+            data[f"event_tokens"][-1] = self.tokenizer.task_to_token(task)
         else:
-            data[f"event_tokens"][-1] = data[
-                f"event_tokens"
-            ][0]
+            data[f"event_tokens"][-1] = data[f"event_tokens"][0]
 
         data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
         tokenized_input = self.tokenize_data(data[f"event_tokens"])
