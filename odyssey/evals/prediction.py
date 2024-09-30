@@ -1,19 +1,16 @@
 """Prediction module for loading and running EHR models on patient data, both for clinical predictive tasks and EHR forecasting."""
 
-import json
-import os
-import re
-from typing import Any, Dict, List, Optional, Tuple, Union
+import pandas as pd
+import numpy as np
 
 import torch
+import torch.nn.functional as F
+from odyssey.data.tokenizer import ConceptTokenizer
+from typing import Any, Dict, List, Union, Tuple, Optional
 
 from odyssey.data.tokenizer import ConceptTokenizer
 from odyssey.models.cehr_big_bird.model import BigBirdFinetune, BigBirdPretrain
 from odyssey.models.ehr_mamba.model import MambaPretrain
-
-import torch
-from typing import Union
-from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 
 
 def load_pretrained_model(
@@ -127,197 +124,217 @@ def load_finetuned_model(
     return model
 
 
-def predict_patient_outcomes(
-    patient: Dict[str, torch.Tensor],
-    model: torch.nn.Module,
-    device: Optional[torch.device] = None,
-) -> Any:
-    """Compute model output predictions on given patient data.
+def create_concept_and_id_to_type_mapping(pretrain_data: pd.DataFrame, tokenizer: ConceptTokenizer) -> Dict[Union[str, int], Any]:
+    """
+    Create a mapping from concepts and their IDs to their corresponding type IDs.
+
+    This function processes pretraining data to build a dictionary that maps each unique concept
+    and its corresponding ID to its type ID, based on the first occurrence of the concept in the data.
 
     Parameters
     ----------
-    patient: Dict[str, torch.Tensor]
-        Patient data as a dictionary of tensors
-    model: torch.nn.Module
-        Model to use for prediction
-    device: torch.device, optional
-        CUDA device. By default, GPU is used
+    pretrain_data : pd.DataFrame
+        A pandas DataFrame containing the pretraining data with columns 'event_tokens_2048' and 'type_tokens_2048'.
+    tokenizer : ConceptTokenizer
+        The tokenizer object used to convert concepts to IDs. Must have a 'token_to_id' method.
 
     Returns
     -------
-    Any
-        Model output predictions on the given patient data
-
+    Dict[Union[str, int], Any]
+        A dictionary mapping concepts and their IDs to their type IDs.
     """
-    # Load GPU or CPU device
-    if not device:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    concept_and_id_to_type: Dict[Union[str, int], Any] = {}
 
-    # Load patient information as a Tuple
-    patient_inputs = (
-        patient["concept_ids"].to(device),
-        patient["type_ids"].to(device),
-        patient["time_stamps"].to(device),
-        patient["ages"].to(device),
-        patient["visit_orders"].to(device),
-        patient["visit_segments"].to(device),
-    )
-    patient_labels = patient["labels"].to(device)
-    patient_attention_mask = patient["attention_mask"].to(device)
+    # Vectorized operation to process all rows at once
+    for events, types in zip(pretrain_data['event_tokens_2048'], pretrain_data['type_tokens_2048']):
+        # Use numpy's unique function to get unique concepts and their first occurrence index
+        unique_concepts, first_occurrence = np.unique(events, return_index=True)
 
-    # Get model output predictions
-    model.to(device)
+        # Map each unique concept and its ID to its corresponding type
+        for concept, index in zip(unique_concepts, first_occurrence):
+            if concept not in concept_and_id_to_type:
+                concept_id = tokenizer.token_to_id(concept)
+                type_id = types[index]
+                concept_and_id_to_type[concept] = type_id
+                concept_and_id_to_type[concept_id] = type_id
 
-    return model(
-        inputs=patient_inputs,
-        attention_mask=patient_attention_mask,
-        labels=patient_labels,
-    )
+    return concept_and_id_to_type
 
 
-def update_patient_sequence_for_next_step(
-    patient_data: Dict[str, torch.Tensor],
-    pad_start_idx: int,
-    predicted_token_ids: List[int],
-    num_tokens: int,
-    device: torch.device,
-) -> Dict[str, torch.Tensor]:
-    """
-    Update the patient sequence for the next prediction step by incorporating predicted tokens.
+class Forecast:
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        tokenizer: ConceptTokenizer,
+        pretrain_data: pd.DataFrame,
+        temperature: float = 0.8,
+        top_p: float = 0.95,
+    ):
+        """
+        Initialize the Forecast class for generating token sequences.
 
-    Args:
-        patient_data (Dict[str, torch.Tensor]): The original patient data containing different tensors.
-        pad_start_idx (int): The index indicating the start of padding tokens in the sequence.
-        predicted_token_ids (List[int]): List of predicted token IDs so far.
-        num_tokens (int): Number of tokens to predict. Default is 10.
-        device (torch.device): The device to run the model on.
+        Parameters
+        ----------
+        model : torch.nn.Module
+            The pretrained model used for generating predictions.
+        tokenizer : ConceptTokenizer
+            The tokenizer used to convert tokens to IDs and vice versa.
+        pretrain_data : pd.DataFrame
+            The pretraining data used to create concept to type mappings.
+        temperature : float, optional
+            The temperature parameter for sampling. Default is 0.8.
+        top_p : float, optional
+            The top-p (nucleus) sampling parameter. Default is 0.95.
+        """
+        self.model = model
+        self.tokenizer = tokenizer
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.eval()
+        self.model.to(self.device)
+        self.concept_and_id_to_type = create_concept_and_id_to_type_mapping(pretrain_data, tokenizer)
+        self.temperature = temperature
+        self.top_p = top_p
 
+    @staticmethod
+    def get_pad_start_idx(concept_ids: torch.Tensor) -> int:
+        """
+        Find the start index of padding in a tensor of concept IDs.
 
-    Returns
-    -------
-        Dict[str, torch.Tensor]: The updated input sequence prepared for the model.
-    """
-    updated_input = {}
-    num_predicted_tokens = len(predicted_token_ids)
+        Parameters
+        ----------
+        concept_ids : torch.Tensor
+            A tensor containing concept IDs.
 
-    for key, tensor in patient_data.items():
-        # Skip keys that are not part of the input sequence
-        if key in ("task", "labels", "task_indices"):
-            continue
+        Returns
+        -------
+        int
+            The index of the first padding token.
+        """
+        return concept_ids.nonzero().squeeze().tolist()[-1] + 1
 
-        # Truncate the tensor to exclude padding tokens and predicted tokens
-        truncated_tensor = tensor[:pad_start_idx][:-num_tokens]
+    def prepare_input_data(
+        self,
+        patient: Dict[str, torch.Tensor],
+        predicted_ids: torch.Tensor,
+    ) -> Tuple[torch.Tensor, ...]:
+        """
+        Prepare patient data for model input efficiently by updating with predicted IDs.
 
-        # Append predicted tokens to the concept_ids, or zeros for other tensor types
-        if key == "concept_ids":
-            new_tokens = torch.tensor(
-                predicted_token_ids, dtype=torch.long, device=device
-            )
-            updated_tensor = torch.cat([truncated_tensor, new_tokens])
-        else:
-            padding_tokens = torch.zeros(
-                num_predicted_tokens, dtype=torch.long, device=device
-            )
-            updated_tensor = torch.cat([truncated_tensor, padding_tokens])
+        Parameters
+        ----------
+        patient : Dict[str, torch.Tensor]
+            A dictionary containing patient data tensors.
+        predicted_ids : torch.Tensor
+            A tensor of predicted concept IDs to be appended to the patient data.
 
-        # Add a batch dimension and move the tensor to the appropriate device
-        updated_input[key] = updated_tensor.unsqueeze(0).to(device)
+        Returns
+        -------
+        Tuple[torch.Tensor, ...]
+            A tuple of tensors ready for model input.
+        """
+        inputs = []
 
-    return updated_input
+        for key in ["concept_ids", "type_ids", "time_stamps", "ages", "visit_orders", "visit_segments"]:
+            tensor = patient[key].to(self.device)
 
+            if key == "concept_ids":
+                new_tensor = torch.cat([tensor, predicted_ids], dim=0)
 
-def predict_next_token(
-    model: torch.nn.Module,
-    input_sample: Dict[str, torch.Tensor],
-    tokenizer: ConceptTokenizer,
-) -> Tuple[int, str]:
-    """
-    Use the model for inference to predict the next token in EHR sequence.
+            elif key == "type_ids":
+                # Map predicted concept IDs to their corresponding type IDs
+                predicted_type_ids = torch.tensor(
+                    [self.concept_and_id_to_type.get(id.item(), 0) for id in predicted_ids],
+                    device=self.device,
+                    dtype=tensor.dtype,
+                )
+                new_tensor = torch.cat([tensor, predicted_type_ids], dim=0)
 
-    Args:
-        model (torch.nn.Module): The model used for generating predictions.
-        input_sample (Dict[str, torch.Tensor]): The input sample prepared for the model.
-        tokenizer (ConceptTokenizer): The tokenizer used for EHR data.
+            else:
+                # For other features, repeat the last value
+                last_value = tensor[-1]
+                new_tensor = torch.cat([tensor, last_value.repeat(len(predicted_ids))], dim=0)
 
-    Returns
-    -------
-        Tuple[int, str]: The predicted token ID and token.
-    """
-    inputs = (
-        input_sample["concept_ids"],
-        input_sample["type_ids"],
-        input_sample["time_stamps"],
-        input_sample["ages"],
-        input_sample["visit_orders"],
-        input_sample["visit_segments"],
-    )
+            inputs.append(new_tensor.unsqueeze(0))
 
-    # Model inference
-    output = model(inputs, labels=None, output_hidden_states=False, return_dict=True)
+        return tuple(inputs)
 
-    # Compute probabilities and get the prediction
-    probs = torch.softmax(output["logits"][:, -1, :].squeeze(), dim=-1)
-    prediction_id = torch.argmax(probs).item()
-    prediction_token = tokenizer.id_to_token(prediction_id)
+    def predict_next_token(self, inputs: Tuple[torch.Tensor, ...]) -> int:
+        """
+        Predict the next token using temperature and top-p sampling.
 
-    return prediction_id, prediction_token
+        Parameters
+        ----------
+        inputs : Tuple[torch.Tensor, ...]
+            A tuple of input tensors prepared for the model.
 
+        Returns
+        -------
+        int
+            The predicted token ID.
+        """
+        with torch.no_grad():
+            output = self.model(inputs)
+        logits = output['logits'][0, -1, :]
 
-def generate_predictions(
-    patient_data: Dict[str, Union[torch.Tensor, str]],
-    model: torch.nn.Module,
-    tokenizer: ConceptTokenizer,
-    device: torch.device,
-    num_tokens: int = 10,
-) -> Tuple[List[int], List[str]]:
-    """
-    Generate predicted tokens for a patient sequence used in EHR forecasting.
+        if self.temperature == 0:
+            return torch.argmax(logits).item()
 
-    Args:
-        patient_data (Dict[str, torch.Tensor]): A dictionary containing patient data with keys 'concept_ids', 'type_ids',
-                                                'time_stamps', 'ages', 'visit_orders', 'visit_segments', and 'labels'.
-        model (torch.nn.Module): The model used for generating predictions.
-        tokenizer (ConceptTokenizer): The tokenizer used for EHR data.
-        device (torch.device): The device to run the model on (e.g., 'cuda' or 'cpu').
-        num_tokens (int): Number of tokens to predict. Default is 10.
+        logits = logits / self.temperature
 
-    Returns
-    -------
-        Tuple[List[int], List[str]]: A tuple containing two lists:
-                                     - predicted_token_ids: List of predicted token IDs.
-                                     - predicted_tokens: List of predicted tokens.
-    """
-    # Prepare model and data for inference
-    model.eval()
-    model.to(device)
-    patient_data = {
-        key: value.to(device) if isinstance(value, torch.Tensor) else value
-        for key, value in patient_data.items()
-    }
+        probs = F.softmax(logits, dim=-1)
+        sorted_probs, sorted_indices = torch.sort(probs, descending=True)
 
-    # Determine the index of the first padding token, or use the full length if no padding is present
-    if 0 in patient_data["concept_ids"]:
-        pad_start_idx = patient_data["concept_ids"].tolist().index(0)
-    else:
-        pad_start_idx = len(patient_data["concept_ids"])
+        cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
 
-    # Initialize lists to store the predicted token IDs and their corresponding tokens
-    predicted_token_ids = []
-    predicted_tokens = []
+        cutoff_index = torch.sum(cumulative_probs < self.top_p) + 1
+        top_p_tokens = sorted_indices[:cutoff_index]
+        top_p_probs = probs[top_p_tokens]
+        top_p_probs /= top_p_probs.sum()
 
-    for _ in range(num_tokens):
-        # Prepare the input sample for the next prediction step by updating the patient sequence
-        input_sample = update_patient_sequence_for_next_step(
-            patient_data, pad_start_idx, predicted_token_ids, num_tokens, device
-        )
+        selected_token_index = torch.multinomial(top_p_probs, 1).item()
+        return top_p_tokens[selected_token_index].item()
 
-        # Generate the next token prediction
-        prediction_id, prediction_token = predict_next_token(
-            model, input_sample, tokenizer
-        )
+    def generate_token_sequence(
+        self,
+        patient: Dict[str, torch.Tensor],
+        num_tokens: int,
+        cutoff_index: Optional[int] = None,
+    ) -> Tuple[List[int], List[str], List[str]]:
+        """
+        Generate a sequence of tokens based on patient data.
 
-        # Append the predicted token ID and token to the respective lists
-        predicted_token_ids.append(prediction_id)
-        predicted_tokens.append(prediction_token)
+        Parameters
+        ----------
+        patient : Dict[str, torch.Tensor]
+            A dictionary containing patient data tensors.
+        num_tokens : int
+            The number of tokens to generate.
+        cutoff_index : int, optional
+            The index at which to truncate the patient data. If None, it will be calculated.
 
-    return predicted_token_ids, predicted_tokens
+        Returns
+        -------
+        Tuple[List[int], List[str], List[str]]
+            A tuple containing:
+            - predicted_ids_list: List of predicted token IDs.
+            - predicted_tokens: List of predicted tokens.
+            - predicted_labels: List of predicted labels decoded from tokens.
+        """
+        predicted_ids = torch.tensor([], dtype=torch.long, device=self.device)
+
+        if not cutoff_index:
+            pad_start_idx = self.get_pad_start_idx(patient["concept_ids"])
+            cutoff_index = max(pad_start_idx - num_tokens, 0)
+
+        patient = {key: value[:cutoff_index] for key, value in patient.items()}
+
+        for _ in range(num_tokens):
+            inputs = self.prepare_input_data(patient, predicted_ids)
+            prediction_id = self.predict_next_token(inputs)
+            predicted_ids = torch.cat([predicted_ids, torch.tensor([prediction_id], device=self.device)])
+
+        predicted_ids_list = predicted_ids.cpu().tolist()
+        predicted_tokens = [self.tokenizer.id_to_token(id) for id in predicted_ids_list]
+        predicted_labels = self.tokenizer.decode_to_labels(predicted_tokens)
+
+        return predicted_ids_list, predicted_tokens, predicted_labels
