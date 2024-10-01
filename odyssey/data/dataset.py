@@ -330,7 +330,7 @@ class PretrainDataset(BaseDataset, AugmentedTokenizationMixin, MaskingMixin):
         data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
 
         # Tokenize and mask the input data
-        tokenized_input = self.tokenize_data(data[f"event_tokens"])
+        tokenized_input = self.tokenize_data(data["event_tokens"])
         concept_tokens = tokenized_input["input_ids"].squeeze()
         attention_mask = tokenized_input["attention_mask"].squeeze()
         masked_tokens, labels = self.mask_tokens(concept_tokens)
@@ -399,7 +399,7 @@ class PretrainDatasetDecoder(BaseDataset, AugmentedTokenizationMixin):
         data = self.data.iloc[idx]
         cutoff = data[self.cutoff_col] if self.cutoff_col else None
         data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
-        tokenized_input = self.tokenize_data(data[f"event_tokens"])
+        tokenized_input = self.tokenize_data(data["event_tokens"])
 
         # Prepare model input
         tokens = self.add_additional_tokens(data, self.additional_token_types)
@@ -462,7 +462,7 @@ class FinetuneDataset(BaseDataset, AugmentedTokenizationMixin):
         data = self.data.iloc[idx]
         cutoff = data[self.cutoff_col] if self.cutoff_col else None
         data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
-        tokenized_input = self.tokenize_data(data[f"event_tokens"])
+        tokenized_input = self.tokenize_data(data["event_tokens"])
 
         # Prepare model input
         tokens = self.add_additional_tokens(data, self.additional_token_types)
@@ -559,9 +559,9 @@ class FinetuneMultiDataset(
         data = self.data.iloc[index]
 
         # Swap the first token with the task token.
-        data[f"event_tokens"][0] = self.tokenizer.task_to_token(task)
+        data["event_tokens"][0] = self.tokenizer.task_to_token(task)
         data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
-        tokenized_input = self.tokenize_data(data[f"event_tokens"])
+        tokenized_input = self.tokenize_data(data["event_tokens"])
 
         # Prepare model input
         tokens = self.add_additional_tokens(data, self.additional_token_types)
@@ -665,13 +665,13 @@ class FinetuneDatasetDecoder(
 
         # Swap the first and last token with the task token.
         if self.is_single_head:
-            data[f"event_tokens"][0] = self.tokenizer.task_to_token(task)
-            data[f"event_tokens"][-1] = self.tokenizer.task_to_token(task)
+            data["event_tokens"][0] = self.tokenizer.task_to_token(task)
+            data["event_tokens"][-1] = self.tokenizer.task_to_token(task)
         else:
-            data[f"event_tokens"][-1] = data[f"event_tokens"][0]
+            data["event_tokens"][-1] = data["event_tokens"][0]
 
         data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
-        tokenized_input = self.tokenize_data(data[f"event_tokens"])
+        tokenized_input = self.tokenize_data(data["event_tokens"])
 
         # Prepare model input
         tokens = self.add_additional_tokens(data, self.additional_token_types)

@@ -1,9 +1,9 @@
 """Tokenizer module."""
 
-import re
 import glob
 import json
 import os
+import re
 from itertools import chain
 from typing import Any, Dict, List, Optional, Set, Union
 
@@ -226,13 +226,15 @@ class ConceptTokenizer:
         self.special_token_ids = self.get_special_token_ids()
 
         # Set token to label dict backbone
-        self.token_to_label_dict = {token:token for token in self.tokenizer_vocab.keys()}
+        self.token_to_label_dict = {
+            token: token for token in self.tokenizer_vocab.keys()
+        }
 
         # Check to make sure tokenizer follows the same vocabulary
         assert (
             self.tokenizer_vocab == self.tokenizer.get_vocab()
         ), "Tokenizer vocabulary does not match original"
-    
+
     def load_token_labels(self, codes_dir: str) -> Dict[str, str]:
         """
         Load and merge JSON files containing medical codes and names.
@@ -255,7 +257,7 @@ class ConceptTokenizer:
                 with open(filepath, "r") as file:
                     data = json.load(file)
                     merged_dict.update(data)
-        
+
         for token, label in merged_dict.items():
             self.token_to_label_dict[token] = label
 
@@ -379,17 +381,19 @@ class ConceptTokenizer:
         """
         if isinstance(concept_input[0], int):
             concept_input = [self.id_to_token(token_id) for token_id in concept_input]
-        
+
         decoded_sequence = []
         for item in concept_input:
             match = re.match(r"^(.*?)(_\d)$", item)
             if match:
                 base_part, suffix = match.groups()
-                replaced_item = self.token_to_label_dict.get(base_part, base_part) + suffix
+                replaced_item = (
+                    self.token_to_label_dict.get(base_part, base_part) + suffix
+                )
             else:
                 replaced_item = self.token_to_label_dict.get(item, item)
             decoded_sequence.append(replaced_item)
-        
+
         return decoded_sequence
 
     def token_to_id(self, token: str) -> int:
@@ -423,7 +427,7 @@ class ConceptTokenizer:
 
         """
         return self.tokenizer_object.id_to_token(token_id)
-    
+
     def token_to_label(self, token: str) -> str:
         """Return the label corresponding to token.
 
@@ -650,7 +654,7 @@ class ConceptTokenizer:
 
         """
         return self.task2token[task]
-    
+
     @staticmethod
     def create_vocab_from_sequences(
         sequences: Union[List[List[str]], pd.Series],
@@ -670,7 +674,9 @@ class ConceptTokenizer:
 
         """
         # Flatten the list of lists and extract unique tokens
-        unique_tokens = sorted(set(token for sequence in sequences for token in sequence))
+        unique_tokens = sorted(
+            set(token for sequence in sequences for token in sequence)
+        )
 
         # Raise error if a token has space in it
         if any(" " in token for token in unique_tokens):

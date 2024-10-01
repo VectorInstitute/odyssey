@@ -1,12 +1,11 @@
 """Prediction module for loading and running EHR models on patient data, both for clinical predictive tasks and EHR forecasting."""
 
-import pandas as pd
-import numpy as np
+from typing import Any, Dict, List, Optional, Tuple, Union
 
+import numpy as np
+import pandas as pd
 import torch
 import torch.nn.functional as F
-from odyssey.data.tokenizer import ConceptTokenizer
-from typing import Any, Dict, List, Union, Tuple, Optional
 
 from odyssey.data.tokenizer import ConceptTokenizer
 from odyssey.models.cehr_big_bird.model import BigBirdFinetune, BigBirdPretrain
@@ -14,10 +13,7 @@ from odyssey.models.ehr_mamba.model import MambaPretrain
 
 
 def load_pretrained_model(
-    model_type: str,
-    tokenizer: ConceptTokenizer,
-    device: torch.device,
-    model_path: str
+    model_type: str, tokenizer: ConceptTokenizer, device: torch.device, model_path: str
 ) -> torch.nn.Module:
     """
     Load a pretrained model based on the specified model type and tokenizer.
@@ -124,7 +120,9 @@ def load_finetuned_model(
     return model
 
 
-def create_concept_and_id_to_type_mapping(pretrain_data: pd.DataFrame, tokenizer: ConceptTokenizer) -> Dict[Union[str, int], Any]:
+def create_concept_and_id_to_type_mapping(
+    pretrain_data: pd.DataFrame, tokenizer: ConceptTokenizer
+) -> Dict[Union[str, int], Any]:
     """
     Create a mapping from concepts and their IDs to their corresponding type IDs.
 
@@ -146,7 +144,9 @@ def create_concept_and_id_to_type_mapping(pretrain_data: pd.DataFrame, tokenizer
     concept_and_id_to_type: Dict[Union[str, int], Any] = {}
 
     # Vectorized operation to process all rows at once
-    for events, types in zip(pretrain_data['event_tokens_2048'], pretrain_data['type_tokens_2048']):
+    for events, types in zip(
+        pretrain_data["event_tokens_2048"], pretrain_data["type_tokens_2048"]
+    ):
         # Use numpy's unique function to get unique concepts and their first occurrence index
         unique_concepts, first_occurrence = np.unique(events, return_index=True)
 
@@ -191,7 +191,9 @@ class Forecast:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.eval()
         self.model.to(self.device)
-        self.concept_and_id_to_type = create_concept_and_id_to_type_mapping(pretrain_data, tokenizer)
+        self.concept_and_id_to_type = create_concept_and_id_to_type_mapping(
+            pretrain_data, tokenizer
+        )
         self.temperature = temperature
         self.top_p = top_p
 
@@ -234,7 +236,14 @@ class Forecast:
         """
         inputs = []
 
-        for key in ["concept_ids", "type_ids", "time_stamps", "ages", "visit_orders", "visit_segments"]:
+        for key in [
+            "concept_ids",
+            "type_ids",
+            "time_stamps",
+            "ages",
+            "visit_orders",
+            "visit_segments",
+        ]:
             tensor = patient[key].to(self.device)
 
             if key == "concept_ids":
@@ -243,7 +252,10 @@ class Forecast:
             elif key == "type_ids":
                 # Map predicted concept IDs to their corresponding type IDs
                 predicted_type_ids = torch.tensor(
-                    [self.concept_and_id_to_type.get(id.item(), 0) for id in predicted_ids],
+                    [
+                        self.concept_and_id_to_type.get(id.item(), 0)
+                        for id in predicted_ids
+                    ],
                     device=self.device,
                     dtype=tensor.dtype,
                 )
@@ -252,7 +264,9 @@ class Forecast:
             else:
                 # For other features, repeat the last value
                 last_value = tensor[-1]
-                new_tensor = torch.cat([tensor, last_value.repeat(len(predicted_ids))], dim=0)
+                new_tensor = torch.cat(
+                    [tensor, last_value.repeat(len(predicted_ids))], dim=0
+                )
 
             inputs.append(new_tensor.unsqueeze(0))
 
@@ -274,7 +288,7 @@ class Forecast:
         """
         with torch.no_grad():
             output = self.model(inputs)
-        logits = output['logits'][0, -1, :]
+        logits = output["logits"][0, -1, :]
 
         if self.temperature == 0:
             return torch.argmax(logits).item()
@@ -331,7 +345,9 @@ class Forecast:
         for _ in range(num_tokens):
             inputs = self.prepare_input_data(patient, predicted_ids)
             prediction_id = self.predict_next_token(inputs)
-            predicted_ids = torch.cat([predicted_ids, torch.tensor([prediction_id], device=self.device)])
+            predicted_ids = torch.cat(
+                [predicted_ids, torch.tensor([prediction_id], device=self.device)]
+            )
 
         predicted_ids_list = predicted_ids.cpu().tolist()
         predicted_tokens = [self.tokenizer.id_to_token(id) for id in predicted_ids_list]
