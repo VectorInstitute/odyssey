@@ -50,6 +50,7 @@ class MambaPretrain(pl.LightningModule):
         dropout_prob: float = 0.1,
         padding_idx: int = 0,
         cls_idx: int = 5,
+        use_mambapy: bool = False,
     ):
         super().__init__()
 
@@ -68,6 +69,7 @@ class MambaPretrain(pl.LightningModule):
         self.dropout_prob = dropout_prob
         self.padding_idx = padding_idx
         self.cls_idx = cls_idx
+        self.use_mambapy = use_mambapy
 
         self.config = MambaConfig(
             vocab_size=self.vocab_size,
@@ -79,6 +81,7 @@ class MambaPretrain(pl.LightningModule):
             pad_token_id=self.padding_idx,
             bos_token_id=self.cls_idx,
             eos_token_id=self.padding_idx,
+            use_mambapy=self.use_mambapy,
         )
         self.embeddings = MambaEmbeddingsForCEHR(
             config=self.config,

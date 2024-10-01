@@ -24,6 +24,15 @@ TASK_TO_INDEX = {
     "c2": 5,
 }
 
+# Mapping of additional token types to column names in the dataset
+AUGMENTED_TOKEN_MAP = {
+    "type_ids": "type_tokens",
+    "ages": "age_tokens",
+    "time_stamps": "time_tokens",
+    "visit_orders": "position_tokens",
+    "visit_segments": "visit_tokens",
+}
+
 
 class BaseDataset(Dataset, ABC):
     """Base class for datasets used in pretraining and finetuning.
@@ -87,34 +96,34 @@ class BaseDataset(Dataset, ABC):
         pass
 
 
-class TokenizationMixin:
+class AugmentedTokenizationMixin:
     """Mixin class for adding additional token types to the dataset."""
 
-    def add_additional_tokens(self, data: pd.Series) -> Dict[str, torch.Tensor]:
-        """Add additional token types to the dataset.
+    def add_additional_tokens(
+        self, data: pd.Series, additional_token_types: List[str] = None
+    ) -> Dict[str, torch.Tensor]:
+        """Add specified additional token types to the dataset.
 
         Parameters
         ----------
         data : pd.Series
             A series containing token sequences and additional information.
+        additional_token_types : List[str], optional
+            A list specifying which token types to add (e.g., ["type_ids", "ages"]).
+            If None, all available tokens will be added.
 
         Returns
         -------
         Dict[str, torch.Tensor]
-            A dictionary containing tensors for each additional token type.
+            A dictionary containing tensors for each specified additional token type.
         """
-        type_tokens = torch.tensor(data[f"type_tokens_{self.max_len}"])
-        age_tokens = torch.tensor(data[f"age_tokens_{self.max_len}"])
-        time_tokens = torch.tensor(data[f"time_tokens_{self.max_len}"])
-        visit_tokens = torch.tensor(data[f"visit_tokens_{self.max_len}"])
-        position_tokens = torch.tensor(data[f"position_tokens_{self.max_len}"])
+        if additional_token_types is None:
+            return {}  # Return an empty dictionary if no token types are specified
 
         return {
-            "type_ids": type_tokens,
-            "ages": age_tokens,
-            "time_stamps": time_tokens,
-            "visit_orders": position_tokens,
-            "visit_segments": visit_tokens,
+            token_name: torch.tensor(data[column_name])
+            for token_name, column_name in AUGMENTED_TOKEN_MAP.items()
+            if token_name in additional_token_types
         }
 
 
@@ -260,7 +269,7 @@ class LabelBalanceMixin:
             self.task_to_index[task] = positives + negatives_kept
 
 
-class PretrainDataset(BaseDataset, TokenizationMixin, MaskingMixin):
+class PretrainDataset(BaseDataset, AugmentedTokenizationMixin, MaskingMixin):
     """Dataset for pretraining the model.
 
     Parameters
@@ -273,6 +282,8 @@ class PretrainDataset(BaseDataset, TokenizationMixin, MaskingMixin):
         The maximum length of the tokenized sequences, by default 2048.
     mask_prob : float, optional
         The probability of masking a token in the sequence, by default 0.15.
+    additional_token_types : List[str], optional
+        A list of additional token types to be added to the dataset, by default None.
 
     Attributes
     ----------
@@ -284,6 +295,8 @@ class PretrainDataset(BaseDataset, TokenizationMixin, MaskingMixin):
         Maximum length of the tokenized sequences.
     mask_prob : float
         Probability of masking a token in the sequence.
+    additional_token_types : List[str], optional
+        A list of additional token types to be added to the dataset, by default None.
     """
 
     def __init__(
@@ -292,9 +305,11 @@ class PretrainDataset(BaseDataset, TokenizationMixin, MaskingMixin):
         tokenizer: ConceptTokenizer,
         max_len: int = 2048,
         mask_prob: float = 0.15,
+        additional_token_types: List[str] = None,
     ):
         super().__init__(data, tokenizer, max_len)
         self.mask_prob = mask_prob
+        self.additional_token_types = additional_token_types
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get data at corresponding index.
@@ -315,13 +330,13 @@ class PretrainDataset(BaseDataset, TokenizationMixin, MaskingMixin):
         data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
 
         # Tokenize and mask the input data
-        tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
+        tokenized_input = self.tokenize_data(data["event_tokens"])
         concept_tokens = tokenized_input["input_ids"].squeeze()
         attention_mask = tokenized_input["attention_mask"].squeeze()
         masked_tokens, labels = self.mask_tokens(concept_tokens)
 
         # Prepare model input
-        tokens = self.add_additional_tokens(data)
+        tokens = self.add_additional_tokens(data, self.additional_token_types)
         tokens["concept_ids"] = masked_tokens
         tokens["labels"] = labels
         tokens["attention_mask"] = attention_mask
@@ -329,7 +344,7 @@ class PretrainDataset(BaseDataset, TokenizationMixin, MaskingMixin):
         return tokens
 
 
-class PretrainDatasetDecoder(BaseDataset, TokenizationMixin):
+class PretrainDatasetDecoder(BaseDataset, AugmentedTokenizationMixin):
     """Dataset for pretraining a decoder-based model (e.g. Mamba).
 
     The decoder is trained using the next token prediction task.
@@ -342,6 +357,8 @@ class PretrainDatasetDecoder(BaseDataset, TokenizationMixin):
         An instance of the ConceptTokenizer class used for tokenizing sequences.
     max_len : int, optional
         The maximum length of the tokenized sequences, by default 2048.
+    additional_token_types : List[str], optional
+        A list of additional token types to be added to the dataset, by default None.
 
     Attributes
     ----------
@@ -351,7 +368,19 @@ class PretrainDatasetDecoder(BaseDataset, TokenizationMixin):
         Tokenizer used for tokenizing sequences.
     max_len : int
         Maximum length of the tokenized sequences.
+    additional_token_types : List[str], optional
+        A list of additional token types to be added to the dataset, by default None.
     """
+
+    def __init__(
+        self,
+        data: pd.DataFrame,
+        tokenizer: ConceptTokenizer,
+        max_len: int = 2048,
+        additional_token_types: List[str] = None,
+    ):
+        super().__init__(data, tokenizer, max_len)
+        self.additional_token_types = additional_token_types
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get data at corresponding index.
@@ -370,17 +399,17 @@ class PretrainDatasetDecoder(BaseDataset, TokenizationMixin):
         data = self.data.iloc[idx]
         cutoff = data[self.cutoff_col] if self.cutoff_col else None
         data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
-        tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
+        tokenized_input = self.tokenize_data(data["event_tokens"])
 
         # Prepare model input
-        tokens = self.add_additional_tokens(data)
+        tokens = self.add_additional_tokens(data, self.additional_token_types)
         tokens["concept_ids"] = tokenized_input["input_ids"].squeeze()
         tokens["labels"] = tokens["concept_ids"]
 
         return tokens
 
 
-class FinetuneDataset(BaseDataset, TokenizationMixin):
+class FinetuneDataset(BaseDataset, AugmentedTokenizationMixin):
     """Dataset for finetuning the model.
 
     Parameters
@@ -391,6 +420,8 @@ class FinetuneDataset(BaseDataset, TokenizationMixin):
         An instance of the ConceptTokenizer class used for tokenizing sequences.
     max_len : int, optional
         The maximum length of the tokenized sequences, by default 2048.
+    additional_token_types : List[str], optional
+        A list of additional token types to be added to the dataset, by default None.
 
     Attributes
     ----------
@@ -400,7 +431,19 @@ class FinetuneDataset(BaseDataset, TokenizationMixin):
         Tokenizer used for tokenizing sequences.
     max_len : int
         Maximum length of the tokenized sequences.
+    additional_token_types : List[str], optional
+        A list of additional token types to be added to the dataset, by default None.
     """
+
+    def __init__(
+        self,
+        data: pd.DataFrame,
+        tokenizer: ConceptTokenizer,
+        max_len: int = 2048,
+        additional_token_types: List[str] = None,
+    ):
+        super().__init__(data, tokenizer, max_len)
+        self.additional_token_types = additional_token_types
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get data at corresponding index.
@@ -419,10 +462,10 @@ class FinetuneDataset(BaseDataset, TokenizationMixin):
         data = self.data.iloc[idx]
         cutoff = data[self.cutoff_col] if self.cutoff_col else None
         data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
-        tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
+        tokenized_input = self.tokenize_data(data["event_tokens"])
 
         # Prepare model input
-        tokens = self.add_additional_tokens(data)
+        tokens = self.add_additional_tokens(data, self.additional_token_types)
         tokens["concept_ids"] = tokenized_input["input_ids"].squeeze()
         tokens["attention_mask"] = tokenized_input["attention_mask"].squeeze()
         tokens["labels"] = torch.tensor(data["label"])
@@ -431,7 +474,7 @@ class FinetuneDataset(BaseDataset, TokenizationMixin):
 
 
 class FinetuneMultiDataset(
-    BaseDataset, TokenizationMixin, MultiTaskMixin, LabelBalanceMixin
+    BaseDataset, AugmentedTokenizationMixin, MultiTaskMixin, LabelBalanceMixin
 ):
     """Dataset for finetuning the model on multiple tasks.
 
@@ -450,6 +493,8 @@ class FinetuneMultiDataset(
         The maximum length of the tokenized sequences, by default 2048.
     nan_indicator : int, optional
         Value used to represent missing labels in the dataset, by default -1.
+    additional_token_types : List[str], optional
+        A list of additional token types to be added to the dataset, by default None.
 
     Attributes
     ----------
@@ -470,6 +515,8 @@ class FinetuneMultiDataset(
         index, task, label, and cutoff.
     index_mapper : List[Tuple[int, str, int, Optional[int]]]
         A list of all datapoints to be used by __getitem__.
+    additional_token_types : List[str], optional
+        A list of additional token types to be added to the dataset, by default None.
     """
 
     def __init__(
@@ -480,11 +527,13 @@ class FinetuneMultiDataset(
         balance_guide: Optional[Dict[str, float]] = None,
         max_len: int = 2048,
         nan_indicator: int = -1,
+        additional_token_types: List[str] = None,
     ):
         BaseDataset.__init__(self, data, tokenizer, max_len)
         MultiTaskMixin.__init__(self, tasks)
         self.nan_indicator = nan_indicator
         self.balance_guide = balance_guide
+        self.additional_token_types = additional_token_types
         self.prepare_multi_task_data()
         self.balance_labels(self.balance_guide)
 
@@ -510,12 +559,12 @@ class FinetuneMultiDataset(
         data = self.data.iloc[index]
 
         # Swap the first token with the task token.
-        data[f"event_tokens_{self.max_len}"][0] = self.tokenizer.task_to_token(task)
+        data["event_tokens"][0] = self.tokenizer.task_to_token(task)
         data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
-        tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
+        tokenized_input = self.tokenize_data(data["event_tokens"])
 
         # Prepare model input
-        tokens = self.add_additional_tokens(data)
+        tokens = self.add_additional_tokens(data, self.additional_token_types)
         tokens["concept_ids"] = tokenized_input["input_ids"].squeeze()
         tokens["attention_mask"] = tokenized_input["attention_mask"].squeeze()
         tokens["labels"] = torch.tensor(label)
@@ -525,7 +574,7 @@ class FinetuneMultiDataset(
 
 
 class FinetuneDatasetDecoder(
-    BaseDataset, TokenizationMixin, MultiTaskMixin, LabelBalanceMixin
+    BaseDataset, AugmentedTokenizationMixin, MultiTaskMixin, LabelBalanceMixin
 ):
     """Dataset for finetuning a decoder-based model.
 
@@ -546,6 +595,8 @@ class FinetuneDatasetDecoder(
         Value used to represent missing labels in the dataset, by default -1.
     is_single_head : bool, optional
         Indicating if the model uses one head for all classifications or not.
+    additional_token_types : List[str], optional
+        A list of additional token types to be added to the dataset, by default None.
 
     Attributes
     ----------
@@ -568,6 +619,8 @@ class FinetuneDatasetDecoder(
         index, task, label, and cutoff.
     index_mapper : List[Tuple[int, str, int, Optional[int]]]
         A list of all datapoints to be used by __getitem__.
+    additional_token_types : List[str], optional
+        A list of additional token types to be added to the dataset, by default None.
     """
 
     def __init__(
@@ -579,12 +632,14 @@ class FinetuneDatasetDecoder(
         max_len: int = 2048,
         nan_indicator: int = -1,
         is_single_head: bool = True,
+        additional_token_types: List[str] = None,
     ):
         BaseDataset.__init__(self, data, tokenizer, max_len)
         MultiTaskMixin.__init__(self, tasks)
         self.nan_indicator = nan_indicator
         self.is_single_head = is_single_head
         self.balance_guide = balance_guide
+        self.additional_token_types = additional_token_types
         self.prepare_multi_task_data()
         self.balance_labels(balance_guide)
 
@@ -610,20 +665,16 @@ class FinetuneDatasetDecoder(
 
         # Swap the first and last token with the task token.
         if self.is_single_head:
-            data[f"event_tokens_{self.max_len}"][0] = self.tokenizer.task_to_token(task)
-            data[f"event_tokens_{self.max_len}"][-1] = self.tokenizer.task_to_token(
-                task
-            )
+            data["event_tokens"][0] = self.tokenizer.task_to_token(task)
+            data["event_tokens"][-1] = self.tokenizer.task_to_token(task)
         else:
-            data[f"event_tokens_{self.max_len}"][-1] = data[
-                f"event_tokens_{self.max_len}"
-            ][0]
+            data["event_tokens"][-1] = data["event_tokens"][0]
 
         data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
-        tokenized_input = self.tokenize_data(data[f"event_tokens_{self.max_len}"])
+        tokenized_input = self.tokenize_data(data["event_tokens"])
 
         # Prepare model input
-        tokens = self.add_additional_tokens(data)
+        tokens = self.add_additional_tokens(data, self.additional_token_types)
         tokens["concept_ids"] = tokenized_input["input_ids"].squeeze()
         tokens["labels"] = torch.tensor(label)
         tokens["task"] = task
