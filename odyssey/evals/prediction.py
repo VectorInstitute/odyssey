@@ -1,4 +1,8 @@
-"""Prediction module for loading and running EHR models on patient data, both for clinical predictive tasks and EHR forecasting."""
+"""Prediction module for loading and running EHR models on patient data.
+
+This module provides functionality to load and run EHR models on patient data,
+both for clinical predictive tasks and EHR forecasting.
+"""
 
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -19,7 +23,8 @@ def load_pretrained_model(
     Load a pretrained model based on the specified model type and tokenizer.
 
     This function initializes a model of the specified type, loads its pretrained
-    weights from a checkpoint file, and prepares it for inference on the specified device.
+    weights from a checkpoint file, and prepares it for inference on the specified
+    device.
 
     Parameters
     ----------
@@ -70,7 +75,8 @@ def load_finetuned_model(
     fine_model_config: Optional[Dict[str, Any]] = None,
     device: Optional[torch.device] = None,
 ) -> torch.nn.Module:
-    """Load a finetuned model from model_path using tokenizer information.
+    """
+    Load a finetuned model from model_path using tokenizer information.
 
     Return a loaded finetuned model from model_path, using tokenizer information.
     If config arguments are not provided, the default configs built into the
@@ -78,22 +84,21 @@ def load_finetuned_model(
 
     Parameters
     ----------
-    model_path: str
+    model_path : str
         Path to the finetuned model to load
-    tokenizer: ConceptTokenizer
+    tokenizer : ConceptTokenizer
         Loaded tokenizer object
-    pre_model_config: Dict[str, Any], optional
+    pre_model_config : Dict[str, Any], optional
         Optional config to override default values of a pretrained model
-    fine_model_config: Dict[str, Any], optional
+    fine_model_config : Dict[str, Any], optional
         Optional config to override default values of a finetuned model
-    device: torch.device, optional
+    device : torch.device, optional
         CUDA device. By default, GPU is used
 
     Returns
     -------
     torch.nn.Module
         Finetuned model loaded from model_path
-
     """
     # Load GPU or CPU device
     if not device:
@@ -126,15 +131,18 @@ def create_concept_and_id_to_type_mapping(
     """
     Create a mapping from concepts and their IDs to their corresponding type IDs.
 
-    This function processes pretraining data to build a dictionary that maps each unique concept
-    and its corresponding ID to its type ID, based on the first occurrence of the concept in the data.
+    This function processes pretraining data to build a dictionary that maps each unique
+    concept and its corresponding ID to its type ID, based on the first occurrence of
+    the concept in the data.
 
     Parameters
     ----------
     pretrain_data : pd.DataFrame
-        A pandas DataFrame containing the pretraining data with columns 'event_tokens_2048' and 'type_tokens_2048'.
+        A pandas DataFrame containing the pretraining data with columns
+        'event_tokens_2048' and 'type_tokens_2048'.
     tokenizer : ConceptTokenizer
-        The tokenizer object used to convert concepts to IDs. Must have a 'token_to_id' method.
+        The tokenizer object used to convert concepts to IDs. Must have a 'token_to_id'
+        method.
 
     Returns
     -------
@@ -147,7 +155,8 @@ def create_concept_and_id_to_type_mapping(
     for events, types in zip(
         pretrain_data["event_tokens_2048"], pretrain_data["type_tokens_2048"]
     ):
-        # Use numpy's unique function to get unique concepts and their first occurrence index
+        # Use numpy's unique function to get unique concepts and
+        # their first occurrence index
         unique_concepts, first_occurrence = np.unique(events, return_index=True)
 
         # Map each unique concept and its ID to its corresponding type
@@ -162,6 +171,8 @@ def create_concept_and_id_to_type_mapping(
 
 
 class Forecast:
+    """Forecast token sequences using a pretrained model."""
+
     def __init__(
         self,
         model: torch.nn.Module,
@@ -253,8 +264,8 @@ class Forecast:
                 # Map predicted concept IDs to their corresponding type IDs
                 predicted_type_ids = torch.tensor(
                     [
-                        self.concept_and_id_to_type.get(id.item(), 0)
-                        for id in predicted_ids
+                        self.concept_and_id_to_type.get(id_.item(), 0)
+                        for id_ in predicted_ids
                     ],
                     device=self.device,
                     dtype=tensor.dtype,
@@ -324,7 +335,8 @@ class Forecast:
         num_tokens : int
             The number of tokens to generate.
         cutoff_index : int, optional
-            The index at which to truncate the patient data. If None, it will be calculated.
+            The index at which to truncate the patient data. If None, it will be
+            calculated.
 
         Returns
         -------
@@ -350,7 +362,9 @@ class Forecast:
             )
 
         predicted_ids_list = predicted_ids.cpu().tolist()
-        predicted_tokens = [self.tokenizer.id_to_token(id) for id in predicted_ids_list]
+        predicted_tokens = [
+            self.tokenizer.id_to_token(id_) for id_ in predicted_ids_list
+        ]
         predicted_labels = self.tokenizer.decode_to_labels(predicted_tokens)
 
         return predicted_ids_list, predicted_tokens, predicted_labels

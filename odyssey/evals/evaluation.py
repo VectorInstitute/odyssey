@@ -22,11 +22,12 @@ def calculate_metrics(
     y_prob: Union[np.ndarray, torch.Tensor, list],
 ) -> Dict[str, float]:
     """
-    Calculate a variety of performance metrics given true labels, predicted labels, and predicted probabilities.
+    Calculate a variety of performance metrics given true labels, predicted labels,
+    and predicted probabilities.
 
-    This function computes several commonly used classification metrics to evaluate the performance of a model.
-    It returns a dictionary containing the balanced accuracy, F1 score, precision, recall, AUROC, average precision score,
-    and AUC-PR.
+    This function computes several commonly used classification metrics to evaluate
+    the performance of a model. It returns a dictionary containing the balanced
+    accuracy, F1 score, precision, recall, AUROC, average precision score, and AUC-PR.
 
     Parameters
     ----------
@@ -41,6 +42,7 @@ def calculate_metrics(
     -------
     Dict[str, float]
         Dictionary containing the following metrics:
+
         - "Balanced Accuracy": Balanced accuracy score
         - "F1 Score": F1 score
         - "Precision": Precision score
