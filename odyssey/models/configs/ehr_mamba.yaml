@@ -11,6 +11,7 @@ model:
   conv_kernel: 4
   dropout_prob: 0.1
   learning_rate: 5.e-5
+  use_mambapy: False
 
 model_finetune:
   learning_rate: 5.e-5
@@ -18,11 +19,11 @@ model_finetune:
   multi_head: False
 
 train:
-  batch_size: 44
-  num_workers: 5
-  gpus: 4
+  batch_size: 1 #44
+  num_workers: 3 #5
+  gpus: 1 #4
   nodes: 1
-  max_epochs: 15
+  max_epochs: 2 #15
   acc: 1
   persistent_workers: True
   pin_memory: False

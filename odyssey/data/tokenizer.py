@@ -3,6 +3,7 @@
 import glob
 import json
 import os
+import re
 from itertools import chain
 from typing import Any, Dict, List, Optional, Set, Union
 
@@ -189,7 +190,7 @@ class ConceptTokenizer:
         """Fit the tokenizer on the vocabulary."""
         # Create dictionary of all possible medical concepts
         self.token_type_vocab["special_tokens"] = self.special_tokens
-        vocab_json_files = glob.glob(os.path.join(self.data_dir, "*_vocab.json"))
+        vocab_json_files = glob.glob(os.path.join(self.data_dir, "*vocab.json"))
 
         for file in vocab_json_files:
             with open(file, "r") as vocab_file:
@@ -224,10 +225,43 @@ class ConceptTokenizer:
         self.last_token_index = self.get_last_token_index()
         self.special_token_ids = self.get_special_token_ids()
 
+        # Set token to label dict backbone
+        self.token_to_label_dict = {
+            token: token for token in self.tokenizer_vocab.keys()
+        }
+
         # Check to make sure tokenizer follows the same vocabulary
         assert (
             self.tokenizer_vocab == self.tokenizer.get_vocab()
         ), "Tokenizer vocabulary does not match original"
+
+    def load_token_labels(self, codes_dir: str) -> Dict[str, str]:
+        """
+        Load and merge JSON files containing medical codes and names.
+        Update the token_to_label_dict with new token to label mappings.
+
+        Parameters
+        ----------
+        codes_dir : str
+            The directory path that contains JSON files with code mappings.
+
+        Returns
+        -------
+        Dict[str, str]
+            A dictionary that represents a medical concept code mapping.
+        """
+        merged_dict = {}
+        for filename in os.listdir(codes_dir):
+            if filename.endswith(".json"):
+                filepath = os.path.join(codes_dir, filename)
+                with open(filepath, "r") as file:
+                    data = json.load(file)
+                    merged_dict.update(data)
+
+        for token, label in merged_dict.items():
+            self.token_to_label_dict[token] = label
+
+        return merged_dict
 
     def create_tokenizer(
         self,
@@ -331,6 +365,37 @@ class ConceptTokenizer:
         """
         return self.tokenizer_object.decode(concept_ids)
 
+    def decode_to_labels(self, concept_input: Union[List[str], List[int]]) -> List[str]:
+        """Decode the concept sequence tokens or ids into labels.
+
+        Parameters
+        ----------
+        concept_input: Union[List[str], List[int]]
+            Concept tokens or ids.
+
+        Returns
+        -------
+        List[str]
+            A new sequence with medical concept codes replaced by their labels.
+
+        """
+        if isinstance(concept_input[0], int):
+            concept_input = [self.id_to_token(token_id) for token_id in concept_input]
+
+        decoded_sequence = []
+        for item in concept_input:
+            match = re.match(r"^(.*?)(_\d)$", item)
+            if match:
+                base_part, suffix = match.groups()
+                replaced_item = (
+                    self.token_to_label_dict.get(base_part, base_part) + suffix
+                )
+            else:
+                replaced_item = self.token_to_label_dict.get(item, item)
+            decoded_sequence.append(replaced_item)
+
+        return decoded_sequence
+
     def token_to_id(self, token: str) -> int:
         """Return the id corresponding to token.
 
@@ -362,6 +427,22 @@ class ConceptTokenizer:
 
         """
         return self.tokenizer_object.id_to_token(token_id)
+
+    def token_to_label(self, token: str) -> str:
+        """Return the label corresponding to token.
+
+        Parameters
+        ----------
+        token: str
+            Token.
+
+        Returns
+        -------
+        str
+            Label.
+
+        """
+        return self.decode_to_labels([token])[0]
 
     def get_all_token_indexes(self, with_special_tokens: bool = True) -> Set[int]:
         """Return a set of all possible token ids.
@@ -573,3 +654,33 @@ class ConceptTokenizer:
 
         """
         return self.task2token[task]
+
+    @staticmethod
+    def create_vocab_from_sequences(
+        sequences: Union[List[List[str]], pd.Series],
+        save_path: str,
+    ) -> None:
+        """Create a vocabulary from sequences and save it as a JSON file.
+
+        This static method takes a list of lists or a Pandas Series containing sequences,
+        extracts unique tokens, sorts them, and saves them in a JSON file.
+
+        Parameters
+        ----------
+        sequences : Union[List[List[str]], pd.Series]
+            List of lists or a Pandas Series containing sequences of tokens (strings).
+        save_path : str
+            The file path to save the vocabulary JSON.
+
+        """
+        # Flatten the list of lists and extract unique tokens
+        unique_tokens = sorted(
+            set(token for sequence in sequences for token in sequence)
+        )
+
+        # Raise error if a token has space in it
+        if any(" " in token for token in unique_tokens):
+            raise ValueError("Tokens should not contain spaces.")
+
+        with open(save_path, "w") as vocab_file:
+            json.dump(unique_tokens, vocab_file, indent=4)
