@@ -21,20 +21,20 @@ def truncate_and_pad(
     """Truncate and pad the input row to the maximum length.
 
     This function assumes the presence of the following columns in row:
-    - 'event_tokens_{max_len}'
-    - 'type_tokens_{max_len}'
-    - 'age_tokens_{max_len}'
-    - 'time_tokens_{max_len}'
-    - 'visit_tokens_{max_len}'
-    - 'position_tokens_{max_len}'
-    - 'elapsed_tokens_{max_len}'
+    - 'event_tokens'
+    - 'type_tokens'
+    - 'age_tokens'
+    - 'time_tokens'
+    - 'visit_tokens'
+    - 'position_tokens'
+    - 'elapsed_tokens'
 
     Parameters
     ----------
     row: pd.Series
         The input row.
     cutoff: Optional[int]
-        The cutoff length. Will be set to length of 'event_tokens_{max_len}' if None.
+        The cutoff length. Will be set to length of 'event_tokens' if None.
     max_len: int
         The maximum length to pad to.
 
@@ -48,42 +48,42 @@ def truncate_and_pad(
     row = row.copy()
 
     if not cutoff:
-        cutoff = min(max_len, len(row[f"event_tokens_{max_len}"]))
+        cutoff = min(max_len, len(row[f"event_tokens"]))
 
-    row[f"event_tokens_{max_len}"] = row[f"event_tokens_{max_len}"][:cutoff]
+    row[f"event_tokens"] = row[f"event_tokens"][:cutoff]
 
-    row[f"type_tokens_{max_len}"] = np.pad(
-        row[f"type_tokens_{max_len}"][:cutoff],
+    row[f"type_tokens"] = np.pad(
+        row[f"type_tokens"][:cutoff],
         (0, max_len - cutoff),
         mode="constant",
     )
-    row[f"age_tokens_{max_len}"] = np.pad(
-        row[f"age_tokens_{max_len}"][:cutoff],
+    row[f"age_tokens"] = np.pad(
+        row[f"age_tokens"][:cutoff],
         (0, max_len - cutoff),
         mode="constant",
     )
-    row[f"time_tokens_{max_len}"] = np.pad(
-        row[f"time_tokens_{max_len}"][:cutoff],
+    row[f"time_tokens"] = np.pad(
+        row[f"time_tokens"][:cutoff],
         (0, max_len - cutoff),
         mode="constant",
     )
-    row[f"visit_tokens_{max_len}"] = np.pad(
-        row[f"visit_tokens_{max_len}"][:cutoff],
+    row[f"visit_tokens"] = np.pad(
+        row[f"visit_tokens"][:cutoff],
         (0, max_len - cutoff),
         mode="constant",
     )
-    row[f"position_tokens_{max_len}"] = np.pad(
-        row[f"position_tokens_{max_len}"][:cutoff],
+    row[f"position_tokens"] = np.pad(
+        row[f"position_tokens"][:cutoff],
         (0, max_len - cutoff),
         mode="constant",
     )
-    row[f"elapsed_tokens_{max_len}"] = np.pad(
-        row[f"elapsed_tokens_{max_len}"][:cutoff],
+    row[f"elapsed_tokens"] = np.pad(
+        row[f"elapsed_tokens"][:cutoff],
         (0, max_len - cutoff),
         mode="constant",
     )
 
-    row[f"event_tokens_{max_len}"] = " ".join(row[f"event_tokens_{max_len}"])
+    row[f"event_tokens"] = " ".join(row[f"event_tokens"])
 
     return row
 
