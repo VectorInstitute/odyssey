@@ -4,11 +4,12 @@ import random
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-from odyssey.data.tokenizer import ConceptTokenizer, truncate_and_pad
+from odyssey.data.tokenizer import ConceptTokenizer
 
 
 # Index of features in tuples used in multi-task datasets
@@ -60,39 +61,65 @@ class BaseDataset(Dataset, ABC):
             (col for col in self.data.columns if "cutoff" in col), None
         )
 
+    def truncate_and_pad(
+        self, 
+        row: pd.Series,
+        cutoff: Optional[int] = None,
+        additional_columns: Optional[List[str]] = None,
+    ) -> pd.Series:
+        """Truncate and pad sequences in the row.
+        
+        Parameters
+        ----------
+        row : pd.Series
+            Input row containing sequences
+        cutoff : Optional[int]
+            Length to truncate sequences to. If None, uses length of event_tokens 
+            up to max_len
+        additional_columns : Optional[List[str]]
+            Additional columns to truncate and pad besides event_tokens
+            
+        Returns
+        -------
+        pd.Series
+            Row with truncated and padded sequences
+        """
+        row = row.copy()
+        
+        # Determine cutoff length
+        if cutoff is None:
+            cutoff = min(self.max_len, len(row["event_tokens"]))
+        cutoff = min(cutoff, self.max_len)
+        
+        # Truncate and pad tokens
+        row["event_tokens"] = row["event_tokens"][:cutoff]
+        
+        if additional_columns:
+            for col in additional_columns:
+                if col in row:
+                    row[col] = np.pad(
+                        row[col][:cutoff],
+                        (0, self.max_len - cutoff),
+                        mode="constant",
+                        constant_values=0
+                    )
+        
+        # Join event tokens for tokenizer
+        row["event_tokens"] = " ".join(row["event_tokens"])
+        
+        return row
+
     def __len__(self) -> int:
         """Return the length of the dataset."""
         return len(self.data)
 
     def tokenize_data(self, sequence: Union[str, List[str]]) -> Any:
-        """Tokenize the sequence.
-
-        Parameters
-        ----------
-        sequence : Union[str, List[str]]
-            The sequence to be tokenized.
-
-        Returns
-        -------
-        Any
-            A dictionary containing input_ids and additional information.
-        """
+        """Tokenize the sequence."""
         return self.tokenizer(sequence, max_length=self.max_len)
 
     @abstractmethod
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-        """Get data at corresponding index.
-
-        Parameters
-        ----------
-        idx : int
-            The index of the data to be retrieved.
-
-        Returns
-        -------
-        Dict[str, Any]
-            A dictionary containing the tokenized data.
-        """
+        """Get data at corresponding index."""
         pass
 
 
@@ -327,7 +354,7 @@ class PretrainDataset(BaseDataset, AugmentedTokenizationMixin, MaskingMixin):
         """
         data = self.data.iloc[idx]
         cutoff = data[self.cutoff_col] if self.cutoff_col else None
-        data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
+        data = self.truncate_and_pad(row=data, cutoff=cutoff, additional_columns=self.additional_token_types)
 
         # Tokenize and mask the input data
         tokenized_input = self.tokenize_data(data[f"event_tokens"])
@@ -398,7 +425,7 @@ class PretrainDatasetDecoder(BaseDataset, AugmentedTokenizationMixin):
         """
         data = self.data.iloc[idx]
         cutoff = data[self.cutoff_col] if self.cutoff_col else None
-        data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
+        data = self.truncate_and_pad(row=data, cutoff=cutoff, additional_columns=self.additional_token_types)
         tokenized_input = self.tokenize_data(data[f"event_tokens"])
 
         # Prepare model input
@@ -461,7 +488,7 @@ class FinetuneDataset(BaseDataset, AugmentedTokenizationMixin):
         """
         data = self.data.iloc[idx]
         cutoff = data[self.cutoff_col] if self.cutoff_col else None
-        data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
+        data = self.truncate_and_pad(row=data, cutoff=cutoff, additional_columns=self.additional_token_types)
         tokenized_input = self.tokenize_data(data[f"event_tokens"])
 
         # Prepare model input
@@ -560,7 +587,7 @@ class FinetuneMultiDataset(
 
         # Swap the first token with the task token.
         data[f"event_tokens"][0] = self.tokenizer.task_to_token(task)
-        data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
+        data = self.truncate_and_pad(row=data, cutoff=cutoff, additional_columns=self.additional_token_types)
         tokenized_input = self.tokenize_data(data[f"event_tokens"])
 
         # Prepare model input
@@ -670,7 +697,7 @@ class FinetuneDatasetDecoder(
         else:
             data[f"event_tokens"][-1] = data[f"event_tokens"][0]
 
-        data = truncate_and_pad(data, cutoff=cutoff, max_len=self.max_len)
+        data = self.truncate_and_pad(row=data, cutoff=cutoff, additional_columns=self.additional_token_types)
         tokenized_input = self.tokenize_data(data[f"event_tokens"])
 
         # Prepare model input
