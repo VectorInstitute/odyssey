@@ -1,1 +1,1 @@
-"""CEHR-Mamba model sub-package."""
+"""EHR-Mamba model sub-package."""
