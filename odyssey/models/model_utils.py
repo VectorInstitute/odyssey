@@ -7,6 +7,7 @@ from os.path import join
 from typing import Any, Dict, Optional, Union
 
 import pandas as pd
+import polars as pl
 import torch
 import yaml
 
@@ -68,7 +69,8 @@ def load_pretrain_data(
     if not os.path.exists(id_path):
         raise FileNotFoundError(f"ID file not found: {id_path}")
 
-    data = pd.read_parquet(sequence_path)
+    # Loading with pandas directly might fail
+    data = pl.read_parquet(sequence_path).to_pandas()
     with open(id_path, "rb") as file:
         patient_ids = pickle.load(file)
 
