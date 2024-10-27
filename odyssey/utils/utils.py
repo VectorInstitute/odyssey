@@ -41,3 +41,21 @@ def save_object_to_disk(obj: Any, save_path: str) -> None:
     with open(save_path, "wb") as f:
         pickle.dump(obj, f)
         print(f"File saved to disk: {save_path}")
+
+
+def load_object_from_disk(load_path: str) -> Any:
+    """Load an object from disk using pickle.
+
+    Parameters
+    ----------
+    load_path: str
+        Path to load the object
+
+    Returns
+    -------
+    Any
+        Loaded object
+
+    """
+    with open(load_path, "rb") as f:
+        return pickle.load(f)
