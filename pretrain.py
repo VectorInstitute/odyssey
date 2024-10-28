@@ -47,8 +47,21 @@ def main(args: argparse.Namespace, model_config: Dict[str, Any]) -> None:
         random_state=args.seed,
     )
 
-    # Train Tokenizer
-    tokenizer = ConceptTokenizer(data_dir=args.vocab_dir)
+    # Initialize Tokenizer
+    if args.tokenizer_type == "fhir":
+        tokenizer = ConceptTokenizer(
+            data_dir=args.vocab_dir,
+            start_token="[VS]",
+            end_token="[VE]",
+            time_tokens=[f"[W_{i}]" for i in range(0, 4)] + [f"[M_{i}]" for i in range(0, 13)] + ["[LT]"]
+        )
+    else: # meds
+        tokenizer = ConceptTokenizer(
+            data_dir=args.vocab_dir,
+            start_token="[BOS]",
+            end_token="[EOS]",
+            time_tokens=None  # New tokenizer comes with predefined time tokens
+        )
     tokenizer.fit_on_vocab()
 
     # Load datasets
@@ -183,31 +196,31 @@ if __name__ == "__main__":
 
     # project configuration
     parser.add_argument(
-        "--model-type",
+        "--model_type",
         type=str,
         required=True,
         help="Model type: 'cehr_bert' or 'cehr_bigbird' or 'ehr_mamba' or 'ehr_mamba2'",
     )
     parser.add_argument(
-        "--exp-name",
+        "--exp_name",
         type=str,
         required=True,
         help="Path to model config file",
     )
     parser.add_argument(
-        "--workspace-name",
+        "--workspace_name",
         type=str,
         default=None,
         help="Name of the Wandb workspace",
     )
     parser.add_argument(
-        "--config-dir",
+        "--config_dir",
         type=str,
         required=True,
         help="Path to model config file",
     )
     parser.add_argument(
-        "--is-decoder",
+        "--is_decoder",
         type=bool,
         default=False,
         help="Is the model a decoder (e.g. Mamba) or not",
@@ -215,39 +228,46 @@ if __name__ == "__main__":
 
     # data-related arguments
     parser.add_argument(
-        "--data-dir",
+        "--data_dir",
         type=str,
         required=True,
         help="Path to the data directory",
     )
     parser.add_argument(
-        "--sequence-file",
+        "--sequence_file",
         type=str,
         required=True,
         help="Path to the patient sequence file",
     )
     parser.add_argument(
-        "--id-file",
+        "--id_file",
         type=str,
         required=True,
         help="Path to the patient id file",
     )
     parser.add_argument(
-        "--vocab-dir",
+        "--vocab_dir",
         type=str,
         required=True,
         help="Path to the vocabulary directory of json files",
     )
     parser.add_argument(
-        "--val-size",
+        "--val_size",
         type=float,
         default=0.1,
         help="Validation set size for splitting the data",
     )
+    parser.add_argument(
+        "--tokenizer_type",
+        type=str,
+        required=True,
+        default="v1",
+        help="Tokenizer version",
+    )
 
     # checkpointing and loggig arguments
     parser.add_argument(
-        "--checkpoint-dir",
+        "--checkpoint_dir",
         type=str,
         required=True,
         help="Path to the checkpoint directory",
