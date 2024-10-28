@@ -84,8 +84,14 @@ class Mamba2Pretrain(pl.LightningModule):
         # Mamba has its own initialization
         self.model = Mamba2ForCausalLM(config=self.config)
 
-    def training_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
-        """Train model on training dataset."""
+    def _step(self, batch: Dict[str, Any], batch_idx: int, stage: str) -> Any:
+        """Run a single step for training or validation.
+        
+        Args:
+            batch: Input batch dictionary
+            batch_idx: Index of current batch
+            stage: Either 'train' or 'val'
+        """
         concept_ids = batch["concept_ids"]
         labels = batch["labels"]
 
@@ -100,35 +106,20 @@ class Mamba2Pretrain(pl.LightningModule):
 
         (current_lr,) = self.lr_schedulers().get_last_lr()
         self.log_dict(
-            dictionary={"train_loss": loss, "lr": current_lr},
+            dictionary={f"{stage}_loss": loss, "lr": current_lr},
             on_step=True,
             prog_bar=True,
             sync_dist=True,
         )
         return loss
+
+    def training_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
+        """Train model on training dataset."""
+        return self._step(batch, batch_idx, "train")
 
     def validation_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
         """Evaluate model on validation dataset."""
-        concept_ids = batch["concept_ids"]
-        labels = batch["labels"]
-
-        # Ensure use of mixed precision
-        with autocast():
-            loss = self.model(
-                concept_ids,
-                labels=labels,
-                return_dict=True,
-                output_hidden_states=False,
-            ).loss
-
-        (current_lr,) = self.lr_schedulers().get_last_lr()
-        self.log_dict(
-            dictionary={"val_loss": loss, "lr": current_lr},
-            on_step=True,
-            prog_bar=True,
-            sync_dist=True,
-        )
-        return loss
+        return self._step(batch, batch_idx, "val")
 
     def configure_optimizers(
         self,
