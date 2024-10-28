@@ -38,10 +38,9 @@ class Mamba2Pretrain(pl.LightningModule):
         learning_rate: float = 5e-5,
         dropout_prob: float = 0.1,
         padding_idx: int = 0,
-        cls_idx: int = 1,
+        cls_idx: int = 1, # used as bos token
         eos_idx: int = 2,
         n_groups: int = 8,
-        use_cache: bool = True,
         chunk_size: int = 256,
     ):
         super().__init__()
@@ -62,7 +61,6 @@ class Mamba2Pretrain(pl.LightningModule):
         self.cls_idx = cls_idx
         self.eos_idx = eos_idx
         self.n_groups = n_groups
-        self.use_cache = use_cache
         self.chunk_size = chunk_size
 
         self.config = Mamba2Config(
@@ -76,7 +74,6 @@ class Mamba2Pretrain(pl.LightningModule):
             bos_token_id=self.cls_idx,
             eos_token_id=self.eos_idx,
             n_groups=self.n_groups,
-            use_cache=self.use_cache,
             chunk_size=self.chunk_size,
             dropout=self.dropout_prob,
             num_heads=self.num_heads,
