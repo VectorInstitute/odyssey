@@ -712,9 +712,9 @@ class FHIRDataCollector:
 
 if __name__ == "__main__":
     collector = FHIRDataCollector(
-        db_path="postgresql://postgres:pwd@localhost:5432/mimiciv-2.0",
+        db_path=f"postgresql://{os.getenv('DB_USER', 'postgres')}:{os.getenv('DB_PASSWORD', 'password')}@{os.getenv('DB_HOST', 'localhost')}:5432/{os.getenv('DB_NAME', 'mimiciv_fhir')}",
         schema="mimic_fhir",
-        save_dir="/mnt/data/odyssey/mimiciv_fhir1",
+        save_dir=os.getenv("SAVE_DIR", "~/default_path/data_files"),
         buffer_size=10000,
     )
     collector.get_patient_data()
