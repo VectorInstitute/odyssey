@@ -70,11 +70,13 @@ def main(args: argparse.Namespace, model_config: Dict[str, Any]) -> None:
             data=pre_train,
             tokenizer=tokenizer,
             max_len=args.max_len,
+            padding_side=args.padding_side,
         )
         val_dataset = PretrainDatasetDecoder(
             data=pre_val,
             tokenizer=tokenizer,
             max_len=args.max_len,
+            padding_side=args.padding_side,
         )
 
     else:
@@ -83,12 +85,14 @@ def main(args: argparse.Namespace, model_config: Dict[str, Any]) -> None:
             tokenizer=tokenizer,
             max_len=args.max_len,
             mask_prob=args.mask_prob,
+            padding_side=args.padding_side,
         )
         val_dataset = PretrainDataset(
             data=pre_val,
             tokenizer=tokenizer,
             max_len=args.max_len,
             mask_prob=args.mask_prob,
+            padding_side=args.padding_side,
         )
 
     train_loader = DataLoader(
@@ -263,6 +267,12 @@ if __name__ == "__main__":
         required=True,
         default="v1",
         help="Tokenizer version",
+    )
+    parser.add_argument(
+        "--padding_side",
+        type=str,
+        default="right",
+        help="Padding side for the tokenizer",
     )
 
     # checkpointing and loggig arguments
