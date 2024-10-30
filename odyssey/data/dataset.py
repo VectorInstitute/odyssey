@@ -62,51 +62,56 @@ class BaseDataset(Dataset, ABC):
         )
 
     def truncate_and_pad(
-        self, 
+        self,
         row: pd.Series,
         cutoff: Optional[int] = None,
         additional_columns: Optional[List[str]] = None,
+        padding_side: str = "right",
     ) -> pd.Series:
         """Truncate and pad sequences in the row.
-        
+
         Parameters
         ----------
         row : pd.Series
             Input row containing sequences
         cutoff : Optional[int]
-            Length to truncate sequences to. If None, uses length of event_tokens 
+            Length to truncate sequences to. If None, uses length of event_tokens
             up to max_len
         additional_columns : Optional[List[str]]
             Additional columns to truncate and pad besides event_tokens
-            
+        padding_side : str
+            Which side to add padding on - "left" or "right". Default is "right"
+
         Returns
         -------
         pd.Series
             Row with truncated and padded sequences
         """
         row = row.copy()
-        
+
         # Determine cutoff length
         if cutoff is None:
             cutoff = min(self.max_len, len(row["event_tokens"]))
         cutoff = min(cutoff, self.max_len)
-        
+
         # Truncate and pad tokens
         row["event_tokens"] = row["event_tokens"][:cutoff]
-        
+
         if additional_columns:
             for col in additional_columns:
                 if col in row:
-                    row[col] = np.pad(
-                        row[col][:cutoff],
-                        (0, self.max_len - cutoff),
-                        mode="constant",
-                        constant_values=0
+                    pad_width = (
+                        (self.max_len - cutoff, 0)
+                        if padding_side == "left"
+                        else (0, self.max_len - cutoff)
                     )
-        
+                    row[col] = np.pad(
+                        row[col][:cutoff], pad_width, mode="constant", constant_values=0
+                    )
+
         # Join event tokens for tokenizer
         row["event_tokens"] = " ".join(row["event_tokens"])
-        
+
         return row
 
     def __len__(self) -> int:
@@ -311,6 +316,8 @@ class PretrainDataset(BaseDataset, AugmentedTokenizationMixin, MaskingMixin):
         The probability of masking a token in the sequence, by default 0.15.
     additional_token_types : List[str], optional
         A list of additional token types to be added to the dataset, by default None.
+    padding_side : str, optional
+        Which side to add padding on - "left" or "right". Default is "right".
 
     Attributes
     ----------
@@ -324,6 +331,8 @@ class PretrainDataset(BaseDataset, AugmentedTokenizationMixin, MaskingMixin):
         Probability of masking a token in the sequence.
     additional_token_types : List[str], optional
         A list of additional token types to be added to the dataset, by default None.
+    padding_side : str, optional
+        Which side to add padding on - "left" or "right". Default is "right".
     """
 
     def __init__(
@@ -333,10 +342,12 @@ class PretrainDataset(BaseDataset, AugmentedTokenizationMixin, MaskingMixin):
         max_len: int = 2048,
         mask_prob: float = 0.15,
         additional_token_types: List[str] = None,
+        padding_side: str = "right",
     ):
         super().__init__(data, tokenizer, max_len)
         self.mask_prob = mask_prob
         self.additional_token_types = additional_token_types
+        self.padding_side = padding_side
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get data at corresponding index.
@@ -354,7 +365,12 @@ class PretrainDataset(BaseDataset, AugmentedTokenizationMixin, MaskingMixin):
         """
         data = self.data.iloc[idx]
         cutoff = data[self.cutoff_col] if self.cutoff_col else None
-        data = self.truncate_and_pad(row=data, cutoff=cutoff, additional_columns=self.additional_token_types)
+        data = self.truncate_and_pad(
+            row=data,
+            cutoff=cutoff,
+            additional_columns=self.additional_token_types,
+            padding_side=self.padding_side,
+        )
 
         # Tokenize and mask the input data
         tokenized_input = self.tokenize_data(data[f"event_tokens"])
@@ -386,6 +402,8 @@ class PretrainDatasetDecoder(BaseDataset, AugmentedTokenizationMixin):
         The maximum length of the tokenized sequences, by default 2048.
     additional_token_types : List[str], optional
         A list of additional token types to be added to the dataset, by default None.
+    padding_side : str, optional
+        Which side to add padding on - "left" or "right". Default is "right".
 
     Attributes
     ----------
@@ -397,6 +415,8 @@ class PretrainDatasetDecoder(BaseDataset, AugmentedTokenizationMixin):
         Maximum length of the tokenized sequences.
     additional_token_types : List[str], optional
         A list of additional token types to be added to the dataset, by default None.
+    padding_side : str, optional
+        Which side to add padding on - "left" or "right". Default is "right".
     """
 
     def __init__(
@@ -405,9 +425,11 @@ class PretrainDatasetDecoder(BaseDataset, AugmentedTokenizationMixin):
         tokenizer: ConceptTokenizer,
         max_len: int = 2048,
         additional_token_types: List[str] = None,
+        padding_side: str = "right",
     ):
         super().__init__(data, tokenizer, max_len)
         self.additional_token_types = additional_token_types
+        self.padding_side = padding_side
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get data at corresponding index.
@@ -425,7 +447,12 @@ class PretrainDatasetDecoder(BaseDataset, AugmentedTokenizationMixin):
         """
         data = self.data.iloc[idx]
         cutoff = data[self.cutoff_col] if self.cutoff_col else None
-        data = self.truncate_and_pad(row=data, cutoff=cutoff, additional_columns=self.additional_token_types)
+        data = self.truncate_and_pad(
+            row=data,
+            cutoff=cutoff,
+            additional_columns=self.additional_token_types,
+            padding_side=self.padding_side,
+        )
         tokenized_input = self.tokenize_data(data[f"event_tokens"])
 
         # Prepare model input
@@ -449,6 +476,8 @@ class FinetuneDataset(BaseDataset, AugmentedTokenizationMixin):
         The maximum length of the tokenized sequences, by default 2048.
     additional_token_types : List[str], optional
         A list of additional token types to be added to the dataset, by default None.
+    padding_side : str, optional
+        Which side to add padding on - "left" or "right". Default is "right".
 
     Attributes
     ----------
@@ -460,6 +489,8 @@ class FinetuneDataset(BaseDataset, AugmentedTokenizationMixin):
         Maximum length of the tokenized sequences.
     additional_token_types : List[str], optional
         A list of additional token types to be added to the dataset, by default None.
+    padding_side : str, optional
+        Which side to add padding on - "left" or "right". Default is "right".
     """
 
     def __init__(
@@ -468,10 +499,11 @@ class FinetuneDataset(BaseDataset, AugmentedTokenizationMixin):
         tokenizer: ConceptTokenizer,
         max_len: int = 2048,
         additional_token_types: List[str] = None,
+        padding_side: str = "right",
     ):
         super().__init__(data, tokenizer, max_len)
         self.additional_token_types = additional_token_types
-
+        self.padding_side = padding_side
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get data at corresponding index.
 
@@ -488,7 +520,12 @@ class FinetuneDataset(BaseDataset, AugmentedTokenizationMixin):
         """
         data = self.data.iloc[idx]
         cutoff = data[self.cutoff_col] if self.cutoff_col else None
-        data = self.truncate_and_pad(row=data, cutoff=cutoff, additional_columns=self.additional_token_types)
+        data = self.truncate_and_pad(
+            row=data,
+            cutoff=cutoff,
+            additional_columns=self.additional_token_types,
+            padding_side=self.padding_side,
+        )
         tokenized_input = self.tokenize_data(data[f"event_tokens"])
 
         # Prepare model input
@@ -522,6 +559,8 @@ class FinetuneMultiDataset(
         Value used to represent missing labels in the dataset, by default -1.
     additional_token_types : List[str], optional
         A list of additional token types to be added to the dataset, by default None.
+    padding_side : str, optional
+        Which side to add padding on - "left" or "right". Default is "right".
 
     Attributes
     ----------
@@ -544,6 +583,8 @@ class FinetuneMultiDataset(
         A list of all datapoints to be used by __getitem__.
     additional_token_types : List[str], optional
         A list of additional token types to be added to the dataset, by default None.
+    padding_side : str, optional
+        Which side to add padding on - "left" or "right". Default is "right".
     """
 
     def __init__(
@@ -555,12 +596,14 @@ class FinetuneMultiDataset(
         max_len: int = 2048,
         nan_indicator: int = -1,
         additional_token_types: List[str] = None,
+        padding_side: str = "right",
     ):
         BaseDataset.__init__(self, data, tokenizer, max_len)
         MultiTaskMixin.__init__(self, tasks)
         self.nan_indicator = nan_indicator
         self.balance_guide = balance_guide
         self.additional_token_types = additional_token_types
+        self.padding_side = padding_side
         self.prepare_multi_task_data()
         self.balance_labels(self.balance_guide)
 
@@ -587,7 +630,12 @@ class FinetuneMultiDataset(
 
         # Swap the first token with the task token.
         data[f"event_tokens"][0] = self.tokenizer.task_to_token(task)
-        data = self.truncate_and_pad(row=data, cutoff=cutoff, additional_columns=self.additional_token_types)
+        data = self.truncate_and_pad(
+            row=data,
+            cutoff=cutoff,
+            additional_columns=self.additional_token_types,
+            padding_side=self.padding_side,
+        )
         tokenized_input = self.tokenize_data(data[f"event_tokens"])
 
         # Prepare model input
@@ -624,6 +672,8 @@ class FinetuneDatasetDecoder(
         Indicating if the model uses one head for all classifications or not.
     additional_token_types : List[str], optional
         A list of additional token types to be added to the dataset, by default None.
+    padding_side : str, optional
+        Which side to add padding on - "left" or "right". Default is "right".
 
     Attributes
     ----------
@@ -648,6 +698,8 @@ class FinetuneDatasetDecoder(
         A list of all datapoints to be used by __getitem__.
     additional_token_types : List[str], optional
         A list of additional token types to be added to the dataset, by default None.
+    padding_side : str, optional
+        Which side to add padding on - "left" or "right". Default is "right".
     """
 
     def __init__(
@@ -660,6 +712,7 @@ class FinetuneDatasetDecoder(
         nan_indicator: int = -1,
         is_single_head: bool = True,
         additional_token_types: List[str] = None,
+        padding_side: str = "right",
     ):
         BaseDataset.__init__(self, data, tokenizer, max_len)
         MultiTaskMixin.__init__(self, tasks)
@@ -667,6 +720,7 @@ class FinetuneDatasetDecoder(
         self.is_single_head = is_single_head
         self.balance_guide = balance_guide
         self.additional_token_types = additional_token_types
+        self.padding_side = padding_side
         self.prepare_multi_task_data()
         self.balance_labels(balance_guide)
 
@@ -697,7 +751,12 @@ class FinetuneDatasetDecoder(
         else:
             data[f"event_tokens"][-1] = data[f"event_tokens"][0]
 
-        data = self.truncate_and_pad(row=data, cutoff=cutoff, additional_columns=self.additional_token_types)
+        data = self.truncate_and_pad(
+            row=data,
+            cutoff=cutoff,
+            additional_columns=self.additional_token_types,
+            padding_side=self.padding_side,
+        )
         tokenized_input = self.tokenize_data(data[f"event_tokens"])
 
         # Prepare model input
