@@ -1,0 +1,36 @@
+model:
+  embedding_size: 768
+  max_seq_length: 2048
+  max_num_visits: 512
+  state_size: 64
+  num_heads: 24
+  head_dim: 64
+  num_hidden_layers: 32
+  expand: 2
+  conv_kernel: 4
+  dropout_prob: 0.1
+  learning_rate: 5.e-5
+  n_groups: 1
+  chunk_size: 256
+# Note, num_heads * head_dim = embedding_size * expand
+
+train:
+  batch_size: 24
+  num_workers: 4
+  gpus: 4
+  nodes: 1
+  max_epochs: 15
+  acc: 1
+  persistent_workers: True
+  pin_memory: False
+
+finetune:
+  batch_size: 64
+  num_workers: 3
+  gpus: 1
+  nodes: 1
+  max_epochs: 3
+  acc: 1
+  patience: 10
+  persistent_workers: True
+  pin_memory: False
