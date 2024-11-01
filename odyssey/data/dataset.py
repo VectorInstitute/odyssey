@@ -373,7 +373,7 @@ class PretrainDataset(BaseDataset, AugmentedTokenizationMixin, MaskingMixin):
         )
 
         # Tokenize and mask the input data
-        tokenized_input = self.tokenize_data(data[f"event_tokens"])
+        tokenized_input = self.tokenize_data(data["event_tokens"])
         concept_tokens = tokenized_input["input_ids"].squeeze()
         attention_mask = tokenized_input["attention_mask"].squeeze()
         masked_tokens, labels = self.mask_tokens(concept_tokens)
@@ -746,10 +746,10 @@ class FinetuneDatasetDecoder(
 
         # Swap the first and last token with the task token.
         if self.is_single_head:
-            data[f"event_tokens"][0] = self.tokenizer.task_to_token(task)
-            data[f"event_tokens"][-1] = self.tokenizer.task_to_token(task)
+            data["event_tokens"][0] = self.tokenizer.task_to_token(task)
+            data["event_tokens"][-1] = self.tokenizer.task_to_token(task)
         else:
-            data[f"event_tokens"][-1] = data[f"event_tokens"][0]
+            data["event_tokens"][-1] = data["event_tokens"][0]
 
         data = self.truncate_and_pad(
             row=data,
