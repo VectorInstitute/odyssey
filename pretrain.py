@@ -18,6 +18,7 @@ from odyssey.data.tokenizer import ConceptTokenizer
 from odyssey.models.cehr_bert.model import BertPretrain
 from odyssey.models.cehr_big_bird.model import BigBirdPretrain
 from odyssey.models.ehr_mamba.model import MambaPretrain
+from odyssey.models.ehr_mamba2.model import Mamba2Pretrain
 from odyssey.models.model_utils import (
     get_run_id,
     load_config,
@@ -46,8 +47,21 @@ def main(args: argparse.Namespace, model_config: Dict[str, Any]) -> None:
         random_state=args.seed,
     )
 
-    # Train Tokenizer
-    tokenizer = ConceptTokenizer(data_dir=args.vocab_dir)
+    # Initialize Tokenizer
+    if args.tokenizer_type == "fhir":
+        tokenizer = ConceptTokenizer(
+            data_dir=args.vocab_dir,
+            start_token="[VS]",
+            end_token="[VE]",
+            time_tokens=[f"[W_{i}]" for i in range(0, 4)] + [f"[M_{i}]" for i in range(0, 13)] + ["[LT]"]
+        )
+    else: # meds
+        tokenizer = ConceptTokenizer(
+            data_dir=args.vocab_dir,
+            start_token="[BOS]",
+            end_token="[EOS]",
+            time_tokens=None  # New tokenizer comes with predefined time tokens
+        )
     tokenizer.fit_on_vocab()
 
     # Load datasets
@@ -56,11 +70,13 @@ def main(args: argparse.Namespace, model_config: Dict[str, Any]) -> None:
             data=pre_train,
             tokenizer=tokenizer,
             max_len=args.max_len,
+            padding_side=args.padding_side,
         )
         val_dataset = PretrainDatasetDecoder(
             data=pre_val,
             tokenizer=tokenizer,
             max_len=args.max_len,
+            padding_side=args.padding_side,
         )
 
     else:
@@ -69,12 +85,14 @@ def main(args: argparse.Namespace, model_config: Dict[str, Any]) -> None:
             tokenizer=tokenizer,
             max_len=args.max_len,
             mask_prob=args.mask_prob,
+            padding_side=args.padding_side,
         )
         val_dataset = PretrainDataset(
             data=pre_val,
             tokenizer=tokenizer,
             max_len=args.max_len,
             mask_prob=args.mask_prob,
+            padding_side=args.padding_side,
         )
 
     train_loader = DataLoader(
@@ -127,6 +145,14 @@ def main(args: argparse.Namespace, model_config: Dict[str, Any]) -> None:
             cls_idx=tokenizer.get_class_token_id(),
             **model_config,
         )
+    elif args.model_type == "ehr_mamba2":
+        model = Mamba2Pretrain(
+            vocab_size=tokenizer.get_vocab_size(),
+            padding_idx=tokenizer.get_pad_token_id(),
+            cls_idx=tokenizer.get_class_token_id(),
+            eos_idx=tokenizer.get_eos_token_id(),
+            **model_config,
+        )
 
     run_id = get_run_id(args.checkpoint_dir)
 
@@ -174,31 +200,31 @@ if __name__ == "__main__":
 
     # project configuration
     parser.add_argument(
-        "--model-type",
+        "--model_type",
         type=str,
         required=True,
-        help="Model type: 'cehr_bert' or 'cehr_bigbird' or 'ehr_mamba'",
+        help="Model type: 'cehr_bert' or 'cehr_bigbird' or 'ehr_mamba' or 'ehr_mamba2'",
     )
     parser.add_argument(
-        "--exp-name",
+        "--exp_name",
         type=str,
         required=True,
         help="Path to model config file",
     )
     parser.add_argument(
-        "--workspace-name",
+        "--workspace_name",
         type=str,
         default=None,
         help="Name of the Wandb workspace",
     )
     parser.add_argument(
-        "--config-dir",
+        "--config_dir",
         type=str,
         required=True,
         help="Path to model config file",
     )
     parser.add_argument(
-        "--is-decoder",
+        "--is_decoder",
         type=bool,
         default=False,
         help="Is the model a decoder (e.g. Mamba) or not",
@@ -206,39 +232,52 @@ if __name__ == "__main__":
 
     # data-related arguments
     parser.add_argument(
-        "--data-dir",
+        "--data_dir",
         type=str,
         required=True,
         help="Path to the data directory",
     )
     parser.add_argument(
-        "--sequence-file",
+        "--sequence_file",
         type=str,
         required=True,
         help="Path to the patient sequence file",
     )
     parser.add_argument(
-        "--id-file",
+        "--id_file",
         type=str,
         required=True,
         help="Path to the patient id file",
     )
     parser.add_argument(
-        "--vocab-dir",
+        "--vocab_dir",
         type=str,
         required=True,
         help="Path to the vocabulary directory of json files",
     )
     parser.add_argument(
-        "--val-size",
+        "--val_size",
         type=float,
         default=0.1,
         help="Validation set size for splitting the data",
     )
+    parser.add_argument(
+        "--tokenizer_type",
+        type=str,
+        required=True,
+        default="v1",
+        help="Tokenizer version",
+    )
+    parser.add_argument(
+        "--padding_side",
+        type=str,
+        default="right",
+        help="Padding side for the tokenizer",
+    )
 
     # checkpointing and loggig arguments
     parser.add_argument(
-        "--checkpoint-dir",
+        "--checkpoint_dir",
         type=str,
         required=True,
         help="Path to the checkpoint directory",
@@ -272,9 +311,9 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if args.model_type not in ["cehr_bert", "cehr_bigbird", "ehr_mamba"]:
+    if args.model_type not in ["cehr_bert", "cehr_bigbird", "ehr_mamba", "ehr_mamba2"]:
         print(
-            "Invalid model type. Choose 'cehr_bert' or 'cehr_bigbird' or 'ehr_mamba'."
+            "Invalid model type. Choose 'cehr_bert' or 'cehr_bigbird' or 'ehr_mamba' or 'ehr_mamba2'."
         )
         sys.exit(1)
 
