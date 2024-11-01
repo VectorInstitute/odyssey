@@ -23,6 +23,8 @@ from odyssey.data.tokenizer import ConceptTokenizer
 
 
 class TestDatasets(unittest.TestCase):
+    """Test dataset classes."""
+
     def setUp(self) -> None:
         """Set up mock data and tokenizer for testing."""
         self.data = pd.DataFrame(

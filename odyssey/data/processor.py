@@ -528,14 +528,16 @@ def get_pretrain_test_split(
             target=stratify_target,
             test_size=test_size,
         )
-
     else:
-        test_patients = dataset.sample(n=test_size, random_state=seed)
+        test_patients = dataset.sample(
+            n=int(test_size * len(dataset)), random_state=seed
+        )
         test_ids = test_patients["patient_id"].tolist()
-        pretrain_ids = dataset[~dataset["patient_id"].isin(test_patients)][
+        pretrain_ids = dataset[~dataset["patient_id"].isin(test_ids)][
             "patient_id"
         ].tolist()
 
+    random.seed(seed)
     random.shuffle(pretrain_ids)
 
     return pretrain_ids, test_ids
