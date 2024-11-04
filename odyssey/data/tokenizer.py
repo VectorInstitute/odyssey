@@ -13,21 +13,6 @@ from tokenizers import Tokenizer, models, pre_tokenizers
 from transformers import BatchEncoding, PreTrainedTokenizerFast
 
 
-"""Tokenizer module."""
-
-import re
-import glob
-import json
-import os
-from itertools import chain
-from typing import Any, Dict, List, Optional, Set, Union
-
-import numpy as np
-import pandas as pd
-from tokenizers import Tokenizer, models, pre_tokenizers
-from transformers import BatchEncoding, PreTrainedTokenizerFast
-
-
 class ConceptTokenizer:
     """Tokenizer for event concepts using HuggingFace Library.
 
