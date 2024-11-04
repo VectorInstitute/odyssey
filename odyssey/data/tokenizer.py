@@ -258,6 +258,7 @@ class ConceptTokenizer:
         return_token_type_ids: bool = False,
         truncation: bool = False,
         padding: str = "max_length",
+        padding_side: str = "right",
         max_length: int = 2048,
     ) -> BatchEncoding:
         """Return the tokenized dictionary of input batch.
@@ -289,6 +290,7 @@ class ConceptTokenizer:
             return_token_type_ids=return_token_type_ids,
             truncation=truncation,
             padding=padding,
+            padding_side=padding_side,
             max_length=max_length,
             return_tensors="pt",
         )
