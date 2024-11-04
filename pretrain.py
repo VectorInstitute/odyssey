@@ -65,18 +65,20 @@ def main(args: argparse.Namespace, model_config: Dict[str, Any]) -> None:
     tokenizer.fit_on_vocab()
 
     # Load datasets
-    if args.is_decoder:  # e.g. Mamba
+    if args.is_decoder:  # e.g. Mamba and Mamba2
         train_dataset = PretrainDatasetDecoder(
             data=pre_train,
             tokenizer=tokenizer,
             max_len=args.max_len,
             padding_side=args.padding_side,
+            return_attention_mask=args.return_attention_mask,
         )
         val_dataset = PretrainDatasetDecoder(
             data=pre_val,
             tokenizer=tokenizer,
             max_len=args.max_len,
             padding_side=args.padding_side,
+            return_attention_mask=args.return_attention_mask,
         )
 
     else:
@@ -273,6 +275,12 @@ if __name__ == "__main__":
         type=str,
         default="right",
         help="Padding side for the tokenizer",
+    )
+    parser.add_argument(
+        "--return_attention_mask",
+        type=bool,
+        default=True,
+        help="Whether to return the attention mask or not",
     )
 
     # checkpointing and loggig arguments
