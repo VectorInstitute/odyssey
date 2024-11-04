@@ -40,6 +40,8 @@ class ConceptTokenizer:
         Tokenizer object.
     tokenizer: Optional[PreTrainedTokenizerFast]
         Tokenizer object.
+    padding_side: str
+        Padding side.
 
     Attributes
     ----------
@@ -91,6 +93,7 @@ class ConceptTokenizer:
         time_tokens: List[str] = [f"[W_{i}]" for i in range(0, 4)] + [f"[M_{i}]" for i in range(0, 13)] + ["[LT]"],
         tokenizer_object: Optional[Tokenizer] = None,
         tokenizer: Optional[PreTrainedTokenizerFast] = None,
+        padding_side: str = "right",
     ) -> None:
         self.pad_token = pad_token
         self.mask_token = mask_token
@@ -99,6 +102,7 @@ class ConceptTokenizer:
         self.class_token = class_token
         self.reg_token = reg_token
         self.unknown_token = unknown_token
+        self.padding_side = padding_side
 
         self.task_tokens = ["[MOR_1M]", "[LOS_1W]", "[REA_1M]"] + [
             f"[C{i}]" for i in range(0, 5)
@@ -233,6 +237,7 @@ class ConceptTokenizer:
             pad_token=self.pad_token,
             cls_token=self.class_token,
             mask_token=self.mask_token,
+            padding_side=self.padding_side,
         )
         return self.tokenizer
 
@@ -241,9 +246,8 @@ class ConceptTokenizer:
         batch: Union[str, List[str]],
         return_attention_mask: bool = True,
         return_token_type_ids: bool = False,
-        truncation: bool = False,
+        truncation: bool = True,
         padding: str = "max_length",
-        padding_side: str = "right",
         max_length: int = 2048,
     ) -> BatchEncoding:
         """Return the tokenized dictionary of input batch.
@@ -275,7 +279,6 @@ class ConceptTokenizer:
             return_token_type_ids=return_token_type_ids,
             truncation=truncation,
             padding=padding,
-            padding_side=padding_side,
             max_length=max_length,
             return_tensors="pt",
         )
