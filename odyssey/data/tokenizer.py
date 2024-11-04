@@ -7,7 +7,6 @@ import re
 from itertools import chain
 from typing import Any, Dict, List, Optional, Set, Union
 
-import numpy as np
 import pandas as pd
 from tokenizers import Tokenizer, models, pre_tokenizers
 from transformers import BatchEncoding, PreTrainedTokenizerFast
@@ -51,7 +50,7 @@ class ConceptTokenizer:
         Mask token.
     start_token: str
         Sequence Start token.
-    end_token: str 
+    end_token: str
         Sequence End token.
     class_token: str
         Class token.
@@ -90,7 +89,9 @@ class ConceptTokenizer:
         reg_token: str = "[REG]",
         unknown_token: str = "[UNK]",
         data_dir: str = "data_files",
-        time_tokens: List[str] = [f"[W_{i}]" for i in range(0, 4)] + [f"[M_{i}]" for i in range(0, 13)] + ["[LT]"],
+        time_tokens: List[str] = [f"[W_{i}]" for i in range(0, 4)]
+        + [f"[M_{i}]" for i in range(0, 13)]
+        + ["[LT]"],
         tokenizer_object: Optional[Tokenizer] = None,
         tokenizer: Optional[PreTrainedTokenizerFast] = None,
         padding_side: str = "right",

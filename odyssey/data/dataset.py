@@ -462,7 +462,7 @@ class PretrainDatasetDecoder(BaseDataset, AugmentedTokenizationMixin):
         tokens["labels"] = tokens["concept_ids"]
 
         if self.return_attention_mask:
-            tokens["attention_mask"] = tokenized_input["attention_mask"].squeeze()        
+            tokens["attention_mask"] = tokenized_input["attention_mask"].squeeze()
 
         return tokens
 
@@ -629,7 +629,7 @@ class FinetuneMultiDataset(
         data = self.data.iloc[index]
 
         # Swap the first token with the task token.
-        data[f"event_tokens"][0] = self.tokenizer.task_to_token(task)
+        data["event_tokens"][0] = self.tokenizer.task_to_token(task)
         data = self.truncate_and_pad(
             row=data, cutoff=cutoff, additional_columns=self.additional_token_types
         )
