@@ -121,9 +121,7 @@ class BaseDataset(Dataset, ABC):
 
     def tokenize_data(self, sequence: Union[str, List[str]]) -> Any:
         """Tokenize the sequence."""
-        return self.tokenizer(
-            sequence, max_length=self.max_len, padding_side=self.padding_side
-        )
+        return self.tokenizer(sequence, max_length=self.max_len)
 
     @abstractmethod
     def __getitem__(self, idx: int) -> Dict[str, Any]:

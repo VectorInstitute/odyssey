@@ -60,7 +60,8 @@ def main(args: argparse.Namespace, model_config: Dict[str, Any]) -> None:
             data_dir=args.vocab_dir,
             start_token="[BOS]",
             end_token="[EOS]",
-            time_tokens=None  # New tokenizer comes with predefined time tokens
+            time_tokens=None,  # New tokenizer comes with predefined time tokens
+            padding_side=args.padding_side,
         )
     tokenizer.fit_on_vocab()
 
