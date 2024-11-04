@@ -14,6 +14,7 @@ import torch.nn.functional as F
 from odyssey.data.tokenizer import ConceptTokenizer
 from odyssey.models.cehr_big_bird.model import BigBirdFinetune, BigBirdPretrain
 from odyssey.models.ehr_mamba.model import MambaPretrain
+from odyssey.models.ehr_mamba2.model import Mamba2Pretrain
 
 
 def load_pretrained_model(
@@ -52,6 +53,17 @@ def load_pretrained_model(
             max_seq_length=2048,
             padding_idx=tokenizer.get_pad_token_id(),
             cls_idx=tokenizer.get_class_token_id(),
+        )
+    elif model_type == "mamba2":
+        model = Mamba2Pretrain(
+            vocab_size=tokenizer.get_vocab_size(),
+            embedding_size=768,
+            state_size=64,
+            num_hidden_layers=32,
+            max_seq_length=2048,
+            padding_idx=tokenizer.get_pad_token_id(),
+            cls_idx=tokenizer.get_class_token_id(),
+            eos_idx=tokenizer.get_eos_token_id(),
         )
     else:
         raise ValueError(f"Unsupported model type: {model_type}")
