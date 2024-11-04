@@ -1,23 +1,12 @@
 """Mamba2 model."""
 
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Tuple
 
-import numpy as np
 import pytorch_lightning as pl
-import torch
-from sklearn.metrics import (
-    accuracy_score,
-    f1_score,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-)
-from torch import nn
 from torch.cuda.amp import autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from transformers import Mamba2Config, Mamba2ForCausalLM
-from transformers.models.mamba2.modeling_mamba2 import Mamba2CausalLMOutput
 
 
 class Mamba2Pretrain(pl.LightningModule):
@@ -38,7 +27,7 @@ class Mamba2Pretrain(pl.LightningModule):
         learning_rate: float = 5e-5,
         dropout_prob: float = 0.1,
         padding_idx: int = 0,
-        cls_idx: int = 1, # used as bos token
+        cls_idx: int = 1,  # used as bos token
         eos_idx: int = 2,
         n_groups: int = 8,
         chunk_size: int = 256,
@@ -78,7 +67,7 @@ class Mamba2Pretrain(pl.LightningModule):
             dropout=self.dropout_prob,
             num_heads=self.num_heads,
             head_dim=self.head_dim,
-            max_position_embeddings=self.max_seq_length
+            max_position_embeddings=self.max_seq_length,
         )
 
         # Mamba has its own initialization
@@ -86,7 +75,7 @@ class Mamba2Pretrain(pl.LightningModule):
 
     def _step(self, batch: Dict[str, Any], batch_idx: int, stage: str) -> Any:
         """Run a single step for training or validation.
-        
+
         Args:
             batch: Input batch dictionary
             batch_idx: Index of current batch
@@ -152,4 +141,3 @@ class Mamba2Pretrain(pl.LightningModule):
         )
 
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
-

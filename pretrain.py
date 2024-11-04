@@ -53,14 +53,16 @@ def main(args: argparse.Namespace, model_config: Dict[str, Any]) -> None:
             data_dir=args.vocab_dir,
             start_token="[VS]",
             end_token="[VE]",
-            time_tokens=[f"[W_{i}]" for i in range(0, 4)] + [f"[M_{i}]" for i in range(0, 13)] + ["[LT]"]
+            time_tokens=[f"[W_{i}]" for i in range(0, 4)]
+            + [f"[M_{i}]" for i in range(0, 13)]
+            + ["[LT]"],
         )
-    else: # meds
+    else:  # meds
         tokenizer = ConceptTokenizer(
             data_dir=args.vocab_dir,
             start_token="[BOS]",
             end_token="[EOS]",
-            time_tokens=None  # New tokenizer comes with predefined time tokens
+            time_tokens=None,  # New tokenizer comes with predefined time tokens
         )
     tokenizer.fit_on_vocab()
 
