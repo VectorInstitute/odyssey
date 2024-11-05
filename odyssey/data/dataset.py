@@ -453,7 +453,7 @@ class PretrainDatasetDecoder(BaseDataset, AugmentedTokenizationMixin):
             additional_columns=self.additional_token_types,
             padding_side=self.padding_side,
         )
-        tokenized_input = self.tokenize_data(data[f"event_tokens"])
+        tokenized_input = self.tokenize_data(data["event_tokens"])
 
         # Prepare model input
         tokens = self.add_additional_tokens(data, self.additional_token_types)
@@ -504,6 +504,7 @@ class FinetuneDataset(BaseDataset, AugmentedTokenizationMixin):
         super().__init__(data, tokenizer, max_len)
         self.additional_token_types = additional_token_types
         self.padding_side = padding_side
+
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get data at corresponding index.
 
@@ -526,7 +527,7 @@ class FinetuneDataset(BaseDataset, AugmentedTokenizationMixin):
             additional_columns=self.additional_token_types,
             padding_side=self.padding_side,
         )
-        tokenized_input = self.tokenize_data(data[f"event_tokens"])
+        tokenized_input = self.tokenize_data(data["event_tokens"])
 
         # Prepare model input
         tokens = self.add_additional_tokens(data, self.additional_token_types)
@@ -629,14 +630,14 @@ class FinetuneMultiDataset(
         data = self.data.iloc[index]
 
         # Swap the first token with the task token.
-        data[f"event_tokens"][0] = self.tokenizer.task_to_token(task)
+        data["event_tokens"][0] = self.tokenizer.task_to_token(task)
         data = self.truncate_and_pad(
             row=data,
             cutoff=cutoff,
             additional_columns=self.additional_token_types,
             padding_side=self.padding_side,
         )
-        tokenized_input = self.tokenize_data(data[f"event_tokens"])
+        tokenized_input = self.tokenize_data(data["event_tokens"])
 
         # Prepare model input
         tokens = self.add_additional_tokens(data, self.additional_token_types)
@@ -757,7 +758,7 @@ class FinetuneDatasetDecoder(
             additional_columns=self.additional_token_types,
             padding_side=self.padding_side,
         )
-        tokenized_input = self.tokenize_data(data[f"event_tokens"])
+        tokenized_input = self.tokenize_data(data["event_tokens"])
 
         # Prepare model input
         tokens = self.add_additional_tokens(data, self.additional_token_types)
