@@ -46,6 +46,8 @@ class BaseDataset(Dataset, ABC):
         An instance of the ConceptTokenizer class used for tokenizing sequences.
     max_len : int, optional
         The maximum length of the tokenized sequences, by default 2048.
+    padding_side : str, optional
+        Which side to add padding on - "left" or "right". Default is "right".
     """
 
     def __init__(
@@ -53,10 +55,12 @@ class BaseDataset(Dataset, ABC):
         data: pd.DataFrame,
         tokenizer: ConceptTokenizer,
         max_len: int = 2048,
+        padding_side: str = "right",
     ):
         self.data = data
         self.tokenizer = tokenizer
         self.max_len = max_len
+        self.padding_side = padding_side
         self.cutoff_col = next(
             (col for col in self.data.columns if "cutoff" in col), None
         )
@@ -66,7 +70,6 @@ class BaseDataset(Dataset, ABC):
         row: pd.Series,
         cutoff: Optional[int] = None,
         additional_columns: Optional[List[str]] = None,
-        padding_side: str = "right",
     ) -> pd.Series:
         """Truncate and pad sequences in the row.
 
@@ -79,8 +82,6 @@ class BaseDataset(Dataset, ABC):
             up to max_len
         additional_columns : Optional[List[str]]
             Additional columns to truncate and pad besides event_tokens
-        padding_side : str
-            Which side to add padding on - "left" or "right". Default is "right"
 
         Returns
         -------
@@ -102,7 +103,7 @@ class BaseDataset(Dataset, ABC):
                 if col in row:
                     pad_width = (
                         (self.max_len - cutoff, 0)
-                        if padding_side == "left"
+                        if self.padding_side == "left"
                         else (0, self.max_len - cutoff)
                     )
                     row[col] = np.pad(
@@ -344,10 +345,9 @@ class PretrainDataset(BaseDataset, AugmentedTokenizationMixin, MaskingMixin):
         additional_token_types: List[str] = None,
         padding_side: str = "right",
     ):
-        super().__init__(data, tokenizer, max_len)
+        super().__init__(data, tokenizer, max_len, padding_side)
         self.mask_prob = mask_prob
         self.additional_token_types = additional_token_types
-        self.padding_side = padding_side
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get data at corresponding index.
@@ -369,7 +369,6 @@ class PretrainDataset(BaseDataset, AugmentedTokenizationMixin, MaskingMixin):
             row=data,
             cutoff=cutoff,
             additional_columns=self.additional_token_types,
-            padding_side=self.padding_side,
         )
 
         # Tokenize and mask the input data
@@ -404,6 +403,8 @@ class PretrainDatasetDecoder(BaseDataset, AugmentedTokenizationMixin):
         A list of additional token types to be added to the dataset, by default None.
     padding_side : str, optional
         Which side to add padding on - "left" or "right". Default is "right".
+    return_attention_mask : bool, optional
+        Whether to return the attention mask or not. Default is True.
 
     Attributes
     ----------
@@ -417,6 +418,8 @@ class PretrainDatasetDecoder(BaseDataset, AugmentedTokenizationMixin):
         A list of additional token types to be added to the dataset, by default None.
     padding_side : str, optional
         Which side to add padding on - "left" or "right". Default is "right".
+    return_attention_mask : bool
+        Whether to return the attention mask or not.
     """
 
     def __init__(
@@ -426,10 +429,11 @@ class PretrainDatasetDecoder(BaseDataset, AugmentedTokenizationMixin):
         max_len: int = 2048,
         additional_token_types: List[str] = None,
         padding_side: str = "right",
+        return_attention_mask: bool = True,
     ):
-        super().__init__(data, tokenizer, max_len)
+        super().__init__(data, tokenizer, max_len, padding_side)
         self.additional_token_types = additional_token_types
-        self.padding_side = padding_side
+        self.return_attention_mask = return_attention_mask
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get data at corresponding index.
@@ -448,10 +452,7 @@ class PretrainDatasetDecoder(BaseDataset, AugmentedTokenizationMixin):
         data = self.data.iloc[idx]
         cutoff = data[self.cutoff_col] if self.cutoff_col else None
         data = self.truncate_and_pad(
-            row=data,
-            cutoff=cutoff,
-            additional_columns=self.additional_token_types,
-            padding_side=self.padding_side,
+            row=data, cutoff=cutoff, additional_columns=self.additional_token_types
         )
         tokenized_input = self.tokenize_data(data["event_tokens"])
 
@@ -459,6 +460,9 @@ class PretrainDatasetDecoder(BaseDataset, AugmentedTokenizationMixin):
         tokens = self.add_additional_tokens(data, self.additional_token_types)
         tokens["concept_ids"] = tokenized_input["input_ids"].squeeze()
         tokens["labels"] = tokens["concept_ids"]
+
+        if self.return_attention_mask:
+            tokens["attention_mask"] = tokenized_input["attention_mask"].squeeze()
 
         return tokens
 
@@ -501,9 +505,8 @@ class FinetuneDataset(BaseDataset, AugmentedTokenizationMixin):
         additional_token_types: List[str] = None,
         padding_side: str = "right",
     ):
-        super().__init__(data, tokenizer, max_len)
+        super().__init__(data, tokenizer, max_len, padding_side)
         self.additional_token_types = additional_token_types
-        self.padding_side = padding_side
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get data at corresponding index.
@@ -522,10 +525,7 @@ class FinetuneDataset(BaseDataset, AugmentedTokenizationMixin):
         data = self.data.iloc[idx]
         cutoff = data[self.cutoff_col] if self.cutoff_col else None
         data = self.truncate_and_pad(
-            row=data,
-            cutoff=cutoff,
-            additional_columns=self.additional_token_types,
-            padding_side=self.padding_side,
+            row=data, cutoff=cutoff, additional_columns=self.additional_token_types
         )
         tokenized_input = self.tokenize_data(data["event_tokens"])
 
@@ -599,12 +599,11 @@ class FinetuneMultiDataset(
         additional_token_types: List[str] = None,
         padding_side: str = "right",
     ):
-        BaseDataset.__init__(self, data, tokenizer, max_len)
+        BaseDataset.__init__(self, data, tokenizer, max_len, padding_side)
         MultiTaskMixin.__init__(self, tasks)
         self.nan_indicator = nan_indicator
         self.balance_guide = balance_guide
         self.additional_token_types = additional_token_types
-        self.padding_side = padding_side
         self.prepare_multi_task_data()
         self.balance_labels(self.balance_guide)
 
@@ -632,10 +631,7 @@ class FinetuneMultiDataset(
         # Swap the first token with the task token.
         data["event_tokens"][0] = self.tokenizer.task_to_token(task)
         data = self.truncate_and_pad(
-            row=data,
-            cutoff=cutoff,
-            additional_columns=self.additional_token_types,
-            padding_side=self.padding_side,
+            row=data, cutoff=cutoff, additional_columns=self.additional_token_types
         )
         tokenized_input = self.tokenize_data(data["event_tokens"])
 
@@ -675,6 +671,8 @@ class FinetuneDatasetDecoder(
         A list of additional token types to be added to the dataset, by default None.
     padding_side : str, optional
         Which side to add padding on - "left" or "right". Default is "right".
+    return_attention_mask : bool, optional
+        Whether to return the attention mask or not. Default is True.
 
     Attributes
     ----------
@@ -701,6 +699,8 @@ class FinetuneDatasetDecoder(
         A list of additional token types to be added to the dataset, by default None.
     padding_side : str, optional
         Which side to add padding on - "left" or "right". Default is "right".
+    return_attention_mask : bool
+        Whether to return the attention mask or not.
     """
 
     def __init__(
@@ -714,14 +714,15 @@ class FinetuneDatasetDecoder(
         is_single_head: bool = True,
         additional_token_types: List[str] = None,
         padding_side: str = "right",
+        return_attention_mask: bool = True,
     ):
-        BaseDataset.__init__(self, data, tokenizer, max_len)
+        BaseDataset.__init__(self, data, tokenizer, max_len, padding_side)
         MultiTaskMixin.__init__(self, tasks)
         self.nan_indicator = nan_indicator
         self.is_single_head = is_single_head
         self.balance_guide = balance_guide
         self.additional_token_types = additional_token_types
-        self.padding_side = padding_side
+        self.return_attention_mask = return_attention_mask
         self.prepare_multi_task_data()
         self.balance_labels(balance_guide)
 
@@ -753,10 +754,7 @@ class FinetuneDatasetDecoder(
             data["event_tokens"][-1] = data["event_tokens"][0]
 
         data = self.truncate_and_pad(
-            row=data,
-            cutoff=cutoff,
-            additional_columns=self.additional_token_types,
-            padding_side=self.padding_side,
+            row=data, cutoff=cutoff, additional_columns=self.additional_token_types
         )
         tokenized_input = self.tokenize_data(data["event_tokens"])
 
@@ -766,5 +764,8 @@ class FinetuneDatasetDecoder(
         tokens["labels"] = torch.tensor(label)
         tokens["task"] = task
         tokens["task_indices"] = torch.tensor(TASK_TO_INDEX[task])
+
+        if self.return_attention_mask:
+            tokens["attention_mask"] = tokenized_input["attention_mask"].squeeze()
 
         return tokens

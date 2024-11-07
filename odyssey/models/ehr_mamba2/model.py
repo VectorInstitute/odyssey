@@ -19,8 +19,8 @@ class Mamba2Pretrain(pl.LightningModule):
         max_num_visits: int = 512,
         max_seq_length: int = 2048,
         state_size: int = 64,
-        num_heads: int = 64,
-        head_dim: int = 32,
+        num_heads: int = 24,
+        head_dim: int = 64,
         num_hidden_layers: int = 32,
         expand: int = 2,
         conv_kernel: int = 4,
@@ -29,7 +29,7 @@ class Mamba2Pretrain(pl.LightningModule):
         padding_idx: int = 0,
         cls_idx: int = 1,  # used as bos token
         eos_idx: int = 2,
-        n_groups: int = 8,
+        n_groups: int = 1,
         chunk_size: int = 256,
     ):
         super().__init__()
@@ -83,12 +83,14 @@ class Mamba2Pretrain(pl.LightningModule):
         """
         concept_ids = batch["concept_ids"]
         labels = batch["labels"]
+        attention_mask = batch["attention_mask"]
 
         # Ensure use of mixed precision
         with autocast():
             loss = self.model(
                 concept_ids,
                 labels=labels,
+                attention_mask=attention_mask,
                 return_dict=True,
                 output_hidden_states=False,
             ).loss
