@@ -111,7 +111,16 @@ class BaseDataset(Dataset, ABC):
                     )
 
         # Join event tokens for tokenizer
-        row["event_tokens"] = " ".join(row["event_tokens"])
+        tokens = (
+            row["event_tokens"].tolist()
+            if isinstance(row["event_tokens"], np.ndarray)
+            else row["event_tokens"]
+        )
+
+        if type(tokens) == str:
+            tokens = [tokens]
+
+        row["event_tokens"] = " ".join(tokens)
 
         return row
 
@@ -430,10 +439,12 @@ class PretrainDatasetDecoder(BaseDataset, AugmentedTokenizationMixin):
         additional_token_types: List[str] = None,
         padding_side: str = "right",
         return_attention_mask: bool = True,
+        return_labels: bool = True,
     ):
         super().__init__(data, tokenizer, max_len, padding_side)
         self.additional_token_types = additional_token_types
         self.return_attention_mask = return_attention_mask
+        self.return_labels = return_labels
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get data at corresponding index.
@@ -459,8 +470,9 @@ class PretrainDatasetDecoder(BaseDataset, AugmentedTokenizationMixin):
         # Prepare model input
         tokens = self.add_additional_tokens(data, self.additional_token_types)
         tokens["concept_ids"] = tokenized_input["input_ids"].squeeze()
-        tokens["labels"] = tokens["concept_ids"]
 
+        if self.return_labels:
+            tokens["labels"] = tokens["concept_ids"]
         if self.return_attention_mask:
             tokens["attention_mask"] = tokenized_input["attention_mask"].squeeze()
 
