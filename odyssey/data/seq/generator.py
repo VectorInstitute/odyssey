@@ -550,9 +550,9 @@ class PatientSequenceGenerator:
             f"visit_tokens_{self.max_seq_length}",
             f"position_tokens_{self.max_seq_length}",
         ]:
-            assert (
-                len(row[key]) == self.max_seq_length
-            ), f"Length of {key} is {len(row[key])} and max_length is {self.max_seq_length}"
+            assert len(row[key]) == self.max_seq_length, (
+                f"Length of {key} is {len(row[key])} and max_length is {self.max_seq_length}"
+            )
             row[key] = np.array(row[key])
 
         return row
