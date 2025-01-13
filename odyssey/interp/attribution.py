@@ -612,9 +612,9 @@ class Attribution:
         HTML
             An HTML object displaying the visualization of token attributions.
         """
-        assert num_baselines < len(
-            self.dataset
-        ), "Number of baselines should be less than the dataset size."
+        assert num_baselines < len(self.dataset), (
+            "Number of baselines should be less than the dataset size."
+        )
         max_rows = min(max_rows, len(self.dataset))
 
         visualization_records = []

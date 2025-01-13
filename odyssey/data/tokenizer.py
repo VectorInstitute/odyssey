@@ -181,9 +181,9 @@ class ConceptTokenizer:
         }
 
         # Check to make sure tokenizer follows the same vocabulary
-        assert (
-            self.tokenizer_vocab == self.tokenizer.get_vocab()
-        ), "Tokenizer vocabulary does not match original"
+        assert self.tokenizer_vocab == self.tokenizer.get_vocab(), (
+            "Tokenizer vocabulary does not match original"
+        )
 
     def load_token_labels(self, codes_dir: str) -> Dict[str, str]:
         """
