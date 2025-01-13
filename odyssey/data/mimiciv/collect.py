@@ -279,12 +279,11 @@ class FHIRDataCollector:
                 starts.append(enc.period.start.isostring)
                 ends.append(enc.period.end.isostring)
                 ids.append(enc.id)
-            assert (
-                len(starts)
-                == len(
-                    ends,
-                )
-            ), f"Length of starts and ends should be equal. {len(starts)} != {len(ends)}"
+            assert len(starts) == len(
+                ends,
+            ), (
+                f"Length of starts and ends should be equal. {len(starts)} != {len(ends)}"
+            )
             e_data = {
                 "patient_id": patient_id,
                 "length": len(starts),
@@ -348,8 +347,10 @@ class FHIRDataCollector:
                 procedure_vocab.add(proc.code.coding[0].code)
             assert len(proc_codes) == len(
                 proc_dates,
-            ), f"Length of proc_codes and proc_dates should be equal. \
+            ), (
+                f"Length of proc_codes and proc_dates should be equal. \
                     {len(proc_codes)} != {len(proc_dates)}"
+            )
             m_data = {
                 "patient_id": patient_id,
                 "length": len(proc_codes),
@@ -428,8 +429,10 @@ class FHIRDataCollector:
                         )
                 assert len(med_codes) == len(
                     med_dates,
-                ), f"Length of med_codes and med_dates should be equal. \
+                ), (
+                    f"Length of med_codes and med_dates should be equal. \
                         {len(med_codes)} != {len(med_dates)}"
+                )
                 m_data = {
                     "patient_id": patient_id,
                     "length": len(med_codes),
@@ -498,10 +501,10 @@ class FHIRDataCollector:
                     all_units[code] = {event.valueQuantity.unit}
                 else:
                     all_units[code].add(event.valueQuantity.unit)
-            assert (
-                len(lab_codes) == len(lab_values) == len(lab_dates)
-            ), f"Length of lab_codes, lab_values and lab_dates should be equal. \
+            assert len(lab_codes) == len(lab_values) == len(lab_dates), (
+                f"Length of lab_codes, lab_values and lab_dates should be equal. \
                     {len(lab_codes)} != {len(lab_values)} != {len(lab_dates)}"
+            )
             m_data = {
                 "patient_id": patient_id,
                 "length": len(lab_codes),
