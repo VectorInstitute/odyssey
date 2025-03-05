@@ -36,7 +36,7 @@ The toolkit is structured into four main modules to streamline the development p
 <br><br>
 
 ## Data Preprocessing
-The data extraction and preprocessing pipeline requires running the repository located at [MEDS_transforms](https://github.com/VectorInstitute/meds/tree/odyssey). The pipeline extracts and preprocesses the MIMIC-IV dataset to generate a patients' sequence of events.
+The data extraction and preprocessing pipeline requires running the repository located at [MEDS repository](https://github.com/VectorInstitute/meds/tree/odyssey). The pipeline extracts and preprocesses the MIMIC-IV dataset to generate a patients' sequence of events.
 
 ### Installation
 
