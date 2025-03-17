@@ -147,7 +147,7 @@ class TestDatasets(unittest.TestCase):
         )
         dataset.prepare_multi_task_data()
         dataset.balance_labels({"mortality_1month": 0.5})
-        task_counts = {task: 0 for task in dataset.tasks}
+        task_counts = dict.fromkeys(dataset.tasks, 0)
         for i in range(len(dataset)):
             task = dataset[i][1]
             task_counts[task] += 1
@@ -230,7 +230,7 @@ class TestDatasets(unittest.TestCase):
             tasks=["mortality_1month", "readmission_1month"],
             balance_guide={"mortality_1month": 0.5},
         )
-        task_counts = {task: 0 for task in dataset.tasks}
+        task_counts = dict.fromkeys(dataset.tasks, 0)
         for i in range(len(dataset)):
             task = dataset[i]["task"]
             task_counts[task] += 1
