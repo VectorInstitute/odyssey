@@ -390,7 +390,7 @@ class Attribution:
         Dict[str, float]
             Dictionary of average attributions per embedding, keyed by embedding names.
         """
-        embedding_attr = {key: 0.0 for key in get_model_embeddings_list(self.model)}
+        embedding_attr = dict.fromkeys(get_model_embeddings_list(self.model), 0.0)
         for inputs, target, attention_mask in self._get_batch_data():
             attributions = self.multi_embedding_lig.attribute(
                 inputs=inputs,
@@ -434,7 +434,7 @@ class Attribution:
         Dict[str, float]
             Dictionary with average attribution per token type, using type ID mapping.
         """
-        token_attr = {key: 0.0 for key in self.type_id_mapping.values()}
+        token_attr = dict.fromkeys(self.type_id_mapping.values(), 0.0)
         for inputs, target, attention_mask in self._get_batch_data():
             attributions = self.multi_embedding_lig.attribute(
                 inputs=inputs,
