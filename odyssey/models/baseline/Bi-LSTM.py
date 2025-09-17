@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 import torch
+from odyssey.models.cehr_big_bird.embeddings import Embeddings
 from sklearn.metrics import (
     balanced_accuracy_score,
 )
@@ -19,7 +20,6 @@ from tqdm import tqdm
 
 from odyssey.data.dataset import FinetuneDataset
 from odyssey.data.tokenizer import HuggingFaceConceptTokenizer
-from odyssey.models.cehr_big_bird.embeddings import Embeddings
 
 
 ROOT = "/fs01/home/afallah/odyssey/odyssey"
