@@ -1,48 +1,48 @@
-[tool.poetry]
+[project]
 name = "odyssey"
 version = "0.1.0"
 description = "A toolkit to develop clinical foundation models using electronic health records"
-authors = ["Vector AI Engineering <odyssey@vectorinstitute.ai>"]
+readme = "README.md"
+authors = [{name = "Vector AI Engineering", email = "odyssey@vectorinstitute.ai"}]
 license = "Apache-2.0"
 repository = "https://github.com/VectorInstitute/odyssey"
 documentation = "https://vectorinstitute.github.io/odyssey/"
-packages = [
-    { include = "odyssey" },
+requires-python = ">=3.9,<3.12"
+dependencies = [
+    "keras==3.9.0",
+    "lightning==2.3.3",
+    "scikit-learn>=1.2.2",
+    "torch>=2.8.0",
+    "tqdm==4.66.3",
+    "wandb==0.16.0",
+    "pandas>=2.2.1",
+    "sqlalchemy>=2.0.28",
+    "psycopg2-binary>=2.9.9",
+    "fhir-resources>=5.1.1",
+    "pyarrow>=15.0.1",
+    "plotly>=5.7.0",
+    "tokenizers>=0.15.2",
+    "transformers>=4.39.3",
+    "captum>=0.7.0",
+    "scikit-multilearn>=0.2.0",
+    "numpy>=1.26.4",
 ]
-readme = "README.md"
 
-[tool.poetry.dependencies]
-python = ">=3.9, <3.12"
-keras = "3.9.0"
-lightning = "2.3.3"
-scikit-learn = "^1.2.2"
-torch = "^2.8.0"
-tqdm = "4.66.3"
-wandb = "0.16.0"
-pandas = "^2.2.1"
-sqlalchemy = "^2.0.28"
-psycopg2-binary = "^2.9.9"
-fhir-resources = "^5.1.1"
-pyarrow = "^15.0.1"
-plotly = "^5.7.0"
-tokenizers = "^0.15.2"
-transformers = "^4.39.3"
-captum = "^0.7.0"
-scikit-multilearn = "^0.2.0"
-numpy = "^1.26.4"
+[dependency-groups]
+dev = [
+    "pytest>=7.1.1",
+    "pre-commit>=4.0.0",
+    "pytest-cov>=3.0.0",
+    "codecov>=2.1.13",
+    "nbstripout>=0.6.1",
+    "mypy>=1.7.0",
+    "ruff>=0.3.0",
+    "nbqa[toolchain]>=1.7.0",
+]
 
-[tool.poetry.group.test]
-optional = true
-
-[tool.poetry.group.test.dependencies]
-pytest = "^7.1.1"
-pre-commit = "^4.0.0"
-pytest-cov = "^3.0.0"
-codecov = "^2.1.13"
-nbstripout = "^0.6.1"
-mypy = "^1.7.0"
-ruff = "^0.3.0"
-nbqa = { version = "^1.7.0", extras = ["toolchain"] }
+# Default dependency groups to be installed
+[tool.uv]
+default-groups = ["dev"]
 
 [tool.mypy]
 plugins = ["numpy.typing.mypy_plugin"]
@@ -69,10 +69,16 @@ extra_checks = true
 
 [tool.ruff]
 include = ["*.py", "pyproject.toml", "*.ipynb"]
-line-length = 88
 exclude = [
     "odyssey/models/ehr_mamba/mamba_utils.py",
 ]
+line-length = 88
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
 [tool.ruff.lint]
 select = [
     "A", # flake8-builtins
@@ -101,15 +107,21 @@ ignore = [
     "D213", # Multi-line docstring summary should start at the second line
     "PLR2004", # Replace magic number with named constant
     "PLR0913", # Too many arguments
-    "COM812",
+    "COM812", # Missing trailing comma
+    "ERA001", # Found commented-out code (too many false positives with math comments)
+    "A001", # Ignore variable `input` is shadowing a Python builtin (common for torch)
+    "A002", # Ignore variable `input` is shadowing a Python builtin in function (common for torch)
+    "D301", # r-strings for docstrings with backslashes
 ]
 
 # Ignore import violations in all `__init__.py` files.
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["E402", "F401", "F403", "F811"]
+# Ignoring undocumented public functions, public init, magic method in tests folder
+"tests/*" = ["D103", "D105", "D107"]
 
 [tool.ruff.lint.pep8-naming]
-ignore-names = ["X*", "setUp", "tearDown"]
+ignore-names = ["X*", "setUp"]
 
 [tool.ruff.lint.isort]
 lines-after-imports = 2
@@ -120,11 +132,16 @@ convention = "numpy"
 [tool.ruff.lint.pycodestyle]
 max-doc-length = 88
 
+[tool.pytest.ini_options]
+markers = [
+    "integration_test: marks tests as integration tests",
+]
+
 [tool.coverage]
     [tool.coverage.run]
     source=["odyssey"]
     omit=["tests/*", "*__init__.py"]
 
 [build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"

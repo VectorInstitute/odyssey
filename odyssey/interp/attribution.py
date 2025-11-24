@@ -1,6 +1,7 @@
 """Attribution methods for interpretability."""
 
-from typing import Any, Dict, Generator, Optional, Tuple, Union
+from collections.abc import Generator
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -26,13 +27,13 @@ class Attribution:
     ----------
     data : pd.DataFrame
         The test data used for computing the the attributions.
-    model : Union[BertFinetune, BigBirdFinetune]
+    model : BertFinetune | BigBirdFinetune
         The predictive model to interpret.
     tokenizer : ConceptTokenizer
         The tokenizer used to process text data.
     device : torch.device
         The device (CPU/GPU) on which computations will be executed.
-    type_id_mapping : Dict[int, str]
+    type_id_mapping : dict[int, str]
         A mapping from integers to token types.
     max_len : int, optional
         Maximum length of token sequences, by default 512.
@@ -47,10 +48,10 @@ class Attribution:
     def __init__(
         self,
         data: pd.DataFrame,
-        model: Union[BertFinetune, BigBirdFinetune],
+        model: BertFinetune | BigBirdFinetune,
         tokenizer: ConceptTokenizer,
         device: torch.device,
-        type_id_mapping: Dict[int, str],
+        type_id_mapping: dict[int, str],
         max_len: int = 512,
         batch_size: int = 32,
         n_steps: int = 100,
@@ -69,7 +70,9 @@ class Attribution:
         self.data = data
         self.dataset, self.dataloader = self._prepare_data(data)
 
-    def _prepare_data(self, data: pd.DataFrame) -> Tuple[FinetuneDataset, DataLoader]:
+    def _prepare_data(
+        self, data: pd.DataFrame
+    ) -> tuple[FinetuneDataset, DataLoader[Any]]:
         """
         Prepare DataLoader from input data.
 
@@ -80,7 +83,7 @@ class Attribution:
 
         Returns
         -------
-        Tuple[FinetuneDataset, DataLoader]
+        tuple[FinetuneDataset, DataLoader]
             FinetuneDataset and a DataLoader prepared for model processing.
         """
         dataset = FinetuneDataset(
@@ -103,7 +106,7 @@ class Attribution:
         ages: torch.Tensor,
         visit_orders: torch.Tensor,
         visit_segments: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
+        attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Process input features through a BERT model and returns probabilities.
@@ -122,7 +125,7 @@ class Attribution:
             Tensor of visit orders.
         visit_segments : torch.Tensor
             Tensor of visit segments.
-        attention_mask : Optional[torch.Tensor], optional
+        attention_mask : torch.Tensor | None, optional
             Tensor for attention operations, by default None.
 
         Returns
@@ -152,7 +155,7 @@ class Attribution:
         ages: torch.Tensor,
         visit_orders: torch.Tensor,
         visit_segments: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
+        attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Process input features through a BigBird model and returns probabilities.
@@ -171,7 +174,7 @@ class Attribution:
             Tensor of visit orders.
         visit_segments : torch.Tensor
             Tensor of visit segments.
-        attention_mask : Optional[torch.Tensor], optional
+        attention_mask : torch.Tensor | None, optional
             Tensor for attention operations, by default None.
 
         Returns
@@ -193,7 +196,7 @@ class Attribution:
         )["logits"]
         return torch.softmax(logits, dim=1)
 
-    def predict(self, *inputs) -> torch.Tensor:
+    def predict(self, *inputs: torch.Tensor) -> torch.Tensor:
         """
         Predicts outputs using the appropriate model based on the model's type.
 
@@ -225,7 +228,7 @@ class Attribution:
         embeddings_list = list(get_model_embeddings_list(self.model).values())
         return LayerIntegratedGradients(self.predict, embeddings_list)
 
-    def _get_inputs(self, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor]:
+    def _get_inputs(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor]:
         """
         Extract and return input tensors from the batch to the specified device.
 
@@ -236,7 +239,7 @@ class Attribution:
 
         Returns
         -------
-        Tuple[torch.Tensor]
+        tuple[torch.Tensor]
             Tuple of tensors for the model input.
         """
         concept_inputs = batch["concept_ids"].to(self.device)
@@ -255,8 +258,8 @@ class Attribution:
         )
 
     def _get_attention_mask(
-        self, batch: Dict[str, torch.Tensor]
-    ) -> Optional[torch.Tensor]:
+        self, batch: dict[str, torch.Tensor]
+    ) -> torch.Tensor | None:
         """
         Retrieve attention mask from the batch if available.
 
@@ -267,7 +270,7 @@ class Attribution:
 
         Returns
         -------
-        Optional[torch.Tensor]
+        torch.Tensor | None
             Tensor of attention mask, or None if not available.
         """
         return (
@@ -276,7 +279,7 @@ class Attribution:
             else None
         )
 
-    def _get_labels(self, batch: Dict[str, torch.Tensor]) -> Optional[torch.Tensor]:
+    def _get_labels(self, batch: dict[str, torch.Tensor]) -> torch.Tensor | None:
         """
         Retrieve labels from the batch if available.
 
@@ -287,19 +290,28 @@ class Attribution:
 
         Returns
         -------
-        Optional[torch.Tensor]
+        torch.Tensor | None
             Tensor of labels, or None if labels are not present in the batch.
         """
         return batch["labels"].to(self.device) if "labels" in batch else None
 
-    def _get_batch_data(self) -> Generator[Tuple[torch.Tensor], None, None]:
+    def _get_batch_data(
+        self,
+    ) -> Generator[
+        tuple[tuple[torch.Tensor, ...], torch.Tensor | None, torch.Tensor | None],
+        None,
+        None,
+    ]:
         """
         Generate batch data from the DataLoader.
 
         Returns
         -------
-        Tuple[torch.Tensor]
-            Tuple of tensors for inputs, targets, and attention masks.
+        Generator
+            Yields tuples containing:
+            - Tuple of input tensors
+            - Target tensor (optional)
+            - Attention mask tensor (optional)
         """
         for batch in self.dataloader:
             inputs = self._get_inputs(batch)
@@ -322,15 +334,19 @@ class Attribution:
             Summarized attributions.
         """
         attributions = attributions.sum(dim=-1)
-        return attributions / torch.norm(attributions)
+        norm = torch.norm(attributions)
+        # Handle the case where norm is 0 to avoid division by zero
+        if norm == 0:
+            return torch.zeros_like(attributions)
+        return attributions / norm  # type: ignore
 
-    def create_baseline(self) -> Tuple[torch.Tensor]:
+    def create_baseline(self) -> tuple[torch.Tensor, ...]:
         """
         Create a baseline input for attribution comparison with zero values.
 
         Returns
         -------
-        Tuple[torch.Tensor]
+        tuple[torch.Tensor]
             A tuple of baseline tensors for each input feature.
         """
         concept_baseline = (
@@ -374,7 +390,7 @@ class Attribution:
         sampled_df = self.data.iloc[sampled_indices]
         return FinetuneDataset(sampled_df, self.tokenizer, self.max_len)
 
-    def average_embeddings_attr(self, use_abs: bool = True) -> Dict[str, float]:
+    def average_embeddings_attr(self, use_abs: bool = True) -> dict[str, float]:
         """
         Calculate and average embeddings attributions across all data.
 
@@ -387,7 +403,7 @@ class Attribution:
 
         Returns
         -------
-        Dict[str, float]
+        dict[str, float]
             Dictionary of average attributions per embedding, keyed by embedding names.
         """
         embedding_attr = dict.fromkeys(get_model_embeddings_list(self.model), 0.0)
@@ -418,7 +434,7 @@ class Attribution:
             embedding_attr[key] /= len(self.dataset)
         return embedding_attr
 
-    def average_tokens_attr(self, use_abs: bool = True) -> Dict[str, float]:
+    def average_tokens_attr(self, use_abs: bool = True) -> dict[str, float]:
         """
         Calculate and average token attributions across all data, grouped by token type.
 
@@ -431,7 +447,7 @@ class Attribution:
 
         Returns
         -------
-        Dict[str, float]
+        dict[str, float]
             Dictionary with average attribution per token type, using type ID mapping.
         """
         token_attr = dict.fromkeys(self.type_id_mapping.values(), 0.0)
@@ -464,8 +480,17 @@ class Attribution:
                             attributions_summary[j][idx][i]
                             for j in range(len(attributions_summary))
                         )
-                    token_attr[self.type_id_mapping[type_id.item()]] += (
-                        total_attr.item() / len(attributions_summary)
+                    # Handle potential tensor or scalar types
+                    type_id_key = self.type_id_mapping[type_id.item()]
+
+                    # Safely extract float value from total_attr
+                    if hasattr(total_attr, "item"):
+                        total_attr_value = total_attr.item()  # type: ignore
+                    else:
+                        total_attr_value = float(total_attr)
+
+                    token_attr[type_id_key] += total_attr_value / len(
+                        attributions_summary
                     )
 
         # take the average of the attributions
@@ -478,10 +503,10 @@ class Attribution:
         concept_seq: torch.Tensor,
         attr_summary: torch.Tensor,
         scores: torch.Tensor,
-        target: torch.Tensor,
+        target: torch.Tensor | int | float | None,  # Allow flexible target types
         delta: torch.Tensor,
         task_name: str,
-        codes_dict: Dict[str, str],
+        codes_dict: dict[str, str],
     ) -> viz.VisualizationDataRecord:
         """
         Create a visualization record for a given sequence using its attributions.
@@ -500,7 +525,7 @@ class Attribution:
             The delta values indicating the error of the attributions.
         task_name : str
             The name of the task for which the visualization is being created.
-        codes_dict : Dict[str, str]
+        codes_dict : dict[str, str]
             A dictionary mapping codes to more interpretable strings.
 
         Returns
@@ -508,7 +533,13 @@ class Attribution:
         viz.VisualizationDataRecord
             An object containing all visualization data, formatted for display.
         """
-        concept_decoded = self.tokenizer.decode(concept_seq)
+        # Convert tensor to list for tokenizer
+        if isinstance(concept_seq, torch.Tensor):
+            concept_ids = concept_seq.tolist()
+        else:
+            concept_ids = concept_seq
+
+        concept_decoded = self.tokenizer.decode(concept_ids)
         pad_index = (
             concept_decoded.find("[PAD]")
             if "[PAD]" in concept_decoded
@@ -566,7 +597,7 @@ class Attribution:
                 internal_batch_size=self.batch_size,
             )
             attributions_summary = self.summarize_attributions(attributions)
-            scores = self.predict(*inputs, attention_mask)
+            scores = self.predict(*inputs, attention_mask)  # type: ignore
             concept_input = inputs[0].tolist()
 
             for i, concept_seq in enumerate(concept_input):
@@ -577,7 +608,7 @@ class Attribution:
                     concept_seq=concept_seq,
                     attr_summary=attributions_summary[i],
                     scores=scores[i],
-                    target=target[i],
+                    target=target[i] if isinstance(target, torch.Tensor) else target,
                     delta=delta[i],
                     task_name=task_name,
                     codes_dict=codes_dict,
@@ -585,7 +616,8 @@ class Attribution:
                 visualization_records.append(vis_record)
             if count >= max_rows:
                 break
-        return viz.visualize_text(visualization_records)
+        # Cast the result to HTML type
+        return HTML(str(viz.visualize_text(visualization_records)))  # type: ignore
 
     def visualize_expected_gradients(
         self,
@@ -630,7 +662,12 @@ class Attribution:
             target = self._get_labels(item)
             baselines = self.sample_baselines(i, num_baselines)
 
-            for baseline in baselines:
+            # Convert to list if not already
+            baseline_list = (
+                list(baselines) if hasattr(baselines, "__iter__") else [baselines]
+            )
+
+            for baseline in baseline_list:
                 baseline_batch = {
                     key: torch.unsqueeze(val, 0) for key, val in baseline.items()
                 }
@@ -649,7 +686,7 @@ class Attribution:
                 tokens_attr += attributions_summary
             tokens_attr /= num_baselines
 
-            scores = self.predict(*inputs, attention_mask)
+            scores = self.predict(*inputs, attention_mask)  # type: ignore
             concept_seq = inputs[0].tolist()[0]
             vis_record = self._create_visualization_record(
                 concept_seq=concept_seq,
@@ -661,4 +698,5 @@ class Attribution:
                 codes_dict=codes_dict,
             )
             visualization_records.append(vis_record)
-        return viz.visualize_text(visualization_records)
+        # Cast the result to HTML type
+        return HTML(str(viz.visualize_text(visualization_records)))  # type: ignore

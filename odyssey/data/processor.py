@@ -1,7 +1,7 @@
 """Process patient sequences based on task and split into train-test-finetune."""
 
 import random
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -398,7 +398,7 @@ def stratified_train_test_split(
     test_size: float,
     return_test: Optional[bool] = False,
     seed: int = SEED,
-) -> List[str]:
+) -> Union[List[str], Tuple[List[str], List[str]]]:
     """Split the given dataset into training and testing sets.
 
     The dataset is stratified using iterative stratification on given multi-label
@@ -426,7 +426,7 @@ def stratified_train_test_split(
     # Convert all_conditions into a format suitable for multi-label stratification
     labels = np.array(dataset[target].values.tolist())
     inputs = dataset["patient_id"].to_numpy().reshape(-1, 1)
-    is_single_label = type(dataset.iloc[0][target]) == np.int64
+    is_single_label = isinstance(dataset.iloc[0][target], np.int64)
 
     # Perform stratified split
     if is_single_label:
@@ -449,9 +449,11 @@ def stratified_train_test_split(
     X_test = X_test.flatten().tolist()
 
     if return_test:
-        return X_test
+        # Ensure it's a list of strings when returning test only
+        return [str(x) for x in X_test]
 
-    return X_train, X_test
+    # Ensure both are lists of strings when returning both train and test
+    return [str(x) for x in X_train], [str(x) for x in X_test]
 
 
 def sample_balanced_subset(
@@ -492,7 +494,8 @@ def sample_balanced_subset(
     )
     random.shuffle(sample_patients)
 
-    return sample_patients
+    # Convert to list of strings
+    return [str(patient_id) for patient_id in sample_patients]
 
 
 def get_pretrain_test_split(
@@ -538,9 +541,12 @@ def get_pretrain_test_split(
         ].tolist()
 
     random.seed(seed)
-    random.shuffle(pretrain_ids)
+    # Convert to list of strings
+    pretrain_ids_str = [str(id_) for id_ in pretrain_ids]
+    test_ids_str = [str(id_) for id_ in test_ids]
+    random.shuffle(pretrain_ids_str)
 
-    return pretrain_ids, test_ids
+    return pretrain_ids_str, test_ids_str
 
 
 def get_finetune_split(
@@ -589,12 +595,18 @@ def get_finetune_split(
             )
 
         elif split_mode in {"single_label_stratified", "multi_label_stratified"}:
-            finetune_ids = stratified_train_test_split(
+            # The stratified_train_test_split returns either a List[str] or
+            # a Tuple containing two List[str], but we're using
+            # return_test=True, so we expect List[str]
+            finetune_ids_result = stratified_train_test_split(
                 dataset,
                 target=label_col,
                 test_size=finetune_num / len(dataset),
                 return_test=True,
             )
+            # Assert the type to help mypy
+            assert isinstance(finetune_ids_result, list)
+            finetune_ids = finetune_ids_result
 
         patient_ids_dict["finetune"]["few_shot"][f"{finetune_num}"] = finetune_ids
 

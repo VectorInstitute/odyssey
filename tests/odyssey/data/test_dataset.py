@@ -70,8 +70,20 @@ class TestDatasets(unittest.TestCase):
         """Test the TokenizationMixin class."""
 
         class DummyDataset(BaseDataset, TokenizationMixin):
+            def __init__(self, data: pd.DataFrame, tokenizer: ConceptTokenizer) -> None:
+                super().__init__(data, tokenizer)
+                self.additional_token_types = [
+                    "type_ids",
+                    "ages",
+                    "time_stamps",
+                    "visit_orders",
+                    "visit_segments",
+                ]
+
             def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-                return self.add_additional_tokens(self.data.iloc[idx])
+                return self.add_additional_tokens(
+                    self.data.iloc[idx], self.additional_token_types
+                )
 
         dataset = DummyDataset(data=self.data, tokenizer=self.tokenizer)
         result = dataset[0]

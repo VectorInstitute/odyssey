@@ -35,7 +35,7 @@ AUGMENTED_TOKEN_MAP = {
 }
 
 
-class BaseDataset(Dataset, ABC):
+class BaseDataset(Dataset[Any], ABC):
     """Base class for datasets used in pretraining and finetuning.
 
     Parameters
@@ -90,13 +90,20 @@ class BaseDataset(Dataset, ABC):
         """
         row = row.copy()
 
+        # Identify the column name containing event tokens
+        event_col = next(
+            (col for col in row.index if col.startswith("event_tokens")), None
+        )
+        if event_col is None:
+            raise KeyError("No event_tokens column found in data")
+
         # Determine cutoff length
         if cutoff is None:
-            cutoff = min(self.max_len, len(row["event_tokens"]))
+            cutoff = min(self.max_len, len(row[event_col]))
         cutoff = min(cutoff, self.max_len)
 
         # Truncate and pad tokens
-        row["event_tokens"] = row["event_tokens"][:cutoff]
+        row[event_col] = row[event_col][:cutoff]
 
         if additional_columns:
             for col in additional_columns:
@@ -110,17 +117,24 @@ class BaseDataset(Dataset, ABC):
                         row[col][:cutoff], pad_width, mode="constant", constant_values=0
                     )
 
+        # Identify the column name containing event tokens
+        event_col = next(
+            (col for col in row.index if col.startswith("event_tokens")), None
+        )
+        if event_col is None:
+            raise KeyError("No event_tokens column found in data")
+
         # Join event tokens for tokenizer
         tokens = (
-            row["event_tokens"].tolist()
-            if isinstance(row["event_tokens"], np.ndarray)
-            else row["event_tokens"]
+            row[event_col].tolist()
+            if isinstance(row[event_col], np.ndarray)
+            else row[event_col]
         )
 
-        if type(tokens) == str:
+        if isinstance(tokens, str):
             tokens = [tokens]
 
-        row["event_tokens"] = " ".join(tokens)
+        row["event_tokens_processed"] = " ".join(tokens)
 
         return row
 
@@ -128,8 +142,10 @@ class BaseDataset(Dataset, ABC):
         """Return the length of the dataset."""
         return len(self.data)
 
-    def tokenize_data(self, sequence: Union[str, List[str]]) -> Any:
+    def tokenize_data(self, sequence: Union[str, List[str]]) -> Dict[str, torch.Tensor]:
         """Tokenize the sequence."""
+        if self.tokenizer is None:
+            return {"input_ids": torch.tensor([]), "attention_mask": torch.tensor([])}
         return self.tokenizer(sequence, max_length=self.max_len)
 
     @abstractmethod
@@ -138,11 +154,11 @@ class BaseDataset(Dataset, ABC):
         pass
 
 
-class AugmentedTokenizationMixin:
-    """Mixin class for adding additional token types to the dataset."""
+class TokenizationMixin:
+    """Mixin class for tokenizing sequences in the dataset."""
 
     def add_additional_tokens(
-        self, data: pd.Series, additional_token_types: List[str] = None
+        self, data: pd.Series, additional_token_types: Optional[List[str]] = None
     ) -> Dict[str, torch.Tensor]:
         """Add specified additional token types to the dataset.
 
@@ -162,11 +178,24 @@ class AugmentedTokenizationMixin:
         if additional_token_types is None:
             return {}  # Return an empty dictionary if no token types are specified
 
-        return {
-            token_name: torch.tensor(data[column_name])
-            for token_name, column_name in AUGMENTED_TOKEN_MAP.items()
-            if token_name in additional_token_types
-        }
+        result = {}
+        for token_name, base_column_name in AUGMENTED_TOKEN_MAP.items():
+            if token_name in additional_token_types:
+                # Find the matching column with possible suffix (e.g., "_2048")
+                matching_column = next(
+                    (col for col in data.index if col.startswith(base_column_name)),
+                    None,
+                )
+                if matching_column and matching_column in data:
+                    result[token_name] = torch.tensor(data[matching_column])
+
+        return result
+
+
+class AugmentedTokenizationMixin(TokenizationMixin):
+    """Mixin class for adding additional token types to the dataset."""
+
+    pass
 
 
 class MaskingMixin:
@@ -351,7 +380,7 @@ class PretrainDataset(BaseDataset, AugmentedTokenizationMixin, MaskingMixin):
         tokenizer: ConceptTokenizer,
         max_len: int = 2048,
         mask_prob: float = 0.15,
-        additional_token_types: List[str] = None,
+        additional_token_types: Optional[List[str]] = None,
         padding_side: str = "right",
     ):
         super().__init__(data, tokenizer, max_len, padding_side)
@@ -381,7 +410,7 @@ class PretrainDataset(BaseDataset, AugmentedTokenizationMixin, MaskingMixin):
         )
 
         # Tokenize and mask the input data
-        tokenized_input = self.tokenize_data(data["event_tokens"])
+        tokenized_input = self.tokenize_data(data["event_tokens_processed"])
         concept_tokens = tokenized_input["input_ids"].squeeze()
         attention_mask = tokenized_input["attention_mask"].squeeze()
         masked_tokens, labels = self.mask_tokens(concept_tokens)
@@ -436,7 +465,7 @@ class PretrainDatasetDecoder(BaseDataset, AugmentedTokenizationMixin):
         data: pd.DataFrame,
         tokenizer: ConceptTokenizer,
         max_len: int = 2048,
-        additional_token_types: List[str] = None,
+        additional_token_types: Optional[List[str]] = None,
         padding_side: str = "right",
         return_attention_mask: bool = True,
         return_labels: bool = True,
@@ -465,7 +494,7 @@ class PretrainDatasetDecoder(BaseDataset, AugmentedTokenizationMixin):
         data = self.truncate_and_pad(
             row=data, cutoff=cutoff, additional_columns=self.additional_token_types
         )
-        tokenized_input = self.tokenize_data(data["event_tokens"])
+        tokenized_input = self.tokenize_data(data["event_tokens_processed"])
 
         # Prepare model input
         tokens = self.add_additional_tokens(data, self.additional_token_types)
@@ -514,7 +543,7 @@ class FinetuneDataset(BaseDataset, AugmentedTokenizationMixin):
         data: pd.DataFrame,
         tokenizer: ConceptTokenizer,
         max_len: int = 2048,
-        additional_token_types: List[str] = None,
+        additional_token_types: Optional[List[str]] = None,
         padding_side: str = "right",
     ):
         super().__init__(data, tokenizer, max_len, padding_side)
@@ -539,7 +568,7 @@ class FinetuneDataset(BaseDataset, AugmentedTokenizationMixin):
         data = self.truncate_and_pad(
             row=data, cutoff=cutoff, additional_columns=self.additional_token_types
         )
-        tokenized_input = self.tokenize_data(data["event_tokens"])
+        tokenized_input = self.tokenize_data(data["event_tokens_processed"])
 
         # Prepare model input
         tokens = self.add_additional_tokens(data, self.additional_token_types)
@@ -608,7 +637,7 @@ class FinetuneMultiDataset(
         balance_guide: Optional[Dict[str, float]] = None,
         max_len: int = 2048,
         nan_indicator: int = -1,
-        additional_token_types: List[str] = None,
+        additional_token_types: Optional[List[str]] = None,
         padding_side: str = "right",
     ):
         BaseDataset.__init__(self, data, tokenizer, max_len, padding_side)
@@ -640,12 +669,24 @@ class FinetuneMultiDataset(
         index, task, label, cutoff = self.index_mapper[idx]
         data = self.data.iloc[index]
 
+        # Identify the column name containing event tokens
+        event_col = next(
+            (
+                col
+                for col in data.index
+                if col.startswith("event_tokens") and col != "event_tokens_processed"
+            ),
+            None,
+        )
+        if event_col is None:
+            raise KeyError("No event_tokens column found in data")
+
         # Swap the first token with the task token.
-        data["event_tokens"][0] = self.tokenizer.task_to_token(task)
+        data[event_col][0] = self.tokenizer.task_to_token(task)
         data = self.truncate_and_pad(
             row=data, cutoff=cutoff, additional_columns=self.additional_token_types
         )
-        tokenized_input = self.tokenize_data(data["event_tokens"])
+        tokenized_input = self.tokenize_data(data["event_tokens_processed"])
 
         # Prepare model input
         tokens = self.add_additional_tokens(data, self.additional_token_types)
@@ -724,7 +765,7 @@ class FinetuneDatasetDecoder(
         max_len: int = 2048,
         nan_indicator: int = -1,
         is_single_head: bool = True,
-        additional_token_types: List[str] = None,
+        additional_token_types: Optional[List[str]] = None,
         padding_side: str = "right",
         return_attention_mask: bool = True,
     ):
@@ -758,17 +799,29 @@ class FinetuneDatasetDecoder(
         index, task, label, cutoff = self.index_mapper[idx]
         data = self.data.iloc[index]
 
+        # Identify the column name containing event tokens
+        event_col = next(
+            (
+                col
+                for col in data.index
+                if col.startswith("event_tokens") and col != "event_tokens_processed"
+            ),
+            None,
+        )
+        if event_col is None:
+            raise KeyError("No event_tokens column found in data")
+
         # Swap the first and last token with the task token.
         if self.is_single_head:
-            data["event_tokens"][0] = self.tokenizer.task_to_token(task)
-            data["event_tokens"][-1] = self.tokenizer.task_to_token(task)
+            data[event_col][0] = self.tokenizer.task_to_token(task)
+            data[event_col][-1] = self.tokenizer.task_to_token(task)
         else:
-            data["event_tokens"][-1] = data["event_tokens"][0]
+            data[event_col][-1] = data[event_col][0]
 
         data = self.truncate_and_pad(
             row=data, cutoff=cutoff, additional_columns=self.additional_token_types
         )
-        tokenized_input = self.tokenize_data(data["event_tokens"])
+        tokenized_input = self.tokenize_data(data["event_tokens_processed"])
 
         # Prepare model input
         tokens = self.add_additional_tokens(data, self.additional_token_types)

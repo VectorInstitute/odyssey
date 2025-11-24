@@ -1,9 +1,10 @@
 """Utilities following HuggingFace style for Mamba models."""
 
 from dataclasses import dataclass
-from typing import Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 from transformers.activations import ACT2FN
@@ -45,7 +46,7 @@ class MambaSequenceClassifierOutput(ModelOutput):
     """
 
     loss: Optional[torch.FloatTensor] = None
-    logits: torch.FloatTensor = None
+    logits: Optional[torch.FloatTensor] = None  # Make optional to allow None default
     hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
 
 
@@ -55,7 +56,7 @@ class MambaSequenceClassifierOutput(ModelOutput):
 class MambaClassificationHead(nn.Module):
     """Head for sentence-level classification tasks."""
 
-    def __init__(self, config):
+    def __init__(self, config: Any) -> None:
         """Initialize the head."""
         super().__init__()
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
@@ -63,7 +64,7 @@ class MambaClassificationHead(nn.Module):
         self.out_proj = nn.Linear(config.hidden_size, config.num_labels)
         self.config = config
 
-    def forward(self, features, **kwargs):
+    def forward(self, features: torch.Tensor, **kwargs: Any) -> torch.Tensor:
         """Forward pass."""
         x = features  # Pooling is done by the forward pass
         x = self.dropout(x)
@@ -71,7 +72,9 @@ class MambaClassificationHead(nn.Module):
         x = ACT2FN[self.config.hidden_act](x)
         x = self.dropout(x)
 
-        return self.out_proj(x)
+        # Ensure we return a proper torch.Tensor
+        result = self.out_proj(x)
+        return torch.as_tensor(result, dtype=torch.float32)
 
 
 @add_start_docstrings(
@@ -81,8 +84,8 @@ class MambaClassificationHead(nn.Module):
     """,
     MAMBA_START_DOCSTRING,
 )
-class MambaForSequenceClassification(MambaPreTrainedModel):
-    def __init__(self, config):
+class MambaForSequenceClassification(MambaPreTrainedModel):  # type: ignore
+    def __init__(self, config: Any) -> None:
         super().__init__(config)
         self.num_labels = config.num_labels
         self.config = config
@@ -92,20 +95,21 @@ class MambaForSequenceClassification(MambaPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @add_start_docstrings_to_model_forward(
+    # Type ignore the decorators as they make the function untyped
+    @add_start_docstrings_to_model_forward(  # type: ignore
         MAMBA_INPUTS_DOCSTRING.format("batch_size, sequence_length")
     )
-    @replace_return_docstrings(
+    @replace_return_docstrings(  # type: ignore
         output_type=MambaSequenceClassifierOutput, config_class=_CONFIG_FOR_DOC
     )
     def forward(
         self,
-        input_ids: torch.LongTensor = None,
+        input_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-    ) -> Union[MambaSequenceClassifierOutput, Tuple[torch.FloatTensor]]:
+    ) -> Union[MambaSequenceClassifierOutput, Tuple[torch.FloatTensor, ...]]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
             Labels for computing the sequence classification/regression loss. Indices should be in `[0, ...,
@@ -133,12 +137,20 @@ class MambaForSequenceClassification(MambaPreTrainedModel):
 
         # Pool the hidden states for the last tokens before padding
         # to use for classification
-        last_token_indexes = (
-            torch.eq(input_ids, self.config.pad_token_id).int().argmax(-1) - 1
-        )
+        if input_ids is not None:
+            # Cast input_ids to Tensor for torch.eq to work properly
+            input_ids_tensor = torch.as_tensor(input_ids, device=last_hidden_states.device)
+            last_token_indexes = (
+                torch.eq(input_ids_tensor, self.config.pad_token_id).int().argmax(-1) - 1
+            )
+        else:
+            # Use default indices if input_ids is None
+            last_token_indexes = torch.zeros(batch_size, dtype=torch.long, device=last_hidden_states.device)
+        # Convert last_token_indexes to tensor if needed
+        last_token_indexes_tensor = torch.as_tensor(last_token_indexes, device=last_hidden_states.device)
         pooled_last_hidden_states = last_hidden_states[
             torch.arange(batch_size, device=last_hidden_states.device),
-            last_token_indexes,
+            last_token_indexes_tensor,
         ]
 
         logits = self.classifier(pooled_last_hidden_states)
@@ -154,25 +166,33 @@ class MambaForSequenceClassification(MambaPreTrainedModel):
                     self.config.problem_type = "multi_label_classification"
 
             if self.config.problem_type == "regression":
-                loss_fct = MSELoss()
+                loss_fct_regression = MSELoss()
                 if self.num_labels == 1:
-                    loss = loss_fct(logits.squeeze(), labels.squeeze())
+                    loss = loss_fct_regression(logits.squeeze(), labels.squeeze())
                 else:
-                    loss = loss_fct(logits, labels)
+                    loss = loss_fct_regression(logits, labels)
             elif self.config.problem_type == "single_label_classification":
-                loss_fct = CrossEntropyLoss()
-                loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+                loss_fct_classification = CrossEntropyLoss()
+                loss = loss_fct_classification(logits.view(-1, self.num_labels), labels.view(-1))
             elif self.config.problem_type == "multi_label_classification":
-                loss_fct = BCEWithLogitsLoss()
-                loss = loss_fct(logits, labels)
+                loss_fct_multilabel = BCEWithLogitsLoss()
+                loss = loss_fct_multilabel(logits, labels)
 
         if not return_dict:
             output = (logits,) + sequence_outputs[1:]
-            return ((loss,) + output) if loss is not None else output
+            return ((loss,) + output) if loss is not None else output  # type: ignore
+
+        # Type cast loss and logits to ensure correct types for MambaSequenceClassifierOutput
+        float_loss: Optional[torch.FloatTensor] = None
+        if isinstance(loss, torch.Tensor):
+            float_loss = cast(torch.FloatTensor, loss.to(dtype=torch.float32))
+
+        # Cast logits to FloatTensor
+        float_logits = cast(torch.FloatTensor, torch.as_tensor(logits, dtype=torch.float32))
 
         return MambaSequenceClassifierOutput(
-            loss=loss,
-            logits=logits,
+            loss=float_loss,
+            logits=float_logits,
             hidden_states=sequence_outputs.hidden_states,
         )
 
@@ -181,19 +201,21 @@ class MambaForSequenceClassification(MambaPreTrainedModel):
 
 
 class MambaClassificationMultiHead(nn.Module):
-    def __init__(self, config, num_tasks):
+    def __init__(self, config: Any, num_tasks: int) -> None:
         super().__init__()
         self.num_tasks = num_tasks
         self.classifiers = nn.ModuleList(
             [MambaClassificationHead(config) for _ in range(num_tasks)]
         )
 
-    def forward(self, features, task_idx):
-        return self.classifiers[task_idx](features)
+    def forward(self, features: torch.Tensor, task_idx: int) -> torch.Tensor:
+        # Ensure we return a proper torch.Tensor
+        result = self.classifiers[task_idx](features)
+        return torch.as_tensor(result, dtype=torch.float32)
 
 
-class MambaForMultiHeadSequenceClassification(MambaPreTrainedModel):
-    def __init__(self, config, num_tasks):
+class MambaForMultiHeadSequenceClassification(MambaPreTrainedModel):  # type: ignore
+    def __init__(self, config: Any, num_tasks: int) -> None:
         super().__init__(config)
         self.num_labels = config.num_labels
         self.config = config
@@ -206,13 +228,13 @@ class MambaForMultiHeadSequenceClassification(MambaPreTrainedModel):
 
     def forward(
         self,
-        input_ids: torch.LongTensor = None,
+        input_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
         task_indices: Optional[torch.LongTensor] = None,  # Add task_indices
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-    ) -> Union[MambaSequenceClassifierOutput, Tuple[torch.FloatTensor]]:
+    ) -> Union[MambaSequenceClassifierOutput, Tuple[torch.FloatTensor, ...]]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
             Labels for computing the sequence classification/regression loss. Indices should be in `[0, ...,
@@ -242,21 +264,28 @@ class MambaForMultiHeadSequenceClassification(MambaPreTrainedModel):
         batch_size = last_hidden_states.shape[0]
 
         # Pool the hidden states for the last tokens before padding to use for classification
+        # Cast input_ids to Tensor for torch.eq to work properly
+        input_ids_tensor = torch.as_tensor(input_ids, device=last_hidden_states.device)
         last_token_indexes = (
-            torch.eq(input_ids, self.config.pad_token_id).int().argmax(-1) - 1
+            torch.eq(input_ids_tensor, self.config.pad_token_id).int().argmax(-1) - 1
         )
+        # Convert last_token_indexes to tensor if needed
+        last_token_indexes_tensor = torch.as_tensor(last_token_indexes, device=last_hidden_states.device)
         pooled_last_hidden_states = last_hidden_states[
             torch.arange(batch_size, device=last_hidden_states.device),
-            last_token_indexes,
+            last_token_indexes_tensor,
         ]
 
         logits = torch.zeros(
             batch_size, self.num_labels, device=pooled_last_hidden_states.device
         )
         for i in range(batch_size):
-            logits[i] = self.classifier(
-                pooled_last_hidden_states[i], task_indices[i].item()
-            )
+            # Ensure task_indices is a tensor and can be indexed
+            if task_indices is not None:
+                task_indices_tensor = torch.as_tensor(task_indices, device=pooled_last_hidden_states.device)
+                logits[i] = self.classifier(
+                    pooled_last_hidden_states[i], task_indices_tensor[i].item()
+                )
 
         loss = None
         if labels is not None:
@@ -270,7 +299,8 @@ class MambaForMultiHeadSequenceClassification(MambaPreTrainedModel):
                 else:
                     self.config.problem_type = "multi_label_classification"
 
-            loss_fct = None
+            # Initialize the appropriate loss function based on the problem type
+            loss_fct: Optional[Union[MSELoss, CrossEntropyLoss, BCEWithLogitsLoss]] = None
             if self.config.problem_type == "regression":
                 loss_fct = MSELoss()
             elif self.config.problem_type == "single_label_classification":
@@ -296,10 +326,18 @@ class MambaForMultiHeadSequenceClassification(MambaPreTrainedModel):
 
         if not return_dict:
             output = (logits,) + sequence_outputs[1:]
-            return ((loss,) + output) if loss is not None else output
+            return ((loss,) + output) if loss is not None else output  # type: ignore
+
+        # Type cast loss and logits to ensure correct types for MambaSequenceClassifierOutput
+        float_loss: Optional[torch.FloatTensor] = None
+        if isinstance(loss, torch.Tensor):
+            float_loss = cast(torch.FloatTensor, loss.to(dtype=torch.float32))
+
+        # Cast logits to FloatTensor
+        float_logits = cast(torch.FloatTensor, torch.as_tensor(logits, dtype=torch.float32))
 
         return MambaSequenceClassifierOutput(
-            loss=loss,
-            logits=logits,
+            loss=float_loss,
+            logits=float_logits,
             hidden_states=sequence_outputs.hidden_states,
         )
