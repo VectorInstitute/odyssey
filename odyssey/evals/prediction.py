@@ -4,17 +4,63 @@ This module provides functionality to load and run EHR models on patient data,
 both for clinical predictive tasks and EHR forecasting.
 """
 
+import json
+import os
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn.functional as F
+import torch.nn.functional as F  # noqa: N812
 
 from odyssey.data.tokenizer import ConceptTokenizer
 from odyssey.models.cehr_big_bird.model import BigBirdFinetune, BigBirdPretrain
 from odyssey.models.ehr_mamba.model import MambaPretrain
 from odyssey.models.ehr_mamba2.model import Mamba2Pretrain
+
+
+def load_codes_dict(codes_dir: str) -> Dict[str, str]:
+    """
+    Load medical codes dictionary from a directory.
+
+    Parameters
+    ----------
+    codes_dir : str
+        Directory containing the medical codes dictionary files.
+
+    Returns
+    -------
+    Dict[str, str]
+        Dictionary mapping medical codes to their descriptions.
+    """
+    codes_dict = {}
+    if os.path.exists(codes_dir):
+        for filename in os.listdir(codes_dir):
+            if filename.endswith(".json"):
+                with open(os.path.join(codes_dir, filename), "r") as f:
+                    codes_dict.update(json.load(f))
+    return codes_dict
+
+
+def replace_sequence_items(
+    sequence: List[str], codes_dict: Dict[str, str]
+) -> List[str]:
+    """
+    Replace medical codes in a sequence with their descriptions.
+
+    Parameters
+    ----------
+    sequence : List[str]
+        List of medical codes.
+    codes_dict : Dict[str, str]
+        Dictionary mapping medical codes to their descriptions.
+
+    Returns
+    -------
+    List[str]
+        Sequence with codes replaced by descriptions when available.
+    """
+    return [codes_dict.get(item, item) for item in sequence]
 
 
 def load_pretrained_model(
@@ -235,7 +281,11 @@ class Forecast:
         int
             The index of the first padding token.
         """
-        return concept_ids.nonzero().squeeze().tolist()[-1] + 1
+        # Make sure to handle empty tensors and ensure int return type
+        nonzero_indices = concept_ids.nonzero()
+        if nonzero_indices.numel() == 0:
+            return 0
+        return int(nonzero_indices.squeeze().tolist()[-1]) + 1
 
     def prepare_input_data(
         self,
@@ -314,7 +364,8 @@ class Forecast:
         logits = output["logits"][0, -1, :]
 
         if self.temperature == 0:
-            return torch.argmax(logits).item()
+            # Explicitly convert to int
+            return int(torch.argmax(logits).item())
 
         logits = logits / self.temperature
 
@@ -328,8 +379,9 @@ class Forecast:
         top_p_probs = probs[top_p_tokens]
         top_p_probs /= top_p_probs.sum()
 
-        selected_token_index = torch.multinomial(top_p_probs, 1).item()
-        return top_p_tokens[selected_token_index].item()
+        selected_token_index = int(torch.multinomial(top_p_probs, 1).item())
+        # Explicitly convert to int
+        return int(top_p_tokens[selected_token_index].item())
 
     def generate_token_sequence(
         self,

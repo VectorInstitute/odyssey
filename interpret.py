@@ -4,13 +4,15 @@ import argparse
 import logging
 import os
 import sys
-from typing import Any, Dict
+from typing import Any, cast
 
 import torch
 
 from odyssey.data.tokenizer import ConceptTokenizer
 from odyssey.interp.attribution import Attribution
 from odyssey.interp.utils import get_type_id_mapping
+from odyssey.models.cehr_bert.model import BertFinetune
+from odyssey.models.cehr_big_bird.model import BigBirdFinetune
 from odyssey.models.model_utils import (
     load_config,
     load_finetune_data,
@@ -26,8 +28,8 @@ setup_logging(print_level="INFO", logger=LOGGER)
 
 def main(
     args: argparse.Namespace,
-    pre_model_config: Dict[str, Any],
-    fine_model_config: Dict[str, Any],
+    pre_model_config: dict[str, Any],
+    fine_model_config: dict[str, Any],
 ) -> None:
     """Run interpretability."""
     seed_everything(args.seed)
@@ -65,9 +67,12 @@ def main(
     )
 
     # Get attributions
+    # Cast model to appropriate type for Attribution
+    model_for_attribution = cast(BertFinetune | BigBirdFinetune, model)
+
     gradient_attr = Attribution(
         test_data_sample,
-        model,
+        model_for_attribution,
         tokenizer,
         device,
         type_id_mapping=get_type_id_mapping(),

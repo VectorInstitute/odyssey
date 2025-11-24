@@ -8,8 +8,14 @@ from itertools import chain
 from typing import Any, Dict, List, Optional, Set, Union
 
 import pandas as pd
+import torch
 from tokenizers import Tokenizer, models, pre_tokenizers
-from transformers import BatchEncoding, PreTrainedTokenizerFast
+from transformers import PreTrainedTokenizerFast
+
+
+DEFAULT_TIME_TOKENS = (
+    [f"[W_{i}]" for i in range(0, 4)] + [f"[M_{i}]" for i in range(0, 13)] + ["[LT]"]
+)
 
 
 class ConceptTokenizer:
@@ -89,9 +95,7 @@ class ConceptTokenizer:
         reg_token: str = "[REG]",
         unknown_token: str = "[UNK]",
         data_dir: str = "data_files",
-        time_tokens: List[str] = [f"[W_{i}]" for i in range(0, 4)]
-        + [f"[M_{i}]" for i in range(0, 13)]
-        + ["[LT]"],
+        time_tokens: List[str] = DEFAULT_TIME_TOKENS,
         tokenizer_object: Optional[Tokenizer] = None,
         tokenizer: Optional[PreTrainedTokenizerFast] = None,
         padding_side: str = "right",
@@ -176,9 +180,7 @@ class ConceptTokenizer:
         self.special_token_ids = self.get_special_token_ids()
 
         # Set token to label dict backbone
-        self.token_to_label_dict = {
-            token: token for token in self.tokenizer_vocab.keys()
-        }
+        self.token_to_label_dict = {token: token for token in self.tokenizer_vocab}
 
         # Check to make sure tokenizer follows the same vocabulary
         assert self.tokenizer_vocab == self.tokenizer.get_vocab(), (
@@ -186,8 +188,8 @@ class ConceptTokenizer:
         )
 
     def load_token_labels(self, codes_dir: str) -> Dict[str, str]:
-        """
-        Load and merge JSON files containing medical codes and names.
+        """Load and merge JSON files containing medical codes and names.
+
         Update the token_to_label_dict with new token to label mappings.
 
         Parameters
@@ -250,7 +252,7 @@ class ConceptTokenizer:
         truncation: bool = True,
         padding: str = "max_length",
         max_length: int = 2048,
-    ) -> BatchEncoding:
+    ) -> Dict[str, torch.Tensor]:
         """Return the tokenized dictionary of input batch.
 
         Parameters
@@ -270,11 +272,21 @@ class ConceptTokenizer:
 
         Returns
         -------
-        BatchEncoding
+        Dict[str, torch.Tensor]
             Tokenized dictionary of input batch.
 
         """
-        return self.tokenizer(
+        if self.tokenizer is None:
+            # Return empty tensors if tokenizer is not initialized
+            empty_tensor = torch.zeros((1, 1), dtype=torch.long)
+            result = {"input_ids": empty_tensor}
+            if return_attention_mask:
+                result["attention_mask"] = empty_tensor.clone()
+            if return_token_type_ids:
+                result["token_type_ids"] = empty_tensor.clone()
+            return result
+
+        tokenized = self.tokenizer(
             batch,
             return_attention_mask=return_attention_mask,
             return_token_type_ids=return_token_type_ids,
@@ -283,6 +295,8 @@ class ConceptTokenizer:
             max_length=max_length,
             return_tensors="pt",
         )
+        # Ensure the return value is correctly typed
+        return {k: torch.as_tensor(v) for k, v in tokenized.items()}
 
     def encode(self, concept_tokens: str) -> List[int]:
         """Encode the concept tokens into token ids.
@@ -298,7 +312,11 @@ class ConceptTokenizer:
             Token ids.
 
         """
-        return self.tokenizer_object.encode(concept_tokens).ids
+        if self.tokenizer_object is None:
+            return []
+        # Ensure return type is List[int]
+        ids = self.tokenizer_object.encode(concept_tokens).ids
+        return [int(id_) for id_ in ids]
 
     def decode(self, concept_ids: List[int]) -> str:
         """Decode the concept sequence token id into token concept.
@@ -314,7 +332,10 @@ class ConceptTokenizer:
             Concept sequence.
 
         """
-        return self.tokenizer_object.decode(concept_ids)
+        if self.tokenizer_object is None:
+            return ""
+        # Ensure the return value is a string
+        return str(self.tokenizer_object.decode(concept_ids))
 
     def decode_to_labels(self, concept_input: Union[List[str], List[int]]) -> List[str]:
         """Decode the concept sequence tokens or ids into labels.
@@ -330,11 +351,29 @@ class ConceptTokenizer:
             A new sequence with medical concept codes replaced by their labels.
 
         """
-        if isinstance(concept_input[0], int):
-            concept_input = [self.id_to_token(token_id) for token_id in concept_input]
+        if not concept_input:
+            return []
+
+        # Convert all elements to strings to handle type mixing issues
+        str_concept_input: List[str] = []
+
+        # Handle integer tokens by converting to strings
+        if all(isinstance(item, int) for item in concept_input):
+            # All items are integers, so safe to cast to int
+            str_concept_input = [
+                self.id_to_token(int(token_id)) for token_id in concept_input
+            ]
+        else:
+            # Handle mixed tokens by processing each individually
+            str_concept_input = []
+            for item in concept_input:
+                if isinstance(item, int):
+                    str_concept_input.append(self.id_to_token(int(item)))
+                else:
+                    str_concept_input.append(str(item))
 
         decoded_sequence = []
-        for item in concept_input:
+        for item in str_concept_input:
             match = re.match(r"^(.*?)(_\d)$", item)
             if match:
                 base_part, suffix = match.groups()
@@ -361,7 +400,10 @@ class ConceptTokenizer:
             Token id.
 
         """
-        return self.tokenizer_object.token_to_id(token)
+        if self.tokenizer_object is None:
+            return 0
+        # Ensure the return type is int
+        return int(self.tokenizer_object.token_to_id(token))
 
     def id_to_token(self, token_id: int) -> str:
         """Return the token corresponding to id.
@@ -377,7 +419,10 @@ class ConceptTokenizer:
             Token.
 
         """
-        return self.tokenizer_object.id_to_token(token_id)
+        if self.tokenizer_object is None:
+            return ""
+        # Ensure the return type is str
+        return str(self.tokenizer_object.id_to_token(token_id))
 
     def token_to_label(self, token: str) -> str:
         """Return the label corresponding to token.
@@ -447,6 +492,8 @@ class ConceptTokenizer:
             Number of tokens in vocabulary.
 
         """
+        if self.tokenizer is None:
+            return 0
         return len(self.tokenizer)
 
     def get_class_token_id(self) -> int:
@@ -624,8 +671,9 @@ class ConceptTokenizer:
     ) -> None:
         """Create a vocabulary from sequences and save it as a JSON file.
 
-        This static method takes a list of lists or a Pandas Series containing sequences,
-        extracts unique tokens, sorts them, and saves them in a JSON file.
+        This static method takes a list of lists or a Pandas Series
+        containing sequences, extracts unique tokens, sorts them,
+        and saves them in a JSON file.
 
         Parameters
         ----------
@@ -636,9 +684,7 @@ class ConceptTokenizer:
 
         """
         # Flatten the list of lists and extract unique tokens
-        unique_tokens = sorted(
-            set(token for sequence in sequences for token in sequence)
-        )
+        unique_tokens = sorted({token for sequence in sequences for token in sequence})
 
         # Raise error if a token has space in it
         if any(" " in token for token in unique_tokens):

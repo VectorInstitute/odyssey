@@ -3,7 +3,7 @@
 import argparse
 import os
 import sys
-from typing import Any, Dict
+from typing import Any, cast
 
 import pytorch_lightning as pl
 import torch
@@ -14,7 +14,7 @@ from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 
 from odyssey.data.dataset import PretrainDataset, PretrainDatasetDecoder
-from odyssey.data.tokenizer import ConceptTokenizer
+from odyssey.data.tokenizer import DEFAULT_TIME_TOKENS, ConceptTokenizer
 from odyssey.models.cehr_bert.model import BertPretrain
 from odyssey.models.cehr_big_bird.model import BigBirdPretrain
 from odyssey.models.ehr_mamba.model import MambaPretrain
@@ -27,7 +27,11 @@ from odyssey.models.model_utils import (
 from odyssey.utils.utils import seed_everything
 
 
-def main(args: argparse.Namespace, model_config: Dict[str, Any]) -> None:
+# Type alias for dataset types
+dataset_type = PretrainDataset | PretrainDatasetDecoder
+
+
+def main(args: argparse.Namespace, model_config: dict[str, Any]) -> None:
     """Train the model."""
     seed_everything(args.seed)
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
@@ -62,42 +66,60 @@ def main(args: argparse.Namespace, model_config: Dict[str, Any]) -> None:
             data_dir=args.vocab_dir,
             start_token="[BOS]",
             end_token="[EOS]",
-            time_tokens=None,  # New tokenizer comes with predefined time tokens
+            time_tokens=DEFAULT_TIME_TOKENS,  # Use default time tokens instead of None
             padding_side=args.padding_side,
         )
     tokenizer.fit_on_vocab()
 
     # Load datasets
-    if args.is_decoder:  # e.g. Mamba and Mamba2
-        train_dataset = PretrainDatasetDecoder(
-            data=pre_train,
-            tokenizer=tokenizer,
-            max_len=args.max_len,
-            padding_side=args.padding_side,
-            return_attention_mask=args.return_attention_mask,
-        )
-        val_dataset = PretrainDatasetDecoder(
-            data=pre_val,
-            tokenizer=tokenizer,
-            max_len=args.max_len,
-            padding_side=args.padding_side,
-            return_attention_mask=args.return_attention_mask,
-        )
+    # Use a generic dataset variable
+    # We'll use variables of this type for train and validation datasets
+    train_dataset: dataset_type
+    val_dataset: dataset_type
 
-    else:
-        train_dataset = PretrainDataset(
-            data=pre_train,
-            tokenizer=tokenizer,
-            max_len=args.max_len,
-            mask_prob=args.mask_prob,
-            padding_side=args.padding_side,
+    if args.is_decoder:  # e.g. Mamba and Mamba2
+        # Create decoder datasets and cast as the generic dataset_type
+        train_dataset = cast(
+            dataset_type,
+            PretrainDatasetDecoder(
+                data=pre_train,
+                tokenizer=tokenizer,
+                max_len=args.max_len,
+                padding_side=args.padding_side,
+                return_attention_mask=args.return_attention_mask,
+            ),
         )
-        val_dataset = PretrainDataset(
-            data=pre_val,
-            tokenizer=tokenizer,
-            max_len=args.max_len,
-            mask_prob=args.mask_prob,
-            padding_side=args.padding_side,
+        val_dataset = cast(
+            dataset_type,
+            PretrainDatasetDecoder(
+                data=pre_val,
+                tokenizer=tokenizer,
+                max_len=args.max_len,
+                padding_side=args.padding_side,
+                return_attention_mask=args.return_attention_mask,
+            ),
+        )
+    else:
+        # Create encoder datasets and cast as the generic dataset_type
+        train_dataset = cast(
+            dataset_type,
+            PretrainDataset(
+                data=pre_train,
+                tokenizer=tokenizer,
+                max_len=args.max_len,
+                mask_prob=args.mask_prob,
+                padding_side=args.padding_side,
+            ),
+        )
+        val_dataset = cast(
+            dataset_type,
+            PretrainDataset(
+                data=pre_val,
+                tokenizer=tokenizer,
+                max_len=args.max_len,
+                mask_prob=args.mask_prob,
+                padding_side=args.padding_side,
+            ),
         )
 
     train_loader = DataLoader(
@@ -132,9 +154,12 @@ def main(args: argparse.Namespace, model_config: Dict[str, Any]) -> None:
     # Create model
     if args.model_type == "cehr_bert":
         model = BertPretrain(
-            args=args,
             vocab_size=tokenizer.get_vocab_size(),
             padding_idx=tokenizer.get_pad_token_id(),
+            learning_rate=args.learning_rate,
+            eta_min=args.eta_min,
+            num_iterations=args.num_iterations,
+            use_adamw=args.use_adamw,
             **model_config,
         )
     elif args.model_type == "cehr_bigbird":
@@ -185,7 +210,7 @@ def main(args: argparse.Namespace, model_config: Dict[str, Any]) -> None:
         enable_checkpointing=True,
         enable_progress_bar=True,
         enable_model_summary=True,
-        logger=wandb_logger,
+        logger=[wandb_logger],  # type: ignore # WandbLogger is a subclass of Logger
         log_every_n_steps=args.log_every_n_steps,
         accumulate_grad_batches=args.acc,
         gradient_clip_val=1.0,

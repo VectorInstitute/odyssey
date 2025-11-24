@@ -84,8 +84,7 @@ class PositionalEmbedding(nn.Module):
         super().__init__()
 
         # Compute the positional encodings once in log space.
-        pe = torch.zeros(max_len, embedding_size).float()
-        pe.require_grad = False
+        pe = torch.zeros(max_len, embedding_size, requires_grad=False).float()
 
         position = torch.arange(0, max_len).float().unsqueeze(1)
         div_term = (
@@ -310,7 +309,7 @@ class BigBirdEmbeddingsForCEHR(nn.Module):
         """Delete the tensors cached by cache_input method."""
         del self.time_stamps, self.ages, self.visit_orders, self.visit_segments
 
-    def forward(
+    def forward(  # noqa: PLR0912 - This is a complex embedding function
         self,
         input_ids: Optional[torch.Tensor] = None,
         token_type_ids: Optional[torch.Tensor] = None,
@@ -321,8 +320,10 @@ class BigBirdEmbeddingsForCEHR(nn.Module):
         """Return the final embeddings of concept ids using input and cached values."""
         if input_ids is not None:
             input_shape = input_ids.size()
-        else:
+        elif inputs_embeds is not None:
             input_shape = inputs_embeds.size()[:-1]
+        else:
+            raise ValueError("You have to specify either input_ids or inputs_embeds")
 
         seq_length = input_shape[1]
 
@@ -363,10 +364,19 @@ class BigBirdEmbeddingsForCEHR(nn.Module):
         position_embeds = self.position_embeddings(position_ids)
         token_type_embeds = self.token_type_embeddings(token_type_ids)
 
-        inputs_embeds = torch.cat(
-            (inputs_embeds, time_stamps_embeds, ages_embeds),
-            dim=-1,
-        )
+        # Check if any of the tensors are None before concatenation
+        tensors_to_cat = []
+        if inputs_embeds is not None:
+            tensors_to_cat.append(inputs_embeds)
+        if time_stamps_embeds is not None:
+            tensors_to_cat.append(time_stamps_embeds)
+        if ages_embeds is not None:
+            tensors_to_cat.append(ages_embeds)
+
+        if not tensors_to_cat:
+            raise ValueError("No valid tensors to concatenate")
+
+        inputs_embeds = torch.cat(tensors_to_cat, dim=-1)
         inputs_embeds = self.tanh(self.scale_back_concat_layer(inputs_embeds))
         embeddings = inputs_embeds + token_type_embeds
         embeddings += position_embeds
@@ -479,10 +489,19 @@ class MambaEmbeddingsForCEHR(nn.Module):
         visit_order_embeds = self.visit_order_embeddings(visit_orders)
         token_type_embeds = self.token_type_embeddings(token_type_ids_batch)
 
-        inputs_embeds = torch.cat(
-            (inputs_embeds, time_stamps_embeds, ages_embeds),
-            dim=-1,
-        )
+        # Check if any of the tensors are None before concatenation
+        tensors_to_cat = []
+        if inputs_embeds is not None:
+            tensors_to_cat.append(inputs_embeds)
+        if time_stamps_embeds is not None:
+            tensors_to_cat.append(time_stamps_embeds)
+        if ages_embeds is not None:
+            tensors_to_cat.append(ages_embeds)
+
+        if not tensors_to_cat:
+            raise ValueError("No valid tensors to concatenate")
+
+        inputs_embeds = torch.cat(tensors_to_cat, dim=-1)
 
         inputs_embeds = self.tanh(self.scale_back_concat_layer(inputs_embeds))
         embeddings = inputs_embeds + token_type_embeds
