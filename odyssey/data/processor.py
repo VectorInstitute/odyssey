@@ -61,8 +61,10 @@ def filter_by_length_of_stay(
     # Only keep the patients that their first event happens within threshold hours
     filtered_dataset = filtered_dataset[
         filtered_dataset.apply(
-            lambda row: row[f"elapsed_tokens_{max_len}"][row["last_VS_index"] + 1]
-            < threshold * 24,
+            lambda row: (
+                row[f"elapsed_tokens_{max_len}"][row["last_VS_index"] + 1]
+                < threshold * 24
+            ),
             axis=1,
         )
     ]
