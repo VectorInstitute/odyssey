@@ -30,6 +30,7 @@ The output directory will contain:
 import argparse
 import json
 import logging
+import random
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -402,7 +403,7 @@ def extract_drgcodes(hosp_dir: Path) -> pl.LazyFrame:
 
 # ── sharding ─────────────────────────────────────────────────────────────────
 
-MEDS_SCHEMA = {
+MEDS_SCHEMA: dict[str, pl.PolarsDataType] = {
     "subject_id": pl.Int64,
     "time": pl.Datetime("us", "UTC"),
     "code": pl.Utf8,
@@ -412,7 +413,6 @@ MEDS_SCHEMA = {
 
 SPLITS = {"train": 0.8, "tuning": 0.1, "held_out": 0.1}
 SUBJECTS_PER_SHARD = 10_000
-
 
 
 def write_metadata(output_dir: Path, n_subjects: int, n_events: int) -> None:
@@ -493,8 +493,6 @@ def _subject_to_shard_map(
     seed: int,
 ) -> tuple[dict[int, str], dict[int, int], dict[str, list[int]]]:
     """Return (subject→split, subject→shard_idx, split→sorted_subjects)."""
-    import random
-
     rng = random.Random(seed)
     shuffled = all_subjects[:]
     rng.shuffle(shuffled)
@@ -546,7 +544,9 @@ def _sink_large_table(
     for split_name, sids in sorted_split_subjects.items():
         n_shards = max(1, (len(sids) + n_per_shard - 1) // n_per_shard)
         for shard_idx in range(n_shards):
-            shard_sids = set(sids[shard_idx * n_per_shard : (shard_idx + 1) * n_per_shard])
+            shard_sids = set(
+                sids[shard_idx * n_per_shard : (shard_idx + 1) * n_per_shard]
+            )
             shard_df = (
                 pl.scan_parquet(str(full_temp))
                 .filter(pl.col("subject_id").is_in(shard_sids))
@@ -582,10 +582,44 @@ def _write_table_to_temp(
     ).filter(pl.col("_split").is_not_null())
 
     for keys, group in df.group_by(["_split", "_shard"]):
-        split_name, shard_idx = str(keys[0]), int(keys[1])
+        split_name, shard_idx = str(keys[0]), int(keys[1])  # type: ignore[call-overload]
         dest = temp_dir / split_name / f"{shard_idx:07d}"
         dest.mkdir(parents=True, exist_ok=True)
         group.drop(["_split", "_shard"]).write_parquet(dest / f"{table_name}.parquet")
+
+
+def _merge_temp_shards(temp_dir: Path, output_dir: Path) -> tuple[int, int]:
+    """Merge per-table temp parquets into final sorted MEDS shard files.
+
+    Returns (total_events, total_subjects).
+    """
+    total_events = 0
+    total_subjects = 0
+
+    for split_name in ("train", "tuning", "held_out"):
+        split_temp = temp_dir / split_name
+        if not split_temp.exists():
+            continue
+        shard_dirs = sorted(split_temp.iterdir())
+        log.info("Writing %s split (%d shards) …", split_name, len(shard_dirs))
+        out_dir = output_dir / "data" / split_name
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        for shard_dir in shard_dirs:
+            parts = sorted(shard_dir.glob("*.parquet"))
+            shard_df = pl.concat([pl.read_parquet(p) for p in parts]).sort(
+                ["subject_id", "time"], nulls_last=True
+            )
+            out_path = out_dir / f"{shard_dir.name}.parquet"
+            shard_df.write_parquet(out_path)
+            n_subj = shard_df["subject_id"].n_unique()
+            log.info(
+                "  %s → %d rows, %d subjects", out_path.name, len(shard_df), n_subj
+            )
+            total_events += len(shard_df)
+            total_subjects += n_subj
+
+    return total_events, total_subjects
 
 
 def main() -> None:
@@ -609,7 +643,9 @@ def main() -> None:
 
     # ── Step 1: collect patients (small) to determine splits ─────────────────
     log.info("Extracting patients …")
-    patients_df = extract_patients(hosp_dir, args.n_subjects).collect().cast(MEDS_SCHEMA)
+    patients_df = (
+        extract_patients(hosp_dir, args.n_subjects).collect().cast(MEDS_SCHEMA)  # type: ignore[arg-type]
+    )
     all_subjects = patients_df["subject_id"].unique().to_list()
     log.info("  %d subjects", len(all_subjects))
 
@@ -620,7 +656,9 @@ def main() -> None:
     del patients_df
 
     # ── Step 2: extract each table one at a time ──────────────────────────────
-    subject_filter: Optional[set[int]] = set(all_subjects) if args.n_subjects > 0 else None
+    subject_filter: Optional[set[int]] = (
+        set(all_subjects) if args.n_subjects > 0 else None
+    )
 
     def _collect_and_write(name: str, lf: Optional[pl.LazyFrame]) -> None:
         """Collect small tables (~tens of millions of rows) into memory."""
@@ -629,7 +667,7 @@ def main() -> None:
         if subject_filter is not None:
             lf = lf.filter(pl.col("subject_id").is_in(subject_filter))
         log.info("Collecting %s …", name)
-        df = lf.collect().cast(MEDS_SCHEMA)  # type: ignore[union-attr]
+        df = lf.collect().cast(MEDS_SCHEMA)  # type: ignore[arg-type]
         log.info("  %d rows", len(df))
         _write_table_to_temp(df, name, temp_dir, split_of, shard_of)
         del df
@@ -640,8 +678,10 @@ def main() -> None:
             return
         if subject_filter is not None:
             lf = lf.filter(pl.col("subject_id").is_in(subject_filter))
-        lf = lf.cast(MEDS_SCHEMA)  # type: ignore[union-attr]
-        _sink_large_table(lf, name, temp_dir, sorted_split_subjects, args.subjects_per_shard)
+        lf = lf.cast(MEDS_SCHEMA)  # type: ignore[arg-type]
+        _sink_large_table(
+            lf, name, temp_dir, sorted_split_subjects, args.subjects_per_shard
+        )
 
     _collect_and_write("admissions", extract_admissions(hosp_dir))
 
@@ -659,30 +699,7 @@ def main() -> None:
     _stream_and_write("prescriptions", extract_prescriptions(hosp_dir))
 
     # ── Step 3: merge temp shards into final MEDS parquets ───────────────────
-    total_events = 0
-    total_subjects = 0
-
-    for split_name in ("train", "tuning", "held_out"):
-        split_temp = temp_dir / split_name
-        if not split_temp.exists():
-            continue
-        shard_dirs = sorted(split_temp.iterdir())
-        log.info("Writing %s split (%d shards) …", split_name, len(shard_dirs))
-        out_dir = output_dir / "data" / split_name
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        for shard_dir in shard_dirs:
-            parts = sorted(shard_dir.glob("*.parquet"))
-            shard_df = (
-                pl.concat([pl.read_parquet(p) for p in parts])
-                .sort(["subject_id", "time"], nulls_last=True)
-            )
-            out_path = out_dir / f"{shard_dir.name}.parquet"
-            shard_df.write_parquet(out_path)
-            n_subj = shard_df["subject_id"].n_unique()
-            log.info("  %s → %d rows, %d subjects", out_path.name, len(shard_df), n_subj)
-            total_events += len(shard_df)
-            total_subjects += n_subj
+    total_events, total_subjects = _merge_temp_shards(temp_dir, output_dir)
 
     shutil.rmtree(temp_dir)
 
