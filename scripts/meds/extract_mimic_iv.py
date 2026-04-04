@@ -475,8 +475,8 @@ def _subject_to_shard_map(
     all_subjects: list[int],
     n_per_shard: int,
     seed: int,
-) -> tuple[dict[int, str], dict[int, int]]:
-    """Return (subject→split, subject→shard_idx) mappings."""
+) -> tuple[dict[int, str], dict[int, int], dict[str, list[int]]]:
+    """Return (subject→split, subject→shard_idx, split→sorted_subjects)."""
     import random
 
     rng = random.Random(seed)
@@ -499,11 +499,51 @@ def _subject_to_shard_map(
     for sid, sp in split_of.items():
         split_subjects[sp].append(sid)
     shard_of: dict[int, int] = {}
-    for sids in split_subjects.values():
-        for i, sid in enumerate(sorted(sids)):
+    sorted_split_subjects: dict[str, list[int]] = {}
+    for sp, sids in split_subjects.items():
+        sorted_sids = sorted(sids)
+        sorted_split_subjects[sp] = sorted_sids
+        for i, sid in enumerate(sorted_sids):
             shard_of[sid] = i // n_per_shard
 
-    return split_of, shard_of
+    return split_of, shard_of, sorted_split_subjects
+
+
+def _sink_large_table(
+    lf: pl.LazyFrame,
+    table_name: str,
+    temp_dir: Path,
+    sorted_split_subjects: dict[str, list[int]],
+    n_per_shard: int,
+) -> None:
+    """Stream a large LazyFrame to a temp parquet, then partition by shard.
+
+    Uses polars sink_parquet (streaming engine) to avoid materialising the
+    full table in memory — essential for labevents (~168 M rows).
+    """
+    full_temp = temp_dir / f"_large_{table_name}.parquet"
+    log.info("Streaming %s → temp parquet (no collect) …", table_name)
+    lf.sink_parquet(str(full_temp))
+    size_mb = full_temp.stat().st_size / 1024**2
+    log.info("  %.0f MB written — partitioning into shards …", size_mb)
+
+    for split_name, sids in sorted_split_subjects.items():
+        n_shards = max(1, (len(sids) + n_per_shard - 1) // n_per_shard)
+        for shard_idx in range(n_shards):
+            shard_sids = set(sids[shard_idx * n_per_shard : (shard_idx + 1) * n_per_shard])
+            shard_df = (
+                pl.scan_parquet(str(full_temp))
+                .filter(pl.col("subject_id").is_in(shard_sids))
+                .collect()
+            )
+            if len(shard_df) == 0:
+                continue
+            dest = temp_dir / split_name / f"{shard_idx:07d}"
+            dest.mkdir(parents=True, exist_ok=True)
+            shard_df.write_parquet(dest / f"{table_name}.parquet")
+            del shard_df
+
+    full_temp.unlink()
 
 
 def _write_table_to_temp(
@@ -557,14 +597,17 @@ def main() -> None:
     all_subjects = patients_df["subject_id"].unique().to_list()
     log.info("  %d subjects", len(all_subjects))
 
-    split_of, shard_of = _subject_to_shard_map(all_subjects, args.subjects_per_shard, args.seed)
+    split_of, shard_of, sorted_split_subjects = _subject_to_shard_map(
+        all_subjects, args.subjects_per_shard, args.seed
+    )
     _write_table_to_temp(patients_df, "patients", temp_dir, split_of, shard_of)
     del patients_df
 
-    # ── Step 2: extract each table one at a time, stream to temp shards ──────
+    # ── Step 2: extract each table one at a time ──────────────────────────────
     subject_filter: Optional[set[int]] = set(all_subjects) if args.n_subjects > 0 else None
 
     def _collect_and_write(name: str, lf: Optional[pl.LazyFrame]) -> None:
+        """Collect small tables (~tens of millions of rows) into memory."""
         if lf is None:
             return
         if subject_filter is not None:
@@ -574,6 +617,15 @@ def main() -> None:
         log.info("  %d rows", len(df))
         _write_table_to_temp(df, name, temp_dir, split_of, shard_of)
         del df
+
+    def _stream_and_write(name: str, lf: Optional[pl.LazyFrame]) -> None:
+        """Stream large tables via sink_parquet to avoid OOM (labevents ~168 M rows)."""
+        if lf is None:
+            return
+        if subject_filter is not None:
+            lf = lf.filter(pl.col("subject_id").is_in(subject_filter))
+        lf = lf.cast(MEDS_SCHEMA)  # type: ignore[union-attr]
+        _sink_large_table(lf, name, temp_dir, sorted_split_subjects, args.subjects_per_shard)
 
     _collect_and_write("admissions", extract_admissions(hosp_dir))
 
@@ -586,8 +638,9 @@ def main() -> None:
     if (hosp_dir / "drgcodes.csv.gz").exists():
         _collect_and_write("drgcodes", extract_drgcodes(hosp_dir))
 
-    _collect_and_write("labevents", extract_labevents(hosp_dir))
-    _collect_and_write("prescriptions", extract_prescriptions(hosp_dir))
+    # labevents (~168 M rows) and prescriptions (~20 M rows): use streaming
+    _stream_and_write("labevents", extract_labevents(hosp_dir))
+    _stream_and_write("prescriptions", extract_prescriptions(hosp_dir))
 
     # ── Step 3: merge temp shards into final MEDS parquets ───────────────────
     total_events = 0
