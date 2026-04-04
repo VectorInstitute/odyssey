@@ -271,15 +271,27 @@ def extract_procedures(hosp_dir: Path) -> pl.LazyFrame:
 
 
 def extract_labevents(hosp_dir: Path) -> Optional[pl.LazyFrame]:
-    """Map labevents.csv.gz → MEDS rows (lab results)."""
+    """Map labevents.csv.gz → MEDS rows (lab results).
+
+    d_labitems is collected eagerly (tiny: ~900 rows) so that the main
+    labevents plan contains no join.  Joins prevent polars sink_parquet
+    from using its streaming engine, causing the full 168 M-row table to
+    be materialised in RAM.  Using Expr.replace() instead keeps the plan
+    fully streaming-compatible.
+    """
     lab_path = hosp_dir / "labevents.csv.gz"
     if not lab_path.exists():
         log.warning("labevents.csv.gz not found — skipping")
         return None
 
-    d_items = _read_gz(hosp_dir / "d_labitems.csv.gz").select(
-        [pl.col("itemid").cast(pl.Int64), "label"]
+    # Collect d_labitems eagerly — it is ~900 rows, negligible memory.
+    d_items_df = (
+        _read_gz(hosp_dir / "d_labitems.csv.gz")
+        .select([pl.col("itemid").cast(pl.Int64), "label"])
+        .collect()
     )
+    itemids: list[int] = d_items_df["itemid"].to_list()
+    labels: list[str] = d_items_df["label"].fill_null("UNKNOWN").to_list()
 
     labs = _read_gz(
         lab_path,
@@ -290,7 +302,13 @@ def extract_labevents(hosp_dir: Path) -> Optional[pl.LazyFrame]:
     )
 
     return (
-        labs.join(d_items, on="itemid", how="left")
+        labs
+        # replace() is streaming-compatible; join() is not
+        .with_columns(
+            pl.col("itemid")
+            .replace(old=itemids, new=labels, default="UNKNOWN")
+            .alias("label")
+        )
         .with_columns(
             [
                 pl.col("charttime")
@@ -298,9 +316,7 @@ def extract_labevents(hosp_dir: Path) -> Optional[pl.LazyFrame]:
                     pl.Datetime("us", "UTC"), format="%Y-%m-%d %H:%M:%S", strict=False
                 )
                 .alias("time"),
-                (pl.lit(LAB_PREFIX) + pl.col("label").fill_null("UNKNOWN")).alias(
-                    "code"
-                ),
+                (pl.lit(LAB_PREFIX) + pl.col("label")).alias("code"),
                 pl.col("valuenum")
                 .cast(pl.Float32, strict=False)
                 .alias("numeric_value"),
