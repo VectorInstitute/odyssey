@@ -29,7 +29,10 @@ dependencies = [
     "captum>=0.7.0",
     "scikit-multilearn>=0.2.0",
     "numpy>=1.26.4",
-    "polars>=1.0.0",
+    # polars is pinned by meds-transforms 0.6.1 (~=1.30.0); will lift when that updates
+    "polars>=1.30.0",
+    "meds>=0.4.0",
+    "meds-transforms>=0.6.1",
 ]
 
 [project.optional-dependencies]

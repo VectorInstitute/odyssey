@@ -1,0 +1,21 @@
+# meds-transforms 0.6.1 post-processing pipeline for MIMIC-IV MEDS data.
+#
+# Run via run_pipeline.sh (step 2), or directly:
+#   MEDS_transform-pipeline scripts/meds/pipeline.yaml \
+#       input_dir=data/meds output_dir=data/meds_processed
+#
+# Stages applied:
+#   1. filter_subjects  — remove subjects with fewer than 5 events
+#   2. filter_measurements — remove codes that appear in fewer than 5 subjects
+#   3. normalization    — z-score numeric values per code
+
+description: "MIMIC-IV MEDS post-processing pipeline (meds-transforms 0.6.1)"
+
+stages:
+  - filter_subjects:
+      min_events_per_subject: 5
+
+  - filter_measurements:
+      min_subjects_per_code: 5
+
+  - normalization
