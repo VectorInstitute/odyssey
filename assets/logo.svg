@@ -47,9 +47,9 @@
 
     <style>
       @import url('https://fonts.googleapis.com/css2?family=Inter:wght@500;800&amp;display=swap');
-      @keyframes flow { from { stroke-dashoffset: 0; } to { stroke-dashoffset: -22; } }
-      .wave-fg { animation: flow 2.2s linear infinite; }
-      .wave-bg { animation: flow 2.2s linear infinite; animation-delay: -0.6s; }
+      @keyframes flow { from { stroke-dashoffset: 0; } to { stroke-dashoffset: -19; } }
+      .wave-fg { animation: flow 1.6s linear infinite; }
+      .wave-bg { animation: flow 1.6s linear infinite; animation-delay: -0.8s; }
     </style>
   </defs>
 
