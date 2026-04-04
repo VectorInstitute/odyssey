@@ -232,7 +232,7 @@ class ConceptTokenizer:
             Tokenizer object.
 
         """
-        self.tokenizer = PreTrainedTokenizerFast(
+        self.tokenizer = PreTrainedTokenizerFast(  # type: ignore[no-untyped-call]
             tokenizer_object=tokenizer_obj,
             bos_token=self.start_token,
             eos_token=self.end_token,

@@ -1,9 +1,8 @@
-"""Train the model."""
+"""Pre-train EHR-Mamba3."""
 
 import argparse
 import os
-import sys
-from typing import Any, cast
+from typing import Any
 
 import pytorch_lightning as pl
 import torch
@@ -13,114 +12,49 @@ from pytorch_lightning.strategies.ddp import DDPStrategy
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 
-from odyssey.data.dataset import PretrainDataset, PretrainDatasetDecoder
+from odyssey.data.dataset import PretrainDatasetDecoder
 from odyssey.data.tokenizer import DEFAULT_TIME_TOKENS, ConceptTokenizer
-from odyssey.models.cehr_bert.model import BertPretrain
-from odyssey.models.cehr_big_bird.model import BigBirdPretrain
-from odyssey.models.ehr_mamba.model import MambaPretrain
-from odyssey.models.ehr_mamba2.model import Mamba2Pretrain
-from odyssey.models.model_utils import (
-    get_run_id,
-    load_config,
-    load_pretrain_data,
-)
+from odyssey.models.ehr_mamba3.model import Mamba3Pretrain
+from odyssey.models.model_utils import get_run_id, load_config, load_pretrain_data
 from odyssey.utils.utils import seed_everything
 
 
-# Type alias for dataset types
-dataset_type = PretrainDataset | PretrainDatasetDecoder
-
-
 def main(args: argparse.Namespace, model_config: dict[str, Any]) -> None:
-    """Train the model."""
+    """Pre-train EHR-Mamba3."""
     seed_everything(args.seed)
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
     torch.cuda.empty_cache()
     torch.set_float32_matmul_precision("medium")
 
-    pre_data = load_pretrain_data(
-        args.data_dir,
-        args.sequence_file,
-        args.id_file,
-    )
+    pre_data = load_pretrain_data(args.data_dir, args.sequence_file, args.id_file)
 
-    # Split data
     pre_train, pre_val = train_test_split(
-        pre_data,
-        test_size=args.val_size,
-        random_state=args.seed,
+        pre_data, test_size=args.val_size, random_state=args.seed
     )
 
-    # Initialize Tokenizer
-    if args.tokenizer_type == "fhir":
-        tokenizer = ConceptTokenizer(
-            data_dir=args.vocab_dir,
-            start_token="[VS]",
-            end_token="[VE]",
-            time_tokens=[f"[W_{i}]" for i in range(0, 4)]
-            + [f"[M_{i}]" for i in range(0, 13)]
-            + ["[LT]"],
-        )
-    else:  # meds
-        tokenizer = ConceptTokenizer(
-            data_dir=args.vocab_dir,
-            start_token="[BOS]",
-            end_token="[EOS]",
-            time_tokens=DEFAULT_TIME_TOKENS,  # Use default time tokens instead of None
-            padding_side=args.padding_side,
-        )
+    tokenizer = ConceptTokenizer(
+        data_dir=args.vocab_dir,
+        start_token="[BOS]",
+        end_token="[EOS]",
+        time_tokens=DEFAULT_TIME_TOKENS,
+        padding_side=args.padding_side,
+    )
     tokenizer.fit_on_vocab()
 
-    # Load datasets
-    # Use a generic dataset variable
-    # We'll use variables of this type for train and validation datasets
-    train_dataset: dataset_type
-    val_dataset: dataset_type
-
-    if args.is_decoder:  # e.g. Mamba and Mamba2
-        # Create decoder datasets and cast as the generic dataset_type
-        train_dataset = cast(
-            dataset_type,
-            PretrainDatasetDecoder(
-                data=pre_train,
-                tokenizer=tokenizer,
-                max_len=args.max_len,
-                padding_side=args.padding_side,
-                return_attention_mask=args.return_attention_mask,
-            ),
-        )
-        val_dataset = cast(
-            dataset_type,
-            PretrainDatasetDecoder(
-                data=pre_val,
-                tokenizer=tokenizer,
-                max_len=args.max_len,
-                padding_side=args.padding_side,
-                return_attention_mask=args.return_attention_mask,
-            ),
-        )
-    else:
-        # Create encoder datasets and cast as the generic dataset_type
-        train_dataset = cast(
-            dataset_type,
-            PretrainDataset(
-                data=pre_train,
-                tokenizer=tokenizer,
-                max_len=args.max_len,
-                mask_prob=args.mask_prob,
-                padding_side=args.padding_side,
-            ),
-        )
-        val_dataset = cast(
-            dataset_type,
-            PretrainDataset(
-                data=pre_val,
-                tokenizer=tokenizer,
-                max_len=args.max_len,
-                mask_prob=args.mask_prob,
-                padding_side=args.padding_side,
-            ),
-        )
+    train_dataset = PretrainDatasetDecoder(
+        data=pre_train,
+        tokenizer=tokenizer,
+        max_len=args.max_len,
+        padding_side=args.padding_side,
+        return_attention_mask=args.return_attention_mask,
+    )
+    val_dataset = PretrainDatasetDecoder(
+        data=pre_val,
+        tokenizer=tokenizer,
+        max_len=args.max_len,
+        padding_side=args.padding_side,
+        return_attention_mask=args.return_attention_mask,
+    )
 
     train_loader = DataLoader(
         train_dataset,
@@ -138,6 +72,23 @@ def main(args: argparse.Namespace, model_config: dict[str, Any]) -> None:
         pin_memory=args.pin_memory,
     )
 
+    model = Mamba3Pretrain(
+        vocab_size=tokenizer.get_vocab_size(),
+        padding_idx=tokenizer.get_pad_token_id(),
+        cls_idx=tokenizer.get_class_token_id(),
+        **model_config,
+    )
+
+    run_id = get_run_id(args.checkpoint_dir)
+
+    wandb_logger = WandbLogger(
+        project=args.exp_name,
+        save_dir=args.log_dir,
+        entity=args.workspace_name,
+        id=run_id,
+        resume="allow",
+    )
+
     callbacks = [
         ModelCheckpoint(
             monitor="val_loss",
@@ -151,58 +102,12 @@ def main(args: argparse.Namespace, model_config: dict[str, Any]) -> None:
         LearningRateMonitor(logging_interval="step"),
     ]
 
-    # Create model
-    if args.model_type == "cehr_bert":
-        model = BertPretrain(
-            vocab_size=tokenizer.get_vocab_size(),
-            padding_idx=tokenizer.get_pad_token_id(),
-            learning_rate=args.learning_rate,
-            eta_min=args.eta_min,
-            num_iterations=args.num_iterations,
-            use_adamw=args.use_adamw,
-            **model_config,
-        )
-    elif args.model_type == "cehr_bigbird":
-        model = BigBirdPretrain(
-            vocab_size=tokenizer.get_vocab_size(),
-            padding_idx=tokenizer.get_pad_token_id(),
-            **model_config,
-        )
-    elif args.model_type == "ehr_mamba":
-        model = MambaPretrain(
-            vocab_size=tokenizer.get_vocab_size(),
-            padding_idx=tokenizer.get_pad_token_id(),
-            cls_idx=tokenizer.get_class_token_id(),
-            **model_config,
-        )
-    elif args.model_type == "ehr_mamba2":
-        model = Mamba2Pretrain(
-            vocab_size=tokenizer.get_vocab_size(),
-            padding_idx=tokenizer.get_pad_token_id(),
-            cls_idx=tokenizer.get_class_token_id(),
-            eos_idx=tokenizer.get_eos_token_id(),
-            **model_config,
-        )
-
-    run_id = get_run_id(args.checkpoint_dir)
-
-    wandb_logger = WandbLogger(
-        project=args.exp_name,
-        save_dir=args.log_dir,
-        entity=args.workspace_name,
-        id=run_id,
-        resume="allow",
-    )
-
-    # Setup PyTorchLightning trainer
     trainer = pl.Trainer(
         accelerator="gpu",
         num_nodes=args.nodes,
         devices=args.gpus,
-        strategy=DDPStrategy(find_unused_parameters=True)
-        if args.gpus > 1
-        else "auto",  # DeepSpeedStrategy(stage=2, offload_optimizer=False)
-        precision="16-mixed",
+        strategy=DDPStrategy(find_unused_parameters=True) if args.gpus > 1 else "auto",
+        precision="bf16-mixed",
         check_val_every_n_epoch=1,
         max_epochs=args.max_epochs,
         callbacks=callbacks,
@@ -210,13 +115,12 @@ def main(args: argparse.Namespace, model_config: dict[str, Any]) -> None:
         enable_checkpointing=True,
         enable_progress_bar=True,
         enable_model_summary=True,
-        logger=[wandb_logger],  # type: ignore # WandbLogger is a subclass of Logger
+        logger=[wandb_logger],  # type: ignore[list-item]
         log_every_n_steps=args.log_every_n_steps,
         accumulate_grad_batches=args.acc,
         gradient_clip_val=1.0,
     )
 
-    # Train the model
     trainer.fit(
         model=model,
         train_dataloaders=train_loader,
@@ -226,138 +130,31 @@ def main(args: argparse.Namespace, model_config: dict[str, Any]) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Pre-train EHR-Mamba3")
 
-    # project configuration
-    parser.add_argument(
-        "--model_type",
-        type=str,
-        required=True,
-        help="Model type: 'cehr_bert' or 'cehr_bigbird' or 'ehr_mamba' or 'ehr_mamba2'",
-    )
-    parser.add_argument(
-        "--exp_name",
-        type=str,
-        required=True,
-        help="Path to model config file",
-    )
-    parser.add_argument(
-        "--workspace_name",
-        type=str,
-        default=None,
-        help="Name of the Wandb workspace",
-    )
-    parser.add_argument(
-        "--config_dir",
-        type=str,
-        required=True,
-        help="Path to model config file",
-    )
-    parser.add_argument(
-        "--is_decoder",
-        type=bool,
-        default=False,
-        help="Is the model a decoder (e.g. Mamba) or not",
-    )
-
-    # data-related arguments
-    parser.add_argument(
-        "--data_dir",
-        type=str,
-        required=True,
-        help="Path to the data directory",
-    )
-    parser.add_argument(
-        "--sequence_file",
-        type=str,
-        required=True,
-        help="Path to the patient sequence file",
-    )
-    parser.add_argument(
-        "--id_file",
-        type=str,
-        required=True,
-        help="Path to the patient id file",
-    )
-    parser.add_argument(
-        "--vocab_dir",
-        type=str,
-        required=True,
-        help="Path to the vocabulary directory of json files",
-    )
-    parser.add_argument(
-        "--val_size",
-        type=float,
-        default=0.1,
-        help="Validation set size for splitting the data",
-    )
-    parser.add_argument(
-        "--tokenizer_type",
-        type=str,
-        required=True,
-        default="v1",
-        help="Tokenizer version",
-    )
-    parser.add_argument(
-        "--padding_side",
-        type=str,
-        default="right",
-        help="Padding side for the tokenizer",
-    )
-    parser.add_argument(
-        "--return_attention_mask",
-        type=bool,
-        default=True,
-        help="Whether to return the attention mask or not",
-    )
-
-    # checkpointing and loggig arguments
-    parser.add_argument(
-        "--checkpoint_dir",
-        type=str,
-        required=True,
-        help="Path to the checkpoint directory",
-    )
-    parser.add_argument(
-        "--log_dir",
-        type=str,
-        default="logs",
-        help="Path to the log directory",
-    )
-    parser.add_argument(
-        "--resume_checkpoint",
-        type=str,
-        default=None,
-        help="Checkpoint to resume pretraining from",
-    )
-    parser.add_argument(
-        "--log_every_n_steps",
-        type=int,
-        default=10,
-        help="Number of steps to log the training",
-    )
-
-    # Other arguments
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Random seed for reproducibility",
-    )
+    parser.add_argument("--exp_name", type=str, required=True)
+    parser.add_argument("--workspace_name", type=str, default=None)
+    parser.add_argument("--config_dir", type=str, required=True)
+    parser.add_argument("--data_dir", type=str, required=True)
+    parser.add_argument("--sequence_file", type=str, required=True)
+    parser.add_argument("--id_file", type=str, required=True)
+    parser.add_argument("--vocab_dir", type=str, required=True)
+    parser.add_argument("--val_size", type=float, default=0.1)
+    parser.add_argument("--padding_side", type=str, default="right")
+    parser.add_argument("--return_attention_mask", type=bool, default=True)
+    parser.add_argument("--checkpoint_dir", type=str, required=True)
+    parser.add_argument("--log_dir", type=str, default="logs")
+    parser.add_argument("--resume_checkpoint", type=str, default=None)
+    parser.add_argument("--log_every_n_steps", type=int, default=10)
+    parser.add_argument("--seed", type=int, default=42)
 
     args = parser.parse_args()
-
-    if args.model_type not in ["cehr_bert", "cehr_bigbird", "ehr_mamba", "ehr_mamba2"]:
-        print(
-            "Invalid model type. Choose 'cehr_bert' or 'cehr_bigbird' or 'ehr_mamba' or 'ehr_mamba2'."
-        )
-        sys.exit(1)
 
     args.checkpoint_dir = os.path.join(args.checkpoint_dir, args.exp_name)
     os.makedirs(args.checkpoint_dir, exist_ok=True)
     os.makedirs(args.log_dir, exist_ok=True)
 
-    config = load_config(args.config_dir, args.model_type)
+    config = load_config(args.config_dir, "ehr_mamba3")
 
     train_config = config["train"]
     for key, value in train_config.items():

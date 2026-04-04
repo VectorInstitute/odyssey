@@ -1,8 +1,4 @@
-"""Prediction module for loading and running EHR models on patient data.
-
-This module provides functionality to load and run EHR models on patient data,
-both for clinical predictive tasks and EHR forecasting.
-"""
+"""Prediction module for loading and running EHR-Mamba3 models on patient data."""
 
 import json
 import os
@@ -14,9 +10,7 @@ import torch
 import torch.nn.functional as F  # noqa: N812
 
 from odyssey.data.tokenizer import ConceptTokenizer
-from odyssey.models.cehr_big_bird.model import BigBirdFinetune, BigBirdPretrain
-from odyssey.models.ehr_mamba.model import MambaPretrain
-from odyssey.models.ehr_mamba2.model import Mamba2Pretrain
+from odyssey.models.ehr_mamba3.model import Mamba3Finetune, Mamba3Pretrain
 
 
 def load_codes_dict(codes_dir: str) -> Dict[str, str]:
@@ -64,122 +58,104 @@ def replace_sequence_items(
 
 
 def load_pretrained_model(
-    model_type: str, tokenizer: ConceptTokenizer, device: torch.device, model_path: str
-) -> torch.nn.Module:
+    tokenizer: ConceptTokenizer,
+    model_path: str,
+    device: Optional[torch.device] = None,
+    **model_kwargs: Any,
+) -> Mamba3Pretrain:
     """
-    Load a pretrained model based on the specified model type and tokenizer.
-
-    This function initializes a model of the specified type, loads its pretrained
-    weights from a checkpoint file, and prepares it for inference on the specified
-    device.
+    Load a pre-trained EHR-Mamba3 model from a checkpoint.
 
     Parameters
     ----------
-    model_type : str
-        The type of model to load. Currently implements "mamba".
     tokenizer : ConceptTokenizer
-        The tokenizer associated with the model, used to determine vocabulary size
-        and special token IDs.
-    device : torch.device
-        The device (CPU or GPU) on which to load the model.
+        Tokenizer used with the model.
     model_path : str
-        The file path to the saved model checkpoint.
+        Path to the saved model checkpoint.
+    device : torch.device, optional
+        Device to load the model on. Defaults to CUDA if available.
+    **model_kwargs
+        Additional keyword arguments forwarded to :class:`Mamba3Pretrain`.
 
     Returns
     -------
-    torch.nn.Module
-        The loaded and prepared model, ready for inference.
+    Mamba3Pretrain
+        Loaded and prepared model ready for inference.
     """
-    if model_type == "mamba":
-        model = MambaPretrain(
-            vocab_size=tokenizer.get_vocab_size(),
-            embedding_size=768,
-            state_size=16,
-            num_hidden_layers=32,
-            max_seq_length=2048,
-            padding_idx=tokenizer.get_pad_token_id(),
-            cls_idx=tokenizer.get_class_token_id(),
-        )
-    elif model_type == "mamba2":
-        model = Mamba2Pretrain(
-            vocab_size=tokenizer.get_vocab_size(),
-            embedding_size=768,
-            state_size=64,
-            num_hidden_layers=32,
-            max_seq_length=2048,
-            padding_idx=tokenizer.get_pad_token_id(),
-            cls_idx=tokenizer.get_class_token_id(),
-            eos_idx=tokenizer.get_eos_token_id(),
-        )
-    else:
-        raise ValueError(f"Unsupported model type: {model_type}")
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Load the pretrained weights
+    model = Mamba3Pretrain(
+        vocab_size=tokenizer.get_vocab_size(),
+        padding_idx=tokenizer.get_pad_token_id(),
+        cls_idx=tokenizer.get_class_token_id(),
+        **model_kwargs,
+    )
     checkpoint = torch.load(model_path, map_location=device)
-    state_dict = checkpoint["state_dict"]
-    model.load_state_dict(state_dict)
-
-    # Set the model to evaluation mode and move it to the specified device
+    model.load_state_dict(checkpoint["state_dict"])
     model.eval()
     model.to(device)
-
     return model
 
 
 def load_finetuned_model(
-    model_path: str,
     tokenizer: ConceptTokenizer,
-    pre_model_config: Optional[Dict[str, Any]] = None,
-    fine_model_config: Optional[Dict[str, Any]] = None,
+    pretrain_path: str,
+    finetune_path: str,
+    num_labels: int = 2,
+    problem_type: str = "single_label_classification",
     device: Optional[torch.device] = None,
-) -> torch.nn.Module:
+    pre_model_kwargs: Optional[Dict[str, Any]] = None,
+    fine_model_kwargs: Optional[Dict[str, Any]] = None,
+) -> Mamba3Finetune:
     """
-    Load a finetuned model from model_path using tokenizer information.
-
-    Return a loaded finetuned model from model_path, using tokenizer information.
-    If config arguments are not provided, the default configs built into the
-    PyTorch classes are used.
+    Load a fine-tuned EHR-Mamba3 model.
 
     Parameters
     ----------
-    model_path : str
-        Path to the finetuned model to load
     tokenizer : ConceptTokenizer
-        Loaded tokenizer object
-    pre_model_config : Dict[str, Any], optional
-        Optional config to override default values of a pretrained model
-    fine_model_config : Dict[str, Any], optional
-        Optional config to override default values of a finetuned model
+        Tokenizer used with the model.
+    pretrain_path : str
+        Path to the pre-trained backbone checkpoint.
+    finetune_path : str
+        Path to the fine-tuned model checkpoint.
+    num_labels : int, optional
+        Number of output labels, by default 2.
+    problem_type : str, optional
+        One of ``"single_label_classification"``, ``"multi_label_classification"``,
+        or ``"regression"``.
     device : torch.device, optional
-        CUDA device. By default, GPU is used
+        Device to load the model on. Defaults to CUDA if available.
+    pre_model_kwargs : dict, optional
+        Additional keyword arguments for :class:`Mamba3Pretrain`.
+    fine_model_kwargs : dict, optional
+        Additional keyword arguments for :class:`Mamba3Finetune`.
 
     Returns
     -------
-    torch.nn.Module
-        Finetuned model loaded from model_path
+    Mamba3Finetune
+        Loaded and prepared fine-tuned model.
     """
-    # Load GPU or CPU device
-    if not device:
+    if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Create the skeleton of a pretrained and finetuned model
-    pretrained_model = BigBirdPretrain(
-        vocab_size=tokenizer.get_vocab_size(),
-        padding_idx=tokenizer.get_pad_token_id(),
-        **(pre_model_config or {}),
+    pretrained_model = load_pretrained_model(
+        tokenizer=tokenizer,
+        model_path=pretrain_path,
+        device=device,
+        **(pre_model_kwargs or {}),
     )
 
-    model = BigBirdFinetune(
+    model = Mamba3Finetune(
         pretrained_model=pretrained_model,
-        **(fine_model_config or {}),
+        num_labels=num_labels,
+        problem_type=problem_type,
+        **(fine_model_kwargs or {}),
     )
-
-    # Load the weights using model_path directory
-    state_dict = torch.load(model_path, map_location=device)["state_dict"]
+    state_dict = torch.load(finetune_path, map_location=device)["state_dict"]
     model.load_state_dict(state_dict)
     model.to(device)
     model.eval()
-
     return model
 
 
@@ -189,35 +165,24 @@ def create_concept_and_id_to_type_mapping(
     """
     Create a mapping from concepts and their IDs to their corresponding type IDs.
 
-    This function processes pretraining data to build a dictionary that maps each unique
-    concept and its corresponding ID to its type ID, based on the first occurrence of
-    the concept in the data.
-
     Parameters
     ----------
     pretrain_data : pd.DataFrame
-        A pandas DataFrame containing the pretraining data with columns
-        'event_tokens_2048' and 'type_tokens_2048'.
+        DataFrame with columns ``event_tokens_2048`` and ``type_tokens_2048``.
     tokenizer : ConceptTokenizer
-        The tokenizer object used to convert concepts to IDs. Must have a 'token_to_id'
-        method.
+        Tokenizer with a ``token_to_id`` method.
 
     Returns
     -------
     Dict[Union[str, int], Any]
-        A dictionary mapping concepts and their IDs to their type IDs.
+        Dictionary mapping concepts and their IDs to type IDs.
     """
     concept_and_id_to_type: Dict[Union[str, int], Any] = {}
 
-    # Vectorized operation to process all rows at once
     for events, types in zip(
         pretrain_data["event_tokens_2048"], pretrain_data["type_tokens_2048"]
     ):
-        # Use numpy's unique function to get unique concepts and
-        # their first occurrence index
         unique_concepts, first_occurrence = np.unique(events, return_index=True)
-
-        # Map each unique concept and its ID to its corresponding type
         for concept, index in zip(unique_concepts, first_occurrence):
             if concept not in concept_and_id_to_type:
                 concept_id = tokenizer.token_to_id(concept)
@@ -229,31 +194,31 @@ def create_concept_and_id_to_type_mapping(
 
 
 class Forecast:
-    """Forecast token sequences using a pretrained model."""
+    """Forecast token sequences using a pre-trained EHR-Mamba3 model."""
 
     def __init__(
         self,
-        model: torch.nn.Module,
+        model: Mamba3Pretrain,
         tokenizer: ConceptTokenizer,
         pretrain_data: pd.DataFrame,
         temperature: float = 0.8,
         top_p: float = 0.95,
     ):
         """
-        Initialize the Forecast class for generating token sequences.
+        Initialize the Forecast class.
 
         Parameters
         ----------
-        model : torch.nn.Module
-            The pretrained model used for generating predictions.
+        model : Mamba3Pretrain
+            Pre-trained model used for generating predictions.
         tokenizer : ConceptTokenizer
-            The tokenizer used to convert tokens to IDs and vice versa.
+            Tokenizer for converting tokens to IDs and vice versa.
         pretrain_data : pd.DataFrame
-            The pretraining data used to create concept to type mappings.
+            Pre-training data used to create concept-to-type mappings.
         temperature : float, optional
-            The temperature parameter for sampling. Default is 0.8.
+            Sampling temperature, by default 0.8.
         top_p : float, optional
-            The top-p (nucleus) sampling parameter. Default is 0.95.
+            Nucleus sampling parameter, by default 0.95.
         """
         self.model = model
         self.tokenizer = tokenizer
@@ -268,20 +233,7 @@ class Forecast:
 
     @staticmethod
     def get_pad_start_idx(concept_ids: torch.Tensor) -> int:
-        """
-        Find the start index of padding in a tensor of concept IDs.
-
-        Parameters
-        ----------
-        concept_ids : torch.Tensor
-            A tensor containing concept IDs.
-
-        Returns
-        -------
-        int
-            The index of the first padding token.
-        """
-        # Make sure to handle empty tensors and ensure int return type
+        """Return the index of the first padding token."""
         nonzero_indices = concept_ids.nonzero()
         if nonzero_indices.numel() == 0:
             return 0
@@ -293,22 +245,21 @@ class Forecast:
         predicted_ids: torch.Tensor,
     ) -> Tuple[torch.Tensor, ...]:
         """
-        Prepare patient data for model input efficiently by updating with predicted IDs.
+        Prepare patient data for model input by appending predicted IDs.
 
         Parameters
         ----------
         patient : Dict[str, torch.Tensor]
-            A dictionary containing patient data tensors.
+            Patient data tensors.
         predicted_ids : torch.Tensor
-            A tensor of predicted concept IDs to be appended to the patient data.
+            Predicted concept IDs to append.
 
         Returns
         -------
         Tuple[torch.Tensor, ...]
-            A tuple of tensors ready for model input.
+            Tensors ready for model input.
         """
         inputs = []
-
         for key in [
             "concept_ids",
             "type_ids",
@@ -318,12 +269,9 @@ class Forecast:
             "visit_segments",
         ]:
             tensor = patient[key].to(self.device)
-
             if key == "concept_ids":
                 new_tensor = torch.cat([tensor, predicted_ids], dim=0)
-
             elif key == "type_ids":
-                # Map predicted concept IDs to their corresponding type IDs
                 predicted_type_ids = torch.tensor(
                     [
                         self.concept_and_id_to_type.get(id_.item(), 0)
@@ -333,16 +281,12 @@ class Forecast:
                     dtype=tensor.dtype,
                 )
                 new_tensor = torch.cat([tensor, predicted_type_ids], dim=0)
-
             else:
-                # For other features, repeat the last value
                 last_value = tensor[-1]
                 new_tensor = torch.cat(
                     [tensor, last_value.repeat(len(predicted_ids))], dim=0
                 )
-
             inputs.append(new_tensor.unsqueeze(0))
-
         return tuple(inputs)
 
     def predict_next_token(self, inputs: Tuple[torch.Tensor, ...]) -> int:
@@ -352,36 +296,28 @@ class Forecast:
         Parameters
         ----------
         inputs : Tuple[torch.Tensor, ...]
-            A tuple of input tensors prepared for the model.
+            Input tensors prepared for the model.
 
         Returns
         -------
         int
-            The predicted token ID.
+            Predicted token ID.
         """
         with torch.no_grad():
-            output = self.model(inputs)
-        logits = output["logits"][0, -1, :]
+            logits = self.model.get_logits(inputs)[0, -1, :]  # type: ignore[arg-type]
 
         if self.temperature == 0:
-            # Explicitly convert to int
             return int(torch.argmax(logits).item())
 
         logits = logits / self.temperature
-
         probs = F.softmax(logits, dim=-1)
         sorted_probs, sorted_indices = torch.sort(probs, descending=True)
-
         cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
-
         cutoff_index = torch.sum(cumulative_probs < self.top_p) + 1
         top_p_tokens = sorted_indices[:cutoff_index]
         top_p_probs = probs[top_p_tokens]
         top_p_probs /= top_p_probs.sum()
-
-        selected_token_index = int(torch.multinomial(top_p_probs, 1).item())
-        # Explicitly convert to int
-        return int(top_p_tokens[selected_token_index].item())
+        return int(top_p_tokens[int(torch.multinomial(top_p_probs, 1).item())].item())
 
     def generate_token_sequence(
         self,
@@ -395,20 +331,16 @@ class Forecast:
         Parameters
         ----------
         patient : Dict[str, torch.Tensor]
-            A dictionary containing patient data tensors.
+            Patient data tensors.
         num_tokens : int
-            The number of tokens to generate.
+            Number of tokens to generate.
         cutoff_index : int, optional
-            The index at which to truncate the patient data. If None, it will be
-            calculated.
+            Index to truncate patient data. Calculated if not provided.
 
         Returns
         -------
         Tuple[List[int], List[str], List[str]]
-            A tuple containing:
-            - predicted_ids_list: List of predicted token IDs.
-            - predicted_tokens: List of predicted tokens.
-            - predicted_labels: List of predicted labels decoded from tokens.
+            Predicted IDs, predicted tokens, and decoded labels.
         """
         predicted_ids = torch.tensor([], dtype=torch.long, device=self.device)
 
