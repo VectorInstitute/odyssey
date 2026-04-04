@@ -174,7 +174,9 @@ class Mamba3Pretrain(pl.LightningModule):
 
         # Shift for causal language modelling
         shift_logits = logits[:, :-1, :].contiguous()
-        shift_labels = (labels if labels is not None else concept_ids)[:, 1:].contiguous()
+        shift_labels = (labels if labels is not None else concept_ids)[
+            :, 1:
+        ].contiguous()
 
         loss = F.cross_entropy(
             shift_logits.view(-1, shift_logits.size(-1)),
@@ -221,7 +223,9 @@ class Mamba3Pretrain(pl.LightningModule):
         loss = self(inputs, labels=batch.get("labels"))
 
         scheduler = self.lr_schedulers()
-        current_lr = scheduler.get_last_lr()[0] if scheduler is not None else self.learning_rate  # type: ignore[union-attr]
+        current_lr = (
+            scheduler.get_last_lr()[0] if scheduler is not None else self.learning_rate
+        )  # type: ignore[union-attr]
         self.log_dict(
             {f"{stage}_loss": loss, "lr": current_lr},
             on_step=True,
@@ -247,9 +251,15 @@ class Mamba3Pretrain(pl.LightningModule):
         n_warmup = int(0.1 * n_steps)
         n_decay = int(0.9 * n_steps)
 
-        warmup = LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=n_warmup)
-        decay = CosineAnnealingLR(optimizer, T_max=n_decay, eta_min=self.learning_rate * 0.01)
-        scheduler = SequentialLR(optimizer, schedulers=[warmup, decay], milestones=[n_warmup])
+        warmup = LinearLR(
+            optimizer, start_factor=0.01, end_factor=1.0, total_iters=n_warmup
+        )
+        decay = CosineAnnealingLR(
+            optimizer, T_max=n_decay, eta_min=self.learning_rate * 0.01
+        )
+        scheduler = SequentialLR(
+            optimizer, schedulers=[warmup, decay], milestones=[n_warmup]
+        )
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
 
 
@@ -295,7 +305,9 @@ class Mamba3Finetune(pl.LightningModule):
         if multi_head:
             self.heads = nn.ModuleList(
                 [
-                    Mamba3ClassificationHead(hidden_size, num_labels, classifier_dropout)
+                    Mamba3ClassificationHead(
+                        hidden_size, num_labels, classifier_dropout
+                    )
                     for _ in range(num_tasks)
                 ]
             )
@@ -338,7 +350,9 @@ class Mamba3Finetune(pl.LightningModule):
         # argmax of first True gives first padding position; subtract 1 for last content token
         last_idx = pad_mask.int().argmax(dim=-1) - 1  # (B,)
         last_idx = last_idx.clamp(min=0)
-        pooled = hidden_states[torch.arange(batch_size, device=hidden_states.device), last_idx]
+        pooled = hidden_states[
+            torch.arange(batch_size, device=hidden_states.device), last_idx
+        ]
 
         return hidden_states, pooled
 
@@ -404,7 +418,9 @@ class Mamba3Finetune(pl.LightningModule):
             task_indices=batch.get("task_indices"),
         )
         scheduler = self.lr_schedulers()
-        current_lr = scheduler.get_last_lr()[0] if scheduler is not None else self.learning_rate  # type: ignore[union-attr]
+        current_lr = (
+            scheduler.get_last_lr()[0] if scheduler is not None else self.learning_rate
+        )  # type: ignore[union-attr]
         self.log_dict(
             {f"{stage}_loss": loss, "lr": current_lr},
             on_step=True,
@@ -488,7 +504,13 @@ class Mamba3Finetune(pl.LightningModule):
         n_warmup = int(0.1 * n_steps)
         n_decay = int(0.9 * n_steps)
 
-        warmup = LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=n_warmup)
-        decay = CosineAnnealingLR(optimizer, T_max=n_decay, eta_min=self.learning_rate * 0.01)
-        scheduler = SequentialLR(optimizer, schedulers=[warmup, decay], milestones=[n_warmup])
+        warmup = LinearLR(
+            optimizer, start_factor=0.01, end_factor=1.0, total_iters=n_warmup
+        )
+        decay = CosineAnnealingLR(
+            optimizer, T_max=n_decay, eta_min=self.learning_rate * 0.01
+        )
+        scheduler = SequentialLR(
+            optimizer, schedulers=[warmup, decay], milestones=[n_warmup]
+        )
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
