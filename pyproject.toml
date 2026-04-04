@@ -9,7 +9,6 @@ repository = "https://github.com/VectorInstitute/odyssey"
 documentation = "https://vectorinstitute.github.io/odyssey/"
 requires-python = ">=3.12"
 dependencies = [
-    "keras==3.14.0",
     "lightning==2.6.1",
     "scikit-learn>=1.2.2",
     "torch>=2.8.0",
@@ -22,10 +21,14 @@ dependencies = [
     "pyarrow>=15.0.1",
     "plotly>=5.7.0",
     "tokenizers>=0.15.2",
-    "transformers>=4.39.3",
+    "transformers>=5.0.0",
     "captum>=0.7.0",
     "scikit-multilearn>=0.2.0",
     "numpy>=1.26.4",
+    "polars>=1.0.0",
+    # mamba-ssm requires CUDA and must be installed with --no-build-isolation
+    # on the training host: pip install mamba-ssm>=2.3.0 --no-build-isolation
+    "mamba-ssm>=2.3.0; sys_platform == 'linux'",
 ]
 
 [dependency-groups]

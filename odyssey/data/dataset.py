@@ -201,6 +201,10 @@ class AugmentedTokenizationMixin(TokenizationMixin):
 class MaskingMixin:
     """Mixin class for masking tokens in the dataset."""
 
+    # Declared here for mypy; subclasses must provide these attributes
+    tokenizer: ConceptTokenizer
+    mask_prob: float
+
     def mask_tokens(self, sequence: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Mask the tokens in the sequence using vectorized operations.
 
@@ -264,10 +268,16 @@ class MultiTaskMixin:
         A list of all datapoints to be used by __getitem__.
     """
 
+    # Declared here for mypy; subclasses must provide these attributes
+    data: pd.DataFrame
+    nan_indicator: Any
+
     def __init__(self, tasks: List[str]):
         self.tasks = tasks
-        self.task_to_index = {task: [] for task in self.tasks}
-        self.index_mapper = []
+        self.task_to_index: Dict[str, List[Tuple[int, str, int, Optional[int]]]] = {
+            task: [] for task in self.tasks
+        }
+        self.index_mapper: List[Tuple[int, str, int, Optional[int]]] = []
 
     def prepare_multi_task_data(self) -> None:
         """Prepare multi-task data by mapping tasks to corresponding indices.
@@ -309,6 +319,9 @@ class MultiTaskMixin:
 
 class LabelBalanceMixin:
     """Mixin class for balancing labels in the dataset."""
+
+    # Declared here for mypy; subclasses must provide these attributes
+    task_to_index: Dict[str, List[Tuple[int, str, int, Optional[int]]]]
 
     def balance_labels(self, balance_guide: Optional[Dict[str, float]] = None) -> None:
         """Balance the labels for the specified tasks in the dataset.
@@ -693,7 +706,7 @@ class FinetuneMultiDataset(
         tokens["concept_ids"] = tokenized_input["input_ids"].squeeze()
         tokens["attention_mask"] = tokenized_input["attention_mask"].squeeze()
         tokens["labels"] = torch.tensor(label)
-        tokens["task"] = task
+        tokens["task"] = task  # type: ignore[assignment]
 
         return tokens
 
@@ -827,7 +840,7 @@ class FinetuneDatasetDecoder(
         tokens = self.add_additional_tokens(data, self.additional_token_types)
         tokens["concept_ids"] = tokenized_input["input_ids"].squeeze()
         tokens["labels"] = torch.tensor(label)
-        tokens["task"] = task
+        tokens["task"] = task  # type: ignore[assignment]
         tokens["task_indices"] = torch.tensor(TASK_TO_INDEX[task])
 
         if self.return_attention_mask:
