@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union, cast
 import numpy as np
 import pytorch_lightning as pl
 import torch
-import torch.nn.functional as F
+import torch.nn.functional as F  # noqa: N812
 from mamba_ssm.models.config_mamba import MambaConfig as MambaSsmConfig
 from mamba_ssm.models.mixer_seq_simple import MambaLMHeadModel
 from sklearn.metrics import (
@@ -54,7 +54,7 @@ class Mamba3ClassificationHead(nn.Module):
         x = self.dense(x)
         x = F.gelu(x)
         x = self.dropout(x)
-        return self.out_proj(x)
+        return self.out_proj(x)  # type: ignore[no-any-return]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -140,7 +140,7 @@ class Mamba3Pretrain(pl.LightningModule):
             hidden_dropout_prob=dropout_prob,
         )
         # Replace the backbone's plain Embedding with the EHR wrapper
-        self.model.backbone.embedding = self.embeddings  # type: ignore[assignment]
+        self.model.backbone.embedding = self.embeddings
 
     # ------------------------------------------------------------------
     # Forward
@@ -174,14 +174,15 @@ class Mamba3Pretrain(pl.LightningModule):
 
         # Shift for causal language modelling
         shift_logits = logits[:, :-1, :].contiguous()
-        shift_labels = (labels if labels is not None else concept_ids)[:, 1:].contiguous()
+        shift_labels = (labels if labels is not None else concept_ids)[
+            :, 1:
+        ].contiguous()
 
-        loss = F.cross_entropy(
+        return F.cross_entropy(
             shift_logits.view(-1, shift_logits.size(-1)),
             shift_labels.view(-1),
             ignore_index=self.padding_idx,
         )
-        return loss
 
     def get_logits(
         self,
@@ -220,8 +221,12 @@ class Mamba3Pretrain(pl.LightningModule):
         )
         loss = self(inputs, labels=batch.get("labels"))
 
-        scheduler = self.lr_schedulers()
-        current_lr = scheduler.get_last_lr()[0] if scheduler is not None else self.learning_rate  # type: ignore[union-attr]
+        optimizer = self.optimizers()
+        current_lr = (
+            optimizer.param_groups[0]["lr"]  # type: ignore[union-attr]
+            if optimizer is not None
+            else self.learning_rate
+        )
         self.log_dict(
             {f"{stage}_loss": loss, "lr": current_lr},
             on_step=True,
@@ -235,21 +240,25 @@ class Mamba3Pretrain(pl.LightningModule):
         return self._step(batch, "train")
 
     def validation_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
-        """Validation step."""
+        """Run validation step."""
         return self._step(batch, "val")
 
-    def configure_optimizers(
-        self,
-    ) -> Tuple[List[Any], List[Dict[str, Any]]]:
+    def configure_optimizers(self) -> Any:
         """Configure AdamW with linear warmup + cosine decay."""
         optimizer = AdamW(self.parameters(), lr=self.learning_rate)
         n_steps = self.trainer.estimated_stepping_batches
         n_warmup = int(0.1 * n_steps)
         n_decay = int(0.9 * n_steps)
 
-        warmup = LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=n_warmup)
-        decay = CosineAnnealingLR(optimizer, T_max=n_decay, eta_min=self.learning_rate * 0.01)
-        scheduler = SequentialLR(optimizer, schedulers=[warmup, decay], milestones=[n_warmup])
+        warmup = LinearLR(
+            optimizer, start_factor=0.01, end_factor=1.0, total_iters=n_warmup
+        )
+        decay = CosineAnnealingLR(
+            optimizer, T_max=n_decay, eta_min=self.learning_rate * 0.01
+        )
+        scheduler = SequentialLR(
+            optimizer, schedulers=[warmup, decay], milestones=[n_warmup]
+        )
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
 
 
@@ -295,7 +304,9 @@ class Mamba3Finetune(pl.LightningModule):
         if multi_head:
             self.heads = nn.ModuleList(
                 [
-                    Mamba3ClassificationHead(hidden_size, num_labels, classifier_dropout)
+                    Mamba3ClassificationHead(
+                        hidden_size, num_labels, classifier_dropout
+                    )
                     for _ in range(num_tasks)
                 ]
             )
@@ -335,10 +346,12 @@ class Mamba3Finetune(pl.LightningModule):
         # Pool the last non-padding token
         batch_size = hidden_states.shape[0]
         pad_mask = concept_ids == self.padding_idx  # (B, L)
-        # argmax of first True gives first padding position; subtract 1 for last content token
+        # First True in pad_mask → first padding position; -1 gives last content token
         last_idx = pad_mask.int().argmax(dim=-1) - 1  # (B,)
         last_idx = last_idx.clamp(min=0)
-        pooled = hidden_states[torch.arange(batch_size, device=hidden_states.device), last_idx]
+        pooled = hidden_states[
+            torch.arange(batch_size, device=hidden_states.device), last_idx
+        ]
 
         return hidden_states, pooled
 
@@ -346,16 +359,16 @@ class Mamba3Finetune(pl.LightningModule):
         """Compute loss based on problem type."""
         if self.problem_type == "regression":
             loss_fn: Union[MSELoss, CrossEntropyLoss, BCEWithLogitsLoss] = MSELoss()
-            return loss_fn(
+            return loss_fn(  # type: ignore[no-any-return]
                 logits.squeeze() if self.num_labels == 1 else logits,
                 labels.squeeze() if self.num_labels == 1 else labels,
             )
         if self.problem_type == "single_label_classification":
             loss_fn = CrossEntropyLoss()
-            return loss_fn(logits.view(-1, self.num_labels), labels.view(-1))
+            return loss_fn(logits.view(-1, self.num_labels), labels.view(-1))  # type: ignore[no-any-return]
         # multi_label_classification
         loss_fn = BCEWithLogitsLoss()
-        return loss_fn(logits, labels.float())
+        return loss_fn(logits, labels.float())  # type: ignore[no-any-return]
 
     def forward(
         self,
@@ -403,8 +416,12 @@ class Mamba3Finetune(pl.LightningModule):
             labels=batch["labels"],
             task_indices=batch.get("task_indices"),
         )
-        scheduler = self.lr_schedulers()
-        current_lr = scheduler.get_last_lr()[0] if scheduler is not None else self.learning_rate  # type: ignore[union-attr]
+        optimizer = self.optimizers()
+        current_lr = (
+            optimizer.param_groups[0]["lr"]  # type: ignore[union-attr]
+            if optimizer is not None
+            else self.learning_rate
+        )
         self.log_dict(
             {f"{stage}_loss": loss, "lr": current_lr},
             on_step=True,
@@ -418,7 +435,7 @@ class Mamba3Finetune(pl.LightningModule):
         return self._step(batch, "train")
 
     def validation_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
-        """Validation step."""
+        """Run validation step."""
         return self._step(batch, "val")
 
     def test_step(self, batch: Dict[str, Any], batch_idx: int) -> Any:
@@ -437,8 +454,8 @@ class Mamba3Finetune(pl.LightningModule):
             task_indices=batch.get("task_indices"),
         )
         preds = torch.argmax(logits, dim=1)
-        log: Dict[str, torch.Tensor] = {
-            "loss": loss,  # type: ignore[dict-item]
+        log: Dict[str, Any] = {
+            "loss": loss,
             "preds": preds,
             "labels": batch["labels"],
             "logits": logits,
@@ -479,16 +496,20 @@ class Mamba3Finetune(pl.LightningModule):
         self.log("test_precision", precision)
         self.log("test_recall", recall)
 
-    def configure_optimizers(
-        self,
-    ) -> Tuple[List[Any], List[Dict[str, Any]]]:
+    def configure_optimizers(self) -> Any:
         """Configure AdamW with linear warmup + cosine decay."""
         optimizer = AdamW(self.parameters(), lr=self.learning_rate)
         n_steps = self.trainer.estimated_stepping_batches
         n_warmup = int(0.1 * n_steps)
         n_decay = int(0.9 * n_steps)
 
-        warmup = LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=n_warmup)
-        decay = CosineAnnealingLR(optimizer, T_max=n_decay, eta_min=self.learning_rate * 0.01)
-        scheduler = SequentialLR(optimizer, schedulers=[warmup, decay], milestones=[n_warmup])
+        warmup = LinearLR(
+            optimizer, start_factor=0.01, end_factor=1.0, total_iters=n_warmup
+        )
+        decay = CosineAnnealingLR(
+            optimizer, T_max=n_decay, eta_min=self.learning_rate * 0.01
+        )
+        scheduler = SequentialLR(
+            optimizer, schedulers=[warmup, decay], milestones=[n_warmup]
+        )
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
