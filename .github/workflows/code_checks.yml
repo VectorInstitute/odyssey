@@ -51,6 +51,9 @@ jobs:
           source .venv/bin/activate
           pre-commit run --all-files
 
+      - name: Add pip to venv for audit
+        run: uv pip install pip
+
       - name: pip-audit (gh-action-pip-audit)
         uses: pypa/gh-action-pip-audit@v1.1.0
         with:
