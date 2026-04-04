@@ -26,9 +26,14 @@ dependencies = [
     "scikit-multilearn>=0.2.0",
     "numpy>=1.26.4",
     "polars>=1.0.0",
-    # mamba-ssm requires CUDA and must be installed with --no-build-isolation
-    # on the training host: pip install mamba-ssm>=2.3.0 --no-build-isolation
-    "mamba-ssm>=2.3.0; sys_platform == 'linux'",
+]
+
+[project.optional-dependencies]
+# mamba-ssm requires CUDA/nvcc; install on GPU hosts with:
+#   uv sync --extra cuda --no-build-isolation
+#   or: pip install mamba-ssm>=2.3.0 --no-build-isolation
+cuda = [
+    "mamba-ssm>=2.3.0",
 ]
 
 [dependency-groups]
@@ -77,9 +82,7 @@ extra_checks = true
 
 [tool.ruff]
 include = ["*.py", "pyproject.toml", "*.ipynb"]
-exclude = [
-    "odyssey/models/ehr_mamba/mamba_utils.py",
-]
+exclude = []
 line-length = 88
 
 [tool.ruff.format]
