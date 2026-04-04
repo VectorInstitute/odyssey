@@ -1,0 +1,38 @@
+model:
+  embedding_size: 768
+  max_seq_length: 2048
+  max_num_visits: 512
+  state_size: 128
+  num_hidden_layers: 32
+  d_intermediate: 0
+  headdim: 64
+  is_mimo: true
+  mimo_rank: 4
+  chunk_size: 256
+  time_embeddings_size: 32
+  visit_order_size: 3
+  type_vocab_size: 9
+  dropout_prob: 0.1
+  learning_rate: 5.0e-5
+# Note: embedding_size must be divisible by headdim for Mamba-3
+
+train:
+  batch_size: 16
+  num_workers: 4
+  gpus: 1
+  nodes: 1
+  max_epochs: 15
+  acc: 2
+  persistent_workers: true
+  pin_memory: false
+
+finetune:
+  batch_size: 32
+  num_workers: 4
+  gpus: 1
+  nodes: 1
+  max_epochs: 10
+  acc: 1
+  patience: 5
+  persistent_workers: true
+  pin_memory: false
