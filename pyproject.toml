@@ -9,11 +9,15 @@ repository = "https://github.com/VectorInstitute/odyssey"
 documentation = "https://vectorinstitute.github.io/odyssey/"
 requires-python = ">=3.12"
 dependencies = [
-    "lightning==2.6.1",
+    "lightning>=2.0.0",
     "scikit-learn>=1.2.2",
-    "torch>=2.8.0",
-    "tqdm==4.67.3",
-    "wandb==0.25.1",
+    # torch is not pinned here — install the wheel matching your CUDA version:
+    #   CPU:       uv pip install torch
+    #   CUDA 12.8: uv pip install torch --index-url https://download.pytorch.org/whl/cu128
+    #   CUDA 12.4: uv pip install torch --index-url https://download.pytorch.org/whl/cu124
+    "torch>=2.0.0",
+    "tqdm>=4.60.0",
+    "wandb>=0.15.0",
     "pandas>=2.2.1",
     "sqlalchemy>=2.0.28",
     "psycopg2-binary>=2.9.9",
@@ -29,7 +33,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# mamba-ssm requires CUDA/nvcc; install on GPU hosts with:
+# mamba-ssm requires CUDA/nvcc; install on GPU hosts with --no-build-isolation:
 #   uv sync --extra cuda --no-build-isolation
 #   or: pip install mamba-ssm>=2.3.0 --no-build-isolation
 cuda = [
