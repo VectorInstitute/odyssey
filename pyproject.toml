@@ -7,14 +7,13 @@ authors = [{name = "Vector AI Engineering", email = "odyssey@vectorinstitute.ai"
 license = "Apache-2.0"
 repository = "https://github.com/VectorInstitute/odyssey"
 documentation = "https://vectorinstitute.github.io/odyssey/"
-requires-python = ">=3.9,<3.12"
+requires-python = ">=3.12"
 dependencies = [
-    "keras==3.9.0",
-    "lightning==2.3.3",
+    "lightning==2.6.1",
     "scikit-learn>=1.2.2",
     "torch>=2.8.0",
-    "tqdm==4.66.3",
-    "wandb==0.16.0",
+    "tqdm==4.67.3",
+    "wandb==0.25.1",
     "pandas>=2.2.1",
     "sqlalchemy>=2.0.28",
     "psycopg2-binary>=2.9.9",
@@ -22,10 +21,14 @@ dependencies = [
     "pyarrow>=15.0.1",
     "plotly>=5.7.0",
     "tokenizers>=0.15.2",
-    "transformers>=4.39.3",
+    "transformers>=5.0.0",
     "captum>=0.7.0",
     "scikit-multilearn>=0.2.0",
     "numpy>=1.26.4",
+    "polars>=1.0.0",
+    # mamba-ssm requires CUDA and must be installed with --no-build-isolation
+    # on the training host: pip install mamba-ssm>=2.3.0 --no-build-isolation
+    "mamba-ssm>=2.3.0; sys_platform == 'linux'",
 ]
 
 [dependency-groups]
@@ -38,6 +41,11 @@ dev = [
     "mypy>=1.7.0",
     "ruff>=0.3.0",
     "nbqa[toolchain]>=1.7.0",
+]
+docs = [
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.0.0",
+    "mkdocstrings[python]>=0.24.0",
 ]
 
 # Default dependency groups to be installed
