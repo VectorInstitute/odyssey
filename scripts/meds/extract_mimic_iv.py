@@ -31,7 +31,6 @@ import argparse
 import json
 import logging
 import math
-import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -74,23 +73,20 @@ def extract_patients(hosp_dir: Path, n_subjects: int = 0) -> pl.LazyFrame:
         schema_overrides={"dod": pl.Utf8},
     )
 
-    # Approximate DOB from anchor_age + anchor_year (1 Jan of anchor year, minus age in years)
-    birth = (
-        df.with_columns(
-            [
-                (pl.lit(None).cast(pl.Utf8)).alias("text_value"),
-                pl.lit(None).cast(pl.Float32).alias("numeric_value"),
-                pl.col("subject_id").cast(pl.Int64),
-                # DOB approximated as Jan 1 of (anchor_year - anchor_age)
-                (pl.col("anchor_year") - pl.col("anchor_age"))
-                .cast(pl.Utf8)
-                .str.strptime(pl.Datetime("us", "UTC"), format="%Y", strict=False)
-                .alias("time"),
-                pl.lit(BIRTH_CODE).alias("code"),
-            ]
-        )
-        .select(["subject_id", "time", "code", "numeric_value", "text_value"])
-    )
+    # DOB approximated as Jan 1 of (anchor_year - anchor_age)
+    birth = df.with_columns(
+        [
+            (pl.lit(None).cast(pl.Utf8)).alias("text_value"),
+            pl.lit(None).cast(pl.Float32).alias("numeric_value"),
+            pl.col("subject_id").cast(pl.Int64),
+            # DOB approximated as Jan 1 of (anchor_year - anchor_age)
+            (pl.col("anchor_year") - pl.col("anchor_age"))
+            .cast(pl.Utf8)
+            .str.strptime(pl.Datetime("us", "UTC"), format="%Y", strict=False)
+            .alias("time"),
+            pl.lit(BIRTH_CODE).alias("code"),
+        ]
+    ).select(["subject_id", "time", "code", "numeric_value", "text_value"])
 
     gender = df.with_columns(
         [
@@ -126,16 +122,25 @@ def extract_patients(hosp_dir: Path, n_subjects: int = 0) -> pl.LazyFrame:
 
 
 def extract_admissions(hosp_dir: Path) -> pl.LazyFrame:
-    """Map admissions.csv.gz → MEDS rows (admission, discharge, ethnicity, insurance)."""
+    """Map admissions.csv.gz → MEDS rows (admission, discharge, ethnicity, insurance).
+
+    Produces admission, discharge, ethnicity, and insurance events.
+    """
     df = _read_gz(
         hosp_dir / "admissions.csv.gz",
-        schema_overrides={"admittime": pl.Utf8, "dischtime": pl.Utf8, "deathtime": pl.Utf8},
+        schema_overrides={
+            "admittime": pl.Utf8,
+            "dischtime": pl.Utf8,
+            "deathtime": pl.Utf8,
+        },
     ).with_columns(pl.col("subject_id").cast(pl.Int64))
 
     admit = df.with_columns(
         [
             pl.col("admittime")
-            .str.strptime(pl.Datetime("us", "UTC"), format="%Y-%m-%d %H:%M:%S", strict=False)
+            .str.strptime(
+                pl.Datetime("us", "UTC"), format="%Y-%m-%d %H:%M:%S", strict=False
+            )
             .alias("time"),
             pl.lit(ADMISSION_CODE).alias("code"),
             pl.lit(None).cast(pl.Float32).alias("numeric_value"),
@@ -143,23 +148,33 @@ def extract_admissions(hosp_dir: Path) -> pl.LazyFrame:
         ]
     ).select(["subject_id", "time", "code", "numeric_value", "text_value"])
 
-    discharge = df.filter(pl.col("dischtime").is_not_null()).with_columns(
-        [
-            pl.col("dischtime")
-            .str.strptime(pl.Datetime("us", "UTC"), format="%Y-%m-%d %H:%M:%S", strict=False)
-            .alias("time"),
-            pl.lit(DISCHARGE_CODE).alias("code"),
-            pl.lit(None).cast(pl.Float32).alias("numeric_value"),
-            pl.col("discharge_location").alias("text_value"),
-        ]
-    ).select(["subject_id", "time", "code", "numeric_value", "text_value"])
+    discharge = (
+        df.filter(pl.col("dischtime").is_not_null())
+        .with_columns(
+            [
+                pl.col("dischtime")
+                .str.strptime(
+                    pl.Datetime("us", "UTC"), format="%Y-%m-%d %H:%M:%S", strict=False
+                )
+                .alias("time"),
+                pl.lit(DISCHARGE_CODE).alias("code"),
+                pl.lit(None).cast(pl.Float32).alias("numeric_value"),
+                pl.col("discharge_location").alias("text_value"),
+            ]
+        )
+        .select(["subject_id", "time", "code", "numeric_value", "text_value"])
+    )
 
     ethnicity = df.with_columns(
         [
             pl.col("admittime")
-            .str.strptime(pl.Datetime("us", "UTC"), format="%Y-%m-%d %H:%M:%S", strict=False)
+            .str.strptime(
+                pl.Datetime("us", "UTC"), format="%Y-%m-%d %H:%M:%S", strict=False
+            )
             .alias("time"),
-            (pl.lit(ETHNICITY_PREFIX) + pl.col("race").str.to_uppercase()).alias("code"),
+            (pl.lit(ETHNICITY_PREFIX) + pl.col("race").str.to_uppercase()).alias(
+                "code"
+            ),
             pl.lit(None).cast(pl.Float32).alias("numeric_value"),
             pl.lit(None).cast(pl.Utf8).alias("text_value"),
         ]
@@ -168,9 +183,13 @@ def extract_admissions(hosp_dir: Path) -> pl.LazyFrame:
     insurance = df.with_columns(
         [
             pl.col("admittime")
-            .str.strptime(pl.Datetime("us", "UTC"), format="%Y-%m-%d %H:%M:%S", strict=False)
+            .str.strptime(
+                pl.Datetime("us", "UTC"), format="%Y-%m-%d %H:%M:%S", strict=False
+            )
             .alias("time"),
-            (pl.lit(INSURANCE_PREFIX) + pl.col("insurance").str.to_uppercase()).alias("code"),
+            (pl.lit(INSURANCE_PREFIX) + pl.col("insurance").str.to_uppercase()).alias(
+                "code"
+            ),
             pl.lit(None).cast(pl.Float32).alias("numeric_value"),
             pl.lit(None).cast(pl.Utf8).alias("text_value"),
         ]
@@ -193,7 +212,9 @@ def extract_diagnoses(hosp_dir: Path) -> pl.LazyFrame:
         [
             "hadm_id",
             pl.col("dischtime")
-            .str.strptime(pl.Datetime("us", "UTC"), format="%Y-%m-%d %H:%M:%S", strict=False)
+            .str.strptime(
+                pl.Datetime("us", "UTC"), format="%Y-%m-%d %H:%M:%S", strict=False
+            )
             .alias("time"),
         ]
     )
@@ -227,7 +248,9 @@ def extract_procedures(hosp_dir: Path) -> pl.LazyFrame:
         [
             pl.col("hadm_id").cast(pl.Int64),
             pl.col("dischtime")
-            .str.strptime(pl.Datetime("us", "UTC"), format="%Y-%m-%d %H:%M:%S", strict=False)
+            .str.strptime(
+                pl.Datetime("us", "UTC"), format="%Y-%m-%d %H:%M:%S", strict=False
+            )
             .alias("time"),
         ]
     )
@@ -275,8 +298,12 @@ def extract_labevents(hosp_dir: Path) -> Optional[pl.LazyFrame]:
                     pl.Datetime("us", "UTC"), format="%Y-%m-%d %H:%M:%S", strict=False
                 )
                 .alias("time"),
-                (pl.lit(LAB_PREFIX) + pl.col("label").fill_null("UNKNOWN")).alias("code"),
-                pl.col("valuenum").cast(pl.Float32, strict=False).alias("numeric_value"),
+                (pl.lit(LAB_PREFIX) + pl.col("label").fill_null("UNKNOWN")).alias(
+                    "code"
+                ),
+                pl.col("valuenum")
+                .cast(pl.Float32, strict=False)
+                .alias("numeric_value"),
                 pl.col("value").alias("text_value"),
             ]
         )
@@ -305,7 +332,9 @@ def extract_prescriptions(hosp_dir: Path) -> Optional[pl.LazyFrame]:
                     pl.lit(MED_PREFIX)
                     + pl.col("drug").fill_null("UNKNOWN").str.to_uppercase()
                 ).alias("code"),
-                pl.col("dose_val_rx").cast(pl.Float32, strict=False).alias("numeric_value"),
+                pl.col("dose_val_rx")
+                .cast(pl.Float32, strict=False)
+                .alias("numeric_value"),
                 pl.col("route").alias("text_value"),
             ]
         )
@@ -323,7 +352,9 @@ def extract_drgcodes(hosp_dir: Path) -> pl.LazyFrame:
         [
             pl.col("hadm_id").cast(pl.Int64),
             pl.col("dischtime")
-            .str.strptime(pl.Datetime("us", "UTC"), format="%Y-%m-%d %H:%M:%S", strict=False)
+            .str.strptime(
+                pl.Datetime("us", "UTC"), format="%Y-%m-%d %H:%M:%S", strict=False
+            )
             .alias("time"),
         ]
     )
@@ -367,8 +398,13 @@ SPLITS = {"train": 0.8, "tuning": 0.1, "held_out": 0.1}
 SUBJECTS_PER_SHARD = 10_000
 
 
-def write_shards(df: pl.DataFrame, output_dir: Path, split: str, n_per_shard: int) -> None:
-    """Write subject-sorted MEDS data as numbered shards under output_dir/data/split/."""
+def write_shards(
+    df: pl.DataFrame, output_dir: Path, split: str, n_per_shard: int
+) -> None:
+    """Write subject-sorted MEDS data as numbered shards.
+
+    Output path: output_dir/data/{split}/{shard_idx:07d}.parquet
+    """
     shard_dir = output_dir / "data" / split
     shard_dir.mkdir(parents=True, exist_ok=True)
 
@@ -376,14 +412,20 @@ def write_shards(df: pl.DataFrame, output_dir: Path, split: str, n_per_shard: in
     n_shards = max(1, math.ceil(len(subjects) / n_per_shard))
 
     for shard_idx in range(n_shards):
-        shard_subjects = subjects[shard_idx * n_per_shard : (shard_idx + 1) * n_per_shard]
-        shard = (
-            df.filter(pl.col("subject_id").is_in(shard_subjects))
-            .sort(["subject_id", "time"], nulls_last=True)
+        shard_subjects = subjects[
+            shard_idx * n_per_shard : (shard_idx + 1) * n_per_shard
+        ]
+        shard = df.filter(pl.col("subject_id").is_in(shard_subjects)).sort(
+            ["subject_id", "time"], nulls_last=True
         )
         out_path = shard_dir / f"{shard_idx:07d}.parquet"
         shard.write_parquet(out_path)
-        log.info("  wrote %s (%d rows, %d subjects)", out_path.name, len(shard), len(shard_subjects))
+        log.info(
+            "  wrote %s (%d rows, %d subjects)",
+            out_path.name,
+            len(shard),
+            len(shard_subjects),
+        )
 
 
 def write_metadata(df: pl.DataFrame, output_dir: Path) -> None:
@@ -517,7 +559,11 @@ def main() -> None:
         kept_ids = all_events["subject_id"].unique().sort()[: args.n_subjects]
         all_events = all_events.filter(pl.col("subject_id").is_in(kept_ids))
 
-    log.info("Total events: %d across %d subjects", len(all_events), all_events["subject_id"].n_unique())
+    log.info(
+        "Total events: %d across %d subjects",
+        len(all_events),
+        all_events["subject_id"].n_unique(),
+    )
 
     # ── split subjects ────────────────────────────────────────────────────────
     all_subjects = all_events["subject_id"].unique().shuffle(seed=args.seed).to_list()
@@ -530,7 +576,11 @@ def main() -> None:
     held_ids = set(all_subjects[n_train + n_tune :])
 
     # ── write shards ──────────────────────────────────────────────────────────
-    for split_name, id_set in [("train", train_ids), ("tuning", tune_ids), ("held_out", held_ids)]:
+    for split_name, id_set in [
+        ("train", train_ids),
+        ("tuning", tune_ids),
+        ("held_out", held_ids),
+    ]:
         log.info("Writing %s split (%d subjects) …", split_name, len(id_set))
         split_df = all_events.filter(pl.col("subject_id").is_in(id_set))
         write_shards(split_df, output_dir, split_name, args.subjects_per_shard)

@@ -50,7 +50,7 @@ MAX_SEQ_LEN = 2048
 
 # ── type ID assignment ────────────────────────────────────────────────────────
 PAD_TYPE = 0
-SPECIAL_TYPE = 1    # CLS, BOS, EOS, VS, VE
+SPECIAL_TYPE = 1  # CLS, BOS, EOS, VS, VE
 VS_TYPE = 2
 VE_TYPE = 3
 TIME_TYPE = 4
@@ -68,8 +68,15 @@ def code_to_type_id(code: str) -> int:
         return MED_TYPE
     if code.startswith(("ICD", "DRG//")):
         return DIAG_TYPE
-    if code in ("MEDS_BIRTH", "MEDS_DEATH", "ADMISSION//HOSPITAL", "DISCHARGE//HOSPITAL",
-                "ADMISSION//ED", "ADMISSION//ICU", "DISCHARGE//ICU"):
+    if code in (
+        "MEDS_BIRTH",
+        "MEDS_DEATH",
+        "ADMISSION//HOSPITAL",
+        "DISCHARGE//HOSPITAL",
+        "ADMISSION//ED",
+        "ADMISSION//ICU",
+        "DISCHARGE//ICU",
+    ):
         return SPECIAL_TYPE
     if code.startswith(("GENDER//", "ETHNICITY//", "INSURANCE//")):
         return OTHER_TYPE
@@ -77,6 +84,7 @@ def code_to_type_id(code: str) -> int:
 
 
 # ── time bucketing ────────────────────────────────────────────────────────────
+
 
 def days_to_time_token(days: float) -> int:
     """Convert delta days to a discrete time bucket index.
@@ -102,6 +110,7 @@ def days_to_time_token(days: float) -> int:
 
 
 # ── per-patient sequence builder ───────────────────────────────────────────────
+
 
 def build_patient_sequence(
     subject_id: int,
@@ -189,6 +198,7 @@ def build_patient_sequence(
 
 # ── shard processing ──────────────────────────────────────────────────────────
 
+
 def process_shard(shard_path: Path, output_path: Path, max_seq_len: int) -> int:
     """Convert one MEDS shard parquet to odyssey format and write output."""
     df = pl.read_parquet(shard_path)
@@ -196,7 +206,7 @@ def process_shard(shard_path: Path, output_path: Path, max_seq_len: int) -> int:
     rows = []
     for subject_id, group in df.group_by("subject_id"):
         row = build_patient_sequence(
-            subject_id=int(subject_id[0]),
+            subject_id=int(subject_id[0]),  # type: ignore[call-overload]
             events=group,
             max_seq_len=max_seq_len,
         )
@@ -213,14 +223,31 @@ def process_shard(shard_path: Path, output_path: Path, max_seq_len: int) -> int:
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
+
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
-    p = argparse.ArgumentParser(description="Convert MEDS shards to odyssey tokenized format")
-    p.add_argument("--meds_dir", required=True, help="Root MEDS directory (output of extract_mimic_iv.py)")
-    p.add_argument("--output_dir", required=True, help="Output directory for odyssey-format parquets")
-    p.add_argument("--max_seq_len", type=int, default=MAX_SEQ_LEN, help="Max sequence length")
-    p.add_argument("--split", default="train", choices=["train", "tuning", "held_out", "all"],
-                   help="Which split to process")
+    p = argparse.ArgumentParser(
+        description="Convert MEDS shards to odyssey tokenized format"
+    )
+    p.add_argument(
+        "--meds_dir",
+        required=True,
+        help="Root MEDS directory (output of extract_mimic_iv.py)",
+    )
+    p.add_argument(
+        "--output_dir",
+        required=True,
+        help="Output directory for odyssey-format parquets",
+    )
+    p.add_argument(
+        "--max_seq_len", type=int, default=MAX_SEQ_LEN, help="Max sequence length"
+    )
+    p.add_argument(
+        "--split",
+        default="train",
+        choices=["train", "tuning", "held_out", "all"],
+        help="Which split to process",
+    )
     return p.parse_args()
 
 
@@ -247,7 +274,9 @@ def main() -> None:
             total += n
             log.info("  %s → %d patients", shard_path.name, n)
 
-        log.info("Split '%s': %d patients written to %s", split, total, output_dir / split)
+        log.info(
+            "Split '%s': %d patients written to %s", split, total, output_dir / split
+        )
 
     log.info("Done.")
 
