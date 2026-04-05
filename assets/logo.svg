@@ -1,0 +1,172 @@
+<svg width="800" height="180" viewBox="0 0 800 180" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!--
+      Vector brand palette:
+        magenta   #EB088A   (primary)
+        cobalt    #313CFF
+        violet    #8A25C9
+        turquoise #48C0D9
+    -->
+
+    <!--
+      ECG path: two full P-QRS-T cardiac cycles
+      Center y=90, x: 15–290
+        P waves   — gentle atrial bumps
+        QRS       — sharp ventricular spikes (y≈24–26)
+        T waves   — broad repolarization humps
+        Baseline  — iso-electric segments
+    -->
+    <path id="ecg"
+          d="M15,90 L38,90
+             C40,90 43,70 50,70 C57,70 60,90 64,90
+             L76,90 L80,97 L87,24 L93,104 L98,90
+             L116,90
+             C120,90 125,58 134,58 C143,58 148,90 154,90
+             L172,90
+             C174,90 177,74 183,74 C189,74 192,90 196,90
+             L206,90 L210,97 L217,26 L223,106 L228,90
+             L244,90
+             C248,90 253,60 262,60 C271,60 275,90 280,90
+             L290,90"/>
+
+    <!-- Ambient glow behind icon -->
+    <radialGradient id="glowbg" cx="155" cy="90" r="160" gradientUnits="userSpaceOnUse">
+      <stop offset="0%"  stop-color="#EB088A" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#EB088A" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- ECG trace gradient: magenta → violet → cobalt -->
+    <linearGradient id="ecgg" x1="15" y1="0" x2="290" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0%"   stop-color="#EB088A"/>
+      <stop offset="48%"  stop-color="#8A25C9"/>
+      <stop offset="100%" stop-color="#313CFF"/>
+    </linearGradient>
+
+    <!-- Wordmark gradient -->
+    <linearGradient id="tg" x1="345" y1="0" x2="730" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0%"   stop-color="#EB088A"/>
+      <stop offset="100%" stop-color="#313CFF"/>
+    </linearGradient>
+
+    <!-- Strong glow -->
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="3.5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+
+    <!-- Soft glow for small nodes -->
+    <filter id="softglow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="1.8" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+
+    <!-- Wide glow for tracer dot -->
+    <filter id="tracerglow" x="-200%" y="-200%" width="500%" height="500%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@500;800&amp;display=swap');
+    </style>
+  </defs>
+
+  <!-- Ambient glow -->
+  <rect width="800" height="180" rx="16" fill="url(#glowbg)"/>
+
+  <!-- ECG trace — ghost layer (faint echo) -->
+  <path d="M15,90 L38,90
+           C40,90 43,70 50,70 C57,70 60,90 64,90
+           L76,90 L80,97 L87,24 L93,104 L98,90
+           L116,90
+           C120,90 125,58 134,58 C143,58 148,90 154,90
+           L172,90
+           C174,90 177,74 183,74 C189,74 192,90 196,90
+           L206,90 L210,97 L217,26 L223,106 L228,90
+           L244,90
+           C248,90 253,60 262,60 C271,60 275,90 280,90
+           L290,90"
+        stroke="url(#ecgg)" stroke-width="1.2" fill="none"
+        stroke-linecap="round" stroke-linejoin="round" opacity="0.18"/>
+
+  <!-- ECG trace — main glowing line -->
+  <path d="M15,90 L38,90
+           C40,90 43,70 50,70 C57,70 60,90 64,90
+           L76,90 L80,97 L87,24 L93,104 L98,90
+           L116,90
+           C120,90 125,58 134,58 C143,58 148,90 154,90
+           L172,90
+           C174,90 177,74 183,74 C189,74 192,90 196,90
+           L206,90 L210,97 L217,26 L223,106 L228,90
+           L244,90
+           C248,90 253,60 262,60 C271,60 275,90 280,90
+           L290,90"
+        stroke="url(#ecgg)" stroke-width="2.5" fill="none"
+        stroke-linecap="round" stroke-linejoin="round"
+        filter="url(#glow)" opacity="0.88"/>
+
+  <!-- ── Clinical event nodes ─────────────────────────────────────────── -->
+
+  <!-- P wave 1 (x=50, y=70) — admission / visit start, magenta -->
+  <circle cx="50" cy="70" r="3.5" fill="#EB088A" filter="url(#softglow)">
+    <animate attributeName="opacity" values="0.5;1;0.5" dur="2.8s" repeatCount="indefinite"/>
+  </circle>
+
+  <!-- R peak 1 (x=87, y=24) — critical/acute event, magenta, heartbeat pulse -->
+  <circle cx="87" cy="24" r="6" fill="#EB088A" filter="url(#glow)">
+    <animate attributeName="r"       values="5.5;7.5;5.5" dur="1.4s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values="1;0.45;1"    dur="1.4s" repeatCount="indefinite"/>
+  </circle>
+
+  <!-- T wave 1 (x=134, y=58) — lab result, violet -->
+  <circle cx="134" cy="58" r="4.5" fill="#8A25C9" filter="url(#softglow)">
+    <animate attributeName="opacity" values="0.55;1;0.55" dur="2.2s" repeatCount="indefinite"/>
+  </circle>
+
+  <!-- P wave 2 (x=183, y=74) — second visit, magenta (dimmer) -->
+  <circle cx="183" cy="74" r="3.5" fill="#EB088A" filter="url(#softglow)" opacity="0.7">
+    <animate attributeName="opacity" values="0.4;0.8;0.4" dur="2.8s" begin="0.4s" repeatCount="indefinite"/>
+  </circle>
+
+  <!-- R peak 2 (x=217, y=26) — second critical event, cobalt -->
+  <circle cx="217" cy="26" r="5.5" fill="#313CFF" filter="url(#glow)">
+    <animate attributeName="r"       values="5;7;5"     dur="1.4s" begin="0.7s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values="1;0.4;1"   dur="1.4s" begin="0.7s" repeatCount="indefinite"/>
+  </circle>
+
+  <!-- T wave 2 (x=262, y=60) — medication/diagnosis, violet -->
+  <circle cx="262" cy="60" r="4" fill="#8A25C9" filter="url(#softglow)" opacity="0.75"/>
+
+  <!-- Forecast ring (x=290, y=90) — next-event prediction, turquoise -->
+  <circle cx="290" cy="90" r="9" fill="none" stroke="#48C0D9" stroke-width="1.5">
+    <animate attributeName="r"       values="9;18;9"   dur="2.2s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values="0.65;0;0.65" dur="2.2s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="290" cy="90" r="4" fill="#48C0D9" filter="url(#glow)">
+    <animate attributeName="opacity" values="1;0.35;1" dur="2.2s" repeatCount="indefinite"/>
+  </circle>
+
+  <!-- ── Tracer dot — scans the ECG like a live monitor ─────────────── -->
+  <circle r="4.5" fill="#48C0D9" filter="url(#tracerglow)">
+    <animateMotion dur="4s" repeatCount="indefinite" rotate="none">
+      <mpath href="#ecg"/>
+    </animateMotion>
+    <!-- fade in at start, hold, fade out near end for clean loop -->
+    <animate attributeName="opacity"
+             values="0;0.9;0.9;0.9;0"
+             keyTimes="0;0.06;0.5;0.88;1"
+             dur="4s" repeatCount="indefinite"/>
+  </circle>
+
+  <!-- ── Wordmark ───────────────────────────────────────────────────── -->
+  <text x="345" y="118"
+        font-family="'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
+        font-size="84" font-weight="800" letter-spacing="-4"
+        fill="url(#tg)">odyssey</text>
+
+  <!-- Tagline -->
+  <text x="347" y="148"
+        font-family="'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
+        font-size="13" font-weight="500" letter-spacing="3.5"
+        fill="#4a4a6a">clinical foundation models</text>
+</svg>
