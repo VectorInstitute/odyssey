@@ -8,7 +8,7 @@ from typing import Any, Tuple
 
 import pandas as pd
 import polars as pl
-import yaml  # type: ignore[import-untyped]
+import yaml
 
 
 def load_config(config_dir: str, model_type: str) -> Any:
