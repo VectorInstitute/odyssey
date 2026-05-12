@@ -33,6 +33,8 @@ dependencies = [
     "polars>=1.30.0",
     "meds>=0.4.0",
     "meds-transforms>=0.6.1",
+    # urllib3>=2.7.0 fixes CVE-2026-44431 and CVE-2026-44432
+    "urllib3>=2.7.0",
 ]
 
 [project.optional-dependencies]
