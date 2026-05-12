@@ -2249,6 +2249,7 @@ dependencies = [
     { name = "torch" },
     { name = "tqdm" },
     { name = "transformers" },
+    { name = "urllib3" },
     { name = "wandb" },
 ]
 
@@ -2296,6 +2297,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.0.0" },
     { name = "tqdm", specifier = ">=4.60.0" },
     { name = "transformers", specifier = ">=5.0.0" },
+    { name = "urllib3", specifier = ">=2.7.0" },
     { name = "wandb", specifier = ">=0.15.0" },
 ]
 provides-extras = ["cuda"]
