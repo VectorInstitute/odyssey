@@ -11,6 +11,8 @@ requires-python = ">=3.12"
 dependencies = [
     # MIMIC-IV -> MEDS extraction (hosp + icu modules; ED not yet covered upstream)
     "MIMIC_IV_MEDS",
+    # Used directly (not just transitively via MIMIC_IV_MEDS) for concept labeling.
+    "polars>=1.30.0",
     # Model dev. Mac (local, CPU/MPS) installs plain torch; on the GCP A100 host,
     # install the CUDA wheel matching the driver and add the `cuda` extra below.
     "torch>=2.12.1",
