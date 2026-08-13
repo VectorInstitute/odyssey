@@ -82,10 +82,15 @@ uv run mypy odyssey
 
 1. ~~Validate the MEDS extraction pipeline (hosp + icu) end-to-end~~
 2. ~~Implement and rigorously test the concept bottleneck layer~~
-3. Derive real clinical concept labels from MIMIC-IV codes (rule-based, e.g. SIRS criteria, AKI, hypotension)
-4. Wire the concept bottleneck into the EHR-Mamba3 backbone; pretrain on real MIMIC-IV 3.1 (GPU-only)
-5. Extend extraction to MIMIC-IV-ED
-6. Phase 2: an LLM agent (e.g. MedGemma) that reads the concept-annotated forecast and assists a clinician
+3. ~~Derive real clinical concept labels from MIMIC-IV codes (rule-based, e.g. SIRS criteria, AKI, hypotension)~~
+4. ~~Wire the concept bottleneck into the EHR-Mamba3 backbone; validate forward+backward on a real GPU~~
+5. Pretrain on real MIMIC-IV 3.1 at scale (GPU)
+6. Extend extraction to MIMIC-IV-ED
+7. Phase 2: an LLM agent (e.g. MedGemma) that reads the concept-annotated forecast and assists a clinician
+
+### GPU notes
+
+`mamba-ssm`'s high-level `MambaLMHeadModel`/`MixerModel` wrapper only dispatches `ssm_cfg={"layer": ...}` to Mamba1/Mamba2 (as of 2.3.2), even though the package ships real Mamba-3 kernels — `EHRMamba3Backbone` builds the block stack directly instead (see its module docstring). Mamba-3's MIMO kernels also require `seq_len % chunk_size == 0` and are only validated here at `headdim=64`; smaller `headdim` values hit TileLang warp-partitioning errors in the backward kernel for this `mamba-ssm` version.
 
 ## Citation
 
