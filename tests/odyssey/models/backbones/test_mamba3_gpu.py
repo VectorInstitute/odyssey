@@ -27,6 +27,14 @@ HIDDEN_SIZE = 64  # must be divisible by headdim
 NUM_CONCEPTS = 4
 RESIDUAL_DIM = 6
 PADDING_IDX = 0
+# Mamba3's MIMO kernels require seq_len % chunk_size == 0, and headdim=64
+# is the smallest value that reliably compiles for both fwd and bwd
+# TileLang kernels in mamba-ssm 2.3.2 -- headdim=16/32 hit warp-partitioning
+# InternalErrors in the backward kernel for this shape. chunk_size=16
+# matches the module's documented recommendation of 64 / mimo_rank (4).
+MAMBA3_HEADDIM = 64
+MAMBA3_CHUNK_SIZE = 16
+SEQ_LEN = 16  # multiple of MAMBA3_CHUNK_SIZE
 
 
 def _make_batch(batch: int, seq_len: int, device: str) -> ClinicalSequenceBatch:
@@ -50,17 +58,14 @@ def test_ehr_mamba3_backbone_forward_shape() -> None:
         padding_idx=PADDING_IDX,
         state_size=16,
         num_hidden_layers=2,
-        headdim=32,
-        # Mamba3's MIMO kernel recommends chunk_size = 64 / mimo_rank
-        # (mimo_rank defaults to 4); untested headdim/chunk_size
-        # combinations can fail in the TileLang kernel's warp partitioning.
-        chunk_size=16,
+        headdim=MAMBA3_HEADDIM,
+        chunk_size=MAMBA3_CHUNK_SIZE,
     ).cuda()
-    batch = _make_batch(batch=2, seq_len=10, device="cuda")
+    batch = _make_batch(batch=2, seq_len=SEQ_LEN, device="cuda")
 
     hidden_states = backbone(batch)
 
-    assert hidden_states.shape == (2, 10, HIDDEN_SIZE)
+    assert hidden_states.shape == (2, SEQ_LEN, HIDDEN_SIZE)
     assert hidden_states.is_cuda
 
 
@@ -78,11 +83,8 @@ def test_ehr_mamba3_backbone_through_concept_bottleneck_end_to_end() -> None:
         padding_idx=PADDING_IDX,
         state_size=16,
         num_hidden_layers=2,
-        headdim=32,
-        # Mamba3's MIMO kernel recommends chunk_size = 64 / mimo_rank
-        # (mimo_rank defaults to 4); untested headdim/chunk_size
-        # combinations can fail in the TileLang kernel's warp partitioning.
-        chunk_size=16,
+        headdim=MAMBA3_HEADDIM,
+        chunk_size=MAMBA3_CHUNK_SIZE,
     )
     model = ConceptBottleneckSequenceModel(
         backbone=backbone,
@@ -92,7 +94,7 @@ def test_ehr_mamba3_backbone_through_concept_bottleneck_end_to_end() -> None:
         padding_idx=PADDING_IDX,
     ).cuda()
 
-    batch = _make_batch(batch=3, seq_len=12, device="cuda")
+    batch = _make_batch(batch=3, seq_len=SEQ_LEN, device="cuda")
     concept_labels = torch.randint(0, 2, (3, NUM_CONCEPTS), device="cuda").float()
 
     total, components = model.compute_loss(batch, concept_labels)
