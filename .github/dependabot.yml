@@ -8,4 +8,10 @@ updates:
   - package-ecosystem: "github-actions" # See documentation for possible values
     directory: "/" # Location of package manifests
     schedule:
-      interval: "weekly"
+      interval: "daily"
+
+  # Keep uv dependencies (uv.lock) up to date
+  - package-ecosystem: "uv"
+    directory: "/"          # where pyproject.toml and uv.lock live
+    schedule:
+      interval: "daily"

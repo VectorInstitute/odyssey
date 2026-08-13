@@ -9,30 +9,11 @@ repository = "https://github.com/VectorInstitute/odyssey"
 documentation = "https://vectorinstitute.github.io/odyssey/"
 requires-python = ">=3.12"
 dependencies = [
-    "lightning>=2.0.0",
-    "scikit-learn>=1.2.2",
-    # torch is not pinned here — install the wheel matching your CUDA version:
-    #   CPU:       uv pip install torch
-    #   CUDA 12.8: uv pip install torch --index-url https://download.pytorch.org/whl/cu128
-    #   CUDA 12.4: uv pip install torch --index-url https://download.pytorch.org/whl/cu124
+    # MIMIC-IV -> MEDS extraction (hosp + icu modules; ED not yet covered upstream)
+    "MIMIC_IV_MEDS",
+    # Model dev. Mac (local, CPU/MPS) installs plain torch; on the GCP A100 host,
+    # install the CUDA wheel matching the driver and add the `cuda` extra below.
     "torch>=2.12.1",
-    "tqdm>=4.60.0",
-    "wandb>=0.15.0",
-    "pandas>=2.2.1",
-    "sqlalchemy>=2.0.28",
-    "psycopg2-binary>=2.9.9",
-    "fhir-resources>=5.1.1",
-    "pyarrow>=15.0.1",
-    "plotly>=5.7.0",
-    "tokenizers>=0.15.2",
-    "transformers>=5.0.0",
-    "captum>=0.7.0",
-    "scikit-multilearn>=0.2.0",
-    "numpy>=1.26.4",
-    # polars is pinned by meds-transforms 0.6.1 (~=1.30.0); will lift when that updates
-    "polars>=1.30.0",
-    "meds>=0.4.0",
-    "meds-transforms>=0.6.1",
     # urllib3>=2.7.0 fixes CVE-2026-44431 and CVE-2026-44432
     "urllib3>=2.7.0",
     # idna>=3.15 fixes CVE-2026-45409
@@ -40,23 +21,29 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# mamba-ssm requires CUDA/nvcc; install on GPU hosts with --no-build-isolation:
+# mamba-ssm requires CUDA/nvcc — GCP A100 only, not buildable on Mac.
 #   uv sync --extra cuda --no-build-isolation
-#   or: pip install mamba-ssm>=2.3.0 --no-build-isolation
 cuda = [
     "mamba-ssm>=2.3.0",
 ]
 
+# NOTE: transformers/lightning/etc. are intentionally omitted until the
+# concept-bottleneck architecture actually needs them — add alongside the
+# code that uses them, not speculatively.
+
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
-    "pre-commit>=4.0.0",
-    "pytest-cov>=3.0.0",
+    "pytest-cov>=6.0.0",
+    "pytest-asyncio>=0.25.2",
+    "pytest-mock>=3.14.0",
+    "pre-commit>=4.1.0",
+    "pip-audit>=2.7.3",
     "codecov>=2.1.13",
     "nbstripout>=0.6.1",
-    "mypy>=1.7.0",
-    "ruff>=0.3.0",
-    "nbqa[toolchain]>=1.7.0",
+    "mypy>=1.20.1",
+    "ruff>=0.15.16",
+    "nbqa[toolchain]>=1.9.1",
     # pip>=26.1.2 fixes PYSEC-2026-196
     "pip>=26.1.2",
 ]
@@ -71,7 +58,6 @@ docs = [
 default-groups = ["dev"]
 
 [tool.mypy]
-plugins = ["numpy.typing.mypy_plugin"]
 ignore_missing_imports = true
 install_types = true
 pretty = true
