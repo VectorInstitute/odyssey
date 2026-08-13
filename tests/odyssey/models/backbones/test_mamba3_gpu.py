@@ -50,8 +50,11 @@ def test_ehr_mamba3_backbone_forward_shape() -> None:
         padding_idx=PADDING_IDX,
         state_size=16,
         num_hidden_layers=2,
-        headdim=16,
-        chunk_size=32,
+        headdim=32,
+        # Mamba3's MIMO kernel recommends chunk_size = 64 / mimo_rank
+        # (mimo_rank defaults to 4); untested headdim/chunk_size
+        # combinations can fail in the TileLang kernel's warp partitioning.
+        chunk_size=16,
     ).cuda()
     batch = _make_batch(batch=2, seq_len=10, device="cuda")
 
@@ -75,8 +78,11 @@ def test_ehr_mamba3_backbone_through_concept_bottleneck_end_to_end() -> None:
         padding_idx=PADDING_IDX,
         state_size=16,
         num_hidden_layers=2,
-        headdim=16,
-        chunk_size=32,
+        headdim=32,
+        # Mamba3's MIMO kernel recommends chunk_size = 64 / mimo_rank
+        # (mimo_rank defaults to 4); untested headdim/chunk_size
+        # combinations can fail in the TileLang kernel's warp partitioning.
+        chunk_size=16,
     )
     model = ConceptBottleneckSequenceModel(
         backbone=backbone,
