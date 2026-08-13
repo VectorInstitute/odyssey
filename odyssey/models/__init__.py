@@ -1,1 +1,1 @@
-"""Models sub-package."""
+"""Model components."""

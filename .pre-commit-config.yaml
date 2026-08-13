@@ -11,27 +11,48 @@ repos:
     - id: end-of-file-fixer
     - id: mixed-line-ending
       args: [--fix=lf]
-    - id: requirements-txt-fixer
+    - id: fix-byte-order-marker
+    - id: check-merge-conflict
+    - id: check-symlinks
+    - id: detect-private-key
     - id: check-yaml
+      args: [--unsafe]
     - id: check-toml
+
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.11.6
+    hooks:
+      - id: uv-lock
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: 'v0.15.16'
     hooks:
     - id: ruff-check
       args: [--fix, --exit-non-zero-on-fix]
-      types_or: [python]
+      types_or: [python, jupyter]
     - id: ruff-format
       types_or: [python, jupyter]
 
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v2.1.0
+    rev: v1.20.1
     hooks:
     - id: mypy
       entry: python3 -m mypy --config-file pyproject.toml
       language: system
       types: [python]
       exclude: "tests"
+
+  - repo: https://github.com/crate-ci/typos
+    rev: v1
+    hooks:
+      - id: typos
+        args: []
+
+  - repo: https://github.com/nbQA-dev/nbQA
+    rev: 1.9.1
+    hooks:
+    - id: nbqa-ruff
+      args: [--fix, --exit-non-zero-on-fix]
 
   - repo: local
     hooks:

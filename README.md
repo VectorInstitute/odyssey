@@ -10,28 +10,34 @@
     <img src="https://img.shields.io/badge/arXiv-2405.14567-b31b1b.svg" alt="arXiv">
   </a>
   <img src="https://img.shields.io/badge/python-≥3.12-blue.svg" alt="Python ≥ 3.12">
-  <img src="https://img.shields.io/badge/mamba--ssm-2.3.1-8A25C9.svg" alt="mamba-ssm 2.3.1">
 </p>
 
 ---
 
-Odyssey is a toolkit for building clinical foundation models from Electronic Health Records (EHR). It uses **EHR-Mamba3** — a Mamba-3 SSM backbone enriched with clinical embeddings (token types, timestamps, ages, visit structure) — and a **MEDS 0.4+ pipeline** that converts raw MIMIC-IV data to the model-ready format.
+Odyssey builds **interpretable** clinical foundation models from Electronic Health Records. Prior work (EHR-Mamba3, [arXiv:2405.14567](https://arxiv.org/abs/2405.14567)) showed that a Mamba SSM trained with next-token prediction over patient event sequences learns strong representations for forecasting — but, like most large sequence models, its predictions aren't inspectable. This iteration adds a **concept bottleneck**: the backbone's hidden state is split into (a) a small set of clinically-grounded, supervised concepts (e.g. "on vasopressors", "acute kidney injury"), and (b) a free "unknown concept" residual that absorbs whatever else the task needs. A patient-timeline forecast can then be explained in terms of the concepts that drove it, instead of an opaque embedding.
 
-## Architecture
+**Status: active research rebuild, not yet trained on real patient data.** See [Roadmap](#roadmap) below.
 
-**EHR-Mamba3** wraps `mamba_ssm.MambaLMHeadModel` with `ssm_cfg={"layer": "Mamba3"}` and injects six EHR-specific embedding streams via a caching bridge (`CachedEHREmbeddings`) that replaces the backbone's standard token embedding layer.
+## Architecture (target)
 
 ```
-MIMIC-IV CSVs
-    ↓  scripts/meds/extract_mimic_iv.py
+MIMIC-IV 3.1 (hosp + icu)
+    ↓  meds-extract  (Medical-Event-Data-Standard/MIMIC_IV_MEDS spec)
 MEDS parquet  (subject_id · time · code · numeric_value)
-    ↓  meds-transforms 0.6.1  (filter + normalize)
-    ↓  scripts/meds/meds_to_odyssey.py
-Odyssey parquet  (event_tokens · type_tokens · time_tokens · age_tokens · …)
+    ↓  concept extraction (rule-derived labels from MEDS codes)
     ↓
-pretrain.py  →  Mamba3Pretrain  (next-token prediction)
-finetune.py  →  Mamba3Finetune  (single- or multi-task classification)
+EHR-Mamba3 backbone  (next-token prediction over patient event sequences)
+    ↓
+ConceptBottleneck  (odyssey/models/concept_bottleneck.py)
+    ├─ known concepts   — supervised, clinically interpretable
+    └─ residual         — free, orthogonality-penalized against the concepts
+    ↓
+task loss + concept loss + orthogonality loss
+    ↓
+forecast (adverse events, deterioration) — traceable to concept activations
 ```
+
+The concept-bottleneck loss recipe follows Ismail, Adebayo, Bravo, Ra & Cho, ["Concept Bottleneck Generative Models"](https://proceedings.iclr.cc/paper_files/paper/2024/hash/9149fc44c95ce58e3ca529a1e34c2691-Abstract-Conference.html) (ICLR 2024): task loss + supervised concept loss + an orthogonality penalty that keeps the residual from silently re-encoding the known concepts.
 
 ## Installation
 
@@ -43,118 +49,43 @@ cd odyssey
 uv sync --dev
 ```
 
-On a CUDA-capable GPU host, also install mamba-ssm (requires `nvcc`):
+The EHR-Mamba3 backbone depends on `mamba-ssm`, which requires CUDA/`nvcc` to build and cannot be installed on a Mac dev machine. On a CUDA-capable GPU host:
 
 ```bash
-# Install the torch wheel matching your CUDA version first, e.g. CUDA 12.8:
-uv pip install torch --index-url https://download.pytorch.org/whl/cu128
-
-# Then build mamba-ssm from source:
 uv sync --extra cuda --no-build-isolation
 ```
 
-## Data Pipeline
+Local (CPU/MPS) development uses a lightweight stand-in backbone so the concept-bottleneck logic can be built and tested without a GPU; see `tests/odyssey/models/test_concept_bottleneck.py`.
 
-### 1 — Download MIMIC-IV 3.1
+## Data pipeline
 
-PhysioNet credentials are required. Download using `wget` or the physionet client:
-
-```bash
-wget -r -N -c -np --user <physionet_user> --ask-password \
-    https://physionet.org/files/mimiciv/3.1/ \
-    -P data/
-```
-
-### 2 — Run the end-to-end pipeline
+MIMIC-IV → MEDS extraction uses the standard [`meds-extract`](https://github.com/Medical-Event-Data-Standard/MIMIC_IV_MEDS) tooling (`hosp` + `icu` modules only — MIMIC-IV-ED is a separate dataset/DUA and is not yet wired in).
 
 ```bash
-bash scripts/meds/run_pipeline.sh \
-    --mimic_dir  data/physionet.org/files/mimiciv/3.1 \
-    --output_dir data/pipeline_output \
-    --max_seq_len 2048
+# No credentials needed — validates the pipeline against the public demo:
+uv run meds-extract-run spec=MIMIC-IV output_dir=<output_dir> dataset_key=demo
+
+# Full MIMIC-IV 3.1, already downloaded locally:
+uv run meds-extract-run spec=MIMIC-IV output_dir=<output_dir> \
+    do_download=false input_dir=<path_to_mimiciv_3.1>
 ```
 
-This runs three steps:
-
-| Step | Script | Input → Output |
-|------|--------|----------------|
-| Extract | `scripts/meds/extract_mimic_iv.py` | MIMIC-IV CSVs → MEDS parquet shards |
-| Transform | `scripts/meds/pipeline.yaml` (meds-transforms 0.6.1) | Filter subjects/codes, normalize numeric values |
-| Tokenize | `scripts/meds/meds_to_odyssey.py` | MEDS → odyssey token sequence parquets |
-
-The output at `data/pipeline_output/odyssey_tokenized/` contains `train/`, `tuning/`, and `held_out/` splits ready for training.
-
-## Training
-
-### Pre-training
+## Development
 
 ```bash
-python pretrain.py \
-    --data_dir       data/pipeline_output/odyssey_tokenized \
-    --sequence_file  train.parquet \
-    --id_file        subject_ids.json \
-    --vocab_dir      data/vocab \
-    --config_path    odyssey/models/configs/ehr_mamba3.yaml \
-    --batch_size     32 \
-    --max_len        2048
+uv run pytest -m "not integration_test" tests/
+uv run ruff check odyssey tests
+uv run mypy odyssey
 ```
 
-### Fine-tuning
+## Roadmap
 
-```bash
-python finetune.py \
-    --pretrain_model_path checkpoints/pretrain.ckpt \
-    --data_dir            data/pipeline_output/odyssey_tokenized \
-    --vocab_dir           data/vocab \
-    --task                mortality \
-    --num_labels          2
-```
-
-## Model Configuration
-
-Default Mamba-3 hyperparameters (`odyssey/models/configs/ehr_mamba3.yaml`):
-
-```yaml
-model:
-  embedding_size: 768
-  num_hidden_layers: 32
-  state_size: 128       # d_state per SSM block
-  headdim: 64           # head dimension
-  is_mimo: true         # Multi-Input Multi-Output mode
-  mimo_rank: 4
-  chunk_size: 256
-```
-
-## Project Structure
-
-```
-odyssey/
-├── data/
-│   ├── dataset.py       # PretrainDatasetDecoder, FinetuneDatasetDecoder, …
-│   └── tokenizer.py     # ConceptTokenizer
-├── evals/
-│   ├── evaluation.py    # calculate_metrics (AUROC, F1, …)
-│   └── prediction.py    # Forecast (autoregressive token generation)
-├── models/
-│   ├── embeddings.py    # CachedEHREmbeddings, TimeEmbeddingLayer, VisitEmbedding
-│   ├── ehr_mamba3/
-│   │   └── model.py     # Mamba3Pretrain, Mamba3Finetune
-│   └── configs/
-│       └── ehr_mamba3.yaml
-└── utils/
-scripts/
-└── meds/
-    ├── extract_mimic_iv.py   # MIMIC-IV → MEDS
-    ├── meds_to_odyssey.py    # MEDS → odyssey format
-    ├── pipeline.yaml         # meds-transforms pipeline
-    └── run_pipeline.sh       # end-to-end runner
-pretrain.py
-finetune.py
-```
-
-## Contributing
-
-Issues and pull requests are welcome. Please open an issue before starting large changes.
+1. ~~Validate the MEDS extraction pipeline (hosp + icu) end-to-end~~
+2. ~~Implement and rigorously test the concept bottleneck layer~~
+3. Derive real clinical concept labels from MIMIC-IV codes (rule-based, e.g. SIRS criteria, AKI, hypotension)
+4. Wire the concept bottleneck into the EHR-Mamba3 backbone; pretrain on real MIMIC-IV 3.1 (GPU-only)
+5. Extend extraction to MIMIC-IV-ED
+6. Phase 2: an LLM agent (e.g. MedGemma) that reads the concept-annotated forecast and assists a clinician
 
 ## Citation
 

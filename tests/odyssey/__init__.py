@@ -1,1 +1,1 @@
-"""Test odyssey."""
+"""Tests for the odyssey package."""

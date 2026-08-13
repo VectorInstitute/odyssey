@@ -1,1 +1,1 @@
-"""Data sub-package."""
+"""Data extraction and MEDS pipeline utilities."""
