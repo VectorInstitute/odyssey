@@ -13,7 +13,8 @@ import torch
 import torch.nn.functional as F  # noqa: N812
 
 from odyssey.data.sequences import PatientSequence
-from odyssey.data.streaming import PackedLaneSampler
+from odyssey.data.streaming import PackedLaneSampler, StreamingChunk
+from odyssey.data.types import AuxiliaryInputs, ClinicalSequenceBatch
 from odyssey.models.backbones.base import TimeAwareState
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
 from odyssey.models.concept_bottleneck import ConceptBottleneckLossWeights
@@ -131,12 +132,57 @@ def test_streaming_loss_backward_works_with_no_patient_end() -> None:
     assert model.backbone.embeddings.embeddings.word_embeddings.weight.grad is not None
 
 
+def test_streaming_task_loss_is_zero_not_nan_when_chunk_has_no_real_target() -> None:
+    # a single-event patient with chunk_size=1: its one token has no
+    # successor to predict, so real_mask is False everywhere -- F.cross_
+    # entropy's mean reduction would otherwise divide 0 valid elements by
+    # 0, giving NaN (see _streaming_next_token_loss).
+    model = _make_model()
+    sampler = PackedLaneSampler(_patients([_seq(1, 1)]), num_lanes=1, chunk_size=1)
+    chunk = sampler.next_chunk()
+    assert not chunk.real_mask.any()
+
+    total, components, _ = model.compute_streaming_loss(chunk, _labels([1]))
+
+    assert components["task_loss"].item() == 0.0
+    assert torch.isfinite(total)
+    total.backward()  # must not crash even though every loss term is zero
+
+
+def _make_chunk_with_three_single_token_patients() -> StreamingChunk:
+    """Build a chunk with 3 patient_ends directly, bypassing PackedLaneSampler.
+
+    PackedLaneSampler itself never packs a second patient's reset into the
+    same chunk (see ``tests/odyssey/data/test_streaming.py`` --
+    ``EHRHybridBackbone`` can't resume mid-chunk state for more than one
+    segment). But ``compute_streaming_loss``'s pooling logic is
+    backbone-agnostic and must still correctly supervise every
+    ``patient_end`` in a chunk for a backbone (like ``TinyGRUBackbone``
+    here) that *can* handle mid-chunk resets -- so this builds that chunk
+    shape by hand rather than deriving it from the sampler.
+    """
+    return StreamingChunk(
+        batch=ClinicalSequenceBatch(
+            concept_ids=torch.tensor([[10, 20, 30]]),
+            aux=AuxiliaryInputs(
+                type_ids=torch.ones(1, 3, dtype=torch.long),
+                time_stamps=torch.tensor([[0.0, 1.0, 2.0]]),
+                ages=torch.full((1, 3), 40.0),
+                visit_orders=torch.zeros(1, 3, dtype=torch.long),
+                visit_segments=torch.zeros(1, 3, dtype=torch.long),
+            ),
+        ),
+        targets=torch.tensor([[11, 21, 31]]),
+        reset_mask=torch.tensor([[True, True, True]]),
+        real_mask=torch.tensor([[True, True, True]]),
+        subject_ids=torch.tensor([[1, 2, 3]]),
+        patient_end=torch.tensor([[True, True, True]]),
+    )
+
+
 def test_multiple_patient_ends_in_one_chunk_are_all_supervised() -> None:
     model = _make_model()
-    sampler = PackedLaneSampler(
-        _patients([_seq(1, 1), _seq(2, 1), _seq(3, 1)]), num_lanes=1, chunk_size=3
-    )
-    chunk = sampler.next_chunk()
+    chunk = _make_chunk_with_three_single_token_patients()
     assert chunk.patient_end[0].tolist() == [True, True, True]
 
     # concept_loss should reflect all 3 subjects, not just one -- compare

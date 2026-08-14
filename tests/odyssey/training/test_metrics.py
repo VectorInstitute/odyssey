@@ -203,7 +203,9 @@ def test_completeness_perfect_probe_matches_full_model() -> None:
     n = 200
     # Task label is exactly concept 0 -- a probe should recover it perfectly.
     concept_probs = torch.rand(n, 3)
-    concept_probs[:, 0] = torch.cat([torch.rand(n // 2) * 0.1, torch.rand(n - n // 2) * 0.1 + 0.9])
+    concept_probs[:, 0] = torch.cat(
+        [torch.rand(n // 2) * 0.1, torch.rand(n - n // 2) * 0.1 + 0.9]
+    )
     task_labels = (concept_probs[:, 0] > 0.5).float()
     perm = torch.randperm(n)
     concept_probs, task_labels = concept_probs[perm], task_labels[perm]
