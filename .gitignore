@@ -1,3 +1,9 @@
+# Local-only research journal: contains real, patient-level MIMIC-IV
+# derived content (event timelines). Never commit -- PhysioNet's DUA
+# restricts sharing patient-level detail outside credentialed access,
+# regardless of de-identification. For local review only.
+research_journal/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
