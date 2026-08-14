@@ -12,7 +12,7 @@ expects for concept labels/masks.
 
 import random
 from pathlib import Path
-from typing import Dict, Iterator, Optional, Sequence, Tuple, Union
+from typing import Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
 import polars as pl
 import torch
@@ -42,12 +42,40 @@ def load_meds_shards(
     return pl.concat([pl.read_parquet(p) for p in paths])
 
 
+def _shuffle_buffered(
+    items: Iterator[PatientSequence], *, buffer_size: int, rng: random.Random
+) -> Iterator[PatientSequence]:
+    """Approximate shuffle over a streaming iterator, bounded to ``buffer_size``.
+
+    Standard reservoir-style streaming shuffle (as used by e.g.
+    ``tf.data.Dataset.shuffle``): fills a buffer, then on every further
+    item swaps in a uniformly-random buffered item and yields the one
+    displaced, draining the buffer in random order once ``items`` is
+    exhausted. Not a perfect global shuffle -- an item can never move
+    more than roughly ``buffer_size`` positions from its original spot
+    -- but bounded to O(buffer_size) memory regardless of how many
+    total items there are, unlike collecting everything to shuffle it
+    exactly.
+    """
+    buffer: List[PatientSequence] = []
+    for item in items:
+        if len(buffer) < buffer_size:
+            buffer.append(item)
+            continue
+        idx = rng.randrange(buffer_size)
+        yield buffer[idx]
+        buffer[idx] = item
+    rng.shuffle(buffer)
+    yield from buffer
+
+
 def iter_patient_sequences(
     events: pl.DataFrame,
     vocab: Vocabulary,
     *,
     max_seq_len: Optional[int] = None,
     shuffle_seed: Optional[int] = None,
+    shuffle_buffer_size: int = 4096,
 ) -> Iterator[PatientSequence]:
     """Yield one :class:`PatientSequence` per subject in ``events``.
 
@@ -58,19 +86,38 @@ def iter_patient_sequences(
     its docstring). Subjects with an empty tokenized sequence (e.g. every
     event was a static, timeless fact) are skipped rather than yielded
     as zero-length.
-    """
-    subject_ids = events["subject_id"].unique().to_list()
-    if shuffle_seed is not None:
-        random.Random(shuffle_seed).shuffle(subject_ids)
 
-    partitions = events.partition_by("subject_id", as_dict=True)
-    for subject_id in subject_ids:
-        frame = partitions.get((subject_id,))
-        if frame is None or frame.height == 0:
-            continue
-        seq = build_patient_sequence(frame, vocab, max_seq_len=max_seq_len)
-        if len(seq) > 0:
-            yield seq
+    Groups subjects via ``group_by(..., maintain_order=True)`` rather
+    than ``partition_by(..., as_dict=True)``: the latter eagerly builds
+    one sub-DataFrame per subject and holds *all* of them alive in a
+    dict simultaneously, which for a real split's ~100K subjects was a
+    large, unnecessary cost confirmed on the training VM. An earlier
+    version of this function shuffled by sorting the *whole* events
+    table into shuffled-subject order first, which fixed that but
+    reintroduced the same class of cost one step later (a second full
+    copy of the table, alongside the original the caller still holds
+    for the next epoch) -- confirmed on the VM to give back essentially
+    all of the memory this was meant to save. Shuffling here instead
+    uses a bounded streaming buffer (see :func:`_shuffle_buffered`) over
+    naturally-ordered groups, at the cost of an approximate rather than
+    exact global shuffle.
+    """
+
+    def _sequences() -> Iterator[PatientSequence]:
+        for _, frame in events.group_by("subject_id", maintain_order=True):
+            if frame.height == 0:
+                continue
+            seq = build_patient_sequence(frame, vocab, max_seq_len=max_seq_len)
+            if len(seq) > 0:
+                yield seq
+
+    sequences = _sequences()
+    if shuffle_seed is None:
+        yield from sequences
+    else:
+        yield from _shuffle_buffered(
+            sequences, buffer_size=shuffle_buffer_size, rng=random.Random(shuffle_seed)
+        )
 
 
 def build_concept_label_dicts(
