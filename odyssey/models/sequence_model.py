@@ -35,7 +35,7 @@ from torch import nn
 
 from odyssey.data.streaming import StreamingChunk
 from odyssey.data.types import ClinicalSequenceBatch
-from odyssey.models.backbones.base import SequenceBackbone
+from odyssey.models.backbones.base import SequenceBackbone, TimeAwareState
 from odyssey.models.concept_bottleneck import (
     ConceptBottleneck,
     ConceptBottleneckLossWeights,
@@ -55,10 +55,16 @@ def _pool_last_non_padding(
     patient ever tachycardic"), which describe the whole stay, not a
     single timestep. Only valid for a batch where each row is one whole
     patient sequence -- see :func:`_pool_patient_ends` for packed chunks.
+
+    Counts non-padding tokens rather than searching for the first padding
+    token, since :func:`~odyssey.data.sequences.collate_patient_sequences`
+    right-pads to the batch's longest sequence: that longest row (or every
+    row, in an already-uniform-length batch) has no padding token at all,
+    so a "find the first pad" search would wrongly fall back to position 0
+    for it instead of its true last position.
     """
-    pad_mask = concept_ids == padding_idx
-    last_idx = pad_mask.int().argmax(dim=-1) - 1
-    last_idx = last_idx.clamp(min=0)
+    real_counts = (concept_ids != padding_idx).sum(dim=-1)
+    last_idx = (real_counts - 1).clamp(min=0)
     batch_idx = torch.arange(values.shape[0], device=values.device)
     return values[batch_idx, last_idx]
 
@@ -90,7 +96,64 @@ def _gather_by_subject(
         ) from exc
 
 
-class BaselineSequenceModel(nn.Module):
+class _SequenceModelBase(nn.Module):
+    """Shared backbone/padding plumbing for the two sequence model variants.
+
+    :class:`BaselineSequenceModel` and :class:`ConceptBottleneckSequenceModel`
+    differ only in what sits between the backbone's hidden states and the
+    LM head (nothing, vs. a concept bottleneck); the backbone/padding
+    bookkeeping and the two next-token loss shapes (whole-sequence shifted,
+    vs. pre-shifted streaming) are identical between them, so they live
+    here once.
+    """
+
+    def __init__(self, backbone: SequenceBackbone, *, padding_idx: int) -> None:
+        """Store the shared backbone and padding token id."""
+        super().__init__()
+        self.backbone = backbone
+        self.padding_idx = padding_idx
+
+    def _whole_sequence_next_token_loss(
+        self,
+        logits: torch.Tensor,
+        batch: ClinicalSequenceBatch,
+        labels: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        """Cross-entropy loss for one full sequence per row, shifted by one.
+
+        Raises rather than silently returning NaN when a sequence has
+        fewer than 2 tokens: there is then nothing left after the shift to
+        supervise, and ``F.cross_entropy`` averaging over zero elements
+        returns NaN instead of failing.
+        """
+        seq_len = logits.shape[1]
+        if seq_len < 2:
+            raise ValueError(
+                "next-token loss needs at least 2 tokens per sequence, got "
+                f"seq_len={seq_len}"
+            )
+        shift_logits = logits[:, :-1, :].contiguous()
+        shift_labels = (labels if labels is not None else batch.concept_ids)[
+            :, 1:
+        ].contiguous()
+        return F.cross_entropy(
+            shift_logits.reshape(-1, shift_logits.size(-1)),
+            shift_labels.reshape(-1),
+            ignore_index=self.padding_idx,
+        )
+
+    def _streaming_next_token_loss(
+        self, logits: torch.Tensor, targets: torch.Tensor
+    ) -> torch.Tensor:
+        """Cross-entropy loss for one packed chunk; ``targets`` are pre-shifted."""
+        return F.cross_entropy(
+            logits.reshape(-1, logits.size(-1)),
+            targets.reshape(-1),
+            ignore_index=self.padding_idx,
+        )
+
+
+class BaselineSequenceModel(_SequenceModelBase):
     """Next-token prediction directly from the backbone: no concept bottleneck."""
 
     def __init__(
@@ -101,17 +164,15 @@ class BaselineSequenceModel(nn.Module):
         padding_idx: int = 0,
     ) -> None:
         """Initialize the baseline sequence model."""
-        super().__init__()
-        self.backbone = backbone
-        self.padding_idx = padding_idx
+        super().__init__(backbone, padding_idx=padding_idx)
         self.lm_head = nn.Linear(backbone.hidden_size, vocab_size)
 
     def forward(
         self,
         batch: ClinicalSequenceBatch,
-        state: Optional[object] = None,
+        state: Optional[TimeAwareState] = None,
         reset_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, object]:
+    ) -> Tuple[torch.Tensor, TimeAwareState]:
         """Return ``(next-token logits, new backbone state)``."""
         hidden_states, new_state = self.backbone(batch, state=state, reset_mask=reset_mask)
         logits: torch.Tensor = self.lm_head(hidden_states)
@@ -122,33 +183,21 @@ class BaselineSequenceModel(nn.Module):
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Compute next-token loss over one full sequence per row."""
         logits, _ = self(batch)
-        shift_logits = logits[:, :-1, :].contiguous()
-        shift_labels = (labels if labels is not None else batch.concept_ids)[
-            :, 1:
-        ].contiguous()
-        loss = F.cross_entropy(
-            shift_logits.reshape(-1, shift_logits.size(-1)),
-            shift_labels.reshape(-1),
-            ignore_index=self.padding_idx,
-        )
+        loss = self._whole_sequence_next_token_loss(logits, batch, labels)
         return loss, {"task_loss": loss.detach()}
 
     def compute_streaming_loss(
         self,
         chunk: StreamingChunk,
-        state: Optional[object] = None,
-    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], object]:
+        state: Optional[TimeAwareState] = None,
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], TimeAwareState]:
         """Compute next-token loss over one packed, chunked training step."""
         logits, new_state = self(chunk.batch, state=state, reset_mask=chunk.reset_mask)
-        loss = F.cross_entropy(
-            logits.reshape(-1, logits.size(-1)),
-            chunk.targets.reshape(-1),
-            ignore_index=self.padding_idx,
-        )
+        loss = self._streaming_next_token_loss(logits, chunk.targets)
         return loss, {"task_loss": loss.detach()}, new_state
 
 
-class ConceptBottleneckSequenceModel(nn.Module):
+class ConceptBottleneckSequenceModel(_SequenceModelBase):
     """Next-token prediction, through a concept bottleneck, over event sequences."""
 
     def __init__(
@@ -162,9 +211,7 @@ class ConceptBottleneckSequenceModel(nn.Module):
         concept_dropout: float = 0.1,
     ) -> None:
         """Initialize the concept-bottleneck sequence model."""
-        super().__init__()
-        self.backbone = backbone
-        self.padding_idx = padding_idx
+        super().__init__(backbone, padding_idx=padding_idx)
         self.bottleneck = ConceptBottleneck(
             hidden_size=backbone.hidden_size,
             num_concepts=num_concepts,
@@ -176,9 +223,9 @@ class ConceptBottleneckSequenceModel(nn.Module):
     def forward(
         self,
         batch: ClinicalSequenceBatch,
-        state: Optional[object] = None,
+        state: Optional[TimeAwareState] = None,
         reset_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, ConceptBottleneckOutput, object]:
+    ) -> Tuple[torch.Tensor, ConceptBottleneckOutput, TimeAwareState]:
         """Return ``(next-token logits, bottleneck output, new backbone state)``."""
         hidden_states, new_state = self.backbone(batch, state=state, reset_mask=reset_mask)
         bottleneck_out = self.bottleneck(hidden_states)
@@ -202,16 +249,7 @@ class ConceptBottleneckSequenceModel(nn.Module):
         for packed, chunked batches.
         """
         logits, bottleneck_out, _ = self(batch)
-
-        shift_logits = logits[:, :-1, :].contiguous()
-        shift_labels = (labels if labels is not None else batch.concept_ids)[
-            :, 1:
-        ].contiguous()
-        next_token_loss = F.cross_entropy(
-            shift_logits.reshape(-1, shift_logits.size(-1)),
-            shift_labels.reshape(-1),
-            ignore_index=self.padding_idx,
-        )
+        next_token_loss = self._whole_sequence_next_token_loss(logits, batch, labels)
 
         pooled_concept_logits = _pool_last_non_padding(
             bottleneck_out.concept_logits, batch.concept_ids, self.padding_idx
@@ -238,9 +276,9 @@ class ConceptBottleneckSequenceModel(nn.Module):
         chunk: StreamingChunk,
         concept_labels: Dict[int, torch.Tensor],
         concept_mask: Optional[Dict[int, torch.Tensor]] = None,
-        state: Optional[object] = None,
+        state: Optional[TimeAwareState] = None,
         loss_weights: Optional[ConceptBottleneckLossWeights] = None,
-    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], object]:
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], TimeAwareState]:
         """Compute next-token + concept + orthogonality loss over one packed chunk.
 
         ``concept_labels``/``concept_mask`` map ``subject_id -> (num_concepts,)``
@@ -255,11 +293,7 @@ class ConceptBottleneckSequenceModel(nn.Module):
         logits, bottleneck_out, new_state = self(
             chunk.batch, state=state, reset_mask=chunk.reset_mask
         )
-        next_token_loss = F.cross_entropy(
-            logits.reshape(-1, logits.size(-1)),
-            chunk.targets.reshape(-1),
-            ignore_index=self.padding_idx,
-        )
+        next_token_loss = self._streaming_next_token_loss(logits, chunk.targets)
 
         if not chunk.patient_end.any():
             zero = next_token_loss.new_zeros(())
