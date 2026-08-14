@@ -110,10 +110,18 @@ def build_vocabulary(
     Never call this on tuning/held_out events -- the same leakage
     discipline :class:`~odyssey.data.value_binning.QuantileBinner` and
     :meth:`Vocabulary.build` are both already documented to require.
+
+    Counts codes with Polars' vectorized ``group_by`` rather than going
+    through :meth:`Vocabulary.build`'s plain ``Counter(codes)`` path: a
+    real train split has tens of millions of event rows, and
+    materializing that column as a Python list of ``str`` objects (one
+    Python object per *row*, not per unique code) was a large,
+    unnecessary memory cost -- confirmed as a real contributor to an OOM
+    on a 50-shard MIMIC-IV run. ``group_by`` is bounded by vocabulary
+    cardinality instead.
     """
-    return Vocabulary.build(
-        train_events["code"].to_list(), min_count=min_count, max_size=max_size
-    )
+    counts = dict(train_events.group_by("code").len().iter_rows())
+    return Vocabulary.build_from_counts(counts, min_count=min_count, max_size=max_size)
 
 
 __all__ = [

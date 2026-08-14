@@ -58,7 +58,21 @@ def test_save_load_roundtrip(tmp_path: Path) -> None:
 
     loaded = Vocabulary.load(path)
     assert loaded.token_to_id == vocab.token_to_id
-    assert loaded.encode("A") == vocab.encode("A")
+
+
+def test_build_from_counts_matches_build_on_the_same_data() -> None:
+    codes = ["A"] * 10 + ["B"] * 5 + ["C"] * 1
+    from_counts = Vocabulary.build_from_counts({"A": 10, "B": 5, "C": 1}, min_count=5)
+    from_list = Vocabulary.build(codes, min_count=5)
+    assert from_counts.token_to_id == from_list.token_to_id
+
+
+def test_build_from_counts_respects_max_size() -> None:
+    counts = {f"code_{i}": 20 - i for i in range(20)}  # code_0 most frequent
+    vocab = Vocabulary.build_from_counts(counts, min_count=1, max_size=5)
+    assert len(vocab) == 5 + 2
+    assert vocab.encode("code_0") != UNK_ID
+    assert vocab.encode("code_19") == UNK_ID
 
 
 def test_code_type_known_prefixes() -> None:
