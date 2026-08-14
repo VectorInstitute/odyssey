@@ -262,6 +262,9 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         pooled_unknown_embedding = _pool_last_non_padding(
             bottleneck_out.unknown_embedding, batch.concept_ids, self.padding_idx
         )
+        pooled_observability_logits = _pool_last_non_padding(
+            bottleneck_out.observability_logits, batch.concept_ids, self.padding_idx
+        )
 
         return combined_loss(
             next_token_loss,
@@ -269,6 +272,7 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
             concept_labels,
             pooled_concept_embeddings,
             pooled_unknown_embedding,
+            observability_logits=pooled_observability_logits,
             concept_mask=concept_mask,
             weights=loss_weights,
         )
@@ -281,16 +285,16 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         state: Optional[TimeAwareState] = None,
         loss_weights: Optional[ConceptBottleneckLossWeights] = None,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], TimeAwareState]:
-        """Compute next-token + concept + orthogonality loss over one packed chunk.
+        """Compute next-token + concept + orthogonality + observability loss.
 
         ``concept_labels``/``concept_mask`` map ``subject_id -> (num_concepts,)``
         tensors, since a chunk's lanes can each hold fragments of several
         different patients. Concept supervision only pools at
         ``chunk.patient_end`` positions -- a patient's true last event, not
         merely their last position within this chunk (see the module
-        docstring). If no patient ends within this chunk, the concept and
-        orthogonality loss terms are zero and the total loss is the
-        next-token loss alone.
+        docstring). If no patient ends within this chunk, the concept,
+        orthogonality, and observability loss terms are zero and the total
+        loss is the next-token loss alone.
         """
         logits, bottleneck_out, new_state = self(
             chunk.batch, state=state, reset_mask=chunk.reset_mask
@@ -303,6 +307,7 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
                 "task_loss": next_token_loss.detach(),
                 "concept_loss": zero,
                 "orthogonality_loss": zero,
+                "observability_loss": zero,
             }
             return next_token_loss, components, new_state
 
@@ -315,6 +320,9 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         )
         pooled_unknown_embedding = _pool_patient_ends(
             bottleneck_out.unknown_embedding, chunk.patient_end
+        )
+        pooled_observability_logits = _pool_patient_ends(
+            bottleneck_out.observability_logits, chunk.patient_end
         )
 
         labels_batch = _gather_by_subject(end_subject_ids, concept_labels)
@@ -330,6 +338,7 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
             labels_batch,
             pooled_concept_embeddings,
             pooled_unknown_embedding,
+            observability_logits=pooled_observability_logits,
             concept_mask=mask_batch,
             weights=loss_weights,
         )

@@ -15,6 +15,22 @@ known concepts', so it can't just silently re-encode them. Backbone
 agnostic: it only consumes hidden states of shape ``(..., hidden_size)``, so
 it attaches equally to the real hybrid backbone or any lighter stand-in used
 for local (non-CUDA) development.
+
+A second, independent head predicts each known concept's *observability*
+-- whether it would be measured at all -- supervised against the real
+``{name}_observed`` mask from :mod:`odyssey.data.concepts`. This exists
+because EHR missingness is informative, not incidental (a lab not being
+drawn reflects clinical suspicion, not an annotation gap the way a missing
+CUB-200 attribute label would be), and because feeding the observed mask
+directly into the bottleneck as an input would leak the exact signal that
+decides where ``concept_loss`` applies no gradient, letting the concept
+probability at unobserved positions go unconstrained by anything but
+``task_loss`` -- undermining the one property (a clinician can trust
+``concept_probs``) the bottleneck exists for. A separately-supervised head
+avoids that: its own output is a real, checkable prediction ("would this
+concept have been tested"), not a free variable. It is deliberately NOT
+wired back into the concept probability computation in this version --
+see ``research_journal/05_missingness.html`` for the full reasoning.
 """
 
 from dataclasses import dataclass
@@ -42,6 +58,12 @@ class ConceptBottleneckOutput(NamedTuple):
 
     bottleneck: torch.Tensor
     """(..., (num_concepts + 1) * embedding_dim): concat of all mixed embeddings."""
+
+    observability_logits: torch.Tensor
+    """(..., num_concepts) predicted "would this concept be observed", pre-sigmoid."""
+
+    observability_probs: torch.Tensor
+    """(..., num_concepts) sigmoid(observability_logits)."""
 
 
 class ConceptBottleneck(nn.Module):
@@ -103,6 +125,12 @@ class ConceptBottleneck(nn.Module):
         self.prob_bias = nn.Parameter(torch.zeros(self.num_slots))
         nn.init.xavier_uniform_(self.prob_weight)
 
+        # Independent of the concept-value pathway above: predicts whether
+        # each known concept would be observed at all, from the same
+        # (dropout-applied) hidden state. See the module docstring for why
+        # this is a separate, supervised head rather than an input feature.
+        self.observability_proj = nn.Linear(hidden_size, num_concepts)
+
     def forward(self, hidden_states: torch.Tensor) -> ConceptBottleneckOutput:
         """Project hidden states into known + unknown concept embeddings."""
         batch_shape = hidden_states.shape[:-1]
@@ -127,11 +155,16 @@ class ConceptBottleneck(nn.Module):
         unknown_embedding = mixed[..., self.num_concepts, :]
         bottleneck = mixed.reshape(*batch_shape, self.num_slots * self.embedding_dim)
 
+        observability_logits: torch.Tensor = self.observability_proj(x)
+        observability_probs = torch.sigmoid(observability_logits)
+
         return ConceptBottleneckOutput(
             concept_logits=concept_logits,
             concept_probs=concept_probs,
             concept_embeddings=concept_embeddings,
             unknown_embedding=unknown_embedding,
+            observability_logits=observability_logits,
+            observability_probs=observability_probs,
             bottleneck=bottleneck,
         )
 
@@ -158,6 +191,25 @@ def concept_loss(
     return (per_element * mask).sum() / denom
 
 
+def observability_loss(
+    observability_logits: torch.Tensor, observed_mask: torch.Tensor
+) -> torch.Tensor:
+    """Supervised BCE loss: predict whether each concept would be observed.
+
+    Unlike ``concept_labels`` (which can be genuinely unknown),
+    ``observed_mask`` is never itself missing -- whether a lab was drawn
+    is always a known fact about the encounter -- so this loss needs no
+    masking of its own; every element has a real target. This is what
+    grounds the model's response to concept missingness in real
+    supervision, rather than the concept probability at unobserved
+    positions being a free variable shaped only by ``task_loss`` (see the
+    module docstring).
+    """
+    return F.binary_cross_entropy_with_logits(
+        observability_logits, observed_mask.float()
+    )
+
+
 def orthogonality_loss(
     concept_embeddings: torch.Tensor, unknown_embedding: torch.Tensor
 ) -> torch.Tensor:
@@ -182,6 +234,7 @@ class ConceptBottleneckLossWeights:
 
     concept: float = 1.0
     orthogonality: float = 0.1
+    observability: float = 0.1
 
 
 def combined_loss(
@@ -191,10 +244,22 @@ def combined_loss(
     concept_embeddings: torch.Tensor,
     unknown_embedding: torch.Tensor,
     *,
+    observability_logits: torch.Tensor,
     concept_mask: Optional[torch.Tensor] = None,
     weights: Optional[ConceptBottleneckLossWeights] = None,
 ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-    """Combine task, concept, and orthogonality losses.
+    """Combine task, concept, orthogonality, and observability losses.
+
+    ``concept_mask`` serves double duty when given: it excludes
+    unobserved entries from ``concept_loss`` (unchanged from before), and
+    is also the ground-truth target for ``observability_loss`` -- the
+    same "was this concept observed" fact drives both, since it's a
+    always-known property of the encounter, not something that can
+    itself be missing. If ``concept_mask`` is not given, there is no
+    ground truth to check an observability prediction against, so
+    ``observability_loss`` is a zero tensor (this step contributes no
+    gradient to that head) rather than being computed against a
+    fabricated all-observed target.
 
     Returns the total loss plus a dict of the (detached) components for
     logging.
@@ -202,10 +267,21 @@ def combined_loss(
     weights = weights or ConceptBottleneckLossWeights()
     c_loss = concept_loss(concept_logits, concept_labels, concept_mask)
     o_loss = orthogonality_loss(concept_embeddings, unknown_embedding)
-    total = task_loss + weights.concept * c_loss + weights.orthogonality * o_loss
+    obs_loss = (
+        observability_loss(observability_logits, concept_mask)
+        if concept_mask is not None
+        else task_loss.new_zeros(())
+    )
+    total = (
+        task_loss
+        + weights.concept * c_loss
+        + weights.orthogonality * o_loss
+        + weights.observability * obs_loss
+    )
     components = {
         "task_loss": task_loss.detach(),
         "concept_loss": c_loss.detach(),
         "orthogonality_loss": o_loss.detach(),
+        "observability_loss": obs_loss.detach(),
     }
     return total, components
