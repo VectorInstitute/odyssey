@@ -125,6 +125,13 @@ def test_null_numeric_value_never_triggers_or_counts_as_observed() -> None:
     assert labels["tachycardia_observed"].to_list() == [0]
 
 
+def test_concept_with_no_rules_raises_a_clear_error() -> None:
+    concepts = [ConceptDefinition("empty", [], "no rules defined")]
+    events = _events([(1, "LAB//220045//bpm", 75.0)])
+    with pytest.raises(ValueError, match="empty"):
+        label_concepts(events, concepts)
+
+
 def test_default_registry_covers_all_subjects() -> None:
     events = _events([(1, "LAB//220045//bpm", 75.0), (2, "LAB//220045//bpm", 75.0)])
     labels = label_concepts(events)

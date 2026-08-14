@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import polars as pl
+
 from odyssey.data.vocabulary import (
     OTHER_TYPE,
     PAD_ID,
@@ -71,3 +73,26 @@ def test_code_type_unknown_prefix_falls_back_to_other() -> None:
 def test_code_types_vectorized_matches_scalar() -> None:
     codes = ["DIAGNOSIS//ICD//10//A047", "MEDICATION//12345", "unknown_prefix"]
     assert code_types(codes) == [code_type(c) for c in codes]
+
+
+def test_from_meds_codes_metadata_keeps_every_code_regardless_of_min_count(
+    tmp_path: Path,
+) -> None:
+    # codes.parquet is a metadata table, not a frequency table -- every code
+    # appears once, so a min_count tuned for real frequencies (e.g. 5) must
+    # not silently empty the vocabulary.
+    path = tmp_path / "codes.parquet"
+    pl.DataFrame({"code": ["A", "B", "C"]}).write_parquet(path)
+
+    vocab = Vocabulary.from_meds_codes_metadata(path, min_count=5)
+    assert vocab.encode("A") != UNK_ID
+    assert vocab.encode("B") != UNK_ID
+    assert vocab.encode("C") != UNK_ID
+
+
+def test_from_meds_codes_metadata_respects_max_size(tmp_path: Path) -> None:
+    path = tmp_path / "codes.parquet"
+    pl.DataFrame({"code": [f"code_{i}" for i in range(10)]}).write_parquet(path)
+
+    vocab = Vocabulary.from_meds_codes_metadata(path, max_size=3)
+    assert len(vocab) == 3 + 2  # 3 codes + PAD/UNK

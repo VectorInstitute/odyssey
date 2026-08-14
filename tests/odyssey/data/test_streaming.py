@@ -6,6 +6,7 @@ import torch
 
 from odyssey.data.sequences import PatientSequence
 from odyssey.data.streaming import NO_SUBJECT, PackedLaneSampler
+from odyssey.data.vocabulary import PAD_ID
 
 
 def _seq(
@@ -276,6 +277,41 @@ def test_rejects_zero_chunk_size() -> None:
 def test_empty_patient_stream_produces_no_chunks() -> None:
     sampler = PackedLaneSampler(_patients([]), num_lanes=2, chunk_size=4)
     assert sampler.next_chunk() is None
+
+
+def test_zero_length_patient_is_skipped_without_corrupting_the_lane() -> None:
+    empty = _seq(99, 0)
+    sampler = PackedLaneSampler(
+        _patients([_seq(1, 2), empty, _seq(2, 2)]), num_lanes=1, chunk_size=5
+    )
+    c1 = sampler.next_chunk()
+    assert c1.batch.concept_ids[0].tolist() == [1000, 1001, 2000, 2001, PAD_ID]
+    assert c1.subject_ids[0].tolist() == [1, 1, 2, 2, NO_SUBJECT]
+
+
+def test_next_chunk_keeps_returning_none_after_exhaustion() -> None:
+    sampler = PackedLaneSampler(_patients([_seq(1, 3)]), num_lanes=1, chunk_size=3)
+    assert sampler.next_chunk() is not None
+    assert sampler.next_chunk() is None
+    # calling again after exhaustion must not raise or resurrect a chunk
+    assert sampler.next_chunk() is None
+    assert sampler.next_chunk() is None
+
+
+def test_iterating_an_exhausted_sampler_a_second_time_yields_nothing() -> None:
+    sampler = PackedLaneSampler(_patients([_seq(1, 3)]), num_lanes=1, chunk_size=3)
+    first_pass = list(sampler)
+    second_pass = list(sampler)
+    assert len(first_pass) > 0
+    assert second_pass == []
+
+
+def test_chunk_size_one_advances_one_token_at_a_time() -> None:
+    sampler = PackedLaneSampler(_patients([_seq(1, 3)]), num_lanes=1, chunk_size=1)
+    chunks = list(sampler)
+    assert [c.batch.concept_ids[0].item() for c in chunks] == [1000, 1001, 1002]
+    assert [c.targets[0].item() for c in chunks] == [1001, 1002, 0]
+    assert [c.real_mask[0].item() for c in chunks] == [True, True, False]
 
 
 def test_batch_and_targets_are_long_tensors() -> None:
