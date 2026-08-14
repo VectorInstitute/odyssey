@@ -146,11 +146,16 @@ def test_chunked_forward_with_carried_state_matches_one_shot_forward() -> None:
     from what a full-history forward pass would.
     """
     torch.manual_seed(0)
-    backbone = _make_backbone()
+    # eval() disables dropout: ClinicalEventEmbeddings' dropout would
+    # otherwise draw fresh randomness on every separate forward call,
+    # making hidden_full and hidden1/hidden2 legitimately differ for
+    # reasons unrelated to state passing.
+    backbone = _make_backbone().eval()
     full_len = 2 * MAMBA3_CHUNK_SIZE
     full_batch = _make_batch(batch=2, seq_len=full_len, device="cuda")
 
-    hidden_full, _ = backbone(full_batch)
+    with torch.no_grad():
+        hidden_full, _ = backbone(full_batch)
 
     def _slice_batch(batch: ClinicalSequenceBatch, start: int, end: int) -> ClinicalSequenceBatch:
         return ClinicalSequenceBatch(
@@ -167,8 +172,9 @@ def test_chunked_forward_with_carried_state_matches_one_shot_forward() -> None:
     first_half = _slice_batch(full_batch, 0, MAMBA3_CHUNK_SIZE)
     second_half = _slice_batch(full_batch, MAMBA3_CHUNK_SIZE, full_len)
 
-    hidden1, state1 = backbone(first_half)
-    hidden2, _ = backbone(second_half, state=state1)
+    with torch.no_grad():
+        hidden1, state1 = backbone(first_half)
+        hidden2, _ = backbone(second_half, state=state1)
 
     assert torch.allclose(hidden_full[:, :MAMBA3_CHUNK_SIZE], hidden1, atol=1e-3, rtol=1e-3)
     assert torch.allclose(hidden_full[:, MAMBA3_CHUNK_SIZE:], hidden2, atol=1e-3, rtol=1e-3)
@@ -185,16 +191,17 @@ def test_reset_row_ignores_carried_state_other_rows_keep_it() -> None:
     chunk-1 context forward.
     """
     torch.manual_seed(0)
-    backbone = _make_backbone()
+    backbone = _make_backbone().eval()  # disable dropout; see the comment above
     chunk1 = _make_batch(batch=2, seq_len=MAMBA3_CHUNK_SIZE, device="cuda")
     chunk2 = _make_batch(batch=2, seq_len=MAMBA3_CHUNK_SIZE, device="cuda")
 
-    _, state1 = backbone(chunk1)
-    reset_mask = torch.zeros(2, MAMBA3_CHUNK_SIZE, dtype=torch.bool, device="cuda")
-    reset_mask[0, 0] = True
-    hidden2_with_reset, _ = backbone(chunk2, state=state1, reset_mask=reset_mask)
+    with torch.no_grad():
+        _, state1 = backbone(chunk1)
+        reset_mask = torch.zeros(2, MAMBA3_CHUNK_SIZE, dtype=torch.bool, device="cuda")
+        reset_mask[0, 0] = True
+        hidden2_with_reset, _ = backbone(chunk2, state=state1, reset_mask=reset_mask)
 
-    hidden2_fresh, _ = backbone(chunk2)
+        hidden2_fresh, _ = backbone(chunk2)
 
     assert torch.allclose(
         hidden2_with_reset[0], hidden2_fresh[0], atol=1e-3, rtol=1e-3

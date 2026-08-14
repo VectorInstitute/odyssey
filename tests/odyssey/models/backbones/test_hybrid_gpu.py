@@ -164,7 +164,7 @@ def test_hybrid_backbone_output_differs_from_mamba_only_and_attention_only() -> 
     entire point of the hybrid design (entry 03).
     """
     torch.manual_seed(0)
-    backbone = _make_backbone(num_hidden_layers=1)
+    backbone = _make_backbone(num_hidden_layers=1).eval()  # disable dropout
     batch = _make_batch(batch=2, seq_len=SEQ_LEN, device="cuda")
 
     block = backbone.layers[0]
