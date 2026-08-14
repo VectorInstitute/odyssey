@@ -1,5 +1,6 @@
 """Tests for the MEDS shard -> training-ready data pipeline."""
 
+import random
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -10,6 +11,7 @@ import pytest
 from odyssey.data.concepts import ConceptDefinition, ConceptRule
 from odyssey.data.vocabulary import PAD_ID, UNK_ID
 from odyssey.training.data import (
+    _shuffle_buffered,
     build_concept_label_dicts,
     build_vocabulary,
     count_subjects,
@@ -133,6 +135,35 @@ def test_iter_patient_sequences_shuffle_seed_is_deterministic() -> None:
     assert order_a == order_b
     assert sorted(order_a) == sorted(order_unshuffled)
     assert order_a != order_unshuffled  # exceedingly unlikely to coincide by chance
+
+
+# ---------------------------------------------------------------------------
+# _shuffle_buffered
+# ---------------------------------------------------------------------------
+
+
+def test_shuffle_buffered_yields_every_item_exactly_once_when_over_buffer_size() -> (
+    None
+):
+    # 500 items through a buffer of only 16 -- exercises the yield-and-
+    # replace branch many times over, not just the final drain.
+    items = list(range(500))
+    out = list(_shuffle_buffered(iter(items), buffer_size=16, rng=random.Random(0)))
+    assert sorted(out) == items
+    assert out != items  # exceedingly unlikely to coincide by chance
+
+
+def test_shuffle_buffered_is_deterministic_given_a_seed() -> None:
+    items = list(range(500))
+    out_a = list(_shuffle_buffered(iter(items), buffer_size=16, rng=random.Random(3)))
+    out_b = list(_shuffle_buffered(iter(items), buffer_size=16, rng=random.Random(3)))
+    assert out_a == out_b
+
+
+def test_shuffle_buffered_fully_shuffles_when_input_is_smaller_than_buffer() -> None:
+    items = list(range(10))
+    out = list(_shuffle_buffered(iter(items), buffer_size=4096, rng=random.Random(0)))
+    assert sorted(out) == items
 
 
 # ---------------------------------------------------------------------------
