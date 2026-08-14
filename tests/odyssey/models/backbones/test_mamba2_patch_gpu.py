@@ -67,13 +67,23 @@ def test_patched_forward_matches_unpatched_when_state_is_freshly_zero() -> None:
     mamba2_with_state_cls = _make_mamba2_with_state_cls(Mamba2)
     patched = (
         mamba2_with_state_cls(
-            HIDDEN_SIZE, d_state=STATE_SIZE, headdim=HEADDIM, chunk_size=CHUNK_SIZE, layer_idx=0
+            HIDDEN_SIZE,
+            d_state=STATE_SIZE,
+            headdim=HEADDIM,
+            chunk_size=CHUNK_SIZE,
+            layer_idx=0,
         )
         .cuda()
         .eval()
     )
     unpatched = (
-        Mamba2(HIDDEN_SIZE, d_state=STATE_SIZE, headdim=HEADDIM, chunk_size=CHUNK_SIZE, layer_idx=0)
+        Mamba2(
+            HIDDEN_SIZE,
+            d_state=STATE_SIZE,
+            headdim=HEADDIM,
+            chunk_size=CHUNK_SIZE,
+            layer_idx=0,
+        )
         .cuda()
         .eval()
     )

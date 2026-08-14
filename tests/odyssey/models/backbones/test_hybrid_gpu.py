@@ -203,11 +203,17 @@ def test_hybrid_backbone_mamba_branch_carries_state_matches_one_shot() -> None:
     original_forward = block.forward
 
     def _capture_mamba_out(hidden_states, residual, **kwargs):  # type: ignore[no-untyped-def]
-        new_residual = hidden_states + residual if residual is not None else hidden_states
+        new_residual = (
+            hidden_states + residual if residual is not None else hidden_states
+        )
         normed = block.norm(new_residual.to(dtype=block.norm.weight.dtype))
-        mamba_out = block.mamba(normed, inference_params=kwargs.get("mamba_inference_params"))
+        mamba_out = block.mamba(
+            normed, inference_params=kwargs.get("mamba_inference_params")
+        )
         captured.setdefault("outputs", []).append(mamba_out)
-        attn_out = block.attn(normed, inference_params=kwargs.get("attn_inference_params"))
+        attn_out = block.attn(
+            normed, inference_params=kwargs.get("attn_inference_params")
+        )
         fused = block.merge(mamba_out, attn_out)
         return fused, new_residual
 
@@ -274,7 +280,9 @@ def test_hybrid_backbone_reset_row_ignores_carried_state_other_rows_keep_it() ->
         hidden2_fresh, _ = backbone(chunk2)
 
     assert torch.allclose(hidden2_with_reset[0], hidden2_fresh[0], atol=1e-3, rtol=1e-3)
-    assert not torch.allclose(hidden2_with_reset[1], hidden2_fresh[1], atol=1e-3, rtol=1e-3)
+    assert not torch.allclose(
+        hidden2_with_reset[1], hidden2_fresh[1], atol=1e-3, rtol=1e-3
+    )
 
 
 @cuda_required
@@ -305,10 +313,17 @@ def test_hybrid_backbone_output_differs_from_mamba_only_and_attention_only() -> 
     original_forward = block.forward
 
     def _mamba_zeroed(hidden_states, residual, **kwargs):  # type: ignore[no-untyped-def]
-        new_residual = hidden_states + residual if residual is not None else hidden_states
+        new_residual = (
+            hidden_states + residual if residual is not None else hidden_states
+        )
         normed = block.norm(new_residual.to(dtype=block.norm.weight.dtype))
-        mamba_out = block.mamba(normed, inference_params=kwargs.get("mamba_inference_params")) * 0
-        attn_out = block.attn(normed, inference_params=kwargs.get("attn_inference_params"))
+        mamba_out = (
+            block.mamba(normed, inference_params=kwargs.get("mamba_inference_params"))
+            * 0
+        )
+        attn_out = block.attn(
+            normed, inference_params=kwargs.get("attn_inference_params")
+        )
         fused = block.merge(mamba_out, attn_out)
         return fused, new_residual
 

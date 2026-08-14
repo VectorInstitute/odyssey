@@ -58,7 +58,9 @@ def test_every_event_is_a_target_exactly_once() -> None:
     seen_targets: List[int] = []
     for chunk in sampler:
         seen_targets.extend(
-            t for t, real in zip(chunk.targets[0].tolist(), chunk.real_mask[0].tolist()) if real
+            t
+            for t, real in zip(chunk.targets[0].tolist(), chunk.real_mask[0].tolist())
+            if real
         )
     # events 1001..1011 (event 1000 is never a target -- it's the first input token)
     assert seen_targets == list(range(1001, 1012))
@@ -233,14 +235,18 @@ def test_padding_uses_no_subject_sentinel() -> None:
 
 def test_reset_prob_zero_never_synthesizes_mid_patient_resets() -> None:
     seq = _seq(1, 6, visit_orders=[0, 0, 1, 1, 2, 2])
-    sampler = PackedLaneSampler(_patients([seq]), num_lanes=1, chunk_size=6, reset_prob=0.0)
+    sampler = PackedLaneSampler(
+        _patients([seq]), num_lanes=1, chunk_size=6, reset_prob=0.0
+    )
     c1 = sampler.next_chunk()
     assert c1.reset_mask[0].tolist() == [True, False, False, False, False, False]
 
 
 def test_reset_prob_one_always_resets_at_visit_boundaries() -> None:
     seq = _seq(1, 6, visit_orders=[0, 0, 1, 1, 2, 2])
-    sampler = PackedLaneSampler(_patients([seq]), num_lanes=1, chunk_size=6, reset_prob=1.0)
+    sampler = PackedLaneSampler(
+        _patients([seq]), num_lanes=1, chunk_size=6, reset_prob=1.0
+    )
     c1 = sampler.next_chunk()
     # resets at position 0 (patient start) and at every visit-order change
     assert c1.reset_mask[0].tolist() == [True, False, True, False, True, False]
@@ -248,8 +254,16 @@ def test_reset_prob_one_always_resets_at_visit_boundaries() -> None:
 
 def test_reset_prob_is_deterministic_given_a_seed() -> None:
     seq = _seq(1, 20, visit_orders=list(range(20)))  # a new visit every event
-    s1 = PackedLaneSampler(_patients([seq]), num_lanes=1, chunk_size=20, reset_prob=0.5, seed=42)
-    s2 = PackedLaneSampler(_patients([_seq(1, 20, visit_orders=list(range(20)))]), num_lanes=1, chunk_size=20, reset_prob=0.5, seed=42)
+    s1 = PackedLaneSampler(
+        _patients([seq]), num_lanes=1, chunk_size=20, reset_prob=0.5, seed=42
+    )
+    s2 = PackedLaneSampler(
+        _patients([_seq(1, 20, visit_orders=list(range(20)))]),
+        num_lanes=1,
+        chunk_size=20,
+        reset_prob=0.5,
+        seed=42,
+    )
     assert s1.next_chunk().reset_mask.tolist() == s2.next_chunk().reset_mask.tolist()
 
 

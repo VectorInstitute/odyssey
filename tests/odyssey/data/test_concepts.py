@@ -24,9 +24,7 @@ from odyssey.data.concepts import (
 T0 = datetime(2024, 1, 1, 0, 0)
 
 
-_EventRow = Union[
-    Tuple[int, str, float], Tuple[int, str, float, datetime]
-]
+_EventRow = Union[Tuple[int, str, float], Tuple[int, str, float, datetime]]
 
 
 def _events(rows: List[_EventRow]) -> pl.DataFrame:
@@ -222,14 +220,26 @@ def test_baseline_relative_rule_triggers_on_rise_within_window() -> None:
     concepts = [
         ConceptDefinition(
             "aki",
-            [BaselineRelativeRule("LAB//RESULT//50912//", delta=0.3, direction="above", window_hours=48.0)],
+            [
+                BaselineRelativeRule(
+                    "LAB//RESULT//50912//",
+                    delta=0.3,
+                    direction="above",
+                    window_hours=48.0,
+                )
+            ],
             "creatinine rose >= 0.3 within 48h",
         )
     ]
     events = _events(
         [
             (1, "LAB//RESULT//50912//", 1.0, T0),
-            (1, "LAB//RESULT//50912//", 1.4, T0 + timedelta(hours=24)),  # +0.4 within 48h
+            (
+                1,
+                "LAB//RESULT//50912//",
+                1.4,
+                T0 + timedelta(hours=24),
+            ),  # +0.4 within 48h
         ]
     )
     labels = label_concepts(events, concepts)
@@ -240,14 +250,26 @@ def test_baseline_relative_rule_does_not_trigger_outside_window() -> None:
     concepts = [
         ConceptDefinition(
             "aki",
-            [BaselineRelativeRule("LAB//RESULT//50912//", delta=0.3, direction="above", window_hours=48.0)],
+            [
+                BaselineRelativeRule(
+                    "LAB//RESULT//50912//",
+                    delta=0.3,
+                    direction="above",
+                    window_hours=48.0,
+                )
+            ],
             "creatinine rose >= 0.3 within 48h",
         )
     ]
     events = _events(
         [
             (1, "LAB//RESULT//50912//", 1.0, T0),
-            (1, "LAB//RESULT//50912//", 1.4, T0 + timedelta(hours=72)),  # +0.4 but outside 48h
+            (
+                1,
+                "LAB//RESULT//50912//",
+                1.4,
+                T0 + timedelta(hours=72),
+            ),  # +0.4 but outside 48h
         ]
     )
     labels = label_concepts(events, concepts)
@@ -258,7 +280,11 @@ def test_baseline_relative_rule_below_direction_triggers_on_fall() -> None:
     concepts = [
         ConceptDefinition(
             "big_drop",
-            [BaselineRelativeRule("LAB//220045//", delta=20.0, direction="below", window_hours=6.0)],
+            [
+                BaselineRelativeRule(
+                    "LAB//220045//", delta=20.0, direction="below", window_hours=6.0
+                )
+            ],
             "HR fell by >= 20 within 6h",
         )
     ]
@@ -272,7 +298,9 @@ def test_baseline_relative_rule_below_direction_triggers_on_fall() -> None:
     assert labels["big_drop"].to_list() == [1]
 
 
-def test_baseline_relative_rule_a_small_absolute_rise_from_a_low_baseline_still_triggers() -> None:
+def test_baseline_relative_rule_a_small_absolute_rise_from_a_low_baseline_still_triggers() -> (
+    None
+):
     """The whole point of KDIGO-style baseline-relative logic.
 
     Catches a delta v1's absolute-threshold proxy (creatinine > 1.5)
@@ -281,14 +309,26 @@ def test_baseline_relative_rule_a_small_absolute_rise_from_a_low_baseline_still_
     concepts = [
         ConceptDefinition(
             "aki",
-            [BaselineRelativeRule("LAB//RESULT//50912//", delta=0.3, direction="above", window_hours=48.0)],
+            [
+                BaselineRelativeRule(
+                    "LAB//RESULT//50912//",
+                    delta=0.3,
+                    direction="above",
+                    window_hours=48.0,
+                )
+            ],
             "creatinine rose >= 0.3 within 48h",
         )
     ]
     events = _events(
         [
             (1, "LAB//RESULT//50912//", 0.6, T0),
-            (1, "LAB//RESULT//50912//", 1.0, T0 + timedelta(hours=24)),  # rose 0.4, still < 1.5
+            (
+                1,
+                "LAB//RESULT//50912//",
+                1.0,
+                T0 + timedelta(hours=24),
+            ),  # rose 0.4, still < 1.5
         ]
     )
     labels = label_concepts(events, concepts)
@@ -315,7 +355,12 @@ def test_derived_gcs_total_sums_components_charted_together() -> None:
         [
             (1, "LAB//220739//", 3.0, T0),  # eye
             (1, "LAB//223900//", 4.0, T0 + timedelta(minutes=1)),  # verbal
-            (1, "LAB//223901//", 5.0, T0 + timedelta(minutes=2)),  # motor: total 12 < 15
+            (
+                1,
+                "LAB//223901//",
+                5.0,
+                T0 + timedelta(minutes=2),
+            ),  # motor: total 12 < 15
         ]
     )
     labels = label_concepts(events, concepts)
@@ -341,7 +386,12 @@ def test_derived_gcs_total_components_too_far_apart_do_not_pair() -> None:
     events = _events(
         [
             (1, "LAB//220739//", 3.0, T0),
-            (1, "LAB//223900//", 4.0, T0 + timedelta(hours=5)),  # far outside the 15min default
+            (
+                1,
+                "LAB//223900//",
+                4.0,
+                T0 + timedelta(hours=5),
+            ),  # far outside the 15min default
             (1, "LAB//223901//", 5.0, T0 + timedelta(hours=10)),
         ]
     )
@@ -353,10 +403,14 @@ def test_derived_gcs_total_components_too_far_apart_do_not_pair() -> None:
 
 def test_derived_gcs_total_missing_a_component_is_not_observed_or_triggered() -> None:
     concepts = [ConceptDefinition("altered_mental_status", [_GCS_RULE], "GCS < 15")]
-    events = _events([(1, "LAB//220739//", 3.0, T0)])  # only eye, no verbal/motor at all
+    events = _events(
+        [(1, "LAB//220739//", 3.0, T0)]
+    )  # only eye, no verbal/motor at all
     labels = label_concepts(events, concepts)
     assert labels["altered_mental_status"].to_list() == [0]
-    assert labels["altered_mental_status_observed"].to_list() == [1]  # eye alone was observed
+    assert labels["altered_mental_status_observed"].to_list() == [
+        1
+    ]  # eye alone was observed
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +458,9 @@ def test_composite_observed_if_any_component_observed() -> None:
 
 
 def test_composite_with_no_components_raises_a_clear_error() -> None:
-    concept = CompositeConceptDefinition("empty", [], min_criteria=1, description="no components")
+    concept = CompositeConceptDefinition(
+        "empty", [], min_criteria=1, description="no components"
+    )
     events = _events([(1, "LAB//220045//bpm", 75.0)])
     with pytest.raises(ValueError, match="empty"):
         label_concepts(events, [concept])

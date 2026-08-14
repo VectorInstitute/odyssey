@@ -132,7 +132,9 @@ class DerivedGcsTotalRule:
     max_component_gap_minutes: float = 15.0
 
 
-ComponentRule = Union[ConceptRule, SustainedRule, BaselineRelativeRule, DerivedGcsTotalRule]
+ComponentRule = Union[
+    ConceptRule, SustainedRule, BaselineRelativeRule, DerivedGcsTotalRule
+]
 
 
 @dataclass(frozen=True)
@@ -259,7 +261,11 @@ _SUSTAINED_TACHYPNEA = ConceptDefinition(
 
 _ACUTE_KIDNEY_INJURY = ConceptDefinition(
     "acute_kidney_injury",
-    [BaselineRelativeRule("LAB//RESULT//50912//", delta=0.3, direction="above", window_hours=48.0)],
+    [
+        BaselineRelativeRule(
+            "LAB//RESULT//50912//", delta=0.3, direction="above", window_hours=48.0
+        )
+    ],
     "KDIGO AKI Stage 1's 48-hour absolute-rise criterion: serum "
     "creatinine rose by >= 0.3 mg/dL within 48 hours of an earlier "
     "reading. Replaces v1's 'creatinine > 1.5 mg/dL' single-value proxy, "
@@ -339,10 +345,15 @@ CONCEPTS: List[AnyConceptDefinition] = [
 
 
 def _instantaneous_ids(
-    events: pl.DataFrame, rule: ConceptRule, subject_id_col: str, code_col: str, value_col: str
+    events: pl.DataFrame,
+    rule: ConceptRule,
+    subject_id_col: str,
+    code_col: str,
+    value_col: str,
 ) -> Tuple[Set[int], Set[int]]:
     matched = events.filter(
-        pl.col(code_col).str.starts_with(rule.code_prefix) & pl.col(value_col).is_not_null()
+        pl.col(code_col).str.starts_with(rule.code_prefix)
+        & pl.col(value_col).is_not_null()
     )
     observed = set(matched[subject_id_col].to_list())
     comparison = (
@@ -364,7 +375,8 @@ def _sustained_ids(
     time_col: str,
 ) -> Tuple[Set[int], Set[int]]:
     matched = events.filter(
-        pl.col(code_col).str.starts_with(rule.code_prefix) & pl.col(value_col).is_not_null()
+        pl.col(code_col).str.starts_with(rule.code_prefix)
+        & pl.col(value_col).is_not_null()
     )
     observed = set(matched[subject_id_col].to_list())
     comparison = (
@@ -394,7 +406,8 @@ def _baseline_relative_ids(
     time_col: str,
 ) -> Tuple[Set[int], Set[int]]:
     matched = events.filter(
-        pl.col(code_col).str.starts_with(rule.code_prefix) & pl.col(value_col).is_not_null()
+        pl.col(code_col).str.starts_with(rule.code_prefix)
+        & pl.col(value_col).is_not_null()
     ).select(subject_id_col, time_col, value_col)
     observed = set(matched[subject_id_col].to_list())
     if matched.height == 0:
@@ -426,7 +439,10 @@ def _derived_gcs_total_ids(
 ) -> Tuple[Set[int], Set[int]]:
     def _component(prefix: str) -> pl.DataFrame:
         return (
-            events.filter(pl.col(code_col).str.starts_with(prefix) & pl.col(value_col).is_not_null())
+            events.filter(
+                pl.col(code_col).str.starts_with(prefix)
+                & pl.col(value_col).is_not_null()
+            )
             .select(subject_id_col, time_col, value_col)
             .sort([subject_id_col, time_col])
         )
@@ -450,7 +466,9 @@ def _derived_gcs_total_ids(
     # data is actually unsorted here, so it's suppressed rather than left
     # as noise on every call.
     with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message="Sortedness of columns cannot be checked")
+        warnings.filterwarnings(
+            "ignore", message="Sortedness of columns cannot be checked"
+        )
         paired = eye.join_asof(
             verbal.rename({value_col: f"{value_col}_verbal"}),
             on=time_col,
@@ -472,8 +490,12 @@ def _derived_gcs_total_ids(
     if paired.height == 0:
         return observed, set()
 
-    total = pl.col(value_col) + pl.col(f"{value_col}_verbal") + pl.col(f"{value_col}_motor")
-    comparison = total < rule.threshold if rule.direction == "below" else total > rule.threshold
+    total = (
+        pl.col(value_col) + pl.col(f"{value_col}_verbal") + pl.col(f"{value_col}_motor")
+    )
+    comparison = (
+        total < rule.threshold if rule.direction == "below" else total > rule.threshold
+    )
     triggered = set(paired.filter(comparison)[subject_id_col].to_list())
     return observed, triggered
 
@@ -598,7 +620,9 @@ def label_concepts(
                 for sid in trig:
                     criteria_met_count[sid] = criteria_met_count.get(sid, 0) + 1
             triggered_ids = {
-                sid for sid, count in criteria_met_count.items() if count >= concept.min_criteria
+                sid
+                for sid, count in criteria_met_count.items()
+                if count >= concept.min_criteria
             }
         else:
             if not concept.rules:

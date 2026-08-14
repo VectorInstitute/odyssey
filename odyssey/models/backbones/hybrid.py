@@ -205,7 +205,9 @@ def _make_mamba2_with_state_cls(mamba2_cls: Any) -> Any:
                 # before the write-back below overwrites conv_state in
                 # place with THIS chunk's own trailing values (kept for a
                 # future step() call, upstream behavior, unchanged here).
-                incoming_conv_state = conv_state.clone() if conv_state is not None else None
+                incoming_conv_state = (
+                    conv_state.clone() if conv_state is not None else None
+                )
 
             zxbcdt = self.in_proj(u)
             if seqlen_og is not None:
@@ -246,14 +248,14 @@ def _make_mamba2_with_state_cls(mamba2_cls: Any) -> Any:
             if conv_state is not None:
                 if cu_seqlens is None:
                     xBC_t = rearrange(xBC, "b l d -> b d l")  # noqa: N806
-                    conv_state.copy_(
-                        F.pad(xBC_t, (self.d_conv - xBC_t.shape[-1], 0))
-                    )
+                    conv_state.copy_(F.pad(xBC_t, (self.d_conv - xBC_t.shape[-1], 0)))
                 else:
                     assert mamba2_module.causal_conv1d_varlen_states is not None, (
                         "varlen inference requires causal_conv1d package"
                     )
-                    assert batch == 1, "varlen inference only supports batch dimension 1"
+                    assert batch == 1, (
+                        "varlen inference only supports batch dimension 1"
+                    )
                     conv_varlen_states = mamba2_module.causal_conv1d_varlen_states(
                         xBC.squeeze(0), cu_seqlens, state_len=conv_state.shape[-1]
                     )
@@ -261,7 +263,9 @@ def _make_mamba2_with_state_cls(mamba2_cls: Any) -> Any:
             assert self.activation in ["silu", "swish"]
             causal_conv1d_fn = mamba2_module.causal_conv1d_fn
             if causal_conv1d_fn is None or self.activation not in ["silu", "swish"]:
-                assert seq_idx is None, "varlen conv1d requires the causal_conv1d package"
+                assert seq_idx is None, (
+                    "varlen conv1d requires the causal_conv1d package"
+                )
                 if incoming_conv_state is not None and self.d_conv > 1:
                     # Real left-context instead of nn.Conv1d's implicit
                     # zero-padding: without this, every chunk after the
@@ -335,7 +339,8 @@ def _make_mamba2_with_state_cls(mamba2_cls: Any) -> Any:
                 # exactly that error before adding this clone.
                 initial_states=ssm_state.clone() if ssm_state is not None else None,
                 return_final_states=ssm_state is not None,
-                return_varlen_states=cu_seqlens is not None and inference_params is not None,
+                return_varlen_states=cu_seqlens is not None
+                and inference_params is not None,
             )
             if ssm_state is not None:
                 y, last_state, *rest = y
@@ -513,9 +518,7 @@ class EHRHybridBackbone(SequenceBackbone):
             norm_cls = partial(RMSNorm, eps=norm_epsilon)
             return HybridBlock(hidden_size, mamba_cls, attn_cls, norm_cls)
 
-        self.layers = nn.ModuleList(
-            [_make_block(i) for i in range(num_hidden_layers)]
-        )
+        self.layers = nn.ModuleList([_make_block(i) for i in range(num_hidden_layers)])
         self.norm_f = RMSNorm(hidden_size, eps=norm_epsilon)
 
     def forward(
@@ -539,12 +542,14 @@ class EHRHybridBackbone(SequenceBackbone):
         from mamba_ssm.utils.generation import InferenceParams  # noqa: PLC0415
 
         typed_state: Optional[MambaStateDict] = (
-            None
-            if state is None
-            else cast(HybridState, state.recurrent).mamba_states
+            None if state is None else cast(HybridState, state.recurrent).mamba_states
         )
 
-        if reset_mask is not None and reset_mask.shape[1] > 1 and reset_mask[:, 1:].any():
+        if (
+            reset_mask is not None
+            and reset_mask.shape[1] > 1
+            and reset_mask[:, 1:].any()
+        ):
             raise NotImplementedError(
                 "EHRHybridBackbone does not yet support resets after "
                 "position 0 of a chunk (packed multi-patient chunks). The "
