@@ -70,26 +70,43 @@ def test_every_event_is_a_target_exactly_once() -> None:
 # ---------------------------------------------------------------------------
 # Packing multiple patients into one lane
 # ---------------------------------------------------------------------------
+#
+# Patients are still packed back-to-back across the *stream* -- every event
+# is eventually consumed in order, nothing is dropped -- but never within
+# the same *chunk*: a chunk's real content stops at the first reset after
+# position 0, and the untaken tokens (including the next patient's own
+# position-0 reset) carry over to start the following chunk instead. See
+# the module docstring for why (the backbone can't resume mid-chunk state
+# for more than one segment).
 
 
-def test_short_patients_are_packed_back_to_back_in_one_lane() -> None:
+def test_a_second_patient_never_starts_within_the_same_chunk() -> None:
     patients = _patients([_seq(1, 2), _seq(2, 2), _seq(3, 2)])
     sampler = PackedLaneSampler(patients, num_lanes=1, chunk_size=3)
 
     c1 = sampler.next_chunk()
-    # patient 1 (2 events) + first event of patient 2, packed into one chunk
-    assert c1.batch.concept_ids[0].tolist() == [1000, 1001, 2000]
-    assert c1.subject_ids[0].tolist() == [1, 1, 2]
+    # patient 1's 2 events, then padding -- patient 2 is deferred to c2
+    # rather than starting mid-chunk.
+    assert c1.batch.concept_ids[0].tolist() == [1000, 1001, PAD_ID]
+    assert c1.subject_ids[0].tolist() == [1, 1, NO_SUBJECT]
+
+    c2 = sampler.next_chunk()
+    # patient 2 now starts fresh at position 0 of its own chunk.
+    assert c2.batch.concept_ids[0].tolist() == [2000, 2001, PAD_ID]
+    assert c2.subject_ids[0].tolist() == [2, 2, NO_SUBJECT]
+    assert c2.reset_mask[0].tolist() == [True, False, False]
 
 
-def test_patient_boundary_within_a_chunk_sets_reset_flag() -> None:
+def test_patient_boundary_within_a_chunk_truncates_it() -> None:
     patients = _patients([_seq(1, 2), _seq(2, 2)])
     sampler = PackedLaneSampler(patients, num_lanes=1, chunk_size=3)
 
     c1 = sampler.next_chunk()
-    # position 0: first token of patient 1 -> reset. position 2: first
-    # token of patient 2 -> reset. position 1: mid-patient-1 -> no reset.
-    assert c1.reset_mask[0].tolist() == [True, False, True]
+    # position 0: first token of patient 1 -> reset (allowed). Patient 2's
+    # own reset would otherwise land at position 2 -- not allowed mid-chunk,
+    # so the chunk is truncated there instead, and that position is padding.
+    assert c1.reset_mask[0].tolist() == [True, False, False]
+    assert c1.batch.concept_ids[0].tolist() == [1000, 1001, PAD_ID]
 
 
 # ---------------------------------------------------------------------------
@@ -98,15 +115,14 @@ def test_patient_boundary_within_a_chunk_sets_reset_flag() -> None:
 
 
 def test_patient_end_marks_a_patients_true_last_token() -> None:
-    # patient 1 (2 events) fully fits, patient 2 (2 events) starts but only
-    # its first token fits in this chunk.
+    # patient 1 (2 events) fully fits; patient 2 is deferred to the next
+    # chunk entirely rather than starting mid-chunk here.
     patients = _patients([_seq(1, 2), _seq(2, 2)])
     sampler = PackedLaneSampler(patients, num_lanes=1, chunk_size=3)
 
     c1 = sampler.next_chunk()
-    assert c1.subject_ids[0].tolist() == [1, 1, 2]
-    # patient 1's last token (position 1) is a true end; patient 2's first
-    # token (position 2) is not, since patient 2 has one more event left.
+    assert c1.subject_ids[0].tolist() == [1, 1, NO_SUBJECT]
+    # patient 1's last token (position 1) is a true end; position 2 is padding.
     assert c1.patient_end[0].tolist() == [False, True, False]
 
 
@@ -133,13 +149,17 @@ def test_patient_end_fires_on_the_correct_later_chunk() -> None:
     assert chunks[-1].patient_end[0].any()
 
 
-def test_patient_end_can_fire_multiple_times_in_one_chunk_with_short_patients() -> None:
+def test_a_second_patient_end_never_shares_a_chunk_with_the_first() -> None:
+    # four single-event patients: each patient_end now fires alone, in its
+    # own chunk, rather than all four landing in one packed chunk -- a
+    # second patient's reset can't share a chunk with the first (see
+    # test_a_second_patient_never_starts_within_the_same_chunk).
     patients = _patients([_seq(i, 1) for i in range(1, 5)])
     sampler = PackedLaneSampler(patients, num_lanes=1, chunk_size=4)
 
-    c1 = sampler.next_chunk()
-    # every single-event patient's one token is also its last token
-    assert c1.patient_end[0].tolist() == [True, True, True, True]
+    chunks = [sampler.next_chunk() for _ in range(4)]
+    for chunk in chunks:
+        assert chunk.patient_end[0].tolist() == [True, False, False, False]
 
 
 def test_patient_end_is_false_on_padding() -> None:
@@ -149,14 +169,45 @@ def test_patient_end_is_false_on_padding() -> None:
     assert c1.patient_end[0].tolist() == [False, True, False, False, False]
 
 
-def test_no_padding_waste_when_enough_patients_are_queued() -> None:
-    patients = _patients([_seq(i, 2) for i in range(1, 6)])
+def test_no_padding_waste_when_patient_length_divides_chunk_size() -> None:
+    # each patient's length exactly matches chunk_size, so every reset
+    # lands precisely at position 0 of some chunk -- zero padding waste.
+    # A third patient keeps c2 away from the true end of the stream (whose
+    # last token has no real target of its own, a separate, unrelated edge
+    # case -- see test_padding_uses_no_subject_sentinel).
+    patients = _patients([_seq(1, 4), _seq(2, 4), _seq(3, 4)])
     sampler = PackedLaneSampler(patients, num_lanes=1, chunk_size=4)
 
     c1 = sampler.next_chunk()
     c2 = sampler.next_chunk()
     assert c1.real_mask[0].all()
     assert c2.real_mask[0].all()
+    assert c2.reset_mask[0].tolist() == [True, False, False, False]
+
+
+def test_padding_absorbs_a_patient_transition_within_a_chunk() -> None:
+    # patients shorter than chunk_size still waste some chunk space at the
+    # transition -- every event still appears as a real input token, but a
+    # target that would predict a new patient's first token from the
+    # previous patient's last hidden state (a prediction across the reset
+    # boundary) is correctly never trained on, in any chunk.
+    patients = _patients([_seq(i, 2) for i in range(1, 6)])
+    sampler = PackedLaneSampler(patients, num_lanes=1, chunk_size=4)
+
+    c1 = sampler.next_chunk()
+    assert not c1.real_mask[0].all()
+    chunks = [c1, *sampler]
+    seen = [
+        t
+        for chunk in chunks
+        for t, real in zip(chunk.targets[0].tolist(), chunk.real_mask[0].tolist())
+        if real
+    ]
+    assert len(seen) == len(set(seen))
+    # one valid within-patient target per patient (predicting each
+    # patient's 2nd event from its 1st) -- the 5 cross-patient-boundary
+    # pairs are correctly excluded.
+    assert seen == [1001, 2001, 3001, 4001, 5001]
 
 
 # ---------------------------------------------------------------------------
@@ -213,8 +264,11 @@ def test_iteration_stops_cleanly() -> None:
         if real
     ]
     # 10 total events across both patients; the very first event of patient
-    # 1 is never a target, giving 9 valid targets total.
-    assert seen_targets == [1001, 1002, 1003, 1004, 2000, 2001, 2002, 2003, 2004]
+    # 1 is never a target (no predecessor), and predicting patient 2's
+    # first event (2000) from patient 1's last hidden state is a
+    # cross-reset-boundary prediction, also correctly excluded -- see
+    # test_padding_absorbs_a_patient_transition_within_a_chunk.
+    assert seen_targets == [1001, 1002, 1003, 1004, 2001, 2002, 2003, 2004]
 
 
 def test_padding_uses_no_subject_sentinel() -> None:
@@ -243,13 +297,23 @@ def test_reset_prob_zero_never_synthesizes_mid_patient_resets() -> None:
 
 
 def test_reset_prob_one_always_resets_at_visit_boundaries() -> None:
+    # A synthetic mid-visit reset is subject to the same mid-chunk
+    # restriction as a real patient boundary: each visit's 2 events get
+    # its own chunk, truncated at the next visit's reset rather than
+    # packing all 3 visits into the one chunk_size=6 window.
     seq = _seq(1, 6, visit_orders=[0, 0, 1, 1, 2, 2])
     sampler = PackedLaneSampler(
         _patients([seq]), num_lanes=1, chunk_size=6, reset_prob=1.0
     )
     c1 = sampler.next_chunk()
-    # resets at position 0 (patient start) and at every visit-order change
-    assert c1.reset_mask[0].tolist() == [True, False, True, False, True, False]
+    c2 = sampler.next_chunk()
+    c3 = sampler.next_chunk()
+    assert c1.reset_mask[0].tolist() == [True, False, False, False, False, False]
+    assert c2.reset_mask[0].tolist() == [True, False, False, False, False, False]
+    assert c3.reset_mask[0].tolist() == [True, False, False, False, False, False]
+    assert c1.batch.concept_ids[0, :2].tolist() == [1000, 1001]
+    assert c2.batch.concept_ids[0, :2].tolist() == [1002, 1003]
+    assert c3.batch.concept_ids[0, :2].tolist() == [1004, 1005]
 
 
 def test_reset_prob_is_deterministic_given_a_seed() -> None:
@@ -299,8 +363,14 @@ def test_zero_length_patient_is_skipped_without_corrupting_the_lane() -> None:
         _patients([_seq(1, 2), empty, _seq(2, 2)]), num_lanes=1, chunk_size=5
     )
     c1 = sampler.next_chunk()
-    assert c1.batch.concept_ids[0].tolist() == [1000, 1001, 2000, 2001, PAD_ID]
-    assert c1.subject_ids[0].tolist() == [1, 1, 2, 2, NO_SUBJECT]
+    # patient 2 is deferred to its own chunk rather than starting mid-chunk;
+    # the empty patient in between contributes nothing and corrupts nothing.
+    assert c1.batch.concept_ids[0].tolist() == [1000, 1001, PAD_ID, PAD_ID, PAD_ID]
+    assert c1.subject_ids[0].tolist() == [1, 1, NO_SUBJECT, NO_SUBJECT, NO_SUBJECT]
+
+    c2 = sampler.next_chunk()
+    assert c2.batch.concept_ids[0, :2].tolist() == [2000, 2001]
+    assert c2.subject_ids[0, :2].tolist() == [2, 2]
 
 
 def test_next_chunk_keeps_returning_none_after_exhaustion() -> None:

@@ -143,10 +143,28 @@ class _SequenceModelBase(nn.Module):
     def _streaming_next_token_loss(
         self, logits: torch.Tensor, targets: torch.Tensor
     ) -> torch.Tensor:
-        """Cross-entropy loss for one packed chunk; ``targets`` are pre-shifted."""
+        """Cross-entropy loss for one packed chunk; ``targets`` are pre-shifted.
+
+        A chunk can have zero real targets across every lane (e.g. right
+        after :class:`~odyssey.data.streaming.PackedLaneSampler` truncates
+        every lane at a reset boundary in the same call, or at the very
+        end of an epoch) -- ``F.cross_entropy``'s default mean reduction
+        divides by the count of non-ignored elements, which is 0/0 = NaN
+        with no guard. Returned as ``logits.sum() * 0.0`` rather than a
+        detached zero constant so it stays a real (zero-valued,
+        zero-gradient) node in the graph: the training loop's
+        ``total.backward()`` must not crash even if this is the only
+        connected loss term in the chunk (every other term already
+        degrades to a genuine disconnected zero -- see
+        :func:`~odyssey.models.concept_bottleneck.combined_loss` --  when
+        it has nothing to supervise).
+        """
+        flat_targets = targets.reshape(-1)
+        if not bool((flat_targets != self.padding_idx).any()):
+            return logits.sum() * 0.0
         return F.cross_entropy(
             logits.reshape(-1, logits.size(-1)),
-            targets.reshape(-1),
+            flat_targets,
             ignore_index=self.padding_idx,
         )
 

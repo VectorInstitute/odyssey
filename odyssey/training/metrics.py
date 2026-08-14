@@ -337,7 +337,9 @@ def compute_completeness(
 
     denom = full_model_accuracy - random_baseline
     completeness_score = (
-        (concepts_only_accuracy - random_baseline) / denom if denom > 1e-9 else float("nan")
+        (concepts_only_accuracy - random_baseline) / denom
+        if denom > 1e-9
+        else float("nan")
     )
     return CompletenessResult(
         full_model_accuracy=full_model_accuracy,

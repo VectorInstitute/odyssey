@@ -10,8 +10,28 @@ that simulates missing history.
 
 A lane is a continuous concatenation of :class:`~odyssey.data.sequences.PatientSequence`
 objects pulled from a queue. :meth:`PackedLaneSampler.next_chunk` advances
-every lane by exactly ``chunk_size`` tokens per call and returns a
+every lane by up to ``chunk_size`` tokens per call and returns a
 :class:`StreamingChunk`:
+
+Backbones that carry recurrent state across chunks (e.g.
+:class:`~odyssey.models.backbones.hybrid.EHRHybridBackbone`) only support a
+state reset at position 0 of a chunk -- a mid-chunk reset would require
+per-row varlen kernel support that hasn't been validated (see that
+backbone's module docstring). Whenever a lane's next reset (patient
+boundary or synthetic mid-visit reset) would otherwise land after
+position 0, :meth:`next_chunk` stops that lane's window there and pads
+the remainder instead of pulling in the next segment early; the
+untaken tokens stay in the buffer and become position 0 of that lane's
+next window, so every event still appears as a real *input* token
+exactly once -- only some compute in that one chunk is spent on padding
+instead. The one deliberate exception is on the *target* side: the
+(input, target) pair that would predict a segment's first token from
+the previous segment's last hidden state -- a prediction across the
+very reset boundary that says no state carries over -- is never a
+target in any chunk, consistent with the model having no information
+to predict it from. This is a correctness improvement over naive
+packing, not data loss: that pair was never a meaningful forecasting
+target to begin with.
 
 - ``batch``: a :class:`~odyssey.data.types.ClinicalSequenceBatch` of
   ``chunk_size`` input tokens per lane.
@@ -153,6 +173,29 @@ class _LaneBuffer:
         )
 
 
+def _repad(window: "_Window", real_len: int) -> "_Window":
+    """Return ``window`` with only its first ``real_len`` positions real.
+
+    Used to truncate a window early (at a mid-chunk reset position) while
+    keeping its fixed length -- the same padding convention
+    :meth:`_LaneBuffer.peek_padded` uses for end-of-buffer padding.
+    """
+    k = len(window.concept_ids)
+    pad = k - real_len
+    return _Window(
+        concept_ids=window.concept_ids[:real_len] + [PAD_ID] * pad,
+        type_ids=window.type_ids[:real_len] + [0] * pad,
+        time_stamps=window.time_stamps[:real_len] + [0.0] * pad,
+        ages=window.ages[:real_len] + [0.0] * pad,
+        visit_orders=window.visit_orders[:real_len] + [0] * pad,
+        visit_segments=window.visit_segments[:real_len] + [0] * pad,
+        reset=window.reset[:real_len] + [False] * pad,
+        subject_ids=window.subject_ids[:real_len] + [NO_SUBJECT] * pad,
+        patient_end=window.patient_end[:real_len] + [False] * pad,
+        n_real=real_len,
+    )
+
+
 @dataclass
 class _Window:
     """A padded, fixed-length peek into a lane's buffer."""
@@ -209,7 +252,11 @@ class PackedLaneSampler:
             lane.append_patient(seq, reset_prob=self.reset_prob, rng=self._rng)
 
     def next_chunk(self) -> Optional[StreamingChunk]:
-        """Advance every lane by ``chunk_size`` tokens.
+        """Advance every lane by up to ``chunk_size`` tokens.
+
+        A lane advances by fewer than ``chunk_size`` tokens (the rest of
+        its window padded) when a reset would otherwise land after
+        position 0 -- see the module docstring.
 
         Returns ``None`` once the patient queue is exhausted and every
         lane's buffer is empty, marking the end of an epoch.
@@ -220,7 +267,19 @@ class PackedLaneSampler:
         for lane in self._lanes:
             self._refill(lane, k)
             window = lane.peek_padded(k)
-            lane.pop_front(min(self.chunk_size, len(lane)))
+            # reset[0] is always allowed (it becomes this window's own
+            # position-0 reset); a reset at any input position after that
+            # (indices 1..chunk_size-1) would ask the backbone to reset
+            # mid-chunk, which it does not support -- stop the real
+            # content there instead and leave the rest for next call.
+            truncate_at = next(
+                (idx for idx in range(1, self.chunk_size) if window.reset[idx]), None
+            )
+            if truncate_at is not None:
+                window = _repad(window, truncate_at)
+                lane.pop_front(truncate_at)
+            else:
+                lane.pop_front(min(self.chunk_size, len(lane)))
             windows.append(window)
             if window.n_real > 0:
                 any_real = True
