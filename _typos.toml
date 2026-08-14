@@ -1,0 +1,5 @@
+[default.extend-words]
+# EHR = Electronic Health Records -- core domain vocabulary throughout this
+# codebase (EHR-Mamba3, CachedEHREmbeddings, ...), not a typo for "HER".
+EHR = "EHR"
+ehr = "ehr"

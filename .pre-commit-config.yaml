@@ -43,7 +43,7 @@ repos:
       exclude: "tests"
 
   - repo: https://github.com/crate-ci/typos
-    rev: v1
+    rev: v1.49.0
     hooks:
       - id: typos
         args: []
