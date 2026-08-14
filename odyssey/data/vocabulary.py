@@ -15,7 +15,7 @@ Two separate, small vocabularies a patient sequence is built from:
 import json
 from collections import Counter
 from pathlib import Path
-from typing import Dict, Iterable, List, Union
+from typing import Dict, Iterable, List, Mapping, Union
 
 import polars as pl
 
@@ -43,10 +43,34 @@ class Vocabulary:
 
         Keeps the ``max_size`` most frequent codes with count >= ``min_count``,
         always reserving ids 0/1 for ``[PAD]``/``[UNK]``.
+
+        ``codes`` is fully materialized into a :class:`collections.Counter`
+        here, one Python object per element -- fine for the small,
+        already-list-like inputs this is normally called with (tests, a
+        codes-metadata file), but a real event stream with tens of
+        millions of rows should use :meth:`build_from_counts` on a
+        vectorized, Arrow-native frequency count instead (see
+        :func:`odyssey.training.data.build_vocabulary`), never
+        ``.to_list()`` the raw column here.
         """
-        counts = Counter(codes)
+        return cls.build_from_counts(
+            Counter(codes), min_count=min_count, max_size=max_size
+        )
+
+    @classmethod
+    def build_from_counts(
+        cls, counts: Mapping[str, int], *, min_count: int = 5, max_size: int = 50_000
+    ) -> "Vocabulary":
+        """Build a vocabulary from already-aggregated ``code -> count`` pairs.
+
+        Bounded by vocabulary cardinality, not by the number of raw
+        events -- the entry point for real, large event streams (see
+        :meth:`build`'s docstring on why this matters).
+        """
         kept = [
-            code for code, count in counts.most_common(max_size) if count >= min_count
+            code
+            for code, count in Counter(counts).most_common(max_size)
+            if count >= min_count
         ]
         token_to_id = {tok: i for i, tok in enumerate(_SPECIAL_TOKENS)}
         for code in kept:

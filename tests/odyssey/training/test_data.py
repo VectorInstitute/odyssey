@@ -197,3 +197,17 @@ def test_build_vocabulary_reserves_pad_and_unk() -> None:
     assert vocab.encode("[PAD]") == PAD_ID
     assert vocab.encode("[UNK]") == UNK_ID
     assert vocab.encode("DIAGNOSIS//A") not in (PAD_ID, UNK_ID)
+
+
+def test_build_vocabulary_respects_real_code_frequencies() -> None:
+    # build_vocabulary counts via a vectorized Polars group_by rather than
+    # materializing the full column as a Python list (see its docstring on
+    # why) -- this checks that path actually produces min_count-correct
+    # frequency filtering, not just that it runs.
+    events = _events(
+        [(i % 3, "DIAGNOSIS//frequent", T0, None, None) for i in range(10)]
+        + [(0, "DIAGNOSIS//rare", T0, None, None)]
+    )
+    vocab = build_vocabulary(events, min_count=5, max_size=100)
+    assert vocab.encode("DIAGNOSIS//frequent") not in (PAD_ID, UNK_ID)
+    assert vocab.encode("DIAGNOSIS//rare") == UNK_ID
