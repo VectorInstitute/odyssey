@@ -25,7 +25,7 @@ from odyssey.models.sequence_model import ConceptBottleneckSequenceModel  # noqa
 VOCAB_SIZE = 40
 HIDDEN_SIZE = 64  # must be divisible by headdim
 NUM_CONCEPTS = 4
-RESIDUAL_DIM = 6
+EMBEDDING_DIM = 6
 PADDING_IDX = 0
 # Mamba3's MIMO kernels require seq_len % chunk_size == 0, and headdim=64
 # is the smallest value that reliably compiles for both fwd and bwd
@@ -90,7 +90,7 @@ def test_ehr_mamba3_backbone_through_concept_bottleneck_end_to_end() -> None:
         backbone=backbone,
         vocab_size=VOCAB_SIZE,
         num_concepts=NUM_CONCEPTS,
-        residual_dim=RESIDUAL_DIM,
+        embedding_dim=EMBEDDING_DIM,
         padding_idx=PADDING_IDX,
     ).cuda()
 
@@ -101,7 +101,7 @@ def test_ehr_mamba3_backbone_through_concept_bottleneck_end_to_end() -> None:
     assert torch.isfinite(total)
 
     total.backward()
-    assert model.bottleneck.concept_proj.weight.grad is not None
-    assert torch.any(model.bottleneck.concept_proj.weight.grad != 0)
+    assert model.bottleneck.context_proj.weight.grad is not None
+    assert torch.any(model.bottleneck.context_proj.weight.grad != 0)
     for name in ("task_loss", "concept_loss", "orthogonality_loss"):
         assert torch.isfinite(components[name])
