@@ -70,6 +70,24 @@ def test_bin_boundaries_are_exclusive_on_the_low_side() -> None:
     assert out["code"][0] == "LAB//220045//bpm::NORMAL"
 
 
+def test_creatinine_bins_into_normal_high_critical() -> None:
+    # Three tiers matching aki_stage_1's 1.5 threshold and aki_stage_3's
+    # 4.0 absolute-value threshold (odyssey/data/concepts.py).
+    events = _events(
+        [
+            ("LAB//RESULT//50912//mg/dL", 1.0),  # normal
+            ("LAB//RESULT//50912//mg/dL", 2.5),  # aki_stage_1/2 territory
+            ("LAB//RESULT//50912//mg/dL", 4.5),  # aki_stage_3 territory
+        ]
+    )
+    out = add_value_tokens(events)
+    assert out["code"].to_list() == [
+        "LAB//RESULT//50912//mg/dL::NORMAL",
+        "LAB//RESULT//50912//mg/dL::HIGH",
+        "LAB//RESULT//50912//mg/dL::CRITICAL",
+    ]
+
+
 def test_only_upper_threshold_defined_gives_two_bins() -> None:
     # respiratory rate only has a tachypnea (>20) rule -- no bradypnea rule.
     events = _events([("LAB//220210//insp/min", 12.0), ("LAB//220210//insp/min", 25.0)])
