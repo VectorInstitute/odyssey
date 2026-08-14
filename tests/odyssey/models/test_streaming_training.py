@@ -14,6 +14,7 @@ import torch.nn.functional as F  # noqa: N812
 
 from odyssey.data.sequences import PatientSequence
 from odyssey.data.streaming import PackedLaneSampler
+from odyssey.models.backbones.base import TimeAwareState
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
 from odyssey.models.concept_bottleneck import ConceptBottleneckLossWeights
 from odyssey.models.sequence_model import (
@@ -65,6 +66,18 @@ def _labels(subject_ids: List[int]) -> Dict[int, torch.Tensor]:
     return {
         sid: torch.randint(0, 2, (NUM_CONCEPTS,)).float() for sid in subject_ids
     }
+
+
+def _detach_state(state: TimeAwareState) -> TimeAwareState:
+    """Truncate BPTT across chunks.
+
+    Detach both the recurrent state and the carried timestamp before
+    reusing them as the next chunk's state.
+    """
+    return TimeAwareState(
+        recurrent=tuple(h.detach() for h in state.recurrent),
+        prev_time_stamps=state.prev_time_stamps.detach(),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +238,7 @@ def test_streaming_training_loop_reduces_loss() -> None:
             optimizer.zero_grad()
             total.backward()
             optimizer.step()
-            state = tuple(h.detach() for h in state)  # truncate BPTT across chunks
+            state = _detach_state(state)  # truncate BPTT across chunks
             epoch_losses.append(components["task_loss"].item())
         losses.append(sum(epoch_losses) / len(epoch_losses))
 
@@ -250,7 +263,7 @@ def test_baseline_model_streaming_loss_and_training_loop() -> None:
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            state = tuple(h.detach() for h in state)
+            state = _detach_state(state)
             epoch_losses.append(components["task_loss"].item())
         losses.append(sum(epoch_losses) / len(epoch_losses))
 

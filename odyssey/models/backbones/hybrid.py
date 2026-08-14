@@ -55,7 +55,7 @@ import torch
 from torch import nn
 
 from odyssey.data.types import ClinicalSequenceBatch
-from odyssey.models.backbones.base import SequenceBackbone
+from odyssey.models.backbones.base import SequenceBackbone, TimeAwareState
 from odyssey.models.embeddings import CachedEHREmbeddings
 
 
@@ -228,15 +228,18 @@ class EHRHybridBackbone(SequenceBackbone):
     def forward(
         self,
         batch: ClinicalSequenceBatch,
-        state: Optional[object] = None,
+        state: Optional[TimeAwareState] = None,
         reset_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, object]:
+    ) -> Tuple[torch.Tensor, TimeAwareState]:
         """Return ``(hidden_states, new_state)``; see the base class docstring.
 
         Raises ``NotImplementedError`` if ``reset_mask`` has any reset
         past position 0 of a chunk (packed multi-patient chunks) -- same
         constraint as :class:`~odyssey.models.backbones.mamba3.EHRMamba3Backbone`,
-        for the same reason (see that module's docstring).
+        for the same reason (see that module's docstring). Also raises if
+        ``state`` is given at all, since cross-chunk attention state isn't
+        supported yet (see the module docstring); the returned state is
+        still tracked correctly, ready for whenever that's fixed.
         """
         from mamba_ssm.utils.generation import InferenceParams  # noqa: PLC0415
 
@@ -258,7 +261,7 @@ class EHRHybridBackbone(SequenceBackbone):
                 "attention side has the same gap."
             )
 
-        self.embeddings.set_aux_inputs(batch.aux)
+        self.embeddings.set_aux_inputs(batch.aux)  # state is always None here
         hidden_states = self.embeddings(batch.concept_ids)
         batch_size, seq_len, _ = hidden_states.shape
 
@@ -275,6 +278,10 @@ class EHRHybridBackbone(SequenceBackbone):
 
         residual = hidden_states + residual if residual is not None else hidden_states
         result: torch.Tensor = self.norm_f(residual.to(dtype=self.norm_f.weight.dtype))
-        return result, HybridState(mamba_states=cast(
-            Dict[int, MambaStateDict], mamba_ip.key_value_memory_dict
-        ))
+        new_state = TimeAwareState(
+            recurrent=HybridState(
+                mamba_states=cast(Dict[int, MambaStateDict], mamba_ip.key_value_memory_dict)
+            ),
+            prev_time_stamps=batch.aux.time_stamps[:, -1],
+        )
+        return result, new_state

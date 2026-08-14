@@ -18,7 +18,11 @@ import torch
 from torch import nn
 
 from odyssey.data.types import ClinicalSequenceBatch
-from odyssey.models.backbones.base import SequenceBackbone
+from odyssey.models.backbones.base import (
+    SequenceBackbone,
+    TimeAwareState,
+    resolve_prev_time_stamps,
+)
 from odyssey.models.embeddings import CachedEHREmbeddings
 
 
@@ -59,15 +63,16 @@ class TinyGRUBackbone(SequenceBackbone):
     def forward(
         self,
         batch: ClinicalSequenceBatch,
-        state: Optional[object] = None,
+        state: Optional[TimeAwareState] = None,
         reset_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, object]:
+    ) -> Tuple[torch.Tensor, TimeAwareState]:
         """Return ``(hidden_states, new_state)``; see the base class docstring.
 
-        ``state``, if given, must be a ``Tuple[torch.Tensor, ...]`` of
-        length ``num_layers`` (as returned by a previous call).
+        ``state.recurrent``, if given, must be a ``Tuple[torch.Tensor,
+        ...]`` of length ``num_layers`` (as returned by a previous call).
         """
-        self.embeddings.set_aux_inputs(batch.aux)
+        prev_time_stamps = resolve_prev_time_stamps(state, batch, reset_mask)
+        self.embeddings.set_aux_inputs(batch.aux, prev_time_stamps=prev_time_stamps)
         embeds = self.embeddings(batch.concept_ids)
         batch_size, seq_len, _ = embeds.shape
 
@@ -77,7 +82,7 @@ class TinyGRUBackbone(SequenceBackbone):
                 for _ in range(self.num_layers)
             ]
         else:
-            hidden = list(cast(Tuple[torch.Tensor, ...], state))
+            hidden = list(cast(Tuple[torch.Tensor, ...], state.recurrent))
 
         if reset_mask is None:
             reset_mask = embeds.new_zeros(batch_size, seq_len, dtype=torch.bool)
@@ -95,4 +100,7 @@ class TinyGRUBackbone(SequenceBackbone):
             outputs.append(hidden[-1])
 
         hidden_states = torch.stack(outputs, dim=1)
-        return hidden_states, tuple(hidden)
+        new_state = TimeAwareState(
+            recurrent=tuple(hidden), prev_time_stamps=batch.aux.time_stamps[:, -1]
+        )
+        return hidden_states, new_state

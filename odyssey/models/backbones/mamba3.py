@@ -52,7 +52,11 @@ import torch
 from torch import nn
 
 from odyssey.data.types import ClinicalSequenceBatch
-from odyssey.models.backbones.base import SequenceBackbone
+from odyssey.models.backbones.base import (
+    SequenceBackbone,
+    TimeAwareState,
+    resolve_prev_time_stamps,
+)
 from odyssey.models.embeddings import CachedEHREmbeddings
 
 
@@ -136,21 +140,21 @@ class EHRMamba3Backbone(SequenceBackbone):
     def forward(
         self,
         batch: ClinicalSequenceBatch,
-        state: Optional[object] = None,
+        state: Optional[TimeAwareState] = None,
         reset_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, object]:
+    ) -> Tuple[torch.Tensor, TimeAwareState]:
         """Return ``(hidden_states, new_state)``; see the base class docstring.
 
-        ``state``, if given, must be a ``StateDict`` (as returned by a
-        previous call to this same method). Raises ``NotImplementedError``
-        if ``reset_mask`` has any reset past position 0 -- see the module
-        docstring's "Resets after position 0" section for why that path
-        isn't wired up yet.
+        ``state.recurrent``, if given, must be a ``StateDict`` (as
+        returned by a previous call to this same method). Raises
+        ``NotImplementedError`` if ``reset_mask`` has any reset past
+        position 0 -- see the module docstring's "Resets after position
+        0" section for why that path isn't wired up yet.
         """
         from mamba_ssm.utils.generation import InferenceParams  # noqa: PLC0415
 
         typed_state: Optional[StateDict] = (
-            None if state is None else cast(StateDict, state)
+            None if state is None else cast(StateDict, state.recurrent)
         )
 
         if reset_mask is not None and reset_mask.shape[1] > 1 and reset_mask[:, 1:].any():
@@ -161,7 +165,8 @@ class EHRMamba3Backbone(SequenceBackbone):
                 "needs and why it isn't wired up yet."
             )
 
-        self.embeddings.set_aux_inputs(batch.aux)
+        prev_time_stamps = resolve_prev_time_stamps(state, batch, reset_mask)
+        self.embeddings.set_aux_inputs(batch.aux, prev_time_stamps=prev_time_stamps)
         hidden_states = self.embeddings(batch.concept_ids)
         batch_size, seq_len, _ = hidden_states.shape
 
@@ -183,6 +188,8 @@ class EHRMamba3Backbone(SequenceBackbone):
                 hidden_states, residual, inference_params=inference_params
             )
 
+        new_prev_time_stamps = batch.aux.time_stamps[:, -1]
+
         if not self.fused_add_norm:
             residual = (
                 (hidden_states + residual) if residual is not None else hidden_states
@@ -190,7 +197,10 @@ class EHRMamba3Backbone(SequenceBackbone):
             result: torch.Tensor = self.norm_f(
                 residual.to(dtype=self.norm_f.weight.dtype)
             )
-            return result, inference_params.key_value_memory_dict
+            return result, TimeAwareState(
+                recurrent=inference_params.key_value_memory_dict,
+                prev_time_stamps=new_prev_time_stamps,
+            )
 
         normed: torch.Tensor = self._layer_norm_fn(
             hidden_states,
@@ -202,4 +212,7 @@ class EHRMamba3Backbone(SequenceBackbone):
             residual_in_fp32=self.residual_in_fp32,
             is_rms_norm=True,
         )
-        return normed, inference_params.key_value_memory_dict
+        return normed, TimeAwareState(
+            recurrent=inference_params.key_value_memory_dict,
+            prev_time_stamps=new_prev_time_stamps,
+        )
