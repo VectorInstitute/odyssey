@@ -60,7 +60,7 @@ def test_forward_shapes() -> None:
     batch, seq_len = 3, 12
     inputs = _make_batch(batch, seq_len)
 
-    logits, bottleneck_out = model(inputs)
+    logits, bottleneck_out, _ = model(inputs)
 
     assert logits.shape == (batch, seq_len, VOCAB_SIZE)
     assert bottleneck_out.concept_logits.shape == (batch, seq_len, NUM_CONCEPTS)
@@ -87,7 +87,7 @@ def test_backbone_is_swappable_via_shared_interface() -> None:
         embedding_dim=EMBEDDING_DIM,
         padding_idx=PADDING_IDX,
     )
-    logits, _ = model(_make_batch(2, 8))
+    logits, _, _ = model(_make_batch(2, 8))
     assert logits.shape == (2, 8, VOCAB_SIZE)
 
 
@@ -150,8 +150,8 @@ def test_padding_positions_do_not_leak_into_pooled_concept_supervision() -> None
 
     model.eval()
     with torch.no_grad():
-        _, out_a = model(batch)
-        _, out_b = model(batch_variant)
+        _, out_a, _ = model(batch)
+        _, out_b, _ = model(batch_variant)
 
     # GRU is causal, so hidden state (and thus concept logits) at position 4
     # only depends on positions 0..4, which are identical between the two.
