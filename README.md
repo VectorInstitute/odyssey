@@ -87,11 +87,15 @@ Validated end-to-end against the real, credentialed MIMIC-IV 3.1 (364,627 subjec
 
 ### Tokenization
 
-`odyssey/data/vocabulary.py` and `odyssey/data/sequences.py` turn raw MEDS events into the batches the model consumes:
+`odyssey/data/vocabulary.py` and `odyssey/data/sequences.py` turn raw MEDS events into the batches the model consumes. `odyssey/data/value_binning.py` runs first, folding each numeric-valued event's magnitude into the token itself — `"LAB//220045//bpm"` (a heart-rate reading, any value) becomes `"LAB//220045//bpm::HIGH"` — via curated clinical ranges for the vitals/labs `odyssey/data/concepts.py` already defines thresholds for, and per-code quantile bins (fit on the training split only) elsewhere. Codes with no numeric value (a diagnosis, a procedure) pass through unchanged, since the event's occurrence is already the full signal:
 
 ```python
+from odyssey.data.value_binning import QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.data.sequences import build_patient_sequence, collate_patient_sequences
+
+binner = QuantileBinner.fit(train_events, n_bins=5, min_count=100)  # train split only
+events = add_value_tokens(events, binner)
 
 vocab = Vocabulary.build(events["code"].to_list(), min_count=10, max_size=20_000)
 sequences = [
@@ -101,7 +105,9 @@ sequences = [
 batch = collate_patient_sequences(sequences)  # -> ClinicalSequenceBatch, ready for the model
 ```
 
-Validated at scale against the real extraction: 500 real patients tokenize in ~2s, mean sequence length ~301 events, 0.8% `[UNK]` rate. Visits are derived from `hadm_id` (events sharing one become one visit; events without one each get their own single-event visit) — a documented v1 simplification, see the module docstring.
+Validated at scale against the real extraction: 500 real patients tokenize in ~2s, mean sequence length ~301 events, 0.8% `[UNK]` rate. Visits are derived from `hadm_id` (events sharing one become one visit; events without one each get their own single-event visit) — a documented v1 simplification, see the module docstring. Inter-event time (including gaps *between* admissions, not just within one) is already encoded regardless of value-binning — `PatientSequence.time_stamps` holds each event's absolute time since the sequence's first event, and `TimeEmbeddingLayer(is_time_delta=True)` computes real consecutive-event deltas from it, so it survives truncation and visit boundaries unchanged.
+
+Sequences are built from each subject's **complete history**, not scoped to one admission or a fixed window — see `research_journal/02_sequence_scoping_methodology.html` (local-only) for why, and for the plan to test whether institution-specific patterns learned from MIMIC-IV's single hospital generalize once Phase 2 adds eICU and GEMINI.
 
 ## Development
 
@@ -119,9 +125,11 @@ uv run mypy odyssey
 4. ~~Wire the concept bottleneck into the EHR-Mamba3 backbone; validate forward+backward on a real GPU~~
 5. ~~Run the real MEDS extraction on full, credentialed MIMIC-IV 3.1 (364,627 subjects)~~
 6. ~~Build patient-sequence tokenization (MEDS events -> the token/type/time/age/visit-order sequences the model consumes)~~
-7. Pretrain on real MIMIC-IV 3.1 at scale (GPU)
-8. Extend extraction to MIMIC-IV-ED
-9. Phase 2: an LLM agent (e.g. MedGemma) that reads the concept-annotated forecast and assists a clinician
+7. ~~Fold numeric lab/vital values into the token itself (clinical-range + quantile-bin fallback), not code-identity alone~~
+8. Pretrain on real MIMIC-IV 3.1 at scale (GPU), on full patient history via Mamba chunked/TBTT training
+9. Extend extraction to MIMIC-IV-ED
+10. Cross-institution generalization: extend extraction to eICU and [GEMINI](https://geminimedicine.ca/) (multi-hospital, and ICU vs. internal medicine) to test whether patterns learned from MIMIC-IV's single hospital transfer
+11. Phase 2: an LLM agent (e.g. MedGemma) that reads the concept-annotated forecast and assists a clinician
 
 ### Known concept-rule limitations
 
