@@ -22,54 +22,66 @@ torch.manual_seed(0)
 
 
 def test_forward_shapes_sequence_input() -> None:
-    batch, seq_len, hidden, num_concepts, residual_dim = 4, 10, 32, 5, 8
-    layer = ConceptBottleneck(hidden, num_concepts, residual_dim)
+    batch, seq_len, hidden, num_concepts, embedding_dim = 4, 10, 32, 5, 8
+    layer = ConceptBottleneck(hidden, num_concepts, embedding_dim)
     hidden_states = torch.randn(batch, seq_len, hidden)
 
     out = layer(hidden_states)
 
     assert out.concept_logits.shape == (batch, seq_len, num_concepts)
     assert out.concept_probs.shape == (batch, seq_len, num_concepts)
-    assert out.residual.shape == (batch, seq_len, residual_dim)
-    assert out.bottleneck.shape == (batch, seq_len, num_concepts + residual_dim)
+    assert out.concept_embeddings.shape == (batch, seq_len, num_concepts, embedding_dim)
+    assert out.unknown_embedding.shape == (batch, seq_len, embedding_dim)
+    assert out.bottleneck.shape == (batch, seq_len, (num_concepts + 1) * embedding_dim)
 
 
 def test_forward_shapes_pooled_input() -> None:
-    batch, hidden, num_concepts, residual_dim = 4, 16, 3, 4
-    layer = ConceptBottleneck(hidden, num_concepts, residual_dim)
+    batch, hidden, num_concepts, embedding_dim = 4, 16, 3, 4
+    layer = ConceptBottleneck(hidden, num_concepts, embedding_dim)
     hidden_states = torch.randn(batch, hidden)
 
     out = layer(hidden_states)
 
     assert out.concept_logits.shape == (batch, num_concepts)
-    assert out.bottleneck.shape == (batch, num_concepts + residual_dim)
+    assert out.concept_embeddings.shape == (batch, num_concepts, embedding_dim)
+    assert out.unknown_embedding.shape == (batch, embedding_dim)
+    assert out.bottleneck.shape == (batch, (num_concepts + 1) * embedding_dim)
 
 
 def test_concept_probs_are_valid_probabilities() -> None:
-    layer = ConceptBottleneck(hidden_size=8, num_concepts=4, residual_dim=4)
+    layer = ConceptBottleneck(hidden_size=8, num_concepts=4, embedding_dim=4)
     out = layer(torch.randn(6, 8))
     assert torch.all(out.concept_probs >= 0.0)
     assert torch.all(out.concept_probs <= 1.0)
 
 
+def test_bottleneck_is_concat_of_concept_and_unknown_embeddings() -> None:
+    layer = ConceptBottleneck(hidden_size=8, num_concepts=3, embedding_dim=4)
+    out = layer(torch.randn(5, 8))
+    expected = torch.cat(
+        [out.concept_embeddings.reshape(5, -1), out.unknown_embedding], dim=-1
+    )
+    assert torch.allclose(out.bottleneck, expected)
+
+
 def test_invalid_dims_raise() -> None:
     with pytest.raises(ValueError):
-        ConceptBottleneck(hidden_size=8, num_concepts=0, residual_dim=4)
+        ConceptBottleneck(hidden_size=8, num_concepts=0, embedding_dim=4)
     with pytest.raises(ValueError):
-        ConceptBottleneck(hidden_size=8, num_concepts=4, residual_dim=0)
+        ConceptBottleneck(hidden_size=8, num_concepts=4, embedding_dim=0)
 
 
 def test_gradients_flow_to_both_branches() -> None:
-    layer = ConceptBottleneck(hidden_size=8, num_concepts=4, residual_dim=4)
+    layer = ConceptBottleneck(hidden_size=8, num_concepts=4, embedding_dim=4)
     hidden_states = torch.randn(6, 8, requires_grad=True)
 
     out = layer(hidden_states)
     out.bottleneck.sum().backward()
 
-    assert layer.concept_proj.weight.grad is not None
-    assert layer.residual_proj.weight.grad is not None
-    assert torch.any(layer.concept_proj.weight.grad != 0)
-    assert torch.any(layer.residual_proj.weight.grad != 0)
+    assert layer.context_proj.weight.grad is not None
+    assert layer.prob_weight.grad is not None
+    assert torch.any(layer.context_proj.weight.grad != 0)
+    assert torch.any(layer.prob_weight.grad != 0)
 
 
 # ---------------------------------------------------------------------------
@@ -111,23 +123,32 @@ def test_concept_loss_all_masked_out_is_finite() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_orthogonality_loss_zero_when_residual_constant() -> None:
-    concept_probs = torch.rand(20, 5)
-    residual = torch.ones(20, 3) * 0.42  # zero variance => zero cross-cov
-    loss = orthogonality_loss(concept_probs, residual)
-    assert loss.item() < 1e-10
+def test_orthogonality_loss_zero_when_unknown_orthogonal_to_all_concepts() -> None:
+    # 2 known concepts in a 2D embedding space spanning the x/y axes; the
+    # unknown embedding points along z -- exactly orthogonal to both.
+    concept_embeddings = torch.tensor([[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]])  # (1, 2, 3)
+    unknown_embedding = torch.tensor([[0.0, 0.0, 1.0]])  # (1, 3)
+    loss = orthogonality_loss(concept_embeddings, unknown_embedding)
+    assert loss.item() < 1e-6
+
+
+def test_orthogonality_loss_maximal_when_unknown_equals_a_concept() -> None:
+    concept_embeddings = torch.tensor([[[1.0, 0.0], [0.0, 1.0]]])  # (1, 2, 2)
+    unknown_embedding = torch.tensor([[1.0, 0.0]])  # identical to first concept
+    loss = orthogonality_loss(concept_embeddings, unknown_embedding)
+    assert loss.item() > 0.49  # mean of (1.0, 0.0) == 0.5
 
 
 def test_orthogonality_loss_higher_when_correlated() -> None:
-    n = 200
-    concept_probs = torch.rand(n, 3)
-    # Correlated: residual is a noisy linear function of the concepts.
-    correlated_residual = concept_probs @ torch.randn(3, 4) + 0.01 * torch.randn(n, 4)
+    n, k, m = 200, 3, 4
+    concept_embeddings = torch.randn(n, k, m)
+    # Correlated: unknown is a noisy copy of the first concept.
+    correlated_unknown = concept_embeddings[:, 0, :] + 0.01 * torch.randn(n, m)
     # Uncorrelated: independent noise.
-    uncorrelated_residual = torch.randn(n, 4)
+    uncorrelated_unknown = torch.randn(n, m)
 
-    loss_correlated = orthogonality_loss(concept_probs, correlated_residual)
-    loss_uncorrelated = orthogonality_loss(concept_probs, uncorrelated_residual)
+    loss_correlated = orthogonality_loss(concept_embeddings, correlated_unknown)
+    loss_uncorrelated = orthogonality_loss(concept_embeddings, uncorrelated_unknown)
 
     assert loss_correlated.item() > loss_uncorrelated.item()
 
@@ -138,7 +159,7 @@ def test_orthogonality_loss_higher_when_correlated() -> None:
 
 
 def test_combined_loss_components_and_weighting() -> None:
-    layer = ConceptBottleneck(hidden_size=8, num_concepts=3, residual_dim=4)
+    layer = ConceptBottleneck(hidden_size=8, num_concepts=3, embedding_dim=4)
     hidden_states = torch.randn(5, 8)
     out = layer(hidden_states)
     labels = torch.randint(0, 2, (5, 3)).float()
@@ -149,8 +170,8 @@ def test_combined_loss_components_and_weighting() -> None:
         task_loss,
         out.concept_logits,
         labels,
-        out.concept_probs,
-        out.residual,
+        out.concept_embeddings,
+        out.unknown_embedding,
         weights=weights,
     )
 
@@ -179,14 +200,14 @@ class _TinyBackboneWithHead(nn.Module):
     """
 
     def __init__(
-        self, input_dim: int, hidden: int, num_concepts: int, residual_dim: int
+        self, input_dim: int, hidden: int, num_concepts: int, embedding_dim: int
     ):
         super().__init__()
         self.encoder = nn.Sequential(
             nn.Linear(input_dim, hidden), nn.ReLU(), nn.Linear(hidden, hidden)
         )
-        self.bottleneck = ConceptBottleneck(hidden, num_concepts, residual_dim)
-        self.task_head = nn.Linear(num_concepts + residual_dim, 1)
+        self.bottleneck = ConceptBottleneck(hidden, num_concepts, embedding_dim)
+        self.task_head = nn.Linear((num_concepts + 1) * embedding_dim, 1)
 
     def forward(self, x: torch.Tensor) -> tuple:
         hidden_states = self.encoder(x)
@@ -201,8 +222,8 @@ def _make_synthetic_dataset(
     """Build a task solvable only via both concepts and uncovered factors.
 
     So a correct implementation must learn concept accuracy AND retain
-    residual capacity to solve the task, not just collapse everything into
-    one branch.
+    unknown-concept capacity to solve the task, not just collapse
+    everything into one branch.
     """
     z_concepts = torch.randn(n, num_concepts)
     z_residual_true = torch.randn(n, num_true_residual_factors)
@@ -218,7 +239,7 @@ def _make_synthetic_dataset(
 
 def test_synthetic_training_learns_concepts_and_task() -> None:
     torch.manual_seed(1)
-    input_dim, hidden, num_concepts, residual_dim = 12, 16, 4, 6
+    input_dim, hidden, num_concepts, embedding_dim = 12, 16, 4, 6
     x, concept_labels, y = _make_synthetic_dataset(
         n=256,
         input_dim=input_dim,
@@ -226,7 +247,7 @@ def test_synthetic_training_learns_concepts_and_task() -> None:
         num_true_residual_factors=3,
     )
 
-    model = _TinyBackboneWithHead(input_dim, hidden, num_concepts, residual_dim)
+    model = _TinyBackboneWithHead(input_dim, hidden, num_concepts, embedding_dim)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.02)
     weights = ConceptBottleneckLossWeights(concept=1.0, orthogonality=0.05)
 
@@ -239,8 +260,8 @@ def test_synthetic_training_learns_concepts_and_task() -> None:
             task_loss,
             out.concept_logits,
             concept_labels,
-            out.concept_probs,
-            out.residual,
+            out.concept_embeddings,
+            out.unknown_embedding,
             weights=weights,
         )
         total.backward()
@@ -262,25 +283,25 @@ def test_synthetic_training_learns_concepts_and_task() -> None:
     assert accuracy > 0.9
 
 
-def test_orthogonality_penalty_reduces_concept_residual_entanglement() -> None:
-    """Directly test the paper's central claim about the orthogonality term.
+def test_orthogonality_penalty_reduces_concept_unknown_entanglement() -> None:
+    """Directly tests the paper's central claim about the orthogonality term.
 
-    It should suppress the residual re-encoding the known concepts. Train
-    the same architecture on the same data with the penalty on vs. off and
-    confirm the trained bottleneck's concept/residual cross-covariance is
-    lower with it on.
+    It should suppress the unknown concept re-encoding the known ones.
+    Train the same architecture on the same data with the penalty on vs.
+    off and confirm the trained bottleneck's concept/unknown cosine
+    similarity is lower with it on.
     """
 
     def train(orthogonality_weight: float) -> float:
         torch.manual_seed(2)
-        input_dim, hidden, num_concepts, residual_dim = 12, 16, 4, 6
+        input_dim, hidden, num_concepts, embedding_dim = 12, 16, 4, 6
         x, concept_labels, y = _make_synthetic_dataset(
             n=256,
             input_dim=input_dim,
             num_concepts=num_concepts,
             num_true_residual_factors=3,
         )
-        model = _TinyBackboneWithHead(input_dim, hidden, num_concepts, residual_dim)
+        model = _TinyBackboneWithHead(input_dim, hidden, num_concepts, embedding_dim)
         optimizer = torch.optim.Adam(model.parameters(), lr=0.02)
         weights = ConceptBottleneckLossWeights(
             concept=1.0, orthogonality=orthogonality_weight
@@ -294,8 +315,8 @@ def test_orthogonality_penalty_reduces_concept_residual_entanglement() -> None:
                 task_loss,
                 out.concept_logits,
                 concept_labels,
-                out.concept_probs,
-                out.residual,
+                out.concept_embeddings,
+                out.unknown_embedding,
                 weights=weights,
             )
             total.backward()
@@ -303,7 +324,9 @@ def test_orthogonality_penalty_reduces_concept_residual_entanglement() -> None:
 
         with torch.no_grad():
             _, out = model(x)
-            return orthogonality_loss(out.concept_probs, out.residual).item()
+            return orthogonality_loss(
+                out.concept_embeddings, out.unknown_embedding
+            ).item()
 
     entanglement_with_penalty = train(orthogonality_weight=0.5)
     entanglement_without_penalty = train(orthogonality_weight=0.0)

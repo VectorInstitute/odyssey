@@ -48,7 +48,7 @@ class ConceptBottleneckSequenceModel(nn.Module):
         backbone: SequenceBackbone,
         vocab_size: int,
         num_concepts: int,
-        residual_dim: int,
+        embedding_dim: int,
         *,
         padding_idx: int = 0,
         concept_dropout: float = 0.1,
@@ -60,10 +60,10 @@ class ConceptBottleneckSequenceModel(nn.Module):
         self.bottleneck = ConceptBottleneck(
             hidden_size=backbone.hidden_size,
             num_concepts=num_concepts,
-            residual_dim=residual_dim,
+            embedding_dim=embedding_dim,
             concept_dropout=concept_dropout,
         )
-        self.lm_head = nn.Linear(num_concepts + residual_dim, vocab_size)
+        self.lm_head = nn.Linear((num_concepts + 1) * embedding_dim, vocab_size)
 
     def forward(
         self, batch: ClinicalSequenceBatch
@@ -103,19 +103,19 @@ class ConceptBottleneckSequenceModel(nn.Module):
         pooled_concept_logits = _pool_last_non_padding(
             bottleneck_out.concept_logits, batch.concept_ids, self.padding_idx
         )
-        pooled_concept_probs = _pool_last_non_padding(
-            bottleneck_out.concept_probs, batch.concept_ids, self.padding_idx
+        pooled_concept_embeddings = _pool_last_non_padding(
+            bottleneck_out.concept_embeddings, batch.concept_ids, self.padding_idx
         )
-        pooled_residual = _pool_last_non_padding(
-            bottleneck_out.residual, batch.concept_ids, self.padding_idx
+        pooled_unknown_embedding = _pool_last_non_padding(
+            bottleneck_out.unknown_embedding, batch.concept_ids, self.padding_idx
         )
 
         return combined_loss(
             next_token_loss,
             pooled_concept_logits,
             concept_labels,
-            pooled_concept_probs,
-            pooled_residual,
+            pooled_concept_embeddings,
+            pooled_unknown_embedding,
             concept_mask=concept_mask,
             weights=loss_weights,
         )

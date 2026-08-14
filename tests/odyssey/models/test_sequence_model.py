@@ -14,7 +14,7 @@ torch.manual_seed(0)
 VOCAB_SIZE = 50
 HIDDEN_SIZE = 32
 NUM_CONCEPTS = 4
-RESIDUAL_DIM = 6
+EMBEDDING_DIM = 6
 PADDING_IDX = 0
 
 
@@ -32,7 +32,7 @@ def _make_model() -> ConceptBottleneckSequenceModel:
         backbone=_make_backbone(),
         vocab_size=VOCAB_SIZE,
         num_concepts=NUM_CONCEPTS,
-        residual_dim=RESIDUAL_DIM,
+        embedding_dim=EMBEDDING_DIM,
         padding_idx=PADDING_IDX,
     )
 
@@ -64,7 +64,13 @@ def test_forward_shapes() -> None:
 
     assert logits.shape == (batch, seq_len, VOCAB_SIZE)
     assert bottleneck_out.concept_logits.shape == (batch, seq_len, NUM_CONCEPTS)
-    assert bottleneck_out.residual.shape == (batch, seq_len, RESIDUAL_DIM)
+    assert bottleneck_out.concept_embeddings.shape == (
+        batch,
+        seq_len,
+        NUM_CONCEPTS,
+        EMBEDDING_DIM,
+    )
+    assert bottleneck_out.unknown_embedding.shape == (batch, seq_len, EMBEDDING_DIM)
 
 
 def test_backbone_is_swappable_via_shared_interface() -> None:
@@ -78,7 +84,7 @@ def test_backbone_is_swappable_via_shared_interface() -> None:
         backbone=other_backbone,
         vocab_size=VOCAB_SIZE,
         num_concepts=NUM_CONCEPTS,
-        residual_dim=RESIDUAL_DIM,
+        embedding_dim=EMBEDDING_DIM,
         padding_idx=PADDING_IDX,
     )
     logits, _ = model(_make_batch(2, 8))
@@ -117,8 +123,8 @@ def test_gradients_flow_through_backbone_and_bottleneck() -> None:
     total, _ = model.compute_loss(inputs, concept_labels)
     total.backward()
 
-    assert model.bottleneck.concept_proj.weight.grad is not None
-    assert torch.any(model.bottleneck.concept_proj.weight.grad != 0)
+    assert model.bottleneck.context_proj.weight.grad is not None
+    assert torch.any(model.bottleneck.context_proj.weight.grad != 0)
     assert model.backbone.embeddings.embeddings.word_embeddings.weight.grad is not None
 
 

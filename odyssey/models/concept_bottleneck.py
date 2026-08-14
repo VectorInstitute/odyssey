@@ -1,10 +1,17 @@
 """Concept bottleneck layer for interpretable sequence models.
 
-Implements the loss recipe from Ismail, Adebayo, Bravo, Ra & Cho, "Concept
-Bottleneck Generative Models" (ICLR 2024): a bottleneck that splits a
-backbone hidden state into (a) known-concept dimensions, supervised against
-clinically-grounded concept labels, and (b) free "unknown"/residual
-dimensions that absorb whatever else the downstream task needs. Backbone
+Implements the concept-embedding bottleneck from Ismail, Adebayo, Bravo, Ra
+& Cho, "Concept Bottleneck Generative Models" (ICLR 2024,
+https://github.com/prescient-design/CBGM), which adapts the Concept
+Embedding Model layer of Espinosa Zarlenga et al. (NeurIPS 2022,
+https://github.com/mateoespinosa/cem) to generative/sequence settings.
+
+Each concept — including one extra, unsupervised "unknown" concept — is
+represented by a pair of learned embeddings (active/inactive), mixed by a
+predicted activation probability into that concept's final representation.
+The known concepts' probabilities are supervised against clinical labels;
+the unknown concept's embedding is regularized to be orthogonal to the
+known concepts', so it can't just silently re-encode them. Backbone
 agnostic: it only consumes hidden states of shape ``(..., hidden_size)``, so
 it attaches equally to the EHR-Mamba3 backbone or any lighter stand-in used
 for local (non-CUDA) development.
@@ -22,20 +29,35 @@ class ConceptBottleneckOutput(NamedTuple):
     """Outputs of a :class:`ConceptBottleneck` forward pass."""
 
     concept_logits: torch.Tensor
-    """(..., num_concepts) known-concept activations, pre-sigmoid."""
+    """(..., num_concepts) known-concept activation logits, pre-sigmoid."""
 
     concept_probs: torch.Tensor
     """(..., num_concepts) sigmoid(concept_logits); what's shown to a clinician."""
 
-    residual: torch.Tensor
-    """(..., residual_dim) free "unknown concept" capacity."""
+    concept_embeddings: torch.Tensor
+    """(..., num_concepts, embedding_dim) known concepts' mixed embeddings."""
+
+    unknown_embedding: torch.Tensor
+    """(..., embedding_dim) the extra, unsupervised concept's mixed embedding."""
 
     bottleneck: torch.Tensor
-    """(..., num_concepts + residual_dim) concat(concept_probs, residual)."""
+    """(..., (num_concepts + 1) * embedding_dim): concat of all mixed embeddings."""
 
 
 class ConceptBottleneck(nn.Module):
-    """Splits a hidden representation into known-concept + residual capacity.
+    """Splits a hidden representation into known + unknown concept embeddings.
+
+    For each of ``num_concepts`` known concepts, plus one extra unsupervised
+    "unknown" concept, a context network maps the hidden state to a pair of
+    embeddings ``(w+, w-)``; a probability network predicts that concept's
+    activation probability ``c`` from ``[w+, w-]``; and the concept's final
+    representation is the mixture ``c * w+ + (1 - c) * w-``. All
+    ``num_concepts + 1`` mixed embeddings are concatenated into the
+    bottleneck output. This mirrors the reference CEM/CBGM implementations
+    exactly, just batched: one ``Linear`` producing every slot's ``(w+,
+    w-)`` pair is mathematically equivalent to independent per-concept
+    context networks, since each slot's output only ever depends on its own
+    weight rows.
 
     Parameters
     ----------
@@ -43,46 +65,73 @@ class ConceptBottleneck(nn.Module):
         Dimensionality of the incoming backbone hidden state.
     num_concepts : int
         Number of supervised, clinically-grounded concepts.
-    residual_dim : int
-        Dimensionality of the free "unknown concept" capacity.
+    embedding_dim : int
+        Dimensionality of each concept's (and the unknown concept's)
+        embedding.
     concept_dropout : float
-        Dropout applied to the hidden state before the concept/residual
-        projections.
+        Dropout applied to the hidden state before the context projection.
     """
 
     def __init__(
         self,
         hidden_size: int,
         num_concepts: int,
-        residual_dim: int,
+        embedding_dim: int,
+        *,
         concept_dropout: float = 0.1,
     ) -> None:
         """Initialize the concept bottleneck layer."""
         super().__init__()
         if num_concepts <= 0:
             raise ValueError("num_concepts must be positive")
-        if residual_dim <= 0:
-            raise ValueError("residual_dim must be positive")
+        if embedding_dim <= 0:
+            raise ValueError("embedding_dim must be positive")
 
         self.hidden_size = hidden_size
         self.num_concepts = num_concepts
-        self.residual_dim = residual_dim
+        self.embedding_dim = embedding_dim
+        self.num_slots = num_concepts + 1  # known concepts + 1 unknown concept
 
         self.dropout = nn.Dropout(concept_dropout)
-        self.concept_proj = nn.Linear(hidden_size, num_concepts)
-        self.residual_proj = nn.Linear(hidden_size, residual_dim)
+        self.context_proj = nn.Linear(hidden_size, self.num_slots * 2 * embedding_dim)
+        self.context_act = nn.LeakyReLU()
+
+        # Per-slot probability network Psi_i([w+, w-]) -> logit. Implemented
+        # as one (num_slots, 2*embedding_dim) weight so every slot's logit
+        # only depends on that slot's own embeddings, not the others'.
+        self.prob_weight = nn.Parameter(torch.empty(self.num_slots, 2 * embedding_dim))
+        self.prob_bias = nn.Parameter(torch.zeros(self.num_slots))
+        nn.init.xavier_uniform_(self.prob_weight)
 
     def forward(self, hidden_states: torch.Tensor) -> ConceptBottleneckOutput:
-        """Project hidden states into known-concept and residual capacity."""
+        """Project hidden states into known + unknown concept embeddings."""
+        batch_shape = hidden_states.shape[:-1]
         x = self.dropout(hidden_states)
-        concept_logits = self.concept_proj(x)
-        residual = self.residual_proj(x)
-        concept_probs = torch.sigmoid(concept_logits)
-        bottleneck = torch.cat([concept_probs, residual], dim=-1)
+
+        context = self.context_act(self.context_proj(x))
+        context = context.view(*batch_shape, self.num_slots, 2, self.embedding_dim)
+        w_pos = context[..., 0, :]
+        w_neg = context[..., 1, :]
+
+        joint = torch.cat([w_pos, w_neg], dim=-1)  # (..., num_slots, 2*embedding_dim)
+        logits = (
+            torch.einsum("...sd,sd->...s", joint, self.prob_weight) + self.prob_bias
+        )
+        probs = torch.sigmoid(logits)
+
+        mixed = probs.unsqueeze(-1) * w_pos + (1 - probs.unsqueeze(-1)) * w_neg
+
+        concept_logits = logits[..., : self.num_concepts]
+        concept_probs = probs[..., : self.num_concepts]
+        concept_embeddings = mixed[..., : self.num_concepts, :]
+        unknown_embedding = mixed[..., self.num_concepts, :]
+        bottleneck = mixed.reshape(*batch_shape, self.num_slots * self.embedding_dim)
+
         return ConceptBottleneckOutput(
             concept_logits=concept_logits,
             concept_probs=concept_probs,
-            residual=residual,
+            concept_embeddings=concept_embeddings,
+            unknown_embedding=unknown_embedding,
             bottleneck=bottleneck,
         )
 
@@ -110,27 +159,21 @@ def concept_loss(
 
 
 def orthogonality_loss(
-    concept_probs: torch.Tensor, residual: torch.Tensor
+    concept_embeddings: torch.Tensor, unknown_embedding: torch.Tensor
 ) -> torch.Tensor:
-    """Penalize correlation between known-concept and residual activations.
+    """Penalize the unknown concept re-encoding the known concepts.
 
-    Without this term the residual is free to re-encode the known concepts
-    redundantly, in an uninterpretable subspace — the model would satisfy
-    the concept loss without those activations being load-bearing for the
-    task, defeating the point of the bottleneck. This is the squared
-    Frobenius norm of the cross-covariance between mean-centered concept
-    probabilities and residual features, normalized by ``n - 1`` so it's
-    comparable across batch sizes.
+    Without this term the unknown concept is free to reconstruct the known
+    concepts redundantly, in an uninterpretable embedding — the model would
+    satisfy the concept loss without those concepts' embeddings being
+    load-bearing for the task, defeating the point of the bottleneck.
+    Mean absolute cosine similarity between each known concept's embedding
+    and the unknown concept's embedding (Eq. 5 of the CBGM paper).
     """
-    c = concept_probs.reshape(-1, concept_probs.shape[-1])
-    r = residual.reshape(-1, residual.shape[-1])
-    n = c.shape[0]
-    if n < 2:
-        return c.new_zeros(())
-    c = c - c.mean(dim=0, keepdim=True)
-    r = r - r.mean(dim=0, keepdim=True)
-    cross_cov = (c.T @ r) / (n - 1)
-    return (cross_cov**2).sum()
+    cos_sim = F.cosine_similarity(
+        concept_embeddings, unknown_embedding.unsqueeze(-2), dim=-1
+    )
+    return cos_sim.abs().mean()
 
 
 @dataclass
@@ -145,8 +188,8 @@ def combined_loss(
     task_loss: torch.Tensor,
     concept_logits: torch.Tensor,
     concept_labels: torch.Tensor,
-    concept_probs: torch.Tensor,
-    residual: torch.Tensor,
+    concept_embeddings: torch.Tensor,
+    unknown_embedding: torch.Tensor,
     *,
     concept_mask: Optional[torch.Tensor] = None,
     weights: Optional[ConceptBottleneckLossWeights] = None,
@@ -158,7 +201,7 @@ def combined_loss(
     """
     weights = weights or ConceptBottleneckLossWeights()
     c_loss = concept_loss(concept_logits, concept_labels, concept_mask)
-    o_loss = orthogonality_loss(concept_probs, residual)
+    o_loss = orthogonality_loss(concept_embeddings, unknown_embedding)
     total = task_loss + weights.concept * c_loss + weights.orthogonality * o_loss
     components = {
         "task_loss": task_loss.detach(),
