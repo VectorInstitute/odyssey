@@ -46,9 +46,7 @@ class Vocabulary:
         """
         counts = Counter(codes)
         kept = [
-            code
-            for code, count in counts.most_common(max_size)
-            if count >= min_count
+            code for code, count in counts.most_common(max_size) if count >= min_count
         ]
         token_to_id = {tok: i for i, tok in enumerate(_SPECIAL_TOKENS)}
         for code in kept:
@@ -57,7 +55,11 @@ class Vocabulary:
 
     @classmethod
     def from_meds_codes_metadata(
-        cls, codes_parquet_path: Union[str, Path], *, min_count: int = 5, max_size: int = 50_000
+        cls,
+        codes_parquet_path: Union[str, Path],
+        *,
+        min_count: int = 5,
+        max_size: int = 50_000,
     ) -> "Vocabulary":
         """Build from a MEDS ``metadata/codes.parquet`` file.
 
@@ -79,6 +81,7 @@ class Vocabulary:
         return self.id_to_token.get(token_id, UNK_TOKEN)
 
     def __len__(self) -> int:
+        """Return the vocabulary size, including special tokens."""
         return len(self.token_to_id)
 
     def save(self, path: Union[str, Path]) -> None:

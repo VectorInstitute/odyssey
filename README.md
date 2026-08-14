@@ -85,6 +85,24 @@ done
 
 Validated end-to-end against the real, credentialed MIMIC-IV 3.1 (364,627 subjects, 148,193 distinct codes) — not just the demo.
 
+### Tokenization
+
+`odyssey/data/vocabulary.py` and `odyssey/data/sequences.py` turn raw MEDS events into the batches the model consumes:
+
+```python
+from odyssey.data.vocabulary import Vocabulary
+from odyssey.data.sequences import build_patient_sequence, collate_patient_sequences
+
+vocab = Vocabulary.build(events["code"].to_list(), min_count=10, max_size=20_000)
+sequences = [
+    build_patient_sequence(events.filter(pl.col("subject_id") == sid), vocab, max_seq_len=512)
+    for sid in subject_ids
+]
+batch = collate_patient_sequences(sequences)  # -> ClinicalSequenceBatch, ready for the model
+```
+
+Validated at scale against the real extraction: 500 real patients tokenize in ~2s, mean sequence length ~301 events, 0.8% `[UNK]` rate. Visits are derived from `hadm_id` (events sharing one become one visit; events without one each get their own single-event visit) — a documented v1 simplification, see the module docstring.
+
 ## Development
 
 ```bash
@@ -100,7 +118,7 @@ uv run mypy odyssey
 3. ~~Derive real clinical concept labels from MIMIC-IV codes (rule-based, e.g. SIRS criteria, AKI, hypotension)~~
 4. ~~Wire the concept bottleneck into the EHR-Mamba3 backbone; validate forward+backward on a real GPU~~
 5. ~~Run the real MEDS extraction on full, credentialed MIMIC-IV 3.1 (364,627 subjects)~~
-6. Build patient-sequence tokenization (MEDS events -> the token/type/time/age/visit-order sequences the model consumes) — not yet implemented; needed before real pretraining
+6. ~~Build patient-sequence tokenization (MEDS events -> the token/type/time/age/visit-order sequences the model consumes)~~
 7. Pretrain on real MIMIC-IV 3.1 at scale (GPU)
 8. Extend extraction to MIMIC-IV-ED
 9. Phase 2: an LLM agent (e.g. MedGemma) that reads the concept-annotated forecast and assists a clinician
