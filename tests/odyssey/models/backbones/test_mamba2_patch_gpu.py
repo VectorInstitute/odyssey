@@ -98,12 +98,11 @@ def test_chunked_forward_with_carried_state_matches_one_shot_forward() -> None:
 
     This is the core numerical-equivalence claim the whole streaming
     training design (decision (i)/(j), entry 02) depends on, and the
-    exact assumption that failed for Mamba-3 (see
-    ``test_mamba3_gpu.py::test_chunked_forward_with_carried_state_matches_one_shot_forward``,
-    still failing there since ``mamba3_mimo_forward`` has no
-    ``initial_states`` parameter at all -- a kernel-level limitation, not
-    a wiring gap). This test validates that the wiring fix for Mamba-2
-    actually closes that gap.
+    exact assumption that failed for Mamba-3 (its MIMO kernel,
+    ``mamba3_mimo_forward``, has no ``initial_states`` parameter at all --
+    a kernel-level limitation, not a wiring gap; see entry 03 for the
+    full investigation and why this backbone moved to Mamba-2). This test
+    validates that the wiring fix for Mamba-2 actually closes that gap.
     """
     torch.manual_seed(0)
     mixer = _make_mixer().eval()

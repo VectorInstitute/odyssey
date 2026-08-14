@@ -7,7 +7,7 @@ bottleneck, kept alongside it so the two can be trained and compared: does
 the bottleneck cost anything in raw forecasting accuracy, and does
 attribution actually differ between them. Both are backbone-agnostic, so
 the same classes run against the lightweight CPU stand-in backbone in
-tests/CI and the real EHR-Mamba3 backbone on a CUDA host.
+tests/CI and the real EHRHybridBackbone on a CUDA host.
 
 Both models support two training regimes:
 

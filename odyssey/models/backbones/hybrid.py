@@ -16,10 +16,12 @@ Section 05. ``MergeAttention`` here is our own implementation in that
 spirit, not a reproduction of their exact published architecture, since
 the paper does not give enough implementation detail to reproduce exactly.
 
-Requires `mamba-ssm`, which needs a CUDA/`nvcc` build; see
-``mamba3.py``'s module docstring for the same constraint and for why the
-block stack is built directly instead of through ``mamba_ssm``'s
-high-level dispatcher.
+Requires `mamba-ssm`, which needs a CUDA/`nvcc` build. The block stack is
+built directly (each :class:`HybridBlock` constructed by hand) rather
+than through ``mamba_ssm``'s high-level ``MixerModel`` dispatcher: that
+dispatcher only builds a sequential stack of single-mixer blocks, with no
+way to express this architecture's per-block parallel Mamba+attention
+fusion.
 
 Why Mamba-2, not Mamba-3, for the Mamba branch (entry 03, decision (d)):
 GPU validation found that neither of Mamba-3's two kernel variants can
@@ -43,13 +45,12 @@ training):
 
 - **Mamba side**: supported. :func:`_make_mamba2_with_state_cls` builds a
   ``Mamba2`` subclass that seeds ``initial_states`` from the carried-over
-  ``key_value_memory_dict`` cache, mirroring
-  :class:`~odyssey.models.backbones.mamba3.EHRMamba3Backbone`'s
-  reset-row-zeroing mechanism exactly. See that function's docstring for
-  the one remaining, deliberately-not-fixed residual gap (the short
-  causal-conv left-context, ``conv_state``, is written but never read
-  back in -- a much smaller-magnitude discontinuity than the SSM state
-  gap this patch fixes).
+  ``key_value_memory_dict`` cache, and this backbone's ``forward`` zeroes
+  a row's cached state before the layer call when that row's
+  ``reset_mask`` fires. See that function's docstring for the SSM-state
+  and causal-conv left-context fixes, and the one remaining,
+  deliberately-not-fixed gap (the fast Triton ``causal_conv1d_fn`` path,
+  dead code in every environment this was validated on).
 - **Attention side**: chunk-boundary state carrying is NOT supported.
   ``mamba_ssm.modules.mha.MHA``'s prefill path
   (``_update_kv_cache``) addresses its cache with a single scalar
@@ -98,7 +99,7 @@ def _make_mamba2_with_state_cls(mamba2_cls: Any) -> Any:
 
     Deferred (needs the real ``Mamba2`` class from an installed,
     CUDA-built ``mamba-ssm``) so this stays a plain function rather than
-    a module-level class definition, matching how ``Mamba3``/``MHA`` are
+    a module-level class definition, matching how ``Mamba2``/``MHA`` are
     imported lazily elsewhere in this module.
 
     Upstream ``Mamba2.forward`` already *writes* the final SSM state back
@@ -530,10 +531,10 @@ class EHRHybridBackbone(SequenceBackbone):
         ``mamba_states`` seed the Mamba branch's cache; the attention
         branch always runs fresh over just this chunk (see the module
         docstring). Raises ``NotImplementedError`` if ``reset_mask`` has
-        any reset past position 0 (packed multi-patient chunks) -- same
-        constraint as
-        :class:`~odyssey.models.backbones.mamba3.EHRMamba3Backbone`, for
-        the same reason (see that module's docstring).
+        any reset past position 0 (packed multi-patient chunks): the
+        kernel exposes a ``cu_seqlens`` varlen path built for exactly
+        this, but its batch-dimension semantics haven't been validated
+        against this backbone.
         """
         from mamba_ssm.utils.generation import InferenceParams  # noqa: PLC0415
 
@@ -546,10 +547,11 @@ class EHRHybridBackbone(SequenceBackbone):
         if reset_mask is not None and reset_mask.shape[1] > 1 and reset_mask[:, 1:].any():
             raise NotImplementedError(
                 "EHRHybridBackbone does not yet support resets after "
-                "position 0 of a chunk (packed multi-patient chunks). See "
-                "odyssey.models.backbones.mamba3's module docstring for "
-                "the cu_seqlens path this needs on the Mamba side; the "
-                "attention side has the same gap."
+                "position 0 of a chunk (packed multi-patient chunks). The "
+                "kernel exposes a cu_seqlens varlen path built for "
+                "exactly this on the Mamba side, but its batch-dimension "
+                "semantics haven't been validated here; the attention "
+                "side has the same gap."
             )
 
         prev_time_stamps = resolve_prev_time_stamps(state, batch, reset_mask)

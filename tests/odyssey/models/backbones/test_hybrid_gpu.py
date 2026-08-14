@@ -224,11 +224,10 @@ def test_hybrid_backbone_mamba_branch_carries_state_matches_one_shot() -> None:
 def test_hybrid_backbone_reset_row_ignores_carried_state_other_rows_keep_it() -> None:
     """A per-row reset must zero only that row's carried Mamba state.
 
-    Mirrors test_mamba3_gpu.py's identically-named test, at the
-    EHRHybridBackbone level: row 0 is reset at the start of chunk 2, so
-    its output there must match a fresh (state=None) computation; row 1
-    is not reset, so its output must differ (it legitimately carries
-    chunk-1 context forward).
+    Row 0 is reset at the start of chunk 2, so its output there must
+    match a fresh (state=None) computation; row 1 is not reset, so its
+    output must differ (it legitimately carries chunk-1 context
+    forward).
     """
     torch.manual_seed(0)
     backbone = _make_backbone().eval()

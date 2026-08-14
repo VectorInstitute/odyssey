@@ -13,7 +13,7 @@ The known concepts' probabilities are supervised against clinical labels;
 the unknown concept's embedding is regularized to be orthogonal to the
 known concepts', so it can't just silently re-encode them. Backbone
 agnostic: it only consumes hidden states of shape ``(..., hidden_size)``, so
-it attaches equally to the EHR-Mamba3 backbone or any lighter stand-in used
+it attaches equally to the real hybrid backbone or any lighter stand-in used
 for local (non-CUDA) development.
 """
 
