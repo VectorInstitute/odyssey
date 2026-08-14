@@ -115,14 +115,22 @@ def _make_mamba2_with_state_cls(mamba2_cls: Any) -> Any:
     into every layer, even on the very first chunk of a sequence (state
     is ``None`` from the caller's point of view), so ``ssm_state`` is
     always a real tensor from ``_get_states_from_cache`` -- all zeros on
-    a fresh cache entry, real carried values afterward. So
-    ``initial_states=ssm_state`` is passed on every call, including the
+    a fresh cache entry, real carried values afterward. So a *clone* of
+    it is passed as ``initial_states`` on every call, including the
     first; on a fresh cache this is an explicit all-zero tensor rather
     than ``None``, which is the same "start from zero" behavior the
     kernel gives for ``initial_states=None`` -- this class never changes
     behavior relative to upstream for anything a one-shot (non-chunked)
     forward call already did, only adds correct continuation when a
-    non-empty cache is carried in.
+    non-empty cache is carried in. The clone (not the raw cache tensor)
+    matters for training: ``mamba_chunk_scan_combined`` saves
+    ``initial_states`` for its backward pass, and this same method writes
+    the chunk's *final* state back into the cache tensor in place
+    (``ssm_state.copy_(last_state)``, upstream behavior, unchanged here)
+    -- passing the raw tensor as both the saved-for-backward input and
+    the in-place write target corrupts autograd's saved version and
+    raises "modified by an inplace operation" on ``.backward()``,
+    confirmed by hitting exactly that error before adding the clone.
 
     ``conv_state`` (the short causal-conv left-context) gets the same
     treatment, in the plain ``nn.Conv1d`` fallback path (``causal_conv1d``
@@ -316,7 +324,15 @@ def _make_mamba2_with_state_cls(mamba2_cls: Any) -> Any:
                 seq_idx=seq_idx,
                 cu_seqlens=cu_seqlens,
                 **dt_limit_kwargs,
-                initial_states=ssm_state,  # the fix: upstream omits this
+                # .clone(): initial_states is saved for backward by the
+                # kernel's autograd Function; the return_final_states
+                # write-back below (ssm_state.copy_(last_state)) mutates
+                # this same cache tensor in place. Passing the raw
+                # ssm_state here would let that in-place write corrupt
+                # what autograd saved, raising "modified by an inplace
+                # operation" on .backward() -- confirmed by hitting
+                # exactly that error before adding this clone.
+                initial_states=ssm_state.clone() if ssm_state is not None else None,
                 return_final_states=ssm_state is not None,
                 return_varlen_states=cu_seqlens is not None and inference_params is not None,
             )
