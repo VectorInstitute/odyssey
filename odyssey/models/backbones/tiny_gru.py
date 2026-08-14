@@ -1,7 +1,7 @@
 """Lightweight CPU-only backbone for local development and CI.
 
 Not intended to produce real training results. `mamba-ssm` (the real
-EHR-Mamba3 backbone, see ``mamba3.py``) requires a CUDA/`nvcc` build and
+hybrid backbone, see ``hybrid.py``) requires a CUDA/`nvcc` build and
 cannot be installed on a Mac dev machine or GitHub Actions' CPU runners, so
 this stand-in exists to exercise the embeddings -> backbone -> concept
 bottleneck -> loss wiring, and the streaming/chunked training pipeline in

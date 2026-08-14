@@ -3,8 +3,8 @@
 Uses TinyGRUBackbone as the only backbone that can actually execute here
 (no CUDA). This validates the sampler/interface/pooling plumbing, which is
 backbone-agnostic by construction -- it says nothing about whether the
-real EHRMamba3Backbone behaves the same way; that needs
-``tests/odyssey/models/backbones/test_mamba3_gpu.py`` on a CUDA host.
+real EHRHybridBackbone behaves the same way; that needs
+``tests/odyssey/models/backbones/test_hybrid_gpu.py`` on a CUDA host.
 """
 
 from typing import Dict, Iterator, List

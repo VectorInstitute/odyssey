@@ -189,14 +189,17 @@ def test_combined_loss_components_and_weighting() -> None:
 
 
 class _TinyBackboneWithHead(nn.Module):
-    """A minimal stand-in for EHR-Mamba3: encoder + bottleneck + task head.
+    """A minimal stand-in for the real hybrid backbone.
 
-    Mamba-3 requires CUDA (mamba-ssm) to build, so it can't run on a Mac
-    dev machine. This substitutes a small MLP encoder that exposes the same
-    hidden-state interface the concept bottleneck consumes, so the
-    bottleneck/loss wiring can be validated end-to-end on CPU. Swapping in
-    the real EHR-Mamba3 backbone (on the GCP A100 host) only changes what
-    produces ``hidden_states`` — everything downstream is unchanged.
+    Encoder + bottleneck + task head.
+
+    The real backbone requires CUDA (mamba-ssm) to build, so it can't run
+    on a Mac dev machine. This substitutes a small MLP encoder that
+    exposes the same hidden-state interface the concept bottleneck
+    consumes, so the bottleneck/loss wiring can be validated end-to-end
+    on CPU. Swapping in the real EHRHybridBackbone (on the GCP A100 host)
+    only changes what produces ``hidden_states`` -- everything downstream
+    is unchanged.
     """
 
     def __init__(

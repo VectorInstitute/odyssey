@@ -76,7 +76,7 @@ def test_forward_shapes() -> None:
 def test_backbone_is_swappable_via_shared_interface() -> None:
     # A second, independently constructed backbone with the same interface
     # must work as a drop-in replacement -- this is the whole point of
-    # SequenceBackbone: the real EHRMamba3Backbone slots in identically.
+    # SequenceBackbone: the real EHRHybridBackbone slots in identically.
     other_backbone = TinyGRUBackbone(
         vocab_size=VOCAB_SIZE, hidden_size=HIDDEN_SIZE, padding_idx=PADDING_IDX
     )
@@ -192,12 +192,12 @@ def test_synthetic_training_reduces_next_token_and_concept_loss() -> None:
 
 
 # ---------------------------------------------------------------------------
-# The real Mamba3 backbone can't be executed here (CUDA-only); confirm the
+# The real hybrid backbone can't be executed here (CUDA-only); confirm the
 # import guard fails helpfully instead of with an opaque ImportError.
 # ---------------------------------------------------------------------------
 
 
-def test_ehr_mamba3_backbone_raises_helpful_error_without_cuda() -> None:
+def test_ehr_hybrid_backbone_raises_helpful_error_without_cuda() -> None:
     """Can't test the real backbone's forward pass without a GPU here.
 
     This instead validates that, absent `mamba-ssm`, the import guard
@@ -210,7 +210,7 @@ def test_ehr_mamba3_backbone_raises_helpful_error_without_cuda() -> None:
     except ImportError:
         pass
 
-    from odyssey.models.backbones.mamba3 import EHRMamba3Backbone  # noqa: PLC0415
+    from odyssey.models.backbones.hybrid import EHRHybridBackbone  # noqa: PLC0415
 
     with pytest.raises(ImportError, match="mamba-ssm"):
-        EHRMamba3Backbone(vocab_size=10, hidden_size=8, num_hidden_layers=1)
+        EHRHybridBackbone(vocab_size=10, hidden_size=8, num_hidden_layers=1)

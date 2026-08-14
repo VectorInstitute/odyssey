@@ -26,7 +26,7 @@ MIMIC-IV 3.1 (hosp + icu)
 MEDS parquet  (subject_id · time · code · numeric_value)
     ↓  concept extraction (rule-derived labels from MEDS codes)
     ↓
-EHR-Mamba3 backbone  (next-token prediction over patient event sequences)
+Hybrid Mamba-2 + attention backbone  (next-token prediction over patient event sequences)
     ↓
 ConceptBottleneck  (odyssey/models/concept_bottleneck.py)
     ├─ k known concepts    — each a soft mixture of a learned active/inactive
@@ -51,7 +51,7 @@ cd odyssey
 uv sync --dev
 ```
 
-The EHR-Mamba3 backbone depends on `mamba-ssm`, which requires CUDA/`nvcc` to build and cannot be installed on a Mac dev machine. On a CUDA-capable GPU host:
+The hybrid Mamba-2 + attention backbone depends on `mamba-ssm`, which requires CUDA/`nvcc` to build and cannot be installed on a Mac dev machine. On a CUDA-capable GPU host:
 
 ```bash
 uv sync --extra cuda --no-build-isolation
@@ -122,7 +122,7 @@ uv run mypy odyssey
 1. ~~Validate the MEDS extraction pipeline (hosp + icu) end-to-end~~
 2. ~~Implement and rigorously test the concept bottleneck layer~~
 3. ~~Derive real clinical concept labels from MIMIC-IV codes (rule-based, e.g. SIRS criteria, AKI, hypotension)~~
-4. ~~Wire the concept bottleneck into the EHR-Mamba3 backbone; validate forward+backward on a real GPU~~
+4. ~~Wire the concept bottleneck into a real Mamba backbone; validate forward+backward on a real GPU~~
 5. ~~Run the real MEDS extraction on full, credentialed MIMIC-IV 3.1 (364,627 subjects)~~
 6. ~~Build patient-sequence tokenization (MEDS events -> the token/type/time/age/visit-order sequences the model consumes)~~
 7. ~~Fold numeric lab/vital values into the token itself (clinical-range + quantile-bin fallback), not code-identity alone~~
@@ -137,7 +137,7 @@ Current v1 concept thresholds are single-timepoint, not sustained-criteria (real
 
 ### GPU notes
 
-`mamba-ssm`'s high-level `MambaLMHeadModel`/`MixerModel` wrapper only dispatches `ssm_cfg={"layer": ...}` to Mamba1/Mamba2 (as of 2.3.2), even though the package ships real Mamba-3 kernels — `EHRMamba3Backbone` builds the block stack directly instead (see its module docstring). Mamba-3's MIMO kernels also require `seq_len % chunk_size == 0` and are only validated here at `headdim=64`; smaller `headdim` values hit TileLang warp-partitioning errors in the backward kernel for this `mamba-ssm` version.
+The real backbone (`EHRHybridBackbone`, `odyssey/models/backbones/hybrid.py`) runs a Mamba-2 mixer and an attention mixer in parallel on every position, fused by a small learned attention (`MergeAttention`) — not a sequential stack, so it's built directly rather than through `mamba_ssm`'s high-level `MixerModel` dispatcher, which only supports one mixer per block. The Mamba branch carries real state across TBTT chunks (`hybrid.py` patches a minimal `Mamba2` subclass that seeds `mamba_chunk_scan_combined`'s `initial_states`, which upstream never wires up); the attention branch runs fresh, full attention over just the current chunk, with no cross-chunk memory — a deliberate trade-off, not a bug: Mamba handles compressed long-range recall across the whole sequence, attention handles precise local recall within a chunk. See `_make_mamba2_with_state_cls` in that module and `research_journal/03_backbone_architecture.html` (local-only) for the full writeup.
 
 ## Citation
 
