@@ -48,7 +48,10 @@ def _patients(seqs: List[PatientSequence]) -> Iterator[PatientSequence]:
 
 def _make_backbone() -> TinyGRUBackbone:
     return TinyGRUBackbone(
-        vocab_size=VOCAB_SIZE, hidden_size=HIDDEN_SIZE, num_layers=1, padding_idx=PADDING_IDX
+        vocab_size=VOCAB_SIZE,
+        hidden_size=HIDDEN_SIZE,
+        num_layers=1,
+        padding_idx=PADDING_IDX,
     )
 
 
@@ -63,9 +66,7 @@ def _make_model() -> ConceptBottleneckSequenceModel:
 
 
 def _labels(subject_ids: List[int]) -> Dict[int, torch.Tensor]:
-    return {
-        sid: torch.randint(0, 2, (NUM_CONCEPTS,)).float() for sid in subject_ids
-    }
+    return {sid: torch.randint(0, 2, (NUM_CONCEPTS,)).float() for sid in subject_ids}
 
 
 def _detach_state(state: TimeAwareState) -> TimeAwareState:
@@ -228,7 +229,9 @@ def test_streaming_training_loop_reduces_loss() -> None:
 
     losses = []
     for _ in range(30):
-        sampler = PackedLaneSampler(_patients(list(patients)), num_lanes=2, chunk_size=6, seed=0)
+        sampler = PackedLaneSampler(
+            _patients(list(patients)), num_lanes=2, chunk_size=6, seed=0
+        )
         state = None
         epoch_losses = []
         for chunk in sampler:
@@ -255,7 +258,9 @@ def test_baseline_model_streaming_loss_and_training_loop() -> None:
 
     losses = []
     for _ in range(30):
-        sampler = PackedLaneSampler(_patients(list(patients)), num_lanes=2, chunk_size=6, seed=0)
+        sampler = PackedLaneSampler(
+            _patients(list(patients)), num_lanes=2, chunk_size=6, seed=0
+        )
         state = None
         epoch_losses = []
         for chunk in sampler:

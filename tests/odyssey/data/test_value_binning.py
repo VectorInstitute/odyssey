@@ -80,7 +80,9 @@ def test_only_upper_threshold_defined_gives_two_bins() -> None:
     ]
 
 
-def test_numeric_valued_code_with_no_curated_range_and_no_binner_passes_through() -> None:
+def test_numeric_valued_code_with_no_curated_range_and_no_binner_passes_through() -> (
+    None
+):
     events = _events([("LAB//99999//unmapped", 42.0)])
     out = add_value_tokens(events)
     assert out["code"][0] == "LAB//99999//unmapped"
@@ -126,7 +128,9 @@ def _threshold_rules(concept: ConceptDefinition) -> List[Tuple[str, float]]:
             for sub_rule in rule.rules:
                 if isinstance(sub_rule, (ConceptRule, SustainedRule)):
                     out.append((sub_rule.code_prefix, sub_rule.threshold))
-                elif not isinstance(sub_rule, (BaselineRelativeRule, DerivedGcsTotalRule)):
+                elif not isinstance(
+                    sub_rule, (BaselineRelativeRule, DerivedGcsTotalRule)
+                ):
                     raise TypeError(f"unhandled rule type in AnyOf: {type(sub_rule)!r}")
         elif isinstance(rule, (ConceptRule, SustainedRule)):
             out.append((rule.code_prefix, rule.threshold))

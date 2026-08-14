@@ -51,8 +51,8 @@ from odyssey.data.types import AuxiliaryInputs, ClinicalSequenceBatch
 from odyssey.data.vocabulary import PAD_ID
 
 
+# Sentinel `subject_ids` value at padding positions.
 NO_SUBJECT = -1
-"""Sentinel ``subject_ids`` value at padding positions."""
 
 
 class StreamingChunk(NamedTuple):
@@ -229,9 +229,7 @@ class PackedLaneSampler:
             return None
 
         def _stack(field_name: str, dtype: torch.dtype) -> torch.Tensor:
-            return torch.tensor(
-                [getattr(w, field_name) for w in windows], dtype=dtype
-            )
+            return torch.tensor([getattr(w, field_name) for w in windows], dtype=dtype)
 
         concept_ids_full = _stack("concept_ids", torch.long)
         type_ids_full = _stack("type_ids", torch.long)

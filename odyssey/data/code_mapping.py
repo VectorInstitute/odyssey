@@ -105,7 +105,9 @@ def prefixes_for_loinc(loinc_code: str, *, source: str = "mimic_iv") -> FrozenSe
     return frozenset(prefix for prefix, loinc in table.items() if loinc == loinc_code)
 
 
-def assert_all_mapped(code_prefixes: Iterable[str], *, source: str = "mimic_iv") -> None:
+def assert_all_mapped(
+    code_prefixes: Iterable[str], *, source: str = "mimic_iv"
+) -> None:
     """Raise ``ValueError`` if any of ``code_prefixes`` has no LOINC mapping.
 
     A cheap, direct guardrail for decision (c): every concept rule's

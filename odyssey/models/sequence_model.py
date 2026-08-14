@@ -69,9 +69,7 @@ def _pool_last_non_padding(
     return values[batch_idx, last_idx]
 
 
-def _pool_patient_ends(
-    values: torch.Tensor, patient_end: torch.Tensor
-) -> torch.Tensor:
+def _pool_patient_ends(values: torch.Tensor, patient_end: torch.Tensor) -> torch.Tensor:
     """Select every position marked ``patient_end`` from ``values``.
 
     ``values`` is ``(lanes, chunk_size, ...)``; the result is
@@ -174,7 +172,9 @@ class BaselineSequenceModel(_SequenceModelBase):
         reset_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, TimeAwareState]:
         """Return ``(next-token logits, new backbone state)``."""
-        hidden_states, new_state = self.backbone(batch, state=state, reset_mask=reset_mask)
+        hidden_states, new_state = self.backbone(
+            batch, state=state, reset_mask=reset_mask
+        )
         logits: torch.Tensor = self.lm_head(hidden_states)
         return logits, new_state
 
@@ -227,7 +227,9 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         reset_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, ConceptBottleneckOutput, TimeAwareState]:
         """Return ``(next-token logits, bottleneck output, new backbone state)``."""
-        hidden_states, new_state = self.backbone(batch, state=state, reset_mask=reset_mask)
+        hidden_states, new_state = self.backbone(
+            batch, state=state, reset_mask=reset_mask
+        )
         bottleneck_out = self.bottleneck(hidden_states)
         logits = self.lm_head(bottleneck_out.bottleneck)
         return logits, bottleneck_out, new_state
