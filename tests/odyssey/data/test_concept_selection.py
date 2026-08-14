@@ -68,7 +68,9 @@ def test_fails_dominant_class_when_almost_always_triggered() -> None:
     stats = compute_prevalence_stats(
         labels, _concepts("c"), min_support=10, max_dominant_class=0.95
     )
-    assert stats[0].passes_min_support  # 4 non-triggered subjects isn't the support issue
+    assert stats[
+        0
+    ].passes_min_support  # 4 non-triggered subjects isn't the support issue
     assert not stats[0].passes_max_dominant_class
     assert not stats[0].passes
 
