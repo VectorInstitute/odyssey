@@ -335,6 +335,110 @@ def test_baseline_relative_rule_a_small_absolute_rise_from_a_low_baseline_still_
     assert labels["aki"].to_list() == [1]
 
 
+def test_baseline_relative_rule_requires_exactly_one_of_delta_or_ratio() -> None:
+    with pytest.raises(ValueError, match="exactly one"):
+        BaselineRelativeRule(
+            "LAB//RESULT//50912//", direction="above", window_hours=48.0
+        )
+    with pytest.raises(ValueError, match="exactly one"):
+        BaselineRelativeRule(
+            "LAB//RESULT//50912//",
+            direction="above",
+            window_hours=48.0,
+            delta=0.3,
+            ratio=1.5,
+        )
+
+
+def test_baseline_relative_rule_ratio_mode_triggers_on_proportional_rise() -> None:
+    concepts = [
+        ConceptDefinition(
+            "aki",
+            [
+                BaselineRelativeRule(
+                    "LAB//RESULT//50912//",
+                    ratio=1.5,
+                    direction="above",
+                    window_hours=168.0,
+                )
+            ],
+            "creatinine rose to >= 1.5x baseline within 7 days",
+        )
+    ]
+    events = _events(
+        [
+            # subject 1: 1.0 -> 1.5 exactly (1.5x) -- triggers.
+            (1, "LAB//RESULT//50912//", 1.0, T0),
+            (1, "LAB//RESULT//50912//", 1.5, T0 + timedelta(hours=48)),
+            # subject 2: 1.0 -> 1.4 (only 1.4x) -- does not trigger.
+            (2, "LAB//RESULT//50912//", 1.0, T0),
+            (2, "LAB//RESULT//50912//", 1.4, T0 + timedelta(hours=48)),
+        ]
+    )
+    labels = label_concepts(events, concepts).sort("subject_id")
+    assert labels["aki"].to_list() == [1, 0]
+
+
+def test_baseline_relative_rule_ratio_mode_below_direction_triggers_on_proportional_fall() -> (
+    None
+):
+    concepts = [
+        ConceptDefinition(
+            "big_relative_drop",
+            [
+                BaselineRelativeRule(
+                    "LAB//220045//", ratio=2.0, direction="below", window_hours=6.0
+                )
+            ],
+            "HR fell to <= half of an earlier reading within 6h",
+        )
+    ]
+    events = _events(
+        [
+            (1, "LAB//220045//", 100.0, T0),
+            (1, "LAB//220045//", 50.0, T0 + timedelta(hours=2)),  # exactly half
+        ]
+    )
+    labels = label_concepts(events, concepts)
+    assert labels["big_relative_drop"].to_list() == [1]
+
+
+def test_aki_staging_is_monotonically_more_selective() -> None:
+    """Same real-data-shaped scenario, worse severity should trigger more stages."""
+    aki_concepts = [
+        c
+        for c in CONCEPTS
+        if c.name in ("acute_kidney_injury", "aki_stage_2", "aki_stage_3")
+    ]
+    events = _events(
+        [
+            # subject 1: 1.0 -> 3.5 (3.5x, absolute stays < 4.0) -- stages 1-3.
+            (1, "LAB//RESULT//50912//", 1.0, T0),
+            (1, "LAB//RESULT//50912//", 3.5, T0 + timedelta(hours=48)),
+            # subject 2: 1.0 -> 2.2 (2.2x) -- stages 1-2 only.
+            (2, "LAB//RESULT//50912//", 1.0, T0),
+            (2, "LAB//RESULT//50912//", 2.2, T0 + timedelta(hours=48)),
+            # subject 3: 1.0 -> 1.2 (only 1.2x, +0.2 absolute) -- no stage at all.
+            (3, "LAB//RESULT//50912//", 1.0, T0),
+            (3, "LAB//RESULT//50912//", 1.2, T0 + timedelta(hours=48)),
+        ]
+    )
+    labels = label_concepts(events, aki_concepts).sort("subject_id")
+    assert labels["acute_kidney_injury"].to_list() == [1, 1, 0]
+    assert labels["aki_stage_2"].to_list() == [1, 1, 0]
+    assert labels["aki_stage_3"].to_list() == [1, 0, 0]
+
+
+def test_aki_stage_3_absolute_creatinine_trigger() -> None:
+    """Stage 3's other trigger: any reading >= 4.0 mg/dL, regardless of baseline."""
+    stage_3 = next(c for c in CONCEPTS if c.name == "aki_stage_3")
+    events = _events(
+        [(1, "LAB//RESULT//50912//", 4.5, T0)]
+    )  # single reading, no baseline
+    labels = label_concepts(events, [stage_3])
+    assert labels["aki_stage_3"].to_list() == [1]
+
+
 # ---------------------------------------------------------------------------
 # DerivedGcsTotalRule
 # ---------------------------------------------------------------------------
@@ -500,7 +604,7 @@ def test_any_of_counts_as_one_criterion_even_if_both_branches_fire() -> None:
     assert labels["sirs_like"].to_list() == [0]
 
 
-def test_sirs_definition_triggers_on_two_of_three_criteria() -> None:
+def test_sirs_definition_triggers_on_two_of_four_criteria() -> None:
     sirs = next(c for c in CONCEPTS if c.name == "sirs")
     events = _events(
         [
@@ -510,6 +614,39 @@ def test_sirs_definition_triggers_on_two_of_three_criteria() -> None:
     )
     labels = label_concepts(events, [sirs])
     assert labels["sirs"].to_list() == [1]
+
+
+def test_sirs_wbc_criterion_triggers_on_high_or_low_count() -> None:
+    sirs = next(c for c in CONCEPTS if c.name == "sirs")
+    events = _events(
+        [
+            # subject 1: WBC high + HR high -- 2 of 4 criteria.
+            (1, "LAB//RESULT//51301//", 15.0, T0),
+            (1, "LAB//220045//", 95.0, T0),
+            # subject 2: WBC low alone -- only 1 of 4 criteria.
+            (2, "LAB//RESULT//51301//", 2.0, T0),
+        ]
+    )
+    labels = label_concepts(events, [sirs]).sort("subject_id")
+    assert labels["sirs"].to_list() == [1, 0]
+
+
+def test_sirs_wbc_high_and_low_still_counts_as_one_criterion() -> None:
+    """AnyOf semantics for a real concept.
+
+    A subject with both a high and a low WBC reading (at different
+    times) must still only get credit for one criterion.
+    """
+    sirs = next(c for c in CONCEPTS if c.name == "sirs")
+    events = _events(
+        [
+            (1, "LAB//RESULT//51301//", 15.0, T0),
+            (1, "LAB//RESULT//51301//", 2.0, T0 + timedelta(hours=1)),
+            (1, "LAB//220045//", 50.0, T0),  # HR normal, no other criterion met
+        ]
+    )
+    labels = label_concepts(events, [sirs])
+    assert labels["sirs"].to_list() == [0]
 
 
 def test_qsofa_definition_triggers_on_two_of_three_criteria() -> None:

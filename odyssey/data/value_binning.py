@@ -51,7 +51,10 @@ CLINICAL_RANGES: Dict[str, List[Tuple[float, str]]] = {
     "LAB//220277//": [(92.0, "LOW")],  # SpO2 (only a lower rule exists)
     "LAB//223761//": [(96.8, "LOW"), (100.4, "NORMAL")],  # temperature, F
     "LAB//223762//": [(36.0, "LOW"), (38.0, "NORMAL")],  # temperature, C
-    "LAB//RESULT//50912//": [(1.5, "NORMAL")],  # creatinine
+    "LAB//RESULT//50912//": [
+        (1.5, "NORMAL"),
+        (4.0, "HIGH"),
+    ],  # creatinine: NORMAL / HIGH (aki_stage_1) / CRITICAL (aki_stage_3)
     "LAB//RESULT//50813//": [(2.0, "NORMAL")],  # lactate
 }
 _FALLBACK_LABEL: Dict[str, str] = {
@@ -62,7 +65,7 @@ _FALLBACK_LABEL: Dict[str, str] = {
     "LAB//220277//": "NORMAL",
     "LAB//223761//": "HIGH",
     "LAB//223762//": "HIGH",
-    "LAB//RESULT//50912//": "HIGH",
+    "LAB//RESULT//50912//": "CRITICAL",
     "LAB//RESULT//50813//": "HIGH",
 }
 

@@ -26,10 +26,11 @@ per research_journal/04_concept_pipeline.html decision (b):
   spike (e.g. during a single stressful procedure) was indistinguishable
   from true sustained tachypnea.
 - :class:`BaselineRelativeRule` -- KDIGO-style: a value rose (or fell) by
-  at least ``delta`` from an earlier reading of the same subject/code
-  within ``window_hours``. Baseline is the subject's own earlier value,
-  not a fixed population reference range -- AKI is specifically about
-  deviation from a patient's own normal.
+  at least an absolute ``delta`` or a proportional ``ratio`` from an
+  earlier reading of the same subject/code within ``window_hours``.
+  Baseline is the subject's own earlier value, not a fixed population
+  reference range -- AKI is specifically about deviation from a
+  patient's own normal.
 - :class:`DerivedGcsTotalRule` -- qSOFA/NEWS2-style: total Glasgow Coma
   Scale (eye + verbal + motor) below a threshold. MIMIC-IV charts GCS as
   three separately-timed components with no single "GCS total" itemid
@@ -57,7 +58,7 @@ yet express. See research_journal/04_concept_pipeline.html, Section 08,
 import warnings
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Dict, List, Literal, Sequence, Set, Tuple, Union
+from typing import Dict, List, Literal, Optional, Sequence, Set, Tuple, Union
 
 import polars as pl
 
@@ -98,22 +99,32 @@ class SustainedRule:
 
 @dataclass(frozen=True)
 class BaselineRelativeRule:
-    """KDIGO-style: value rose/fell by >= ``delta`` from an earlier reading.
+    """KDIGO-style: value rose/fell by an absolute delta or a ratio.
 
     Triggers if any two readings of the same subject and code, with the
-    later one within ``window_hours`` of the earlier one, differ by at
-    least ``delta`` in the direction given by ``direction`` (``"above"``:
-    a rise triggers; ``"below"``: a fall triggers). This is KDIGO AKI
-    Stage 1's 48-hour absolute-rise criterion specifically -- KDIGO's
-    other criterion (>= 1.5x baseline within 7 days, a ratio rather than
-    an absolute delta) is not implemented here; see the module docstring
-    for what full SOFA/NEWS2 would additionally need.
+    later one within ``window_hours`` of the earlier one, differ enough
+    in the direction given by ``direction`` (``"above"``: a rise
+    triggers; ``"below"``: a fall triggers). Exactly one of ``delta``
+    (an absolute difference, e.g. KDIGO AKI Stage 1's "+0.3 mg/dL within
+    48h") or ``ratio`` (a proportional difference, e.g. Stage 1's other
+    trigger "1.5x baseline within 7 days", or Stage 2/3's 2x/3x) must be
+    given. Baseline is the subject's own earlier value, not a fixed
+    population reference range.
     """
 
     code_prefix: str
-    delta: float
     direction: Direction
     window_hours: float
+    delta: Optional[float] = None
+    ratio: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        """Require exactly one of ``delta``/``ratio``."""
+        if (self.delta is None) == (self.ratio is None):
+            raise ValueError(
+                "BaselineRelativeRule needs exactly one of delta or ratio, got "
+                f"delta={self.delta!r} ratio={self.ratio!r}"
+            )
 
 
 @dataclass(frozen=True)
@@ -259,20 +270,51 @@ _SUSTAINED_TACHYPNEA = ConceptDefinition(
     "indistinguishable from true sustained tachypnea).",
 )
 
+_CREATININE = "LAB//RESULT//50912//"
+
 _ACUTE_KIDNEY_INJURY = ConceptDefinition(
     "acute_kidney_injury",
     [
         BaselineRelativeRule(
-            "LAB//RESULT//50912//", delta=0.3, direction="above", window_hours=48.0
+            _CREATININE, delta=0.3, direction="above", window_hours=48.0
+        ),
+        BaselineRelativeRule(
+            _CREATININE, ratio=1.5, direction="above", window_hours=168.0
+        ),
+    ],
+    "KDIGO AKI Stage 1 (either trigger): serum creatinine rose by >= 0.3 "
+    "mg/dL within 48 hours, OR rose to >= 1.5x an earlier reading within "
+    "7 days (168h). Replaces v1's 'creatinine > 1.5 mg/dL' single-value "
+    "proxy, which ignored a patient's own baseline. See aki_stage_2 and "
+    "aki_stage_3 for higher severity; urine-output-based staging is not "
+    "implemented -- see 'still open'.",
+)
+
+_AKI_STAGE_2 = ConceptDefinition(
+    "aki_stage_2",
+    [
+        BaselineRelativeRule(
+            _CREATININE, ratio=2.0, direction="above", window_hours=168.0
         )
     ],
-    "KDIGO AKI Stage 1's 48-hour absolute-rise criterion: serum "
-    "creatinine rose by >= 0.3 mg/dL within 48 hours of an earlier "
-    "reading. Replaces v1's 'creatinine > 1.5 mg/dL' single-value proxy, "
-    "which ignored a patient's own baseline. KDIGO's other Stage 1 "
-    "criterion (>= 1.5x baseline within 7 days, a ratio rather than an "
-    "absolute delta) and Stages 2-3 are not implemented -- see the "
-    "module docstring.",
+    "KDIGO AKI Stage 2: serum creatinine rose to >= 2.0x an earlier "
+    "reading within 7 days. Urine-output-based staging (<0.5 mL/kg/h for "
+    ">= 12h) is not implemented -- see 'still open'.",
+)
+
+_AKI_STAGE_3 = ConceptDefinition(
+    "aki_stage_3",
+    [
+        BaselineRelativeRule(
+            _CREATININE, ratio=3.0, direction="above", window_hours=168.0
+        ),
+        ConceptRule(_CREATININE, 4.0, "above"),
+    ],
+    "KDIGO AKI Stage 3 (either trigger): serum creatinine rose to "
+    ">= 3.0x an earlier reading within 7 days, OR any reading >= 4.0 "
+    "mg/dL. Renal-replacement-therapy initiation and urine-output-based "
+    "staging (<0.3 mL/kg/h for >= 24h, or anuria for >= 12h) are not "
+    "implemented -- see 'still open'.",
 )
 
 _SIRS = CompositeConceptDefinition(
@@ -288,16 +330,20 @@ _SIRS = CompositeConceptDefinition(
         ),  # criterion 1: temp > 38C/100.4F or < 36C/96.8F
         ConceptRule("LAB//220045//", 90.0, "above"),  # criterion 2: HR > 90
         ConceptRule("LAB//220210//", 20.0, "above"),  # criterion 3: RR > 20
+        AnyOf(
+            [
+                ConceptRule("LAB//RESULT//51301//", 12.0, "above"),
+                ConceptRule("LAB//RESULT//51301//", 4.0, "below"),
+            ]
+        ),  # criterion 4: WBC > 12k or < 4k per uL
     ],
     min_criteria=2,
     description=(
         "SIRS (Systemic Inflammatory Response Syndrome): >= 2 of "
         "{abnormal temperature, HR > 90, RR > 20, abnormal WBC}. The "
-        "WBC criterion (>12k or <4k per uL, or >10% bands) is not "
-        "included -- this project's current lab concept-map coverage "
-        "doesn't yet have a verified WBC itemid wired through "
-        "odyssey.data.code_mapping; see 'still open'. So this is "
-        "'>= 2 of the 3 vital-sign criteria', a documented partial SIRS."
+        "bands-percentage alternative for the WBC criterion (>10% bands, "
+        "an option even with a normal WBC count) is not included -- no "
+        "verified MIMIC-IV itemid for band percentage has been found yet."
     ),
 )
 
@@ -339,6 +385,8 @@ CONCEPTS: List[AnyConceptDefinition] = [
     _ELEVATED_LACTATE,
     _SUSTAINED_TACHYPNEA,
     _ACUTE_KIDNEY_INJURY,
+    _AKI_STAGE_2,
+    _AKI_STAGE_3,
     _SIRS,
     _QSOFA,
 ]
@@ -419,12 +467,20 @@ def _baseline_relative_ids(
         (pl.col(f"{time_col}_later") > pl.col(time_col))
         & (pl.col(f"{time_col}_later") - pl.col(time_col) <= window)
     )
-    delta_expr = (
-        pl.col(f"{value_col}_later") - pl.col(value_col)
-        if rule.direction == "above"
-        else pl.col(value_col) - pl.col(f"{value_col}_later")
-    )
-    triggered = set(pairs.filter(delta_expr >= rule.delta)[subject_id_col].to_list())
+    if rule.ratio is not None:
+        comparison = (
+            pl.col(f"{value_col}_later") >= rule.ratio * pl.col(value_col)
+            if rule.direction == "above"
+            else pl.col(f"{value_col}_later") <= pl.col(value_col) / rule.ratio
+        )
+    else:
+        delta_expr = (
+            pl.col(f"{value_col}_later") - pl.col(value_col)
+            if rule.direction == "above"
+            else pl.col(value_col) - pl.col(f"{value_col}_later")
+        )
+        comparison = delta_expr >= rule.delta
+    triggered = set(pairs.filter(comparison)[subject_id_col].to_list())
     return observed, triggered
 
 
