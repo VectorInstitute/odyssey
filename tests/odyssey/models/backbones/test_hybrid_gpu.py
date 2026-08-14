@@ -151,6 +151,37 @@ def test_hybrid_backbone_accepts_carried_state_and_produces_finite_output() -> N
 
 
 @cuda_required
+def test_hybrid_backbone_does_not_mutate_the_state_it_was_given() -> None:
+    """Passing a state into forward() must not corrupt the caller's copy.
+
+    EHRHybridBackbone's own reset-zeroing loop and the Mamba2 mixer's
+    ssm_state.copy_(last_state) write-back both mutate cache tensors in
+    place; without cloning them first, calling backbone(chunk2,
+    state=state1) would silently corrupt state1 as a side effect -- a
+    caller holding onto a state for checkpointing or replay would see it
+    change out from under them. A fresh (state=None) forward on the same
+    input, after state has supposedly been "used", must still match a
+    fresh forward computed before state was ever touched.
+    """
+    torch.manual_seed(0)
+    backbone = _make_backbone().eval()
+    batch = _make_batch(batch=2, seq_len=SEQ_LEN, device="cuda")
+
+    with torch.no_grad():
+        _, state = backbone(batch)
+        snapshot = {
+            layer_idx: tuple(t.clone() for t in cached)
+            for layer_idx, cached in state.recurrent.mamba_states.items()
+        }
+
+        backbone(batch, state=state)  # a second chunk; must not mutate `state`
+
+        for layer_idx, cached in state.recurrent.mamba_states.items():
+            for original, after in zip(snapshot[layer_idx], cached):
+                assert torch.equal(original, after)
+
+
+@cuda_required
 def test_hybrid_backbone_mamba_branch_carries_state_matches_one_shot() -> None:
     """The Mamba branch's chunked-with-state output must match one-shot.
 

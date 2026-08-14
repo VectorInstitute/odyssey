@@ -561,11 +561,23 @@ class EHRHybridBackbone(SequenceBackbone):
 
         mamba_ip = InferenceParams(max_seqlen=seq_len, max_batch_size=batch_size)
         if typed_state is not None:
-            mamba_ip.key_value_memory_dict = typed_state
+            # Clone rather than reuse the caller's tensors directly: this
+            # method's own reset-zeroing loop below, and Mamba2WithState's
+            # ssm_state.copy_(last_state) write-back inside the layer
+            # loop, both mutate these tensors in place. Without the
+            # clone, calling backbone(chunk2, state=state1) would
+            # silently corrupt state1 as a side effect -- the same class
+            # of aliasing bug already fixed for the ssm_state/
+            # initial_states pair and the conv_state snapshot in
+            # _make_mamba2_with_state_cls, just one layer further out.
+            mamba_ip.key_value_memory_dict = {
+                layer_idx: tuple(tensor.clone() for tensor in cached)
+                for layer_idx, cached in typed_state.items()
+            }
             if reset_mask is not None:
                 reset_rows = reset_mask[:, 0]
                 if reset_rows.any():
-                    for cached in typed_state.values():
+                    for cached in mamba_ip.key_value_memory_dict.values():
                         for tensor in cached:
                             tensor[reset_rows] = 0
 
