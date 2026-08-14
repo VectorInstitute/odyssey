@@ -29,15 +29,17 @@ MEDS parquet  (subject_id · time · code · numeric_value)
 EHR-Mamba3 backbone  (next-token prediction over patient event sequences)
     ↓
 ConceptBottleneck  (odyssey/models/concept_bottleneck.py)
-    ├─ known concepts   — supervised, clinically interpretable
-    └─ residual         — free, orthogonality-penalized against the concepts
+    ├─ k known concepts    — each a soft mixture of a learned active/inactive
+    │                        embedding pair, weighted by a supervised probability
+    └─ 1 unknown concept   — same mixture structure, unsupervised, orthogonality-
+                             penalized against the known concepts' embeddings
     ↓
 task loss + concept loss + orthogonality loss
     ↓
 forecast (adverse events, deterioration) — traceable to concept activations
 ```
 
-The concept-bottleneck loss recipe follows Ismail, Adebayo, Bravo, Ra & Cho, ["Concept Bottleneck Generative Models"](https://proceedings.iclr.cc/paper_files/paper/2024/hash/9149fc44c95ce58e3ca529a1e34c2691-Abstract-Conference.html) (ICLR 2024): task loss + supervised concept loss + an orthogonality penalty that keeps the residual from silently re-encoding the known concepts.
+The concept bottleneck implements Ismail, Adebayo, Bravo, Ra & Cho, ["Concept Bottleneck Generative Models"](https://proceedings.iclr.cc/paper_files/paper/2024/file/9149fc44c95ce58e3ca529a1e34c2691-Paper-Conference.pdf) (ICLR 2024) — task loss + supervised concept loss + an orthogonality penalty — verified directly against the paper's Section 3.1/Eq. 5 and its official reference code ([prescient-design/CBGM](https://github.com/prescient-design/CBGM), [mateoespinosa/cem](https://github.com/mateoespinosa/cem)), not just the abstract. Each concept (including the unsupervised "unknown" one) is a *mixture of two learned embeddings*, not a scalar — see the module docstring for why that distinction is load-bearing (the paper's own ablation shows removing the unknown concept's embedding capacity, not merely having some free capacity, degrades FID 9.3→44.1).
 
 ## Installation
 
