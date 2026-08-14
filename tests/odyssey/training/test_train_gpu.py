@@ -120,6 +120,7 @@ def test_train_runs_end_to_end_and_produces_expected_outputs(tmp_path: Path) -> 
     assert (output_dir / "vocabulary.json").exists()
     assert (output_dir / "quantile_binner.json").exists()
     assert (output_dir / "checkpoint_final.pt").exists()
+    assert (output_dir / "checkpoint_epoch_0.pt").exists()
 
     log_lines = (output_dir / "loss_log.jsonl").read_text().strip().split("\n")
     assert len(log_lines) > 0
@@ -148,3 +149,58 @@ def test_train_runs_end_to_end_and_produces_expected_outputs(tmp_path: Path) -> 
     # step (logging cadence and total step count are independent), only
     # be at least as far along as the last thing we logged.
     assert checkpoint["step"] >= train_records[-1]["step"]
+
+
+@cuda_required
+def test_train_resumes_from_an_epoch_checkpoint(tmp_path: Path) -> None:
+    train_dir = tmp_path / "data" / "train"
+    tuning_dir = tmp_path / "data" / "tuning"
+    _write_shards(train_dir, n_subjects=12, n_events_per_subject=30)
+    _write_shards(tuning_dir, n_subjects=4, n_events_per_subject=30)
+
+    output_dir = tmp_path / "run"
+    base_config = TrainingConfig(
+        train_shard_dir=str(train_dir),
+        tuning_shard_dir=str(tuning_dir),
+        output_dir=str(output_dir),
+        hidden_size=64,
+        num_hidden_layers=2,
+        mamba_state_size=16,
+        mamba_headdim=64,
+        mamba_chunk_size=16,
+        attn_num_heads=8,
+        embedding_dim=8,
+        vocab_min_count=1,
+        quantile_min_count=1,
+        num_lanes=2,
+        chunk_size=8,
+        num_epochs=1,
+        log_every=2,
+        eval_every=100,  # skip eval here, already covered above
+        checkpoint_every=100000,  # only the end-of-epoch checkpoint matters here
+    )
+
+    train(base_config)
+    checkpoint_path = output_dir / "checkpoint_epoch_0.pt"
+    assert checkpoint_path.exists()
+    first_run_step = torch.load(checkpoint_path, map_location="cpu")["step"]
+
+    resumed_config = TrainingConfig(
+        **{**vars(base_config), "num_epochs": 2, "resume_from": str(checkpoint_path)}
+    )
+    train(resumed_config)
+
+    final_checkpoint = torch.load(
+        output_dir / "checkpoint_final.pt", map_location="cpu"
+    )
+    # the resumed run continues global_step from where the checkpoint left
+    # off, rather than restarting the counter from 0.
+    assert final_checkpoint["step"] > first_run_step
+
+    log_lines = (output_dir / "loss_log.jsonl").read_text().strip().split("\n")
+    records = [json.loads(line) for line in log_lines]
+    # loss_log.jsonl is append-only, so both runs' records are present,
+    # and the resumed run's records pick up step numbering where the
+    # first run left off rather than overlapping it.
+    steps_after_first_run = [r["step"] for r in records if r["step"] > first_run_step]
+    assert steps_after_first_run

@@ -44,7 +44,9 @@ def _events(rows: List[_EventRow]) -> pl.DataFrame:
 # ---------------------------------------------------------------------------
 
 
-def test_load_meds_shards_concatenates_in_numeric_filename_order(tmp_path: Path) -> None:
+def test_load_meds_shards_concatenates_in_numeric_filename_order(
+    tmp_path: Path,
+) -> None:
     shard_dir = tmp_path / "train"
     shard_dir.mkdir()
     _events([(1, "A", T0, None, None)]).write_parquet(shard_dir / "0.parquet")
@@ -120,8 +122,12 @@ def test_iter_patient_sequences_shuffle_seed_is_deterministic() -> None:
     events = _events([(i, f"DIAGNOSIS//{i}", T0, None, None) for i in range(20)])
     vocab = build_vocabulary(events, min_count=1, max_size=100)
 
-    order_a = [s.subject_id for s in iter_patient_sequences(events, vocab, shuffle_seed=7)]
-    order_b = [s.subject_id for s in iter_patient_sequences(events, vocab, shuffle_seed=7)]
+    order_a = [
+        s.subject_id for s in iter_patient_sequences(events, vocab, shuffle_seed=7)
+    ]
+    order_b = [
+        s.subject_id for s in iter_patient_sequences(events, vocab, shuffle_seed=7)
+    ]
     order_unshuffled = [s.subject_id for s in iter_patient_sequences(events, vocab)]
 
     assert order_a == order_b
@@ -179,7 +185,9 @@ def test_build_concept_label_dicts_multiple_concepts_preserve_order() -> None:
 
 
 def test_count_subjects() -> None:
-    events = _events([(1, "A", T0, None, None), (1, "B", T0, None, None), (2, "C", T0, None, None)])
+    events = _events(
+        [(1, "A", T0, None, None), (1, "B", T0, None, None), (2, "C", T0, None, None)]
+    )
     assert count_subjects(events) == 2
 
 
