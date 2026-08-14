@@ -25,6 +25,7 @@ docstring on why), so prefer an epoch checkpoint over a ``checkpoint_every``
 one when resuming.
 """
 
+import gc
 import json
 import time
 from dataclasses import asdict, dataclass
@@ -237,6 +238,14 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
         f"[data] tuning: {count_subjects(tuning_events)} subjects, {tuning_events.height} events"
     )
 
+    print("[data] labeling concepts")
+    train_labels, train_masks = build_concept_label_dicts(train_events, CONCEPTS)
+    tuning_labels, tuning_masks = build_concept_label_dicts(tuning_events, CONCEPTS)
+    train_labels = {k: v.to(device) for k, v in train_labels.items()}
+    train_masks = {k: v.to(device) for k, v in train_masks.items()}
+    tuning_labels = {k: v.to(device) for k, v in tuning_labels.items()}
+    tuning_masks = {k: v.to(device) for k, v in tuning_masks.items()}
+
     print("[data] fitting quantile binner on train split")
     binner = QuantileBinner.fit(
         train_events, n_bins=config.quantile_n_bins, min_count=config.quantile_min_count
@@ -244,6 +253,14 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
     binner.save(output_dir / "quantile_binner.json")
     train_events_binned = add_value_tokens(train_events, binner)
     tuning_events_binned = add_value_tokens(tuning_events, binner)
+    # The unbinned events are never needed again -- everything for the
+    # rest of this (potentially many-hour) run reads from the binned
+    # copies instead. Without this, both copies of every split stay
+    # alive as live locals for the whole run: 100 train shards alone
+    # was enough to OOM-kill an 83GB VM (confirmed via dmesg) before
+    # this fix.
+    del train_events, tuning_events
+    gc.collect()
 
     print("[data] building vocabulary from train split")
     vocab = build_vocabulary(
@@ -253,14 +270,6 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
     )
     vocab.save(output_dir / "vocabulary.json")
     print(f"[data] vocab size: {len(vocab)}")
-
-    print("[data] labeling concepts")
-    train_labels, train_masks = build_concept_label_dicts(train_events, CONCEPTS)
-    tuning_labels, tuning_masks = build_concept_label_dicts(tuning_events, CONCEPTS)
-    train_labels = {k: v.to(device) for k, v in train_labels.items()}
-    train_masks = {k: v.to(device) for k, v in train_masks.items()}
-    tuning_labels = {k: v.to(device) for k, v in tuning_labels.items()}
-    tuning_masks = {k: v.to(device) for k, v in tuning_masks.items()}
 
     model = build_model(config, vocab_size=len(vocab), num_concepts=len(CONCEPTS)).to(
         device
