@@ -124,17 +124,38 @@ def _make_mamba2_with_state_cls(mamba2_cls: Any) -> Any:
     forward call already did, only adds correct continuation when a
     non-empty cache is carried in.
 
-    Known, deliberately-not-fixed residual gap: unlike ``ssm_state``,
-    ``conv_state`` (the short causal-conv left-context) is only *written*
-    here too, never *read* back in -- upstream's own ``step()`` path
-    reads it, but the multi-token prefill path this method takes never
-    prepends it before calling the conv. This affects only the first
-    ``d_conv - 1`` (default 3) positions of each chunk's short causal
-    convolution, a much smaller-magnitude discontinuity than the SSM
-    state gap this class fixes, and fixing it needs a more invasive
-    prepend-and-truncate change around the conv1d call. Left as a
-    documented limitation rather than fixed, per the "working and
-    reliable, not perfect" bar for this backbone (entry 03).
+    ``conv_state`` (the short causal-conv left-context) gets the same
+    treatment, in the plain ``nn.Conv1d`` fallback path (``causal_conv1d``
+    not installed -- true in every environment this was validated on;
+    confirmed via ``mamba_ssm.modules.mamba2.causal_conv1d_fn is None``).
+    Upstream only *writes* ``conv_state`` here (for a future ``step()``
+    call), never *reads* one back in for this prefill path -- it relies
+    on ``nn.Conv1d``'s own built-in zero-padding at the start of every
+    call. Initially this was assumed to be a small, ~3-position artifact
+    and left unfixed, matching the "working and reliable, not perfect"
+    bar for this backbone (entry 03); GPU testing
+    (``test_chunked_forward_with_carried_state_matches_one_shot_forward``
+    in ``test_mamba2_patch_gpu.py``) showed that assumption was wrong --
+    the corrupted conv output at a chunk's first few positions feeds the
+    *recurrent* SSM state, so the error persists and decays across the
+    whole chunk rather than staying confined to a few positions, large
+    enough to fail a 1e-3 equivalence check well into the second half of
+    a 16-token chunk. So this class snapshots the incoming ``conv_state``
+    (before upstream's write-back overwrites it in place) and manually
+    pads the plain-``nn.Conv1d`` branch with it instead of relying on that
+    module's zero-padding. Same "purely additive on a fresh cache"
+    guarantee as ``ssm_state`` above: an all-zero incoming ``conv_state``
+    produces the same padding as before.
+
+    Known, deliberately-not-fixed residual gap: the *fast* Triton
+    ``causal_conv1d_fn`` branch (taken only if the ``causal_conv1d``
+    package is installed, which it is not in any environment this was
+    tested on) still has the original gap -- it is dead code here, so
+    fixing it blind, without being able to run it, was judged not worth
+    the risk. If that package is ever installed, this class's fast-path
+    branch will silently regress to the original chunk-boundary conv
+    discontinuity; there is no runtime guard against this, so revisit if
+    ``causal_conv1d`` becomes a dependency.
     """
 
     class Mamba2WithState(mamba2_cls):  # type: ignore[misc]
@@ -160,6 +181,7 @@ def _make_mamba2_with_state_cls(mamba2_cls: Any) -> Any:
                 batch = batch_seqlen // seqlen
 
             conv_state, ssm_state = None, None
+            incoming_conv_state = None
             if inference_params is not None:
                 inference_batch = (
                     cu_seqlens.shape[0] - 1 if cu_seqlens is not None else batch
@@ -170,6 +192,11 @@ def _make_mamba2_with_state_cls(mamba2_cls: Any) -> Any:
                 if inference_params.seqlen_offset > 0:
                     out_step, _, _ = self.step(u, conv_state, ssm_state)
                     return cast(torch.Tensor, out_step)
+                # Snapshot the incoming (previous-chunk) conv left-context
+                # before the write-back below overwrites conv_state in
+                # place with THIS chunk's own trailing values (kept for a
+                # future step() call, upstream behavior, unchanged here).
+                incoming_conv_state = conv_state.clone() if conv_state is not None else None
 
             zxbcdt = self.in_proj(u)
             if seqlen_og is not None:
@@ -226,11 +253,38 @@ def _make_mamba2_with_state_cls(mamba2_cls: Any) -> Any:
             causal_conv1d_fn = mamba2_module.causal_conv1d_fn
             if causal_conv1d_fn is None or self.activation not in ["silu", "swish"]:
                 assert seq_idx is None, "varlen conv1d requires the causal_conv1d package"
-                xBC = self.act(  # noqa: N806
-                    self.conv1d(xBC.transpose(1, 2)).transpose(1, 2)[
-                        :, : -(self.d_conv - 1)
-                    ]
-                )
+                if incoming_conv_state is not None and self.d_conv > 1:
+                    # Real left-context instead of nn.Conv1d's implicit
+                    # zero-padding: without this, every chunk after the
+                    # first sees a spurious "sequence start" at its own
+                    # position 0, which this backbone's GPU tests showed
+                    # is NOT a localized, 3-position artifact -- the
+                    # corrupted conv output feeds the recurrent SSM state,
+                    # so the error persists and decays across the whole
+                    # chunk rather than staying confined to a few
+                    # positions. On a fresh (all-zero) cache this is
+                    # numerically identical to the zero-padding it
+                    # replaces, so this is purely additive for a one-shot
+                    # (non-chunked) forward call, same as the SSM-state
+                    # fix above.
+                    left_context = incoming_conv_state[:, :, -(self.d_conv - 1) :]
+                    xBC_padded = torch.cat(  # noqa: N806
+                        [left_context, xBC.transpose(1, 2)], dim=-1
+                    )
+                    xBC = self.act(  # noqa: N806
+                        F.conv1d(
+                            xBC_padded,
+                            self.conv1d.weight,
+                            self.conv1d.bias,
+                            groups=xBC_padded.shape[1],
+                        ).transpose(1, 2)
+                    )
+                else:
+                    xBC = self.act(  # noqa: N806
+                        self.conv1d(xBC.transpose(1, 2)).transpose(1, 2)[
+                            :, : -(self.d_conv - 1)
+                        ]
+                    )
             else:
                 xBC = causal_conv1d_fn(  # noqa: N806
                     xBC.transpose(1, 2),
