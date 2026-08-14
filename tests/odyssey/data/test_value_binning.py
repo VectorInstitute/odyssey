@@ -1,9 +1,19 @@
 """Tests for folding numeric event values into clinically meaningful tokens."""
 
+from typing import List, Optional, Tuple
+
 import polars as pl
 import pytest
 
-from odyssey.data.concepts import CONCEPTS
+from odyssey.data.concepts import (
+    CONCEPTS,
+    AnyOf,
+    BaselineRelativeRule,
+    ConceptDefinition,
+    ConceptRule,
+    DerivedGcsTotalRule,
+    SustainedRule,
+)
 from odyssey.data.value_binning import (
     _FALLBACK_LABEL,
     CLINICAL_RANGES,
@@ -12,7 +22,7 @@ from odyssey.data.value_binning import (
 )
 
 
-def _events(rows: list) -> pl.DataFrame:
+def _events(rows: List[Tuple[str, Optional[float]]]) -> pl.DataFrame:
     """rows: list of (code, numeric_value_or_None)."""
     return pl.DataFrame(
         rows, schema={"code": pl.Utf8, "numeric_value": pl.Float64}, orient="row"
@@ -87,24 +97,65 @@ def test_empty_events_frame_is_a_noop() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _threshold_rules(concept: ConceptDefinition) -> List[Tuple[str, float]]:
+    """Yield every (code_prefix, threshold) pair reachable from a concept.
+
+    Only :class:`~odyssey.data.concepts.ConceptRule` and
+    :class:`~odyssey.data.concepts.SustainedRule` represent a single
+    instantaneous value crossing a fixed threshold -- the kind of thing
+    a CLINICAL_RANGES bin transition can meaningfully correspond to.
+    :class:`~odyssey.data.concepts.BaselineRelativeRule` is a delta from
+    a personal baseline, not a fixed value, and
+    :class:`~odyssey.data.concepts.DerivedGcsTotalRule` sums three
+    different codes, not one -- neither maps to a single CLINICAL_RANGES
+    prefix's bin edge, so both are skipped here. Recurses into
+    :class:`~odyssey.data.concepts.AnyOf`, which nests further rules.
+
+    :class:`~odyssey.data.concepts.CompositeConceptDefinition` (SIRS,
+    qSOFA) is out of scope entirely, not just certain rule types within
+    it: its component thresholds (e.g. SIRS's HR > 90) exist purely to
+    feed a composite N-of-M score and are not, on their own, meant to be
+    a standalone interpretable "this vital is abnormal" concept the way
+    a plain :class:`~odyssey.data.concepts.ConceptDefinition` is -- they
+    have no reason to share a bin edge with, say, ``tachycardia``'s
+    HR > 100.
+    """
+    out: List[Tuple[str, float]] = []
+    for rule in concept.rules:
+        if isinstance(rule, AnyOf):
+            for sub_rule in rule.rules:
+                if isinstance(sub_rule, (ConceptRule, SustainedRule)):
+                    out.append((sub_rule.code_prefix, sub_rule.threshold))
+                elif not isinstance(sub_rule, (BaselineRelativeRule, DerivedGcsTotalRule)):
+                    raise TypeError(f"unhandled rule type in AnyOf: {type(sub_rule)!r}")
+        elif isinstance(rule, (ConceptRule, SustainedRule)):
+            out.append((rule.code_prefix, rule.threshold))
+        elif not isinstance(rule, (BaselineRelativeRule, DerivedGcsTotalRule)):
+            raise TypeError(f"unhandled rule type: {type(rule)!r}")
+    return out
+
+
 def test_clinical_ranges_reproduce_every_concept_rule_threshold() -> None:
-    """Every rule in concepts.py must correspond to a bin transition here.
+    """Every threshold-based rule in concepts.py must have a bin transition here.
 
     So a lab's bin label always means the same thing as the concept label
-    it also supervises.
+    it also supervises. Composite definitions and rule types with no
+    single fixed threshold value are out of scope -- see
+    :func:`_threshold_rules`.
     """
-    for concept in CONCEPTS:
-        for rule in concept.rules:
+    plain_concepts = [c for c in CONCEPTS if isinstance(c, ConceptDefinition)]
+    for concept in plain_concepts:
+        for code_prefix, threshold in _threshold_rules(concept):
             events = _events(
                 [
-                    (rule.code_prefix + "x", rule.threshold - 0.01),
-                    (rule.code_prefix + "x", rule.threshold + 0.01),
+                    (code_prefix + "x", threshold - 0.01),
+                    (code_prefix + "x", threshold + 0.01),
                 ]
             )
             out = add_value_tokens(events)
             below_bin, above_bin = out["code"].to_list()
             assert below_bin != above_bin, (
-                f"{concept.name}: {rule.code_prefix} threshold {rule.threshold} "
+                f"{concept.name}: {code_prefix} threshold {threshold} "
                 "produces no bin transition"
             )
 

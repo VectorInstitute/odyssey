@@ -1,23 +1,53 @@
 """Tests for rule-derived concept labels."""
 
 import subprocess
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import List, Tuple, Union
 
 import polars as pl
 import pytest
 
 from odyssey.data.concepts import (
     CONCEPTS,
+    AnyOf,
+    BaselineRelativeRule,
+    CompositeConceptDefinition,
     ConceptDefinition,
     ConceptRule,
+    DerivedGcsTotalRule,
+    SustainedRule,
     label_concepts,
 )
 
 
-def _events(rows: list) -> pl.DataFrame:
+T0 = datetime(2024, 1, 1, 0, 0)
+
+
+_EventRow = Union[
+    Tuple[int, str, float], Tuple[int, str, float, datetime]
+]
+
+
+def _events(rows: List[_EventRow]) -> pl.DataFrame:
+    """Build a synthetic events frame; each row optionally includes a time.
+
+    Rows may be ``(subject_id, code, value)`` (time defaults to ``T0``,
+    fine for rules that don't need real timing) or
+    ``(subject_id, code, value, time)`` for tests of the time-aware rule
+    types (:class:`~odyssey.data.concepts.SustainedRule`,
+    :class:`~odyssey.data.concepts.BaselineRelativeRule`,
+    :class:`~odyssey.data.concepts.DerivedGcsTotalRule`).
+    """
+    padded = [row if len(row) == 4 else (*row, T0) for row in rows]
     return pl.DataFrame(
-        rows,
-        schema={"subject_id": pl.Int64, "code": pl.Utf8, "numeric_value": pl.Float32},
+        padded,
+        schema={
+            "subject_id": pl.Int64,
+            "code": pl.Utf8,
+            "numeric_value": pl.Float32,
+            "time": pl.Datetime,
+        },
         orient="row",
     )
 
@@ -118,6 +148,7 @@ def test_null_numeric_value_never_triggers_or_counts_as_observed() -> None:
             "subject_id": [1],
             "code": ["LAB//220045//bpm"],
             "numeric_value": pl.Series([None], dtype=pl.Float32),
+            "time": [T0],
         }
     )
     labels = label_concepts(events, concepts)
@@ -130,6 +161,311 @@ def test_concept_with_no_rules_raises_a_clear_error() -> None:
     events = _events([(1, "LAB//220045//bpm", 75.0)])
     with pytest.raises(ValueError, match="empty"):
         label_concepts(events, concepts)
+
+
+# ---------------------------------------------------------------------------
+# SustainedRule
+# ---------------------------------------------------------------------------
+
+
+def test_sustained_rule_requires_recurrence_apart_not_just_one_reading() -> None:
+    concepts = [
+        ConceptDefinition(
+            "sustained_tachypnea",
+            [SustainedRule("LAB//220210//", 20.0, "above", min_gap_hours=1.0)],
+            "RR > 20, recurring >= 1h apart",
+        )
+    ]
+    events = _events(
+        [
+            # subject 1: a single transient spike -- must NOT trigger.
+            (1, "LAB//220210//", 25.0, T0),
+            # subject 2: two qualifying readings 2h apart -- must trigger.
+            (2, "LAB//220210//", 25.0, T0),
+            (2, "LAB//220210//", 22.0, T0 + timedelta(hours=2)),
+            # subject 3: two readings close together (30 min) -- must NOT trigger.
+            (3, "LAB//220210//", 25.0, T0),
+            (3, "LAB//220210//", 22.0, T0 + timedelta(minutes=30)),
+        ]
+    )
+    labels = label_concepts(events, concepts).sort("subject_id")
+    assert labels["sustained_tachypnea"].to_list() == [0, 1, 0]
+    assert labels["sustained_tachypnea_observed"].to_list() == [1, 1, 1]
+
+
+def test_sustained_rule_non_qualifying_readings_between_do_not_matter() -> None:
+    """Only the earliest/latest qualifying readings' span matters."""
+    concepts = [
+        ConceptDefinition(
+            "sustained_tachypnea",
+            [SustainedRule("LAB//220210//", 20.0, "above", min_gap_hours=1.0)],
+            "RR > 20, recurring >= 1h apart",
+        )
+    ]
+    events = _events(
+        [
+            (1, "LAB//220210//", 25.0, T0),
+            (1, "LAB//220210//", 10.0, T0 + timedelta(hours=1)),  # normal, in between
+            (1, "LAB//220210//", 25.0, T0 + timedelta(hours=2)),
+        ]
+    )
+    labels = label_concepts(events, concepts)
+    assert labels["sustained_tachypnea"].to_list() == [1]
+
+
+# ---------------------------------------------------------------------------
+# BaselineRelativeRule
+# ---------------------------------------------------------------------------
+
+
+def test_baseline_relative_rule_triggers_on_rise_within_window() -> None:
+    concepts = [
+        ConceptDefinition(
+            "aki",
+            [BaselineRelativeRule("LAB//RESULT//50912//", delta=0.3, direction="above", window_hours=48.0)],
+            "creatinine rose >= 0.3 within 48h",
+        )
+    ]
+    events = _events(
+        [
+            (1, "LAB//RESULT//50912//", 1.0, T0),
+            (1, "LAB//RESULT//50912//", 1.4, T0 + timedelta(hours=24)),  # +0.4 within 48h
+        ]
+    )
+    labels = label_concepts(events, concepts)
+    assert labels["aki"].to_list() == [1]
+
+
+def test_baseline_relative_rule_does_not_trigger_outside_window() -> None:
+    concepts = [
+        ConceptDefinition(
+            "aki",
+            [BaselineRelativeRule("LAB//RESULT//50912//", delta=0.3, direction="above", window_hours=48.0)],
+            "creatinine rose >= 0.3 within 48h",
+        )
+    ]
+    events = _events(
+        [
+            (1, "LAB//RESULT//50912//", 1.0, T0),
+            (1, "LAB//RESULT//50912//", 1.4, T0 + timedelta(hours=72)),  # +0.4 but outside 48h
+        ]
+    )
+    labels = label_concepts(events, concepts)
+    assert labels["aki"].to_list() == [0]
+
+
+def test_baseline_relative_rule_below_direction_triggers_on_fall() -> None:
+    concepts = [
+        ConceptDefinition(
+            "big_drop",
+            [BaselineRelativeRule("LAB//220045//", delta=20.0, direction="below", window_hours=6.0)],
+            "HR fell by >= 20 within 6h",
+        )
+    ]
+    events = _events(
+        [
+            (1, "LAB//220045//", 100.0, T0),
+            (1, "LAB//220045//", 70.0, T0 + timedelta(hours=2)),  # -30 within 6h
+        ]
+    )
+    labels = label_concepts(events, concepts)
+    assert labels["big_drop"].to_list() == [1]
+
+
+def test_baseline_relative_rule_a_small_absolute_rise_from_a_low_baseline_still_triggers() -> None:
+    """The whole point of KDIGO-style baseline-relative logic.
+
+    Catches a delta v1's absolute-threshold proxy (creatinine > 1.5)
+    would miss.
+    """
+    concepts = [
+        ConceptDefinition(
+            "aki",
+            [BaselineRelativeRule("LAB//RESULT//50912//", delta=0.3, direction="above", window_hours=48.0)],
+            "creatinine rose >= 0.3 within 48h",
+        )
+    ]
+    events = _events(
+        [
+            (1, "LAB//RESULT//50912//", 0.6, T0),
+            (1, "LAB//RESULT//50912//", 1.0, T0 + timedelta(hours=24)),  # rose 0.4, still < 1.5
+        ]
+    )
+    labels = label_concepts(events, concepts)
+    assert labels["aki"].to_list() == [1]
+
+
+# ---------------------------------------------------------------------------
+# DerivedGcsTotalRule
+# ---------------------------------------------------------------------------
+
+
+_GCS_RULE = DerivedGcsTotalRule(
+    eye_prefix="LAB//220739//",
+    verbal_prefix="LAB//223900//",
+    motor_prefix="LAB//223901//",
+    threshold=15.0,
+    direction="below",
+)
+
+
+def test_derived_gcs_total_sums_components_charted_together() -> None:
+    concepts = [ConceptDefinition("altered_mental_status", [_GCS_RULE], "GCS < 15")]
+    events = _events(
+        [
+            (1, "LAB//220739//", 3.0, T0),  # eye
+            (1, "LAB//223900//", 4.0, T0 + timedelta(minutes=1)),  # verbal
+            (1, "LAB//223901//", 5.0, T0 + timedelta(minutes=2)),  # motor: total 12 < 15
+        ]
+    )
+    labels = label_concepts(events, concepts)
+    assert labels["altered_mental_status"].to_list() == [1]
+    assert labels["altered_mental_status_observed"].to_list() == [1]
+
+
+def test_derived_gcs_total_full_score_does_not_trigger() -> None:
+    concepts = [ConceptDefinition("altered_mental_status", [_GCS_RULE], "GCS < 15")]
+    events = _events(
+        [
+            (1, "LAB//220739//", 4.0, T0),
+            (1, "LAB//223900//", 5.0, T0 + timedelta(minutes=1)),
+            (1, "LAB//223901//", 6.0, T0 + timedelta(minutes=2)),  # total 15, not < 15
+        ]
+    )
+    labels = label_concepts(events, concepts)
+    assert labels["altered_mental_status"].to_list() == [0]
+
+
+def test_derived_gcs_total_components_too_far_apart_do_not_pair() -> None:
+    concepts = [ConceptDefinition("altered_mental_status", [_GCS_RULE], "GCS < 15")]
+    events = _events(
+        [
+            (1, "LAB//220739//", 3.0, T0),
+            (1, "LAB//223900//", 4.0, T0 + timedelta(hours=5)),  # far outside the 15min default
+            (1, "LAB//223901//", 5.0, T0 + timedelta(hours=10)),
+        ]
+    )
+    labels = label_concepts(events, concepts)
+    assert labels["altered_mental_status"].to_list() == [0]
+    # All three components were still individually observed.
+    assert labels["altered_mental_status_observed"].to_list() == [1]
+
+
+def test_derived_gcs_total_missing_a_component_is_not_observed_or_triggered() -> None:
+    concepts = [ConceptDefinition("altered_mental_status", [_GCS_RULE], "GCS < 15")]
+    events = _events([(1, "LAB//220739//", 3.0, T0)])  # only eye, no verbal/motor at all
+    labels = label_concepts(events, concepts)
+    assert labels["altered_mental_status"].to_list() == [0]
+    assert labels["altered_mental_status_observed"].to_list() == [1]  # eye alone was observed
+
+
+# ---------------------------------------------------------------------------
+# CompositeConceptDefinition / AnyOf
+# ---------------------------------------------------------------------------
+
+
+def test_composite_requires_min_criteria_met() -> None:
+    concept = CompositeConceptDefinition(
+        "sirs_like",
+        components=[
+            ConceptRule("LAB//220045//", 90.0, "above"),  # HR > 90
+            ConceptRule("LAB//220210//", 20.0, "above"),  # RR > 20
+        ],
+        min_criteria=2,
+        description="both criteria required",
+    )
+    events = _events(
+        [
+            # subject 1: only HR criterion met.
+            (1, "LAB//220045//", 95.0, T0),
+            # subject 2: both criteria met.
+            (2, "LAB//220045//", 95.0, T0),
+            (2, "LAB//220210//", 25.0, T0),
+        ]
+    )
+    labels = label_concepts(events, [concept]).sort("subject_id")
+    assert labels["sirs_like"].to_list() == [0, 1]
+
+
+def test_composite_observed_if_any_component_observed() -> None:
+    concept = CompositeConceptDefinition(
+        "sirs_like",
+        components=[
+            ConceptRule("LAB//220045//", 90.0, "above"),
+            ConceptRule("LAB//220210//", 20.0, "above"),
+        ],
+        min_criteria=2,
+        description="both criteria required",
+    )
+    events = _events([(1, "LAB//220045//", 50.0, T0)])  # observed, doesn't trigger
+    labels = label_concepts(events, [concept])
+    assert labels["sirs_like_observed"].to_list() == [1]
+    assert labels["sirs_like"].to_list() == [0]
+
+
+def test_composite_with_no_components_raises_a_clear_error() -> None:
+    concept = CompositeConceptDefinition("empty", [], min_criteria=1, description="no components")
+    events = _events([(1, "LAB//220045//bpm", 75.0)])
+    with pytest.raises(ValueError, match="empty"):
+        label_concepts(events, [concept])
+
+
+def test_any_of_counts_as_one_criterion_even_if_both_branches_fire() -> None:
+    """SIRS-style: an AnyOf criterion counts once, however many branches fire.
+
+    'Abnormal temperature' (too high OR too low) must count once, not
+    twice, even if a subject had both at different times.
+    """
+    concept = CompositeConceptDefinition(
+        "sirs_like",
+        components=[
+            AnyOf(
+                [
+                    ConceptRule("LAB//223761//", 100.4, "above"),
+                    ConceptRule("LAB//223761//", 96.8, "below"),
+                ]
+            ),  # criterion 1: abnormal temp (fires twice below, must count once)
+            ConceptRule("LAB//220045//", 90.0, "above"),  # criterion 2: HR > 90
+            ConceptRule("LAB//220210//", 20.0, "above"),  # criterion 3: RR > 20
+        ],
+        min_criteria=3,
+        description="all three criteria required",
+    )
+    events = _events(
+        [
+            # subject 1: temp fires both high AND low (still just 1 criterion),
+            # HR fires -- only 2 of 3 criteria, must not trigger.
+            (1, "LAB//223761//", 101.0, T0),
+            (1, "LAB//223761//", 90.0, T0 + timedelta(hours=1)),
+            (1, "LAB//220045//", 95.0, T0),
+        ]
+    )
+    labels = label_concepts(events, [concept])
+    assert labels["sirs_like"].to_list() == [0]
+
+
+def test_sirs_definition_triggers_on_two_of_three_criteria() -> None:
+    sirs = next(c for c in CONCEPTS if c.name == "sirs")
+    events = _events(
+        [
+            (1, "LAB//220045//", 95.0, T0),  # HR > 90
+            (1, "LAB//220210//", 25.0, T0),  # RR > 20
+        ]
+    )
+    labels = label_concepts(events, [sirs])
+    assert labels["sirs"].to_list() == [1]
+
+
+def test_qsofa_definition_triggers_on_two_of_three_criteria() -> None:
+    qsofa = next(c for c in CONCEPTS if c.name == "qsofa")
+    events = _events(
+        [
+            (1, "LAB//220210//", 25.0, T0),  # RR >= 22
+            (1, "LAB//220179//", 90.0, T0),  # SBP <= 100
+        ]
+    )
+    labels = label_concepts(events, [qsofa])
+    assert labels["qsofa"].to_list() == [1]
 
 
 def test_default_registry_covers_all_subjects() -> None:
