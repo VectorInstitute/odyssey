@@ -95,7 +95,12 @@ def test_streaming_loss_is_finite_when_a_patient_ends_in_chunk() -> None:
     total, components, new_state = model.compute_streaming_loss(chunk, _labels([1]))
 
     assert torch.isfinite(total)
-    assert set(components) == {"task_loss", "concept_loss", "orthogonality_loss"}
+    assert set(components) == {
+        "task_loss",
+        "concept_loss",
+        "orthogonality_loss",
+        "observability_loss",
+    }
     assert new_state is not None
 
 

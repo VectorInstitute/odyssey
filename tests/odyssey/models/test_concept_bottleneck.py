@@ -9,6 +9,7 @@ from odyssey.models.concept_bottleneck import (
     ConceptBottleneckLossWeights,
     combined_loss,
     concept_loss,
+    observability_loss,
     orthogonality_loss,
 )
 
@@ -94,7 +95,7 @@ def test_gradients_flow_to_every_learnable_parameter() -> None:
     hidden_states = torch.randn(6, 8)
 
     out = layer(hidden_states)
-    out.bottleneck.sum().backward()
+    (out.bottleneck.sum() + out.observability_logits.sum()).backward()
 
     for name, param in layer.named_parameters():
         assert param.grad is not None, f"{name} received no gradient"
@@ -154,6 +155,40 @@ def test_concept_loss_all_masked_out_is_finite() -> None:
     mask = torch.zeros(3, 4)
     loss = concept_loss(logits, labels, mask)
     assert torch.isfinite(loss)
+
+
+# ---------------------------------------------------------------------------
+# observability_loss
+# ---------------------------------------------------------------------------
+
+
+def test_observability_loss_zero_for_perfect_confident_predictions() -> None:
+    observed = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+    logits = (observed * 2 - 1) * 20.0
+    loss = observability_loss(logits, observed)
+    assert loss.item() < 1e-6
+
+
+def test_observability_loss_high_for_confidently_wrong_predictions() -> None:
+    observed = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+    wrong_logits = (observed * 2 - 1) * -20.0  # confidently predicts the opposite
+    loss = observability_loss(wrong_logits, observed)
+    assert loss.item() > 10.0
+
+
+def test_observability_loss_reduces_to_plain_bce_mean() -> None:
+    """No masking concept: it's exactly BCE-with-logits averaged over every element.
+
+    Unlike concept_loss, whether a concept was observed is never itself
+    missing information, so every element always has a real target and
+    there's nothing analogous to concept_loss's concept_mask to exclude.
+    """
+    logits = torch.randn(4, 5)
+    observed = torch.randint(0, 2, (4, 5)).float()
+    expected = concept_loss(
+        logits, observed
+    )  # concept_loss(mask=None) == plain BCE mean
+    assert torch.allclose(observability_loss(logits, observed), expected)
 
 
 # ---------------------------------------------------------------------------
@@ -225,14 +260,50 @@ def test_combined_loss_components_and_weighting() -> None:
         labels,
         out.concept_embeddings,
         out.unknown_embedding,
+        observability_logits=out.observability_logits,
         weights=weights,
     )
 
+    # No concept_mask given: observability_loss has nothing to check its
+    # prediction against, so it's a bare zero, not part of the total.
     expected = task_loss + components["concept_loss"]
     assert torch.allclose(total, expected)
-    assert set(components) == {"task_loss", "concept_loss", "orthogonality_loss"}
+    assert components["observability_loss"].item() == 0.0
+    assert set(components) == {
+        "task_loss",
+        "concept_loss",
+        "orthogonality_loss",
+        "observability_loss",
+    }
     # Components are detached (no grad_fn) so logging them doesn't retain the graph.
     assert not components["concept_loss"].requires_grad
+
+
+def test_combined_loss_observability_term_present_when_concept_mask_given() -> None:
+    layer = ConceptBottleneck(hidden_size=8, num_concepts=3, embedding_dim=4)
+    hidden_states = torch.randn(5, 8)
+    out = layer(hidden_states)
+    labels = torch.randint(0, 2, (5, 3)).float()
+    concept_mask = torch.randint(0, 2, (5, 3)).float()
+    task_loss = torch.tensor(2.0)
+
+    weights = ConceptBottleneckLossWeights(
+        concept=1.0, orthogonality=0.0, observability=1.0
+    )
+    total, components = combined_loss(
+        task_loss,
+        out.concept_logits,
+        labels,
+        out.concept_embeddings,
+        out.unknown_embedding,
+        observability_logits=out.observability_logits,
+        concept_mask=concept_mask,
+        weights=weights,
+    )
+
+    expected = task_loss + components["concept_loss"] + components["observability_loss"]
+    assert torch.allclose(total, expected)
+    assert components["observability_loss"].item() > 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +389,7 @@ def test_synthetic_training_learns_concepts_and_task() -> None:
             concept_labels,
             out.concept_embeddings,
             out.unknown_embedding,
+            observability_logits=out.observability_logits,
             weights=weights,
         )
         total.backward()
@@ -373,6 +445,7 @@ def test_orthogonality_penalty_reduces_concept_unknown_entanglement() -> None:
                 concept_labels,
                 out.concept_embeddings,
                 out.unknown_embedding,
+                observability_logits=out.observability_logits,
                 weights=weights,
             )
             total.backward()

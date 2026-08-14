@@ -110,7 +110,12 @@ def test_compute_loss_returns_finite_scalar_and_components() -> None:
 
     assert total.dim() == 0
     assert torch.isfinite(total)
-    assert set(components) == {"task_loss", "concept_loss", "orthogonality_loss"}
+    assert set(components) == {
+        "task_loss",
+        "concept_loss",
+        "orthogonality_loss",
+        "observability_loss",
+    }
 
 
 def test_concept_mask_excludes_unobserved_labels_from_loss() -> None:
@@ -148,8 +153,15 @@ def test_gradients_flow_to_every_learnable_parameter() -> None:
     model = _make_model()
     inputs = _make_batch(batch=3, seq_len=7)
     concept_labels = torch.randint(0, 2, (3, NUM_CONCEPTS)).float()
+    # A concept_mask is needed for the observability head to get any
+    # gradient at all: with no mask, there's no ground truth for it to
+    # be checked against, so observability_loss is a bare zero (see
+    # combined_loss's docstring) and that parameter is correctly
+    # unexercised -- pass one here so this test's "every parameter"
+    # claim actually covers it.
+    concept_mask = torch.ones(3, NUM_CONCEPTS)
 
-    total, _ = model.compute_loss(inputs, concept_labels)
+    total, _ = model.compute_loss(inputs, concept_labels, concept_mask)
     total.backward()
 
     for name, param in model.named_parameters():
