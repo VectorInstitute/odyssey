@@ -70,6 +70,19 @@ uv run meds-extract-run spec=MIMIC-IV output_dir=<output_dir> \
     do_download=false input_dir=<path_to_mimiciv_3.1>
 ```
 
+`do_download=false` skips *all* downloads, including ten small auxiliary concept-mapping CSVs the pipeline fetches from `MIT-LCP/mimic-code` on GitHub (not PhysioNet) for `extract_code_metadata` — these aren't part of the MIMIC-IV release itself. If you're pointing `input_dir` at a manually-downloaded copy, fetch those into its root first:
+
+```bash
+BASE="https://raw.githubusercontent.com/MIT-LCP/mimic-code/v2.4.0/mimic-iv/concepts/concept_map"
+for f in meas_chartevents_main.csv inputevents_to_rxnorm.csv lab_itemid_to_loinc.csv \
+         meas_chartevents_value.csv numerics-summary.csv outputevents_to_loinc.csv \
+         d_labitems_to_loinc.csv proc_datetimeevents.csv waveforms-summary.csv proc_itemid.csv; do
+  curl -sSL -o "<path_to_mimiciv_3.1>/$f" "$BASE/$f"
+done
+```
+
+Validated end-to-end against the real, credentialed MIMIC-IV 3.1 (364,627 subjects, 148,193 distinct codes) — not just the demo.
+
 ## Development
 
 ```bash
@@ -84,9 +97,15 @@ uv run mypy odyssey
 2. ~~Implement and rigorously test the concept bottleneck layer~~
 3. ~~Derive real clinical concept labels from MIMIC-IV codes (rule-based, e.g. SIRS criteria, AKI, hypotension)~~
 4. ~~Wire the concept bottleneck into the EHR-Mamba3 backbone; validate forward+backward on a real GPU~~
-5. Pretrain on real MIMIC-IV 3.1 at scale (GPU)
-6. Extend extraction to MIMIC-IV-ED
-7. Phase 2: an LLM agent (e.g. MedGemma) that reads the concept-annotated forecast and assists a clinician
+5. ~~Run the real MEDS extraction on full, credentialed MIMIC-IV 3.1 (364,627 subjects)~~
+6. Build patient-sequence tokenization (MEDS events -> the token/type/time/age/visit-order sequences the model consumes) — not yet implemented; needed before real pretraining
+7. Pretrain on real MIMIC-IV 3.1 at scale (GPU)
+8. Extend extraction to MIMIC-IV-ED
+9. Phase 2: an LLM agent (e.g. MedGemma) that reads the concept-annotated forecast and assists a clinician
+
+### Known concept-rule limitations
+
+Current v1 concept thresholds are single-timepoint, not sustained-criteria (real clinical definitions usually require e.g. persistence over a time window). On the full real dataset, `tachypnea` (RR > 20) triggers for 96.5% of subjects with respiratory-rate data — too loose to be a useful signal as-is, and worth recalibrating (e.g. against a sustained/windowed version, or a stricter threshold) before relying on it for supervision.
 
 ### GPU notes
 
