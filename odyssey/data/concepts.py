@@ -453,34 +453,67 @@ def _baseline_relative_ids(
     value_col: str,
     time_col: str,
 ) -> Tuple[Set[int], Set[int]]:
-    matched = events.filter(
-        pl.col(code_col).str.starts_with(rule.code_prefix)
-        & pl.col(value_col).is_not_null()
-    ).select(subject_id_col, time_col, value_col)
+    """Check whether any reading exceeds an earlier one (within window) by delta/ratio.
+
+    Uses a per-subject rolling extreme (min for direction="above", max for
+    "below") as the baseline, rather than an explicit self-join over every
+    pair of a subject's readings: a self-join keyed only on subject_id
+    produces a full k^2 cartesian product of that subject's own readings
+    (k = readings for that subject), which blew up badly for a frequently
+    -repeated lab value (creatinine, for AKI staging) on real data -- a
+    100-shard MIMIC-IV run OOM-killed an 83GB VM inside this exact
+    function. The rewrite is mathematically equivalent: for direction=
+    "above", "exists an earlier reading v1 in the window with v2 - v1 >=
+    delta (or v2 >= ratio*v1)" is true iff it's true for the *smallest*
+    v1 in that window (subtracting/dividing by a smaller positive number
+    only makes the comparison easier to satisfy) -- symmetric with the
+    largest v1 for direction="below". ``closed="left"`` matches the
+    original's strict ``t1 < t2`` (baseline excludes the current reading
+    itself).
+    """
+    matched = (
+        events.filter(
+            pl.col(code_col).str.starts_with(rule.code_prefix)
+            & pl.col(value_col).is_not_null()
+        )
+        .select(subject_id_col, time_col, value_col)
+        .sort(subject_id_col, time_col)
+    )
     observed = set(matched[subject_id_col].to_list())
     if matched.height == 0:
         return observed, set()
 
-    pairs = matched.join(matched, on=subject_id_col, suffix="_later")
-    window = timedelta(hours=rule.window_hours)
-    pairs = pairs.filter(
-        (pl.col(f"{time_col}_later") > pl.col(time_col))
-        & (pl.col(f"{time_col}_later") - pl.col(time_col) <= window)
-    )
+    window_size = timedelta(hours=rule.window_hours)
+    baseline_expr = (
+        pl.col(value_col).rolling_min_by(
+            time_col, window_size=window_size, closed="left"
+        )
+        if rule.direction == "above"
+        else pl.col(value_col).rolling_max_by(
+            time_col, window_size=window_size, closed="left"
+        )
+    ).over(subject_id_col)
+    matched = matched.with_columns(baseline_expr.alias("_baseline"))
+
     if rule.ratio is not None:
         comparison = (
-            pl.col(f"{value_col}_later") >= rule.ratio * pl.col(value_col)
+            pl.col(value_col) >= rule.ratio * pl.col("_baseline")
             if rule.direction == "above"
-            else pl.col(f"{value_col}_later") <= pl.col(value_col) / rule.ratio
+            else pl.col(value_col) <= pl.col("_baseline") / rule.ratio
         )
     else:
         delta_expr = (
-            pl.col(f"{value_col}_later") - pl.col(value_col)
+            pl.col(value_col) - pl.col("_baseline")
             if rule.direction == "above"
-            else pl.col(value_col) - pl.col(f"{value_col}_later")
+            else pl.col("_baseline") - pl.col(value_col)
         )
         comparison = delta_expr >= rule.delta
-    triggered = set(pairs.filter(comparison)[subject_id_col].to_list())
+
+    triggered = set(
+        matched.filter(pl.col("_baseline").is_not_null() & comparison)[
+            subject_id_col
+        ].to_list()
+    )
     return observed, triggered
 
 
