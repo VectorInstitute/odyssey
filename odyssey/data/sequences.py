@@ -101,7 +101,21 @@ def build_patient_sequence(
     included as a sequence token. If ``max_seq_len`` truncates, the most
     recent events are kept (older history is less relevant to near-term
     forecasting).
+
+    Raises
+    ------
+    ValueError
+        If ``events`` contains more than one distinct ``subject_id`` --
+        silently keying off the first row would otherwise merge two
+        patients' histories into one token stream.
     """
+    n_subjects = events["subject_id"].n_unique() if events.height > 0 else 0
+    if n_subjects > 1:
+        raise ValueError(
+            f"build_patient_sequence expects a single subject_id, got "
+            f"{n_subjects} distinct subject_ids"
+        )
+
     events = events.filter(pl.col("time").is_not_null())
     birth_rows = events.filter(pl.col("code") == BIRTH_CODE)
     birth_time = birth_rows["time"][0] if birth_rows.height > 0 else None

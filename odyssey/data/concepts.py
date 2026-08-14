@@ -131,6 +131,9 @@ def label_concepts(
     out = subject_ids
 
     for concept in concepts:
+        if not concept.rules:
+            raise ValueError(f"concept {concept.name!r} has no rules defined")
+
         observed_frames = []
         triggered_frames = []
         for rule in concept.rules:

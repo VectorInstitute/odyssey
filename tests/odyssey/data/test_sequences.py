@@ -112,6 +112,27 @@ def test_empty_events_produce_empty_sequence() -> None:
     assert len(seq) == 0
 
 
+def test_multiple_subject_ids_raises() -> None:
+    events = _events(
+        [
+            (1, T0, "DIAGNOSIS//A", None),
+            (2, T0, "MEDICATION//X", None),
+        ]
+    )
+    with pytest.raises(ValueError, match="single subject_id"):
+        build_patient_sequence(events, VOCAB)
+
+
+def test_missing_hadm_id_column_treated_like_all_none() -> None:
+    events = pl.DataFrame(
+        [(1, T0, "DIAGNOSIS//A"), (1, T0 + timedelta(hours=1), "MEDICATION//X")],
+        schema={"subject_id": pl.Int64, "time": pl.Datetime, "code": pl.Utf8},
+        orient="row",
+    )
+    seq = build_patient_sequence(events, VOCAB)
+    assert seq.visit_orders == [0, 1]  # each event its own solo visit
+
+
 # ---------------------------------------------------------------------------
 # Visit derivation
 # ---------------------------------------------------------------------------
@@ -201,6 +222,17 @@ def test_collate_output_types_and_aux_shapes_match() -> None:
 def test_collate_empty_list_produces_empty_batch() -> None:
     batch = collate_patient_sequences([])
     assert batch.concept_ids.shape == (0, 0)
+
+
+def test_collate_mixes_empty_and_nonempty_sequences() -> None:
+    empty_seq = build_patient_sequence(_events([]), VOCAB)
+    seq = build_patient_sequence(_events([(1, T0, "DIAGNOSIS//A", None)]), VOCAB)
+
+    batch = collate_patient_sequences([empty_seq, seq])
+
+    assert batch.concept_ids.shape == (2, 1)
+    assert batch.concept_ids[0, 0].item() == PAD_ID  # the empty sequence's only slot
+    assert batch.concept_ids[1, 0].item() == VOCAB.encode("DIAGNOSIS//A")
 
 
 def test_hours_per_year_constant_is_a_julian_year() -> None:

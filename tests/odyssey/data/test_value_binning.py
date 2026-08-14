@@ -76,6 +76,12 @@ def test_numeric_valued_code_with_no_curated_range_and_no_binner_passes_through(
     assert out["code"][0] == "LAB//99999//unmapped"
 
 
+def test_empty_events_frame_is_a_noop() -> None:
+    events = _events([])
+    out = add_value_tokens(events)
+    assert out["code"].to_list() == []
+
+
 # ---------------------------------------------------------------------------
 # Consistency with odyssey/data/concepts.py's thresholds
 # ---------------------------------------------------------------------------
@@ -144,6 +150,32 @@ def test_quantile_binner_save_load_roundtrip(tmp_path) -> None:  # type: ignore[
     loaded = QuantileBinner.load(path)
     assert loaded.boundaries == binner.boundaries
     assert loaded.n_bins == binner.n_bins
+
+
+def test_quantile_binner_apply_on_empty_events_frame() -> None:
+    events = _events([("LAB//UNMAPPED//x", float(v)) for v in range(100)])
+    binner = QuantileBinner.fit(events, n_bins=5, min_count=50)
+    assert binner.apply(_events([])).to_list() == []
+
+
+def test_quantile_binner_handles_constant_values_via_deduped_boundaries() -> None:
+    # Every observation is identical, so every quantile collapses to one
+    # cut point -- fewer than n_bins - 1. apply() must not index out of range.
+    events = _events([("LAB//UNMAPPED//x", 5.0)] * 100)
+    binner = QuantileBinner.fit(events, n_bins=5, min_count=50)
+    assert binner.boundaries["LAB//UNMAPPED//x"] == [5.0]
+
+    out = binner.apply(events)
+    assert set(out.to_list()) == {"Q2"}
+
+
+def test_quantile_binner_n_bins_one_gives_a_single_bin() -> None:
+    events = _events([("LAB//UNMAPPED//x", float(v)) for v in range(100)])
+    binner = QuantileBinner.fit(events, n_bins=1, min_count=50)
+    assert binner.boundaries["LAB//UNMAPPED//x"] == []
+
+    out = binner.apply(events)
+    assert set(out.to_list()) == {"Q1"}
 
 
 def test_add_value_tokens_uses_quantile_binner_when_no_clinical_range_applies() -> None:

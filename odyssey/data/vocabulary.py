@@ -63,13 +63,15 @@ class Vocabulary:
     ) -> "Vocabulary":
         """Build from a MEDS ``metadata/codes.parquet`` file.
 
-        Falls back to a count of 1 per code if the metadata has no
-        ``code/n_occurrences``-style count column, since MEDS's ``codes.parquet``
-        schema is metadata (description, parent codes), not a frequency table;
-        prefer :meth:`build` directly from the event stream when true
-        frequencies matter.
+        ``codes.parquet``'s schema is metadata (description, parent codes),
+        not a frequency table, so every code here is treated as observed
+        exactly once regardless of ``min_count``; prefer :meth:`build`
+        directly from the event stream when true frequencies matter.
         """
         codes = pl.read_parquet(codes_parquet_path)["code"].to_list()
+        # Every code has an unweighted count of 1 above, so any min_count > 1
+        # would silently empty the vocabulary; clamp so the caller's default
+        # (tuned for `build`'s real frequencies) doesn't do that here.
         return cls.build(codes, min_count=min(min_count, 1), max_size=max_size)
 
     def encode(self, code: str) -> int:
