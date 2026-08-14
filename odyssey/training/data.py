@@ -102,7 +102,9 @@ def count_subjects(events: pl.DataFrame) -> int:
     return int(events["subject_id"].n_unique())
 
 
-def build_vocabulary(train_events: pl.DataFrame, *, min_count: int, max_size: int) -> Vocabulary:
+def build_vocabulary(
+    train_events: pl.DataFrame, *, min_count: int, max_size: int
+) -> Vocabulary:
     """Build a :class:`Vocabulary` from the training split's real code frequencies.
 
     Never call this on tuning/held_out events -- the same leakage

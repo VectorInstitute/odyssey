@@ -13,9 +13,16 @@ logged per step to ``<output_dir>/loss_log.jsonl``, one JSON object per
 line -- the source the results HTML's loss-curve plots read from
 directly, so training is auditable after the fact without re-running it.
 Checkpoints are periodic ``torch.save`` dicts of the model/optimizer
-state, plus a final one; the fitted quantile binner and vocabulary are
-saved alongside so inference can reconstruct the exact same tokenization
-without needing the train split again.
+state, one more at the end of every epoch, plus a final one; the fitted
+quantile binner and vocabulary are saved alongside so inference can
+reconstruct the exact same tokenization without needing the train split
+again.
+
+To resume after an interruption (e.g. a spot-instance preemption), pass
+``--config-json`` with ``"resume_from": "<output_dir>/checkpoint_epoch_N.pt"``
+-- resumption is epoch-granular, not step-granular (see ``train()``'s
+docstring on why), so prefer an epoch checkpoint over a ``checkpoint_every``
+one when resuming.
 """
 
 import json
@@ -51,6 +58,7 @@ class TrainingConfig:
     output_dir: str
     max_train_shards: Optional[int] = None
     max_tuning_shards: Optional[int] = None
+    resume_from: Optional[str] = None
 
     # Backbone (EHRHybridBackbone). Defaults are modest, not the paper-scale
     # numbers -- see the training run's own README note on why.
@@ -269,6 +277,26 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
         observability=config.observability_weight,
     )
 
+    start_epoch = 0
+    global_step = 0
+    if config.resume_from is not None:
+        print(f"[resume] loading {config.resume_from}")
+        checkpoint = torch.load(config.resume_from, map_location=device)
+        model.load_state_dict(checkpoint["model"])
+        if "optimizer" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer"])
+        global_step = checkpoint["step"]
+        # Resume at the start of the epoch the checkpoint was taken in
+        # (not mid-epoch: PackedLaneSampler has no notion of resuming
+        # from an arbitrary mid-stream position, and restarting the
+        # epoch's sampler from its own deterministic, seeded shuffle is
+        # simple and correct -- only some already-seen data gets
+        # revisited, not a correctness issue). A spot-preemption restart
+        # should pass the *previous* epoch's final checkpoint for this
+        # reason, not a mid-epoch one.
+        start_epoch = checkpoint.get("epoch", 0)
+        print(f"[resume] resuming at epoch={start_epoch}, global_step={global_step}")
+
     def make_train_sampler(epoch: int) -> PackedLaneSampler:
         patients = iter_patient_sequences(
             train_events_binned,
@@ -293,10 +321,9 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
         )
 
     logger = LossLogger(output_dir / "loss_log.jsonl")
-    global_step = 0
     start_time = time.time()
 
-    for epoch in range(config.num_epochs):
+    for epoch in range(start_epoch, config.num_epochs):
         sampler = make_train_sampler(epoch)
         state = None
         for chunk in sampler:
@@ -349,10 +376,28 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
                         "model": model.state_dict(),
                         "optimizer": optimizer.state_dict(),
                         "step": global_step,
+                        "epoch": epoch,
                         "config": asdict(config),
                     },
                     output_dir / f"checkpoint_{global_step}.pt",
                 )
+
+        # One checkpoint per completed epoch, independent of
+        # checkpoint_every -- the safe resume point after a spot
+        # preemption (see the resume_from loading above: it resumes at
+        # the start of an epoch, so a mid-epoch checkpoint_every
+        # checkpoint's epoch number would incorrectly skip the rest of
+        # that epoch's data on resume).
+        torch.save(
+            {
+                "model": model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "step": global_step,
+                "epoch": epoch + 1,
+                "config": asdict(config),
+            },
+            output_dir / f"checkpoint_epoch_{epoch}.pt",
+        )
 
     torch.save(
         {"model": model.state_dict(), "step": global_step, "config": asdict(config)},
