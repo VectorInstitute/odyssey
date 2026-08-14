@@ -1,4 +1,4 @@
-"""Tests for the concept-bottleneck sequence model (backbone/bottleneck/LM head)."""
+"""Tests for the sequence models (backbone [/bottleneck] -> LM head)."""
 
 import pytest
 import torch
@@ -6,7 +6,11 @@ import torch
 from odyssey.data.types import AuxiliaryInputs, ClinicalSequenceBatch
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
 from odyssey.models.concept_bottleneck import ConceptBottleneckLossWeights
-from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
+from odyssey.models.sequence_model import (
+    BaselineSequenceModel,
+    ConceptBottleneckSequenceModel,
+    _pool_last_non_padding,
+)
 
 
 torch.manual_seed(0)
@@ -34,6 +38,12 @@ def _make_model() -> ConceptBottleneckSequenceModel:
         num_concepts=NUM_CONCEPTS,
         embedding_dim=EMBEDDING_DIM,
         padding_idx=PADDING_IDX,
+    )
+
+
+def _make_baseline_model() -> BaselineSequenceModel:
+    return BaselineSequenceModel(
+        backbone=_make_backbone(), vocab_size=VOCAB_SIZE, padding_idx=PADDING_IDX
     )
 
 
@@ -128,6 +138,24 @@ def test_gradients_flow_through_backbone_and_bottleneck() -> None:
     assert model.backbone.embeddings.embeddings.word_embeddings.weight.grad is not None
 
 
+def test_gradients_flow_to_every_learnable_parameter() -> None:
+    """Every parameter -- LM head, bottleneck, backbone embeddings -- gets a gradient.
+
+    A narrower, name-specific gradient check (as above) can miss a
+    component that's silently disconnected from the loss; this instead
+    walks every registered parameter.
+    """
+    model = _make_model()
+    inputs = _make_batch(batch=3, seq_len=7)
+    concept_labels = torch.randint(0, 2, (3, NUM_CONCEPTS)).float()
+
+    total, _ = model.compute_loss(inputs, concept_labels)
+    total.backward()
+
+    for name, param in model.named_parameters():
+        assert param.grad is not None, f"{name} received no gradient"
+
+
 def test_padding_positions_do_not_leak_into_pooled_concept_supervision() -> None:
     """Pooling must stop at the last non-padding token.
 
@@ -158,6 +186,90 @@ def test_padding_positions_do_not_leak_into_pooled_concept_supervision() -> None
     assert torch.allclose(
         out_a.concept_logits[0, 4], out_b.concept_logits[0, 4], atol=1e-6
     )
+
+
+# ---------------------------------------------------------------------------
+# _pool_last_non_padding
+# ---------------------------------------------------------------------------
+
+
+def test_pool_last_non_padding_selects_each_row_own_last_real_position() -> None:
+    values = torch.arange(2 * 4).reshape(2, 4, 1).float()
+    concept_ids = torch.tensor(
+        [
+            [1, 2, 3, PADDING_IDX],  # last real position: index 2
+            [1, 2, 3, 4],  # no padding: last real position: index 3
+        ]
+    )
+    pooled = _pool_last_non_padding(values, concept_ids, PADDING_IDX)
+    assert torch.equal(pooled, torch.stack([values[0, 2], values[1, 3]]))
+
+
+def test_pool_last_non_padding_all_padding_row_falls_back_to_position_zero() -> None:
+    """Document current behavior for a row that is entirely padding.
+
+    Real collated batches always have at least one real token per row, so
+    this shouldn't arise in practice, but the ``argmax``-based
+    implementation degrades to picking position 0 rather than raising --
+    worth pinning down explicitly rather than leaving it to accident.
+    """
+    values = torch.arange(4).reshape(1, 4, 1).float()
+    concept_ids = torch.full((1, 4), PADDING_IDX)
+    pooled = _pool_last_non_padding(values, concept_ids, PADDING_IDX)
+    assert torch.equal(pooled, values[:, 0])
+
+
+# ---------------------------------------------------------------------------
+# BaselineSequenceModel: no bottleneck, but shares the loss/backbone plumbing
+# ---------------------------------------------------------------------------
+
+
+def test_baseline_forward_shapes() -> None:
+    model = _make_baseline_model()
+    batch, seq_len = 3, 12
+    logits, _ = model(_make_batch(batch, seq_len))
+    assert logits.shape == (batch, seq_len, VOCAB_SIZE)
+
+
+def test_baseline_compute_loss_returns_finite_scalar() -> None:
+    model = _make_baseline_model()
+    total, components = model.compute_loss(_make_batch(batch=4, seq_len=10))
+    assert total.dim() == 0
+    assert torch.isfinite(total)
+    assert set(components) == {"task_loss"}
+
+
+def test_baseline_gradients_flow_to_every_learnable_parameter() -> None:
+    model = _make_baseline_model()
+    total, _ = model.compute_loss(_make_batch(batch=2, seq_len=6))
+    total.backward()
+    for name, param in model.named_parameters():
+        assert param.grad is not None, f"{name} received no gradient"
+
+
+# ---------------------------------------------------------------------------
+# Degenerate inputs: a sequence with no next-token target to supervise
+# ---------------------------------------------------------------------------
+
+
+def test_compute_loss_raises_on_single_token_sequences() -> None:
+    """A 1-token batch has nothing left after the shift to supervise.
+
+    Without an explicit guard, ``F.cross_entropy`` over zero elements
+    returns NaN, which would silently corrupt every parameter's gradient
+    on ``.backward()`` instead of failing at the source.
+    """
+    model = _make_model()
+    inputs = _make_batch(batch=2, seq_len=1)
+    concept_labels = torch.randint(0, 2, (2, NUM_CONCEPTS)).float()
+    with pytest.raises(ValueError, match="seq_len=1"):
+        model.compute_loss(inputs, concept_labels)
+
+
+def test_baseline_compute_loss_raises_on_single_token_sequences() -> None:
+    model = _make_baseline_model()
+    with pytest.raises(ValueError, match="seq_len=1"):
+        model.compute_loss(_make_batch(batch=2, seq_len=1))
 
 
 # ---------------------------------------------------------------------------
