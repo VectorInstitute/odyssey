@@ -84,6 +84,22 @@ def test_gradients_flow_to_both_branches() -> None:
     assert torch.any(layer.prob_weight.grad != 0)
 
 
+def test_gradients_flow_to_every_learnable_parameter() -> None:
+    """Every registered parameter, including ``prob_bias``, gets a gradient.
+
+    A narrower name-specific check (as above) can miss a parameter that's
+    silently disconnected from the output; this walks all of them.
+    """
+    layer = ConceptBottleneck(hidden_size=8, num_concepts=4, embedding_dim=4)
+    hidden_states = torch.randn(6, 8)
+
+    out = layer(hidden_states)
+    out.bottleneck.sum().backward()
+
+    for name, param in layer.named_parameters():
+        assert param.grad is not None, f"{name} received no gradient"
+
+
 # ---------------------------------------------------------------------------
 # concept_loss
 # ---------------------------------------------------------------------------
@@ -94,6 +110,28 @@ def test_concept_loss_zero_for_perfect_confident_predictions() -> None:
     logits = (labels * 2 - 1) * 20.0  # +-20 => sigmoid saturates to the label
     loss = concept_loss(logits, labels)
     assert loss.item() < 1e-6
+
+
+def test_concept_loss_finite_for_extreme_logits_both_correct_and_wrong() -> None:
+    """Numerical stability: BCE-with-logits must not overflow to inf/NaN.
+
+    ``F.binary_cross_entropy_with_logits`` is stable by construction (it
+    never materializes ``sigmoid`` directly), but that's an implementation
+    detail of a function this module depends on -- worth pinning down here
+    since a naive ``sigmoid`` + ``log`` implementation would saturate to
+    ``0``/``1`` and produce ``inf``/``NaN`` at these magnitudes.
+    """
+    logits = torch.tensor([[1e4, -1e4], [-1e4, 1e4]])
+
+    correct_labels = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+    loss_correct = concept_loss(logits, correct_labels)
+    assert torch.isfinite(loss_correct)
+    assert loss_correct.item() < 1e-6
+
+    wrong_labels = torch.tensor([[0.0, 1.0], [1.0, 0.0]])
+    loss_wrong = concept_loss(logits, wrong_labels)
+    assert torch.isfinite(loss_wrong)
+    assert loss_wrong.item() > 1e3
 
 
 def test_concept_loss_mask_excludes_unobserved_labels() -> None:
@@ -137,6 +175,21 @@ def test_orthogonality_loss_maximal_when_unknown_equals_a_concept() -> None:
     unknown_embedding = torch.tensor([[1.0, 0.0]])  # identical to first concept
     loss = orthogonality_loss(concept_embeddings, unknown_embedding)
     assert loss.item() > 0.49  # mean of (1.0, 0.0) == 0.5
+
+
+def test_orthogonality_loss_finite_for_zero_embeddings() -> None:
+    """Cosine similarity is 0/0 for a zero-norm embedding; must not become NaN.
+
+    An under-trained bottleneck early in training, or a degenerate all-zero
+    mixture (``concept_prob`` exactly balancing ``w+``/``w-`` to zero), can
+    produce a zero-vector embedding. ``F.cosine_similarity``'s ``eps``
+    guards the division, but that's the underlying library's behavior, not
+    this module's -- worth confirming directly.
+    """
+    concept_embeddings = torch.zeros(2, 3, 4)
+    unknown_embedding = torch.zeros(2, 4)
+    loss = orthogonality_loss(concept_embeddings, unknown_embedding)
+    assert torch.isfinite(loss)
 
 
 def test_orthogonality_loss_higher_when_correlated() -> None:

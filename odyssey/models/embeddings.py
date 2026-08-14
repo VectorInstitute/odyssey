@@ -130,7 +130,7 @@ class ClinicalEventEmbeddings(nn.Module):
             hidden_size + 2 * time_embeddings_size, hidden_size
         )
         self.tanh = nn.Tanh()
-        self.LayerNorm = nn.LayerNorm(hidden_size, eps=layer_norm_eps)
+        self.layer_norm = nn.LayerNorm(hidden_size, eps=layer_norm_eps)
         self.dropout = nn.Dropout(hidden_dropout_prob)
 
     def forward(
@@ -156,7 +156,7 @@ class ClinicalEventEmbeddings(nn.Module):
         fused = self.tanh(self.scale_back_concat_layer(fused))
         embeddings = fused + token_type_embeds + visit_order_embeds + visit_seg_embeds
 
-        result: torch.Tensor = self.LayerNorm(self.dropout(embeddings))
+        result: torch.Tensor = self.layer_norm(self.dropout(embeddings))
         return result
 
 

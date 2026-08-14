@@ -98,7 +98,7 @@ def _make_mamba2_with_state_cls(mamba2_cls: Any) -> Any:
     """Build a ``Mamba2`` subclass that seeds ``initial_states`` for TBTT.
 
     Deferred (needs the real ``Mamba2`` class from an installed,
-    CUDA-built ``mamba-ssm``) so this stays a plain function rather than
+    CUDA-built `mamba-ssm`) so this stays a plain function rather than
     a module-level class definition, matching how ``Mamba2``/``MHA`` are
     imported lazily elsewhere in this module.
 
