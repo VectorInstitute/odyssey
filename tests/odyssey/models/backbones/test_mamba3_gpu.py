@@ -67,8 +67,10 @@ def test_ehr_mamba3_backbone_forward_shape() -> None:
 
     assert hidden_states.shape == (2, SEQ_LEN, HIDDEN_SIZE)
     assert hidden_states.is_cuda
-    assert isinstance(state, dict)
-    assert len(state) == 2  # one cache entry per layer (num_hidden_layers=2)
+    assert isinstance(state.recurrent, dict)
+    assert len(state.recurrent) == 2  # one cache entry per layer (num_hidden_layers=2)
+    assert state.prev_time_stamps.shape == (2,)
+    assert torch.equal(state.prev_time_stamps, batch.aux.time_stamps[:, -1])
 
 
 @cuda_required

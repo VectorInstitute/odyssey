@@ -28,11 +28,30 @@ class TimeEmbeddingLayer(nn.Module):
         nn.init.xavier_uniform_(self.w)
         nn.init.xavier_uniform_(self.phi)
 
-    def forward(self, time_stamps: torch.Tensor) -> torch.Tensor:
-        """Apply time embedding to the input time stamps."""
+    def forward(
+        self, time_stamps: torch.Tensor, prev_value: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Apply time embedding to the input time stamps.
+
+        ``prev_value`` is ``(batch,)``: the true value immediately
+        preceding ``time_stamps[:, 0]``, from a previous chunk in the same
+        lane (see ``odyssey/data/streaming.py``). Without it, position 0's
+        delta is zeroed, correct for a genuinely fresh sequence but wrong
+        for a chunk continuing an earlier one -- confirmed on real
+        hardware to produce materially different hidden states (up to
+        ~30% relative) purely from this, independent of any actual
+        recurrent-state bug. Callers continuing a lane must zero
+        ``prev_value`` at real reset positions themselves (e.g. by setting
+        it equal to that row's own ``time_stamps[:, 0]``, which makes the
+        computed delta ``0`` the same way omitting it would).
+        """
         if self.is_time_delta:
+            if prev_value is not None:
+                first_delta = time_stamps[:, 0:1] - prev_value.unsqueeze(-1)
+            else:
+                first_delta = time_stamps[:, 0:1] * 0
             time_stamps = torch.cat(
-                (time_stamps[:, 0:1] * 0, time_stamps[:, 1:] - time_stamps[:, :-1]),
+                (first_delta, time_stamps[:, 1:] - time_stamps[:, :-1]),
                 dim=-1,
             )
         time_stamps = time_stamps.float()
@@ -114,10 +133,20 @@ class ClinicalEventEmbeddings(nn.Module):
         self.LayerNorm = nn.LayerNorm(hidden_size, eps=layer_norm_eps)
         self.dropout = nn.Dropout(hidden_dropout_prob)
 
-    def forward(self, input_ids: torch.Tensor, aux: AuxiliaryInputs) -> torch.Tensor:
-        """Fuse token identity with clinical sequence structure."""
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        aux: AuxiliaryInputs,
+        prev_time_stamps: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Fuse token identity with clinical sequence structure.
+
+        ``prev_time_stamps`` is ``(batch,)``, see :meth:`TimeEmbeddingLayer.forward`.
+        Ages are not delta-based (absolute age at each event), so they are
+        unaffected by chunk boundaries and need no equivalent parameter.
+        """
         word_embeds = self.word_embeddings(input_ids)
-        time_embeds = self.time_embeddings(aux.time_stamps)
+        time_embeds = self.time_embeddings(aux.time_stamps, prev_value=prev_time_stamps)
         age_embeds = self.age_embeddings(aux.ages)
         visit_seg_embeds = self.visit_segment_embeddings(aux.visit_segments)
         visit_order_embeds = self.visit_order_embeddings(aux.visit_orders)
@@ -145,15 +174,22 @@ class CachedEHREmbeddings(nn.Module):
         super().__init__()
         self.embeddings = ClinicalEventEmbeddings(*args, **kwargs)  # type: ignore[arg-type]
         self._aux: Optional[AuxiliaryInputs] = None
+        self._prev_time_stamps: Optional[torch.Tensor] = None
 
-    def set_aux_inputs(self, aux: AuxiliaryInputs) -> None:
+    def set_aux_inputs(
+        self, aux: AuxiliaryInputs, prev_time_stamps: Optional[torch.Tensor] = None
+    ) -> None:
         """Cache auxiliary clinical inputs before the backbone forward call."""
         self._aux = aux
+        self._prev_time_stamps = prev_time_stamps
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
         """Produce EHR-enriched embeddings, consuming cached auxiliary inputs."""
         if self._aux is None:
             raise RuntimeError("set_aux_inputs must be called before forward")
-        embeddings: torch.Tensor = self.embeddings(input_ids, self._aux)
+        embeddings: torch.Tensor = self.embeddings(
+            input_ids, self._aux, prev_time_stamps=self._prev_time_stamps
+        )
         self._aux = None
+        self._prev_time_stamps = None
         return embeddings
