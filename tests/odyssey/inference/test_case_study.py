@@ -5,12 +5,14 @@ test_case_study_gpu.py.
 """
 
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 import polars as pl
+import pytest
 import torch
 
-from odyssey.inference.case_study import select_diverse_cases
+from odyssey.inference.case_study import _parse_args, select_diverse_cases
 
 
 T0 = datetime(2024, 1, 1, 0, 0)
@@ -101,3 +103,29 @@ def test_select_diverse_cases_is_deterministic_given_a_seed() -> None:
 def test_select_diverse_cases_empty_when_nobody_meets_min_events() -> None:
     events = _events(_patient_events(1, 3))
     assert select_diverse_cases(events, {}, n_cases=15, min_events=10) == []
+
+
+# ---------------------------------------------------------------------------
+# _parse_args
+# ---------------------------------------------------------------------------
+
+
+def test_parse_args_defaults_checkpoint_to_best_and_15_cases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "prog",
+            "--run-dir",
+            "/runs/x",
+            "--held-out-shard-dir",
+            "/data/held_out",
+            "--output-json",
+            "/out/cases.json",
+        ],
+    )
+    args = _parse_args()
+    assert args.checkpoint_path == Path("/runs/x/checkpoint_best.pt")
+    assert args.n_cases == 15
+    assert args.max_shards is None
