@@ -204,3 +204,116 @@ def test_train_resumes_from_an_epoch_checkpoint(tmp_path: Path) -> None:
     # first run left off rather than overlapping it.
     steps_after_first_run = [r["step"] for r in records if r["step"] > first_run_step]
     assert steps_after_first_run
+
+
+@cuda_required
+def test_train_resumes_mid_epoch_by_fast_forwarding(tmp_path: Path) -> None:
+    # Unlike test_train_resumes_from_an_epoch_checkpoint (which resumes
+    # from the clean, epoch-boundary checkpoint), this resumes from a
+    # checkpoint_every checkpoint taken partway through epoch 0 -- the
+    # actual spot-preemption scenario this mechanism exists for.
+    train_dir = tmp_path / "data" / "train"
+    tuning_dir = tmp_path / "data" / "tuning"
+    _write_shards(train_dir, n_subjects=12, n_events_per_subject=30)
+    _write_shards(tuning_dir, n_subjects=4, n_events_per_subject=30)
+
+    output_dir = tmp_path / "run"
+    base_config = TrainingConfig(
+        train_shard_dir=str(train_dir),
+        tuning_shard_dir=str(tuning_dir),
+        output_dir=str(output_dir),
+        hidden_size=64,
+        num_hidden_layers=2,
+        mamba_state_size=16,
+        mamba_headdim=64,
+        mamba_chunk_size=16,
+        attn_num_heads=8,
+        embedding_dim=8,
+        vocab_min_count=1,
+        quantile_min_count=1,
+        num_lanes=2,
+        chunk_size=8,
+        num_epochs=1,
+        log_every=2,
+        eval_every=100000,
+        checkpoint_every=4,  # small enough to land mid-epoch, not just at the end
+    )
+    train(base_config)
+
+    mid_epoch_checkpoints = sorted(
+        output_dir.glob("checkpoint_[0-9]*.pt"),
+        key=lambda p: int(p.stem.split("_")[-1]),
+    )
+    assert mid_epoch_checkpoints, "expected at least one checkpoint_every checkpoint"
+    checkpoint_path = mid_epoch_checkpoints[0]
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    assert checkpoint["steps_into_epoch"] > 0
+    assert checkpoint["batch_config"] == {
+        "num_lanes": 2,
+        "chunk_size": 8,
+        "reset_prob": base_config.reset_prob,
+        "seed": base_config.seed,
+    }
+    first_checkpoint_step = checkpoint["step"]
+
+    resumed_config = TrainingConfig(
+        **{**vars(base_config), "resume_from": str(checkpoint_path)}
+    )
+    train(resumed_config)
+
+    final_checkpoint = torch.load(
+        output_dir / "checkpoint_final.pt", map_location="cpu"
+    )
+    assert final_checkpoint["step"] > first_checkpoint_step
+
+
+@cuda_required
+def test_train_falls_back_to_epoch_restart_when_batch_config_differs(
+    tmp_path: Path,
+) -> None:
+    train_dir = tmp_path / "data" / "train"
+    tuning_dir = tmp_path / "data" / "tuning"
+    _write_shards(train_dir, n_subjects=12, n_events_per_subject=30)
+    _write_shards(tuning_dir, n_subjects=4, n_events_per_subject=30)
+
+    output_dir = tmp_path / "run"
+    base_config = TrainingConfig(
+        train_shard_dir=str(train_dir),
+        tuning_shard_dir=str(tuning_dir),
+        output_dir=str(output_dir),
+        hidden_size=64,
+        num_hidden_layers=2,
+        mamba_state_size=16,
+        mamba_headdim=64,
+        mamba_chunk_size=16,
+        attn_num_heads=8,
+        embedding_dim=8,
+        vocab_min_count=1,
+        quantile_min_count=1,
+        num_lanes=2,
+        chunk_size=8,
+        num_epochs=1,
+        log_every=2,
+        eval_every=100000,
+        checkpoint_every=4,
+    )
+    train(base_config)
+    checkpoint_path = next(output_dir.glob("checkpoint_[0-9]*.pt"))
+    first_checkpoint_step = torch.load(checkpoint_path, map_location="cpu")["step"]
+
+    # A different num_lanes than what the checkpoint was taken under --
+    # must not crash or silently fast-forward to a meaningless position;
+    # falls back to restarting the epoch, which still runs to completion.
+    resumed_config = TrainingConfig(
+        **{
+            **vars(base_config),
+            "num_lanes": 4,
+            "resume_from": str(checkpoint_path),
+        }
+    )
+    train(resumed_config)
+
+    final_checkpoint = torch.load(
+        output_dir / "checkpoint_final.pt", map_location="cpu"
+    )
+    assert final_checkpoint["step"] > first_checkpoint_step
