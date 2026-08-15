@@ -102,6 +102,18 @@ def build_patient_sequence(
     recent events are kept (older history is less relevant to near-term
     forecasting).
 
+    Several events commonly share the exact same timestamp (e.g. a panel
+    of labs drawn together) -- there's no true order between them, but
+    the tokenized sequence still needs *some* fixed, reproducible order.
+    ``sort(..., maintain_order=True)`` makes that order deterministic
+    (same-timestamp events keep their relative order from ``events``,
+    which traces back to the source shard's own row order): Polars'
+    default (``maintain_order=False``, the faster path) does not
+    guarantee this, which would otherwise make the exact tokenization of
+    a patient with simultaneous events not reliably reproducible across
+    runs/environments -- a real problem for auditable eval results, even
+    though it hasn't been observed to actually vary in practice yet.
+
     Raises
     ------
     ValueError
@@ -119,7 +131,9 @@ def build_patient_sequence(
     events = events.filter(pl.col("time").is_not_null())
     birth_rows = events.filter(pl.col("code") == BIRTH_CODE)
     birth_time = birth_rows["time"][0] if birth_rows.height > 0 else None
-    events = events.filter(pl.col("code") != BIRTH_CODE).sort("time")
+    events = events.filter(pl.col("code") != BIRTH_CODE).sort(
+        "time", maintain_order=True
+    )
 
     subject_id = int(events["subject_id"][0]) if events.height > 0 else -1
     codes = events["code"].to_list()
