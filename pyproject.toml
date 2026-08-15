@@ -40,20 +40,46 @@ dependencies = [
 # Pinned exact (not >=): 2.3.2 added a Mamba3 module that's imported
 # eagerly by mamba_ssm/__init__.py (so even our own submodule-only
 # imports trigger it) and needs a newer Triton than the one torch==2.6.0
-# bundles. 2.3.0 doesn't have that module. mamba-ssm also ships prebuilt
-# PyPI wheels that silently win over building from source unless forced
-# past -- both --no-build-isolation alone and a plain rebuild picked a
-# prebuilt wheel compiled against a different torch ABI (undefined
-# symbol at import). The install that actually works:
-#   PATH=/usr/local/cuda-12.9/bin:$PATH CUDA_HOME=/usr/local/cuda-12.9 \
-#   MAX_JOBS=12 MAMBA_FORCE_BUILD=TRUE \
-#   uv sync --extra cuda --no-build-isolation
-#   uv pip install --no-build-isolation --no-binary mamba-ssm --no-deps \
-#     --no-cache --reinstall 'mamba-ssm==2.3.0'
-# (--no-binary forces a real source build; MAMBA_FORCE_BUILD skips
-# mamba-ssm's own auto-download-a-prebuilt-wheel shortcut in setup.py;
-# CUDA_HOME must point at a toolkit whose major CUDA version matches
-# torch's, or torch.utils.cpp_extension refuses to build at all.)
+# bundles. 2.3.0 doesn't have that module.
+#
+# Two separate steps -- do NOT collapse into one `uv sync --no-build-
+# isolation` call, confirmed both ways fail:
+#   1. `uv sync --extra cuda` (plain, isolated builds). This correctly
+#      installs the pinned torch and the rest of the project; mamba-ssm
+#      itself comes out broken from this step alone (see #2) but that's
+#      fine, it gets overwritten next. Passing --no-build-isolation
+#      *here* instead breaks the *local* `odyssey` package's own build
+#      (hatchling/editables aren't in the venv to satisfy it non-
+#      isolated) and doesn't even fix mamba-ssm, since mamba-ssm's own
+#      declared build requirements pull a fresh, unpinned (and thus
+#      ABI-mismatched) torch into its *own* isolated build env,
+#      regardless of this project's torch pin.
+#   2. Force-rebuild mamba-ssm specifically, non-isolated so it reuses
+#      the already-installed, correctly-pinned torch instead of
+#      resolving its own:
+#        PATH=/usr/local/cuda-12.9/bin:$PATH \
+#        CUDA_HOME=/usr/local/cuda-12.9 MAX_JOBS=12 \
+#        MAMBA_FORCE_BUILD=TRUE \
+#        uv pip install --no-build-isolation --no-binary mamba-ssm \
+#          --no-deps --no-cache --reinstall 'mamba-ssm==2.3.0'
+#      (--no-binary forces a real source build -- mamba-ssm's installer
+#      otherwise silently substitutes a prebuilt wheel that looks
+#      "compatible" by coarse tag matching but is actually ABI-
+#      mismatched, undefined symbol at import; MAMBA_FORCE_BUILD skips
+#      that shortcut in its own setup.py; CUDA_HOME must point at a
+#      toolkit whose major CUDA version matches torch's major CUDA
+#      version, or torch.utils.cpp_extension refuses to build at all.)
+#
+# Also seen on this host, unrelated to the above: uv's default
+# hardlink-based install has silently dropped the actual .so payload
+# of several unrelated nvidia-* packages (metadata installs fine,
+# libraries are just missing from disk, surfacing later as an unrelated-
+# looking ImportError: libFOO.so: cannot open shared object file). If
+# that happens, `UV_LINK_MODE=copy uv pip install --no-cache --reinstall
+# <package>==<pinned-version>` for the specific broken package fixes it;
+# a version already matching the lock is otherwise skipped and won't
+# self-heal, so check by actually importing torch, not just `uv sync`
+# exiting 0.
 cuda = [
     "mamba-ssm==2.3.0",
 ]
