@@ -84,9 +84,7 @@ def test_code_type_eicu_prefixes() -> None:
     # eICU code families (specs/eICU.yaml) map into the same taxonomy as
     # the equivalent MIMIC-IV families.
     assert code_type("VITALS//PERIODIC//HEARTRATE") == code_type("LAB//220045//bpm")
-    assert code_type("LAB//creatinine//mg/dL") == code_type(
-        "LAB//RESULT//50912//mg/dL"
-    )
+    assert code_type("LAB//creatinine//mg/dL") == code_type("LAB//RESULT//50912//mg/dL")
     assert code_type("ADMISSION_DIAGNOSIS//SEPSIS") == code_type(
         "DIAGNOSIS//ICD//9//0389"
     )
