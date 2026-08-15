@@ -63,17 +63,17 @@ from typing import Dict, List, Literal, Optional, Sequence, Set, Tuple, Union
 import polars as pl
 
 
+# Which side of a threshold triggers a rule. The `at_or_*` variants make
+# the threshold value itself qualify -- clinical criteria are precise
+# about this (qSOFA is RR >= 22, KDIGO Stage 3 is creatinine >= 4.0),
+# and vitals/labs are often charted as exact integers, so a strict
+# inequality would silently miss real boundary readings.
 Direction = Literal["above", "below", "at_or_above", "at_or_below"]
-"""Which side of a threshold triggers a rule. The ``at_or_*`` variants
-make the threshold value itself qualify -- clinical criteria are precise
-about this (qSOFA is RR *>= 22*, KDIGO Stage 3 is creatinine *>= 4.0*),
-and vitals/labs are often charted as exact integers, so a strict
-inequality would silently miss real boundary readings."""
 
+# Direction of a *change* relative to a subject's own baseline
+# (BaselineRelativeRule): a rise or a fall. Inclusive variants don't
+# apply -- the delta/ratio comparison is already >=.
 TrendDirection = Literal["above", "below"]
-"""Direction of a *change* relative to a subject's own baseline
-(:class:`BaselineRelativeRule`): a rise or a fall. Inclusive variants
-don't apply -- the delta/ratio comparison is already ``>=``."""
 
 
 def _threshold_expr(value: pl.Expr, threshold: float, direction: Direction) -> pl.Expr:

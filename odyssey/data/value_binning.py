@@ -91,8 +91,7 @@ def _clinical_label_expr(value_col: str) -> pl.Expr:
             )
         label_expr = (
             pl.when(
-                pl.col("code").str.starts_with(prefix)
-                & pl.col(value_col).is_not_null()
+                pl.col("code").str.starts_with(prefix) & pl.col(value_col).is_not_null()
             )
             .then(prefix_label)
             .otherwise(label_expr)
