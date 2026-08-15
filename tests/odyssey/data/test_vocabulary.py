@@ -80,6 +80,20 @@ def test_code_type_known_prefixes() -> None:
     assert code_type("HOSPITAL_ADMISSION//...") == VISIT_TYPE
 
 
+def test_code_type_eicu_prefixes() -> None:
+    # eICU code families (specs/eICU.yaml) map into the same taxonomy as
+    # the equivalent MIMIC-IV families.
+    assert code_type("VITALS//PERIODIC//HEARTRATE") == code_type("LAB//220045//bpm")
+    assert code_type("LAB//creatinine//mg/dL") == code_type(
+        "LAB//RESULT//50912//mg/dL"
+    )
+    assert code_type("ADMISSION_DIAGNOSIS//SEPSIS") == code_type(
+        "DIAGNOSIS//ICD//9//0389"
+    )
+    assert code_type("INFUSION_DRUG") == code_type("MEDICATION//STARTED//X")
+    assert code_type("ICU_ADMISSION//UNK//admit") == VISIT_TYPE
+
+
 def test_code_type_unknown_prefix_falls_back_to_other() -> None:
     assert code_type("Blood Pressure Standing") == OTHER_TYPE
 

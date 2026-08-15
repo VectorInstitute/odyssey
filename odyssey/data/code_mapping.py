@@ -72,12 +72,43 @@ MIMIC_IV_TO_LOINC: Dict[str, str] = {
     "LAB//RESULT//51301//": "6690-2",  # White Blood Cells
 }
 
-# Per-source tables. eICU and GEMINI are Phase 2 placeholders (README
-# roadmap item 10): empty until those extractions exist to build a real,
-# verified mapping against, deliberately not guessed ahead of time.
+# code_prefix -> LOINC code for the eICU extraction (specs/eICU.yaml).
+# Vitals codes are the fixed VITALS//... family that spec emits from
+# vitalPeriodic/vitalAperiodic (systemic BP is arterial-line, noninvasive
+# BP is cuff -- mirroring the MIMIC 220050/220179 split above); lab
+# prefixes are `LAB//{labname}//`, where each labname was verified
+# against the actual `lab.csv.gz` of the public eICU demo (2.0.1), not
+# guessed from documentation. GCS is charted in eICU's nurseCharting
+# table, which the spec does not extract yet -- no GCS mapping until it
+# does. eICU temperature is Celsius (same LOINC as MIMIC's two
+# temperature itemids, unit-differentiated there).
+EICU_TO_LOINC: Dict[str, str] = {
+    # vitalPeriodic
+    "VITALS//PERIODIC//HEARTRATE": "8867-4",  # Heart Rate
+    "VITALS//PERIODIC//RESPIRATION": "9279-1",  # Respiratory Rate
+    "VITALS//PERIODIC//SAO2": "59408-5",  # O2 saturation, pulse oximetry
+    "VITALS//PERIODIC//TEMPERATURE": "8310-5",  # Temperature (Celsius)
+    "VITALS//PERIODIC//BP//SYSTEMIC_SYSTOLIC": "8480-6",  # Arterial BP systolic
+    "VITALS//PERIODIC//BP//SYSTEMIC_MEAN": "8478-0",  # Arterial BP mean
+    # vitalAperiodic
+    "VITALS//APERIODIC//BP//NONINVASIVE_SYSTOLIC": "76534-7",
+    "VITALS//APERIODIC//BP//NONINVASIVE_MEAN": "76536-2",
+    # lab (prefix matches any unit suffix)
+    "LAB//creatinine//": "2160-0",  # Creatinine
+    "LAB//lactate//": "32693-4",  # Lactate
+    "LAB//WBC x 1000//": "6690-2",  # White Blood Cells
+    "LAB//paO2//": "11556-8",  # pO2
+    "LAB//total bilirubin//": "1975-2",  # Bilirubin, Total
+    "LAB//platelets x 1000//": "777-3",  # Platelet Count
+    "LAB//FiO2//": "3150-0",  # Inspired O2 Fraction
+}
+
+# Per-source tables. GEMINI remains a Phase 2 placeholder (README roadmap
+# item 10): empty until that extraction exists to build a real, verified
+# mapping against, deliberately not guessed ahead of time.
 _SOURCE_TABLES: Dict[str, Dict[str, str]] = {
     "mimic_iv": MIMIC_IV_TO_LOINC,
-    "eicu": {},
+    "eicu": EICU_TO_LOINC,
     "gemini": {},
 }
 

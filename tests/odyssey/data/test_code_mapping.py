@@ -3,6 +3,7 @@
 import pytest
 
 from odyssey.data.code_mapping import (
+    EICU_TO_LOINC,
     MIMIC_IV_TO_LOINC,
     assert_all_mapped,
     loinc_for,
@@ -50,11 +51,32 @@ def test_assert_all_mapped_raises_with_the_missing_prefix_named() -> None:
         assert_all_mapped(["LAB//220045//", "LAB//999999//"])
 
 
-def test_eicu_and_gemini_tables_are_still_empty_placeholders() -> None:
-    # Phase 2 (README roadmap item 10) hasn't happened yet; these must
-    # stay empty rather than someone guessing entries ahead of a real
-    # extraction to verify against. If this test starts failing because
-    # entries were added, that's good news -- update the test, don't
-    # just delete it.
+def test_eicu_table_is_populated_and_mimic_prefixes_do_not_leak_into_it() -> None:
+    # The eICU extraction exists now (specs/eICU.yaml), so its table is
+    # real; MIMIC itemid-keyed prefixes must not resolve under it.
+    assert loinc_for("VITALS//PERIODIC//HEARTRATE", source="eicu") == "8867-4"
+    assert loinc_for("LAB//creatinine//", source="eicu") == "2160-0"
     assert loinc_for("LAB//220045//", source="eicu") is None
+
+
+def test_same_loinc_resolves_across_sources() -> None:
+    # The whole point of the LOINC layer: one concept rule, grounded in a
+    # LOINC code, finds each institution's own prefixes.
+    assert loinc_for("LAB//220045//", source="mimic_iv") == loinc_for(
+        "VITALS//PERIODIC//HEARTRATE", source="eicu"
+    )
+    assert prefixes_for_loinc("2160-0", source="eicu") == frozenset(
+        {"LAB//creatinine//"}
+    )
+
+
+def test_assert_all_mapped_covers_the_eicu_table() -> None:
+    assert_all_mapped(EICU_TO_LOINC.keys(), source="eicu")
+
+
+def test_gemini_table_is_still_an_empty_placeholder() -> None:
+    # GEMINI extraction doesn't exist yet; its table must stay empty
+    # rather than someone guessing entries ahead of a real extraction to
+    # verify against. If this test starts failing because entries were
+    # added, that's good news -- update the test, don't just delete it.
     assert loinc_for("LAB//220045//", source="gemini") is None
