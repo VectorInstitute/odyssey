@@ -1,0 +1,1015 @@
+<meta charset="utf-8">
+<title>Concept Trace</title>
+
+<style>
+:root {
+  --bg: #F5F7F8;
+  --surface: #FFFFFF;
+  --surface-2: #ECF1F2;
+  --ink: #14212B;
+  --ink-muted: #566873;
+  --ink-faint: #8598A1;
+  --border: #D8E0E3;
+  --border-strong: #C1CDD1;
+  --accent: #0B6E77;
+  --accent-strong: #084F56;
+  --accent-soft: #DCEEF0;
+  --good: #2E8B57;
+  --good-soft: #E1F1E7;
+  --warn: #A6720A;
+  --warn-soft: #F5ECD8;
+  --critical: #B23A3A;
+  --critical-soft: #F5E1E1;
+  --shadow: 0 1px 2px rgba(20, 33, 43, 0.06), 0 4px 16px rgba(20, 33, 43, 0.05);
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0B1416;
+    --surface: #101B1E;
+    --surface-2: #162427;
+    --ink: #E7EEF0;
+    --ink-muted: #93A6AC;
+    --ink-faint: #64777D;
+    --border: #223236;
+    --border-strong: #2C4045;
+    --accent: #3FC1C9;
+    --accent-strong: #6FDEE3;
+    --accent-soft: #123338;
+    --good: #4CAF7D;
+    --good-soft: #123324;
+    --warn: #D9A441;
+    --warn-soft: #332A14;
+    --critical: #E07272;
+    --critical-soft: #331717;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 20px rgba(0, 0, 0, 0.35);
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #0B1416;
+  --surface: #101B1E;
+  --surface-2: #162427;
+  --ink: #E7EEF0;
+  --ink-muted: #93A6AC;
+  --ink-faint: #64777D;
+  --border: #223236;
+  --border-strong: #2C4045;
+  --accent: #3FC1C9;
+  --accent-strong: #6FDEE3;
+  --accent-soft: #123338;
+  --good: #4CAF7D;
+  --good-soft: #123324;
+  --warn: #D9A441;
+  --warn-soft: #332A14;
+  --critical: #E07272;
+  --critical-soft: #331717;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 20px rgba(0, 0, 0, 0.35);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+body {
+  margin: 0;
+  padding: 0 0 6rem;
+  min-height: 100vh;
+}
+
+a { color: var(--accent-strong); }
+
+.container {
+  max-width: 78rem;
+  margin: 0 auto;
+  padding: 0 2rem;
+}
+
+/* ---------------------------------------------------------------- header */
+
+header.top {
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  padding: 2.25rem 0 1.75rem;
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-weight: 600;
+  margin: 0 0 0.6rem;
+}
+
+h1.title {
+  font-size: clamp(1.8rem, 3vw, 2.5rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin: 0 0 0.5rem;
+  text-wrap: balance;
+}
+
+.subtitle {
+  color: var(--ink-muted);
+  font-size: 1rem;
+  max-width: 46rem;
+  line-height: 1.55;
+  margin: 0 0 1.5rem;
+}
+
+.run-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.run-meta li {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--ink-muted);
+  padding: 0 1.1rem;
+  border-right: 1px solid var(--border);
+}
+.run-meta li:first-child { padding-left: 0; }
+.run-meta li:last-child { border-right: none; }
+.run-meta strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------------------- nav */
+
+nav.section-nav {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border);
+}
+nav.section-nav .container { display: flex; gap: 0.25rem; }
+nav.section-nav a {
+  display: block;
+  padding: 0.85rem 0.9rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--ink-muted);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+}
+nav.section-nav a:hover { color: var(--ink); }
+nav.section-nav a.active { color: var(--accent-strong); border-bottom-color: var(--accent); }
+
+/* ---------------------------------------------------------------- sections */
+
+section.report {
+  padding: 3rem 0 3.5rem;
+  border-bottom: 1px solid var(--border);
+}
+section.report:last-of-type { border-bottom: none; }
+
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.4rem;
+  flex-wrap: wrap;
+}
+
+h2.section-title {
+  font-size: 1.5rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+h2.section-title .num {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.section-desc {
+  color: var(--ink-muted);
+  font-size: 0.94rem;
+  line-height: 1.6;
+  max-width: 52rem;
+  margin: 0.5rem 0 1.75rem;
+}
+
+/* ---------------------------------------------------------------- cards / stats */
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11.5rem, 1fr));
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  margin-bottom: 2rem;
+}
+.stat {
+  background: var(--surface);
+  padding: 1.1rem 1.25rem;
+}
+.stat .label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-faint);
+  font-weight: 600;
+  margin-bottom: 0.4rem;
+}
+.stat .value {
+  font-family: var(--font-mono);
+  font-size: 1.5rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+.stat .value small { font-size: 0.85rem; color: var(--ink-muted); font-weight: 500; }
+.stat .sub { font-size: 0.78rem; color: var(--ink-muted); margin-top: 0.25rem; }
+
+/* ---------------------------------------------------------------- loss charts */
+
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(21rem, 1fr));
+  gap: 1.25rem;
+}
+.chart-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.1rem 1.25rem 0.9rem;
+  box-shadow: var(--shadow);
+}
+.chart-card .chart-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 0.5rem;
+}
+.chart-card h3 {
+  font-size: 0.92rem;
+  font-weight: 700;
+  margin: 0;
+}
+.chart-card .final-val {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+.chart-card .final-val strong { color: var(--accent-strong); font-weight: 700; }
+.chart-legend {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.74rem;
+  color: var(--ink-muted);
+  margin-top: 0.3rem;
+  font-family: var(--font-mono);
+}
+.chart-legend .dot { display: inline-block; width: 0.6rem; height: 0.6rem; border-radius: 1px; margin-right: 0.35rem; vertical-align: middle; }
+
+/* ---------------------------------------------------------------- tables */
+
+.table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); background: var(--surface); }
+table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+th, td {
+  padding: 0.62rem 0.9rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+thead th {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-faint);
+  font-weight: 700;
+  background: var(--surface-2);
+  position: sticky;
+  top: 0;
+}
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover { background: var(--surface-2); }
+td.num, th.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
+td.code { font-family: var(--font-mono); font-size: 0.8rem; }
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.16rem 0.55rem;
+  border-radius: 99px;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.chip.good { background: var(--good-soft); color: var(--good); }
+.chip.warn { background: var(--warn-soft); color: var(--warn); }
+.chip.critical { background: var(--critical-soft); color: var(--critical); }
+.chip.neutral { background: var(--surface-2); color: var(--ink-muted); }
+
+.bar-cell { display: flex; align-items: center; gap: 0.55rem; }
+.bar-track { flex: 1; height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; min-width: 4rem; }
+.bar-fill { height: 100%; border-radius: 3px; background: var(--accent); }
+
+/* ---------------------------------------------------------------- qualitative / case browser */
+
+.case-layout {
+  display: grid;
+  grid-template-columns: 17.5rem 1fr;
+  gap: 1.5rem;
+  align-items: start;
+}
+@media (max-width: 62rem) {
+  .case-layout { grid-template-columns: 1fr; }
+}
+
+.case-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  max-height: 44rem;
+  overflow-y: auto;
+  padding-right: 0.25rem;
+}
+.case-chip {
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.65rem 0.8rem;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  color: var(--ink);
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.case-chip:hover { border-color: var(--border-strong); }
+.case-chip.active { border-color: var(--accent); background: var(--accent-soft); }
+.case-chip .row1 { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.2rem; }
+.case-chip .sid { font-family: var(--font-mono); font-size: 0.78rem; font-weight: 700; color: var(--ink-muted); }
+.case-chip.active .sid { color: var(--accent-strong); }
+.case-chip .n-concepts { font-family: var(--font-mono); font-size: 0.72rem; font-weight: 700; }
+.case-chip .row2 { font-size: 0.74rem; color: var(--ink-muted); display: flex; gap: 0.6rem; font-family: var(--font-mono); }
+
+.case-detail {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 1.4rem 1.5rem 1.6rem;
+}
+
+.case-detail-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 1.1rem;
+  padding-bottom: 1.1rem;
+  border-bottom: 1px solid var(--border);
+}
+.case-detail-head h3 {
+  margin: 0 0 0.25rem;
+  font-size: 1.05rem;
+  font-family: var(--font-mono);
+}
+.case-detail-head .meta { font-size: 0.8rem; color: var(--ink-muted); }
+.case-stat-row { display: flex; gap: 1.5rem; }
+.case-stat-row .cs { text-align: right; }
+.case-stat-row .cs .label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-faint); font-weight: 700; }
+.case-stat-row .cs .value { font-family: var(--font-mono); font-weight: 700; font-size: 1.05rem; }
+
+.concept-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 1.25rem;
+}
+.flag {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.18rem 0.55rem;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  color: var(--ink-faint);
+}
+.flag.triggered { background: var(--critical-soft); color: var(--critical); border-color: transparent; }
+
+.strip-wrap { margin-bottom: 1.5rem; }
+.strip-wrap .strip-title { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-faint); font-weight: 700; margin-bottom: 0.5rem; }
+.monitor { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface-2); }
+.monitor-row { display: flex; align-items: center; border-bottom: 1px solid var(--border); }
+.monitor-row:last-child { border-bottom: none; }
+.monitor-row .row-label {
+  width: 10.5rem;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 0.3rem 0.6rem;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-right: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.monitor-row .row-label .truth-dot { width: 0.45rem; height: 0.45rem; border-radius: 99px; flex-shrink: 0; background: var(--border-strong); }
+.monitor-row .row-label.is-true .truth-dot { background: var(--critical); }
+.monitor-row canvas { display: block; height: 1.7rem; flex: 1; }
+
+.detail-table-title { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-faint); font-weight: 700; margin-bottom: 0.5rem; }
+.pred-list { display: flex; flex-direction: column; gap: 0.15rem; }
+.pred-list .p-row { display: flex; justify-content: space-between; gap: 0.6rem; font-size: 0.78rem; }
+.pred-list .p-code { color: var(--ink-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 15rem; }
+.pred-list .p-prob { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-faint); flex-shrink: 0; }
+.pred-list .p-row.hit .p-code { color: var(--good); font-weight: 600; }
+
+/* ---------------------------------------------------------------- footer */
+
+footer {
+  padding: 2.5rem 0 0;
+  color: var(--ink-faint);
+  font-size: 0.8rem;
+  line-height: 1.6;
+}
+
+::selection { background: var(--accent-soft); color: var(--accent-strong); }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+</style>
+
+<header class="top">
+  <div class="container">
+    <p class="eyebrow">Training &amp; Evaluation Report</p>
+    <h1 class="title">Concept-Bottleneck EHR Sequence Model</h1>
+    <p class="subtitle">
+      A Mamba-based clinical event forecaster trained with an interpretable concept bottleneck —
+      <span id="n-concepts-blurb">known clinical concepts</span> (SIRS, qSOFA, AKI staging, vital-sign thresholds) plus a residual
+      unknown channel. This report covers the training run's loss trajectory, held-out quantitative
+      evaluation, and <span id="n-cases-blurb">several</span> diverse patient case traces.
+    </p>
+    <ul class="run-meta" id="run-meta"></ul>
+  </div>
+</header>
+
+<nav class="section-nav">
+  <div class="container">
+    <a href="#training" class="active">01 · Training</a>
+    <a href="#quantitative">02 · Quantitative Eval</a>
+    <a href="#qualitative">03 · Case Traces</a>
+  </div>
+</nav>
+
+<main class="container">
+
+  <section class="report" id="training">
+    <div class="section-head">
+      <h2 class="section-title"><span class="num">01</span> Training Diagnostics</h2>
+    </div>
+    <p class="section-desc" id="training-desc"></p>
+    <div class="chart-grid" id="loss-charts"></div>
+  </section>
+
+  <section class="report" id="quantitative">
+    <div class="section-head">
+      <h2 class="section-title"><span class="num">02</span> Quantitative Evaluation</h2>
+    </div>
+    <p class="section-desc" id="quant-desc"></p>
+    <div class="stat-grid" id="headline-stats"></div>
+
+    <h3 style="font-size:1rem;font-weight:700;margin:0 0 0.75rem;">Forecasting accuracy by code type</h3>
+    <div class="table-wrap" style="margin-bottom:2rem;">
+      <table id="code-type-table"></table>
+    </div>
+
+    <h3 style="font-size:1rem;font-weight:700;margin:0 0 0.75rem;">Concept quality</h3>
+    <p class="section-desc" style="margin-top:0;margin-bottom:1rem;">
+      How well the bottleneck's concept probabilities match each concept's own rule-derived label,
+      among held-out patients where that concept was actually observed.
+    </p>
+    <div class="table-wrap" style="margin-bottom:2rem;">
+      <table id="concept-table"></table>
+    </div>
+
+    <h3 style="font-size:1rem;font-weight:700;margin:0 0 0.75rem;">Observability</h3>
+    <p class="section-desc" style="margin-top:0;margin-bottom:1rem;">
+      Separately from getting a concept's <em>value</em> right, does the model know
+      <em>whether</em> a concept will be measured at all for this patient? Scored against
+      whether real data was ever observed for that concept, independent of the label's value.
+    </p>
+    <div class="table-wrap">
+      <table id="observability-table"></table>
+    </div>
+  </section>
+
+  <section class="report" id="qualitative">
+    <div class="section-head">
+      <h2 class="section-title"><span class="num">03</span> Patient Case Traces</h2>
+    </div>
+    <p class="section-desc" id="qualitative-desc"></p>
+    <div class="case-layout">
+      <div class="case-rail" id="case-rail"></div>
+      <div class="case-detail" id="case-detail"></div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="container">
+    <p>Concept Trace — generated from a single training + held-out evaluation run of the odyssey concept-bottleneck EHR-Mamba pipeline. Detail rows and forecast codes are sampled, not exhaustive, per patient trace.</p>
+  </div>
+</footer>
+
+<script id="dashboard-data" type="application/json">__DASHBOARD_DATA__</script>
+
+<script>
+(function () {
+  "use strict";
+  const raw = document.getElementById("dashboard-data").textContent;
+  const DATA = JSON.parse(raw);
+
+  const fmt = (x, d) => (x === null || x === undefined ? "—" : Number(x).toFixed(d === undefined ? 3 : d));
+  const fmtInt = (x) => (x === null || x === undefined ? "—" : Number(x).toLocaleString("en-US"));
+  const fmtPct = (x, d) => (x === null || x === undefined ? "—" : (Number(x) * 100).toFixed(d === undefined ? 1 : d) + "%");
+
+  function el(tag, attrs, children) {
+    const e = document.createElement(tag);
+    if (attrs) for (const k in attrs) {
+      if (k === "class") e.className = attrs[k];
+      else if (k === "html") e.innerHTML = attrs[k];
+      else e.setAttribute(k, attrs[k]);
+    }
+    (children || []).forEach((c) => { if (c != null) e.appendChild(typeof c === "string" ? document.createTextNode(c) : c); });
+    return e;
+  }
+
+  /* ---------------------------------------------------------- run meta */
+
+  (function renderRunMeta() {
+    const ul = document.getElementById("run-meta");
+    DATA.run_meta.forEach(([k, v]) => {
+      ul.appendChild(el("li", {}, [el("strong", {}, [v]), " " + k]));
+    });
+    const nConcepts = DATA.cases.length ? DATA.cases[0].concept_names.length : DATA.inference_results.concept_metrics.length;
+    document.getElementById("n-concepts-blurb").textContent = nConcepts + " known clinical concepts";
+    document.getElementById("n-cases-blurb").textContent = DATA.cases.length;
+    document.getElementById("training-desc").textContent = DATA.training_desc;
+    document.getElementById("quant-desc").textContent = DATA.quant_desc;
+    document.getElementById("qualitative-desc").textContent = DATA.qualitative_desc;
+  })();
+
+  /* ---------------------------------------------------------- nav highlight */
+
+  (function setupNav() {
+    const links = Array.from(document.querySelectorAll("nav.section-nav a"));
+    const sections = links.map((a) => document.querySelector(a.getAttribute("href")));
+    const onScroll = () => {
+      let idx = 0;
+      const y = window.scrollY + 120;
+      sections.forEach((s, i) => { if (s && s.offsetTop <= y) idx = i; });
+      links.forEach((a, i) => a.classList.toggle("active", i === idx));
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+  })();
+
+  /* ---------------------------------------------------------- loss charts */
+
+  const LOSS_TERMS = [
+    { key: "task_loss", label: "Task loss (next-event forecasting)", color: "var(--accent)" },
+    { key: "concept_loss", label: "Concept-supervision loss", color: "#7A5FC4" },
+    { key: "orthogonality_loss", label: "Orthogonality loss", color: "#C4785F" },
+    { key: "observability_loss", label: "Observability loss", color: "#5FA3C4" },
+  ];
+
+  function movingAverage(arr, window) {
+    const out = new Array(arr.length);
+    let sum = 0;
+    for (let i = 0; i < arr.length; i++) {
+      sum += arr[i];
+      if (i >= window) sum -= arr[i - window];
+      out[i] = sum / Math.min(i + 1, window);
+    }
+    return out;
+  }
+
+  function drawLossChart(svg, trainX, trainY, valX, valY, color) {
+    const W = 560, H = 190, padL = 44, padR = 10, padT = 10, padB = 24;
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.style.width = "100%";
+    svg.style.height = "11rem";
+
+    const allX = trainX.concat(valX);
+    const allY = trainY.concat(valY).filter((v) => Number.isFinite(v));
+    const xMin = Math.min(...allX), xMax = Math.max(...allX);
+    const yMin = 0, yMax = Math.max(...allY) * 1.08;
+
+    const sx = (x) => padL + ((x - xMin) / (xMax - xMin || 1)) * (W - padL - padR);
+    const sy = (y) => H - padB - ((y - yMin) / (yMax - yMin || 1)) * (H - padT - padB);
+
+    // gridlines
+    const nGrid = 4;
+    for (let i = 0; i <= nGrid; i++) {
+      const gy = padT + (i / nGrid) * (H - padT - padB);
+      const value = yMax - (i / nGrid) * (yMax - yMin);
+      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      line.setAttribute("x1", padL); line.setAttribute("x2", W - padR);
+      line.setAttribute("y1", gy); line.setAttribute("y2", gy);
+      line.setAttribute("stroke", "var(--border)"); line.setAttribute("stroke-width", "1");
+      svg.appendChild(line);
+      const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      label.setAttribute("x", padL - 6); label.setAttribute("y", gy + 3);
+      label.setAttribute("text-anchor", "end");
+      label.setAttribute("font-size", "9"); label.setAttribute("font-family", "var(--font-mono)");
+      label.setAttribute("fill", "var(--ink-faint)");
+      label.textContent = value.toFixed(value < 1 ? 2 : 1);
+      svg.appendChild(label);
+    }
+
+    function pathFor(xs, ys) {
+      let d = "";
+      let started = false;
+      for (let i = 0; i < xs.length; i++) {
+        if (!Number.isFinite(ys[i])) continue;
+        const cmd = started ? "L" : "M";
+        d += `${cmd}${sx(xs[i]).toFixed(1)},${sy(ys[i]).toFixed(1)} `;
+        started = true;
+      }
+      return d;
+    }
+
+    // train line (smoothed), faint raw underneath
+    const rawPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    rawPath.setAttribute("d", pathFor(trainX, trainY));
+    rawPath.setAttribute("fill", "none");
+    rawPath.setAttribute("stroke", color);
+    rawPath.setAttribute("stroke-width", "1");
+    rawPath.setAttribute("opacity", "0.22");
+    svg.appendChild(rawPath);
+
+    const smoothY = movingAverage(trainY, 15);
+    const smoothPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    smoothPath.setAttribute("d", pathFor(trainX, smoothY));
+    smoothPath.setAttribute("fill", "none");
+    smoothPath.setAttribute("stroke", color);
+    smoothPath.setAttribute("stroke-width", "2");
+    svg.appendChild(smoothPath);
+
+    // val markers + line
+    if (valX.length) {
+      const valPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      valPath.setAttribute("d", pathFor(valX, valY));
+      valPath.setAttribute("fill", "none");
+      valPath.setAttribute("stroke", "var(--ink)");
+      valPath.setAttribute("stroke-width", "1.4");
+      valPath.setAttribute("stroke-dasharray", "3 3");
+      valPath.setAttribute("opacity", "0.55");
+      svg.appendChild(valPath);
+      valX.forEach((x, i) => {
+        if (!Number.isFinite(valY[i])) return;
+        const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        c.setAttribute("cx", sx(x)); c.setAttribute("cy", sy(valY[i])); c.setAttribute("r", "2");
+        c.setAttribute("fill", "var(--surface)"); c.setAttribute("stroke", "var(--ink)"); c.setAttribute("stroke-width", "1.2");
+        svg.appendChild(c);
+      });
+    }
+
+    // x-axis endpoints
+    [xMin, xMax].forEach((x) => {
+      const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      label.setAttribute("x", sx(x)); label.setAttribute("y", H - 6);
+      label.setAttribute("text-anchor", x === xMin ? "start" : "end");
+      label.setAttribute("font-size", "9"); label.setAttribute("font-family", "var(--font-mono)");
+      label.setAttribute("fill", "var(--ink-faint)");
+      label.textContent = "step " + x.toLocaleString("en-US");
+      svg.appendChild(label);
+    });
+  }
+
+  (function renderLossCharts() {
+    const grid = document.getElementById("loss-charts");
+    const tc = DATA.loss_curves.train, vc = DATA.loss_curves.val;
+    LOSS_TERMS.forEach((term) => {
+      const card = el("div", { class: "chart-card" });
+      // Last 15-pt smoothed value, not the raw final point -- most steps
+      // legitimately log 0.0 for concept/orthogonality/observability loss
+      // (only chunks with a patient_end contribute those terms), so the
+      // single last raw point is noisy and can misleadingly read as "solved".
+      const smoothedTrain = movingAverage(tc[term.key], 15);
+      const finalTrain = smoothedTrain[smoothedTrain.length - 1];
+      card.appendChild(el("div", { class: "chart-head" }, [
+        el("h3", {}, [term.label]),
+        el("span", { class: "final-val" }, ["train (smoothed) ", el("strong", {}, [fmt(finalTrain, 3)])]),
+      ]));
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      card.appendChild(svg);
+      card.appendChild(el("div", { class: "chart-legend" }, [
+        el("span", {}, [el("span", { class: "dot", style: `background:${term.color}` }), "train (15-pt smoothed)"]),
+        el("span", {}, [el("span", { class: "dot", style: "background:var(--ink);opacity:.55" }), "held-out tuning split"]),
+      ]));
+      grid.appendChild(card);
+      drawLossChart(svg, tc.step, tc[term.key], vc.step, vc[term.key], term.color);
+    });
+  })();
+
+  /* ---------------------------------------------------------- headline stats */
+
+  (function renderHeadlineStats() {
+    const g = document.getElementById("headline-stats");
+    const tm = DATA.inference_results.task_metrics;
+    const stats = [
+      ["Cross-entropy", fmt(tm.cross_entropy, 3), null],
+      ["Perplexity", fmt(tm.perplexity, 2), null],
+      ["Top-1 accuracy", fmtPct(tm.top1_accuracy), "next-event exact match"],
+      ["Top-5 accuracy", fmtPct(tm.top5_accuracy), "true event in top 5"],
+      ["Predictions scored", fmtInt(tm.n_predictions), null],
+      ["Orthogonality", fmt(DATA.inference_results.orthogonality, 4), "known vs. unknown leakage"],
+    ];
+    stats.forEach(([label, value, sub]) => {
+      g.appendChild(el("div", { class: "stat" }, [
+        el("div", { class: "label" }, [label]),
+        el("div", { class: "value" }, [value]),
+        sub ? el("div", { class: "sub" }, [sub]) : null,
+      ]));
+    });
+  })();
+
+  /* ---------------------------------------------------------- code-type table */
+
+  (function renderCodeTypeTable() {
+    const table = document.getElementById("code-type-table");
+    const rows = Object.entries(DATA.inference_results.task_metrics_by_code_type)
+      .sort((a, b) => b[1].n_predictions - a[1].n_predictions);
+    const thead = el("thead", {}, [el("tr", {}, [
+      el("th", {}, ["Code type"]),
+      el("th", { class: "num" }, ["Predictions"]),
+      el("th", { class: "num" }, ["Cross-entropy"]),
+      el("th", { class: "num" }, ["Top-1"]),
+      el("th", {}, ["Top-5"]),
+    ])]);
+    const tbody = el("tbody");
+    rows.forEach(([name, m]) => {
+      tbody.appendChild(el("tr", {}, [
+        el("td", {}, [name[0].toUpperCase() + name.slice(1)]),
+        el("td", { class: "num" }, [fmtInt(m.n_predictions)]),
+        el("td", { class: "num" }, [fmt(m.cross_entropy, 3)]),
+        el("td", { class: "num" }, [fmtPct(m.top1_accuracy)]),
+        el("td", {}, [el("div", { class: "bar-cell" }, [
+          el("div", { class: "bar-track" }, [el("div", { class: "bar-fill", style: `width:${(m.top5_accuracy * 100).toFixed(1)}%` })]),
+          el("span", { style: "font-family:var(--font-mono);font-size:0.78rem;color:var(--ink-muted);" }, [fmtPct(m.top5_accuracy)]),
+        ])]),
+      ]));
+    });
+    table.appendChild(thead);
+    table.appendChild(tbody);
+  })();
+
+  /* ---------------------------------------------------------- concept table */
+
+  function aurocChip(v) {
+    if (v === null || v === undefined) return el("span", { class: "chip neutral" }, ["n/a"]);
+    const cls = v >= 0.85 ? "good" : v >= 0.7 ? "warn" : "critical";
+    return el("span", { class: "chip " + cls }, [fmt(v, 3)]);
+  }
+
+  function prettyConceptName(name) {
+    return name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+      .replace(/Aki/g, "AKI").replace(/Sirs/g, "SIRS").replace(/Qsofa/g, "qSOFA");
+  }
+
+  (function renderConceptTable() {
+    const table = document.getElementById("concept-table");
+    const rows = DATA.inference_results.concept_metrics.slice().sort((a, b) => (b.auroc || 0) - (a.auroc || 0));
+    const thead = el("thead", {}, [el("tr", {}, [
+      el("th", {}, ["Concept"]),
+      el("th", { class: "num" }, ["n observed"]),
+      el("th", { class: "num" }, ["Prevalence"]),
+      el("th", { class: "num" }, ["AUROC"]),
+      el("th", { class: "num" }, ["AUPRC"]),
+      el("th", { class: "num" }, ["Brier"]),
+      el("th", { class: "num" }, ["Acc @ 0.5"]),
+    ])]);
+    const tbody = el("tbody");
+    rows.forEach((m) => {
+      tbody.appendChild(el("tr", {}, [
+        el("td", {}, [prettyConceptName(m.name)]),
+        el("td", { class: "num" }, [fmtInt(m.n_observed)]),
+        el("td", { class: "num" }, [fmtPct(m.prevalence)]),
+        el("td", { class: "num" }, [aurocChip(m.auroc)]),
+        el("td", { class: "num" }, [fmt(m.auprc, 3)]),
+        el("td", { class: "num" }, [fmt(m.brier_score, 3)]),
+        el("td", { class: "num" }, [fmtPct(m.accuracy_at_0_5)]),
+      ]));
+    });
+    table.appendChild(thead);
+    table.appendChild(tbody);
+  })();
+
+  /* ---------------------------------------------------------- observability table */
+
+  (function renderObservabilityTable() {
+    const table = document.getElementById("observability-table");
+    const rows = DATA.inference_results.observability_metrics.slice().sort((a, b) => (b.auroc || 0) - (a.auroc || 0));
+    const thead = el("thead", {}, [el("tr", {}, [
+      el("th", {}, ["Concept"]),
+      el("th", { class: "num" }, ["Observed rate"]),
+      el("th", { class: "num" }, ["AUROC"]),
+      el("th", { class: "num" }, ["Acc @ 0.5"]),
+    ])]);
+    const tbody = el("tbody");
+    rows.forEach((m) => {
+      tbody.appendChild(el("tr", {}, [
+        el("td", {}, [prettyConceptName(m.name)]),
+        el("td", { class: "num" }, [fmtPct(m.observed_rate)]),
+        el("td", { class: "num" }, [aurocChip(m.auroc)]),
+        el("td", { class: "num" }, [fmtPct(m.accuracy_at_0_5)]),
+      ]));
+    });
+    table.appendChild(thead);
+    table.appendChild(tbody);
+  })();
+
+  /* ---------------------------------------------------------- case browser */
+
+  let selectedCaseIdx = 0;
+
+  function renderCaseRail() {
+    const rail = document.getElementById("case-rail");
+    rail.innerHTML = "";
+    DATA.cases.forEach((c, i) => {
+      const chip = el("button", { class: "case-chip" + (i === selectedCaseIdx ? " active" : "") }, [
+        el("div", { class: "row1" }, [
+          el("span", { class: "sid" }, ["#" + c.subject_id]),
+          el("span", { class: "n-concepts", style: c.n_concepts_triggered > 0 ? "color:var(--critical)" : "color:var(--ink-faint)" }, [
+            c.n_concepts_triggered + (c.n_concepts_triggered === 1 ? " concept" : " concepts"),
+          ]),
+        ]),
+        el("div", { class: "row2" }, [
+          el("span", {}, [fmtInt(c.n_events) + " events"]),
+          el("span", {}, [fmtDuration(c.span_hrs)]),
+        ]),
+      ]);
+      chip.addEventListener("click", () => { selectedCaseIdx = i; renderCaseRail(); renderCaseDetail(); });
+      rail.appendChild(chip);
+    });
+  }
+
+  function fmtDuration(hrs) {
+    if (hrs < 48) return hrs.toFixed(1) + "h stay";
+    const days = hrs / 24;
+    if (days < 90) return days.toFixed(1) + "d span";
+    const years = days / 365.25;
+    return years.toFixed(1) + "y span";
+  }
+
+  function hexToRgb(hex) {
+    const m = hex.trim().replace("#", "");
+    const r = parseInt(m.substring(0, 2), 16);
+    const g = parseInt(m.substring(2, 4), 16);
+    const b = parseInt(m.substring(4, 6), 16);
+    return [r, g, b];
+  }
+
+  // Canvas 2D's fillStyle is resolved outside the DOM cascade -- it cannot
+  // parse var()/color-mix() referencing custom properties, silently falling
+  // back to black. Resolve the accent token to concrete RGB once instead.
+  function accentRgb() {
+    const hex = getComputedStyle(document.documentElement).getPropertyValue("--accent");
+    return hexToRgb(hex);
+  }
+
+  function drawConceptStrip(canvas, values) {
+    const dpr = window.devicePixelRatio || 1;
+    const rectW = canvas.clientWidth || 400, rectH = 28;
+    canvas.width = rectW * dpr; canvas.height = rectH * dpr;
+    const ctx = canvas.getContext("2d");
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, rectW, rectH);
+    const [r, g, b] = accentRgb();
+    const n = values.length;
+    const bw = rectW / n;
+    for (let i = 0; i < n; i++) {
+      const v = Math.max(0, Math.min(1, values[i]));
+      const alpha = 0.08 + v * 0.85;
+      ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(3)})`;
+      ctx.fillRect(i * bw, 0, bw + 0.6, rectH);
+    }
+  }
+
+  function renderCaseDetail() {
+    const c = DATA.cases[selectedCaseIdx];
+    const wrap = document.getElementById("case-detail");
+    wrap.innerHTML = "";
+
+    wrap.appendChild(el("div", { class: "case-detail-head" }, [
+      el("div", {}, [
+        el("h3", {}, ["Patient #" + c.subject_id]),
+        el("div", { class: "meta" }, [fmtInt(c.n_events) + " tokenized events over " + fmtDuration(c.span_hrs)]),
+      ]),
+      el("div", { class: "case-stat-row" }, [
+        el("div", { class: "cs" }, [el("div", { class: "label" }, ["Top-1"]), el("div", { class: "value" }, [fmtPct(c.top1_acc)])]),
+        el("div", { class: "cs" }, [el("div", { class: "label" }, ["Top-5"]), el("div", { class: "value" }, [fmtPct(c.top5_acc)])]),
+      ]),
+    ]));
+
+    const flags = el("div", { class: "concept-flags" });
+    c.concept_names.forEach((name, i) => {
+      const triggered = c.concept_labels[i] > 0;
+      const observed = c.concept_observed[i] > 0;
+      flags.appendChild(el("span", { class: "flag" + (triggered ? " triggered" : ""), title: observed ? "observed" : "never observed in this stay" }, [
+        prettyConceptName(name) + (observed ? "" : " ·  n/o"),
+      ]));
+    });
+    wrap.appendChild(flags);
+
+    const stripWrap = el("div", { class: "strip-wrap" });
+    stripWrap.appendChild(el("div", { class: "strip-title" }, ["Concept-probability trace over the stay (bottleneck output, sampled)"]));
+    const monitor = el("div", { class: "monitor" });
+    const traj = c.trajectory;
+    c.concept_names.forEach((name, ci) => {
+      const isTrue = c.concept_labels[ci] > 0;
+      const row = el("div", { class: "monitor-row" });
+      row.appendChild(el("div", { class: "row-label" + (isTrue ? " is-true" : "") }, [
+        el("span", { class: "truth-dot" }), prettyConceptName(name),
+      ]));
+      const canvas = document.createElement("canvas");
+      row.appendChild(canvas);
+      monitor.appendChild(row);
+      requestAnimationFrame(() => drawConceptStrip(canvas, traj.concept_probs.map((row) => row[ci])));
+    });
+    stripWrap.appendChild(monitor);
+    wrap.appendChild(stripWrap);
+
+    wrap.appendChild(el("div", { class: "detail-table-title" }, ["Sampled forecast points along the stay"]));
+    const tableWrap = el("div", { class: "table-wrap" });
+    const table = el("table");
+    table.appendChild(el("thead", {}, [el("tr", {}, [
+      el("th", {}, ["t (hrs)"]),
+      el("th", {}, ["Actual event"]),
+      el("th", {}, ["Model's top-3 forecast for next event"]),
+      el("th", { class: "num" }, ["True rank"]),
+    ])]));
+    const tbody = el("tbody");
+    c.detail_rows.forEach((row) => {
+      const rankChip = row.true_rank === null
+        ? el("span", { class: "chip neutral" }, ["end"])
+        : el("span", { class: "chip " + (row.true_rank === 0 ? "good" : row.true_rank < 5 ? "warn" : "critical") }, [
+            row.true_rank === 0 ? "hit" : "#" + (row.true_rank + 1),
+          ]);
+      const predList = el("div", { class: "pred-list" });
+      row.top3.forEach(([code, p]) => {
+        const hit = row.true_next && code === row.true_next;
+        predList.appendChild(el("div", { class: "p-row" + (hit ? " hit" : "") }, [
+          el("span", { class: "p-code" }, [code]),
+          el("span", { class: "p-prob" }, [fmt(p, 3)]),
+        ]));
+      });
+      tbody.appendChild(el("tr", {}, [
+        el("td", { class: "num" }, [fmt(row.t, 1)]),
+        el("td", { class: "code" }, [row.input]),
+        el("td", {}, [predList]),
+        el("td", { class: "num" }, [rankChip]),
+      ]));
+    });
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+    wrap.appendChild(tableWrap);
+  }
+
+  renderCaseRail();
+  renderCaseDetail();
+  window.addEventListener("resize", () => { renderCaseDetail(); });
+})();
+</script>
