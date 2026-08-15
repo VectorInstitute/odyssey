@@ -16,7 +16,14 @@ Checkpoints are periodic ``torch.save`` dicts of the model/optimizer
 state, one more at the end of every epoch, plus a final one; the fitted
 quantile binner and vocabulary are saved alongside so inference can
 reconstruct the exact same tokenization without needing the train split
-again.
+again. Every evaluation that improves the combined validation loss (the
+same task + weighted concept/orthogonality/observability combination
+training itself optimizes) also saves ``checkpoint_best.pt`` -- the one
+inference should generally load, since it need not be the same as
+whatever the run happened to end on. Set ``early_stopping_patience`` to
+stop once that hasn't improved for that many consecutive evaluations;
+unset (the default), a run always completes every configured epoch, as
+it always did before this existed.
 
 To resume after an interruption (e.g. a spot-instance preemption), pass
 ``--config-json`` with ``"resume_from": "<output_dir>/checkpoint_N.pt"``
@@ -108,6 +115,15 @@ class TrainingConfig:
     eval_every: int = 200
     eval_max_chunks: int = 50
     checkpoint_every: int = 500
+
+    early_stopping_patience: Optional[int] = None
+    """Stop once the combined validation loss (the same task + weighted
+    concept/orthogonality/observability combination compute_streaming_loss
+    trains against, evaluated on the tuning split) hasn't improved for
+    this many consecutive ``eval_every`` checks. ``None`` disables early
+    stopping -- the run always did every configured epoch before this
+    existed, so opt-in keeps that the default. Every improvement saves
+    ``checkpoint_best.pt``, independent of ``checkpoint_every``."""
 
     seed: int = 0
 
@@ -262,7 +278,26 @@ def evaluate_streaming(
     return {key: value / max(n, 1) for key, value in totals.items()}
 
 
-def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
+def _combined_val_loss(
+    components: Dict[str, float], weights: ConceptBottleneckLossWeights
+) -> float:
+    """Compute the same task + weighted-auxiliary combination the training loss uses.
+
+    ``evaluate_streaming``'s returned dict has the four loss components
+    averaged separately, not combined -- this applies
+    :func:`~odyssey.models.concept_bottleneck.combined_loss`'s exact
+    weighting to them, so "is validation performance improving" tracks
+    the actual thing being optimized, not just next-token loss alone.
+    """
+    return (
+        components["task_loss"]
+        + weights.concept * components.get("concept_loss", 0.0)
+        + weights.orthogonality * components.get("orthogonality_loss", 0.0)
+        + weights.observability * components.get("observability_loss", 0.0)
+    )
+
+
+def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
     """Run one full training job; returns the output directory."""
     output_dir = Path(config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -360,6 +395,8 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
     start_epoch = 0
     global_step = 0
     steps_into_epoch = 0
+    best_val_loss = float("inf")
+    evals_without_improvement = 0
     if config.resume_from is not None:
         logger.info("[resume] loading %s", config.resume_from)
         checkpoint = torch.load(config.resume_from, map_location=device)
@@ -368,6 +405,8 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
             optimizer.load_state_dict(checkpoint["optimizer"])
         global_step = checkpoint["step"]
         start_epoch = checkpoint.get("epoch", 0)
+        best_val_loss = checkpoint.get("best_val_loss", float("inf"))
+        evals_without_improvement = checkpoint.get("evals_without_improvement", 0)
         saved_steps_into_epoch = checkpoint.get("steps_into_epoch", 0)
         saved_batch_config = checkpoint.get("batch_config")
         if saved_steps_into_epoch > 0 and saved_batch_config != _batch_config_fields(
@@ -415,6 +454,7 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
 
     loss_logger = LossLogger(output_dir / "loss_log.jsonl")
     start_time = time.time()
+    stop_early = False
 
     for epoch in range(start_epoch, config.num_epochs):
         sampler = make_train_sampler(epoch)
@@ -476,6 +516,52 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
                 summary = " ".join(f"{k}={v:.4f}" for k, v in val.items())
                 logger.info("[val]   step=%d %s", global_step, summary)
 
+                val_loss = _combined_val_loss(val, loss_weights)
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    evals_without_improvement = 0
+                    _atomic_torch_save(
+                        {
+                            "model": model.state_dict(),
+                            "optimizer": optimizer.state_dict(),
+                            "step": global_step,
+                            "epoch": epoch,
+                            "steps_into_epoch": steps_this_epoch,
+                            "batch_config": _batch_config_fields(config),
+                            "best_val_loss": best_val_loss,
+                            "evals_without_improvement": evals_without_improvement,
+                            "config": asdict(config),
+                        },
+                        output_dir / "checkpoint_best.pt",
+                    )
+                    logger.info(
+                        "[best]  new best val_loss=%.4f at step=%d",
+                        best_val_loss,
+                        global_step,
+                    )
+                else:
+                    evals_without_improvement += 1
+                    if config.early_stopping_patience is not None:
+                        logger.info(
+                            "[early-stop] %d/%d evals without improvement "
+                            "(best=%.4f, current=%.4f)",
+                            evals_without_improvement,
+                            config.early_stopping_patience,
+                            best_val_loss,
+                            val_loss,
+                        )
+
+                if (
+                    config.early_stopping_patience is not None
+                    and evals_without_improvement >= config.early_stopping_patience
+                ):
+                    logger.info(
+                        "[early-stop] stopping: no improvement in %d consecutive evals",
+                        config.early_stopping_patience,
+                    )
+                    stop_early = True
+                    break
+
             if global_step % config.checkpoint_every == 0:
                 _atomic_torch_save(
                     {
@@ -485,10 +571,15 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
                         "epoch": epoch,
                         "steps_into_epoch": steps_this_epoch,
                         "batch_config": _batch_config_fields(config),
+                        "best_val_loss": best_val_loss,
+                        "evals_without_improvement": evals_without_improvement,
                         "config": asdict(config),
                     },
                     output_dir / f"checkpoint_{global_step}.pt",
                 )
+
+        if stop_early:
+            break
 
         # One checkpoint per completed epoch, independent of
         # checkpoint_every -- steps_into_epoch=0 here since resuming
@@ -500,6 +591,8 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
                 "optimizer": optimizer.state_dict(),
                 "step": global_step,
                 "epoch": epoch + 1,
+                "best_val_loss": best_val_loss,
+                "evals_without_improvement": evals_without_improvement,
                 "config": asdict(config),
             },
             output_dir / f"checkpoint_epoch_{epoch}.pt",
@@ -512,7 +605,12 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
     loss_logger.close()
     elapsed = time.time() - start_time
     logger.info(
-        "[done] %d steps in %.1fs, output in %s", global_step, elapsed, output_dir
+        "[done] %d steps in %.1fs (early_stop=%s, best_val_loss=%.4f), output in %s",
+        global_step,
+        elapsed,
+        stop_early,
+        best_val_loss,
+        output_dir,
     )
     return output_dir
 

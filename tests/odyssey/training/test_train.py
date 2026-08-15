@@ -12,13 +12,46 @@ import torch
 
 from odyssey.data.types import AuxiliaryInputs, ClinicalSequenceBatch
 from odyssey.models.backbones.base import TimeAwareState
+from odyssey.models.concept_bottleneck import ConceptBottleneckLossWeights
 from odyssey.training.train import (
     LossLogger,
     TrainingConfig,
     _atomic_torch_save,
+    _combined_val_loss,
     _detach_state,
     _move_chunk_to_device,
 )
+
+
+# ---------------------------------------------------------------------------
+# _combined_val_loss
+# ---------------------------------------------------------------------------
+
+
+def test_combined_val_loss_matches_combined_loss_weighting() -> None:
+    weights = ConceptBottleneckLossWeights(
+        concept=1.0, orthogonality=0.1, observability=0.2
+    )
+    components = {
+        "task_loss": 2.0,
+        "concept_loss": 0.5,
+        "orthogonality_loss": 0.3,
+        "observability_loss": 0.1,
+    }
+
+    got = _combined_val_loss(components, weights)
+
+    assert got == pytest.approx(2.0 + 1.0 * 0.5 + 0.1 * 0.3 + 0.2 * 0.1)
+
+
+def test_combined_val_loss_defaults_missing_auxiliary_terms_to_zero() -> None:
+    # A chunk with no patient_end (or a whole eval pass with none) has no
+    # concept/orthogonality/observability signal -- matches
+    # evaluate_streaming's own dict, which only has whatever keys
+    # compute_streaming_loss actually returned.
+    weights = ConceptBottleneckLossWeights(concept=1.0, orthogonality=1.0)
+    got = _combined_val_loss({"task_loss": 3.0}, weights)
+    assert got == pytest.approx(3.0)
 
 
 # ---------------------------------------------------------------------------

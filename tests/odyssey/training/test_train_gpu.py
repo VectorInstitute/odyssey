@@ -13,7 +13,7 @@ loss logging), not that the model learns anything meaningful yet.
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pytest
 import torch
@@ -28,6 +28,7 @@ cuda_required = pytest.mark.skipif(
 
 import polars as pl  # noqa: E402
 
+import odyssey.training.train as train_module  # noqa: E402
 from odyssey.training.train import TrainingConfig, train  # noqa: E402
 
 
@@ -83,6 +84,39 @@ def _write_shards(shard_dir: Path, n_subjects: int, n_events_per_subject: int) -
     frame.write_parquet(shard_dir / "0.parquet")
 
 
+def _tiny_config(
+    train_dir: Path, tuning_dir: Path, output_dir: Path, **overrides: Any
+) -> TrainingConfig:
+    """Build the smallest TrainingConfig that still exercises EHRHybridBackbone.
+
+    Shared across every test in this file so each one only states the
+    fields it actually varies.
+    """
+    defaults: Dict[str, Any] = {
+        "train_shard_dir": str(train_dir),
+        "tuning_shard_dir": str(tuning_dir),
+        "output_dir": str(output_dir),
+        "hidden_size": 64,
+        "num_hidden_layers": 2,
+        "mamba_state_size": 16,
+        "mamba_headdim": 64,
+        "mamba_chunk_size": 16,
+        "attn_num_heads": 8,
+        "embedding_dim": 8,
+        "vocab_min_count": 1,
+        "quantile_min_count": 1,
+        "num_lanes": 2,
+        "chunk_size": 8,
+        "num_epochs": 1,
+        "log_every": 2,
+        "eval_every": 4,
+        "eval_max_chunks": 2,
+        "checkpoint_every": 4,
+    }
+    defaults.update(overrides)
+    return TrainingConfig(**defaults)
+
+
 @cuda_required
 def test_train_runs_end_to_end_and_produces_expected_outputs(tmp_path: Path) -> None:
     train_dir = tmp_path / "data" / "train"
@@ -91,27 +125,7 @@ def test_train_runs_end_to_end_and_produces_expected_outputs(tmp_path: Path) -> 
     _write_shards(tuning_dir, n_subjects=4, n_events_per_subject=30)
 
     output_dir = tmp_path / "run"
-    config = TrainingConfig(
-        train_shard_dir=str(train_dir),
-        tuning_shard_dir=str(tuning_dir),
-        output_dir=str(output_dir),
-        hidden_size=64,
-        num_hidden_layers=2,
-        mamba_state_size=16,
-        mamba_headdim=64,
-        mamba_chunk_size=16,
-        attn_num_heads=8,
-        embedding_dim=8,
-        vocab_min_count=1,
-        quantile_min_count=1,
-        num_lanes=2,
-        chunk_size=8,
-        num_epochs=1,
-        log_every=2,
-        eval_every=4,
-        eval_max_chunks=2,
-        checkpoint_every=4,
-    )
+    config = _tiny_config(train_dir, tuning_dir, output_dir)
 
     result_dir = train(config)
 
@@ -121,6 +135,12 @@ def test_train_runs_end_to_end_and_produces_expected_outputs(tmp_path: Path) -> 
     assert (output_dir / "quantile_binner.json").exists()
     assert (output_dir / "checkpoint_final.pt").exists()
     assert (output_dir / "checkpoint_epoch_0.pt").exists()
+    # best-checkpoint tracking always runs (independent of whether early
+    # stopping is enabled) -- any eval improving on the running best saves
+    # checkpoint_best.pt, and with eval_every=4 this run had several.
+    assert (output_dir / "checkpoint_best.pt").exists()
+    best_checkpoint = torch.load(output_dir / "checkpoint_best.pt", map_location="cpu")
+    assert torch.isfinite(torch.tensor(best_checkpoint["best_val_loss"]))
 
     log_lines = (output_dir / "loss_log.jsonl").read_text().strip().split("\n")
     assert len(log_lines) > 0
@@ -159,23 +179,10 @@ def test_train_resumes_from_an_epoch_checkpoint(tmp_path: Path) -> None:
     _write_shards(tuning_dir, n_subjects=4, n_events_per_subject=30)
 
     output_dir = tmp_path / "run"
-    base_config = TrainingConfig(
-        train_shard_dir=str(train_dir),
-        tuning_shard_dir=str(tuning_dir),
-        output_dir=str(output_dir),
-        hidden_size=64,
-        num_hidden_layers=2,
-        mamba_state_size=16,
-        mamba_headdim=64,
-        mamba_chunk_size=16,
-        attn_num_heads=8,
-        embedding_dim=8,
-        vocab_min_count=1,
-        quantile_min_count=1,
-        num_lanes=2,
-        chunk_size=8,
-        num_epochs=1,
-        log_every=2,
+    base_config = _tiny_config(
+        train_dir,
+        tuning_dir,
+        output_dir,
         eval_every=100,  # skip eval here, already covered above
         checkpoint_every=100000,  # only the end-of-epoch checkpoint matters here
     )
@@ -218,23 +225,10 @@ def test_train_resumes_mid_epoch_by_fast_forwarding(tmp_path: Path) -> None:
     _write_shards(tuning_dir, n_subjects=4, n_events_per_subject=30)
 
     output_dir = tmp_path / "run"
-    base_config = TrainingConfig(
-        train_shard_dir=str(train_dir),
-        tuning_shard_dir=str(tuning_dir),
-        output_dir=str(output_dir),
-        hidden_size=64,
-        num_hidden_layers=2,
-        mamba_state_size=16,
-        mamba_headdim=64,
-        mamba_chunk_size=16,
-        attn_num_heads=8,
-        embedding_dim=8,
-        vocab_min_count=1,
-        quantile_min_count=1,
-        num_lanes=2,
-        chunk_size=8,
-        num_epochs=1,
-        log_every=2,
+    base_config = _tiny_config(
+        train_dir,
+        tuning_dir,
+        output_dir,
         eval_every=100000,
         checkpoint_every=4,  # small enough to land mid-epoch, not just at the end
     )
@@ -277,25 +271,8 @@ def test_train_falls_back_to_epoch_restart_when_batch_config_differs(
     _write_shards(tuning_dir, n_subjects=4, n_events_per_subject=30)
 
     output_dir = tmp_path / "run"
-    base_config = TrainingConfig(
-        train_shard_dir=str(train_dir),
-        tuning_shard_dir=str(tuning_dir),
-        output_dir=str(output_dir),
-        hidden_size=64,
-        num_hidden_layers=2,
-        mamba_state_size=16,
-        mamba_headdim=64,
-        mamba_chunk_size=16,
-        attn_num_heads=8,
-        embedding_dim=8,
-        vocab_min_count=1,
-        quantile_min_count=1,
-        num_lanes=2,
-        chunk_size=8,
-        num_epochs=1,
-        log_every=2,
-        eval_every=100000,
-        checkpoint_every=4,
+    base_config = _tiny_config(
+        train_dir, tuning_dir, output_dir, eval_every=100000, checkpoint_every=4
     )
     train(base_config)
     checkpoint_path = next(output_dir.glob("checkpoint_[0-9]*.pt"))
@@ -317,3 +294,104 @@ def test_train_falls_back_to_epoch_restart_when_batch_config_differs(
         output_dir / "checkpoint_final.pt", map_location="cpu"
     )
     assert final_checkpoint["step"] > first_checkpoint_step
+
+
+@cuda_required
+def test_train_stops_early_when_validation_loss_stops_improving(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    train_dir = tmp_path / "data" / "train"
+    tuning_dir = tmp_path / "data" / "tuning"
+    _write_shards(train_dir, n_subjects=12, n_events_per_subject=30)
+    _write_shards(tuning_dir, n_subjects=4, n_events_per_subject=30)
+
+    output_dir = tmp_path / "run"
+    # Many epochs' worth of steps available, but evaluate_streaming is
+    # monkeypatched to a scripted, deterministic sequence -- improves
+    # twice, then plateaus -- so the test doesn't depend on a tiny,
+    # barely-trained model's real (noisy) validation loss actually
+    # plateauing within a short run.
+    scripted_val_losses = iter([2.0, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5])
+
+    def _fake_evaluate_streaming(*_args: object, **_kwargs: object) -> Dict[str, float]:
+        return {"task_loss": next(scripted_val_losses)}
+
+    monkeypatch.setattr(train_module, "evaluate_streaming", _fake_evaluate_streaming)
+
+    config = _tiny_config(
+        train_dir,
+        tuning_dir,
+        output_dir,
+        num_epochs=20,
+        eval_every=2,
+        checkpoint_every=100000,
+        early_stopping_patience=2,
+    )
+
+    train(config)
+
+    records = [
+        json.loads(line)
+        for line in (output_dir / "loss_log.jsonl").read_text().strip().split("\n")
+    ]
+    val_records = [r for r in records if r["split"] == "tuning"]
+    # 2 improving evals + 2 non-improving (patience=2) = 4 evals total,
+    # not the dozens a 20-epoch run would otherwise produce.
+    assert len(val_records) == 4
+    assert [r["task_loss"] for r in val_records] == [2.0, 1.5, 1.5, 1.5]
+
+    best_checkpoint = torch.load(output_dir / "checkpoint_best.pt", map_location="cpu")
+    assert best_checkpoint["best_val_loss"] == pytest.approx(1.5)
+    # stopped early -- never reached anywhere near 20 epochs' worth of
+    # checkpoint_epoch_N.pt files.
+    assert not (output_dir / "checkpoint_epoch_1.pt").exists()
+
+
+@cuda_required
+def test_train_resume_preserves_best_val_loss_across_a_restart(
+    tmp_path: Path,
+) -> None:
+    train_dir = tmp_path / "data" / "train"
+    tuning_dir = tmp_path / "data" / "tuning"
+    _write_shards(train_dir, n_subjects=12, n_events_per_subject=30)
+    _write_shards(tuning_dir, n_subjects=4, n_events_per_subject=30)
+
+    output_dir = tmp_path / "run"
+    base_config = _tiny_config(
+        train_dir,
+        tuning_dir,
+        output_dir,
+        eval_every=4,
+        checkpoint_every=4,
+    )
+    train(base_config)
+
+    checkpoint_path = next(
+        p
+        for p in sorted(
+            output_dir.glob("checkpoint_[0-9]*.pt"),
+            key=lambda p: int(p.stem.split("_")[-1]),
+        )
+        if "best_val_loss" in torch.load(p, map_location="cpu")
+    )
+    saved_best = torch.load(checkpoint_path, map_location="cpu")["best_val_loss"]
+    assert saved_best < float("inf")
+
+    resumed_config = TrainingConfig(
+        **{
+            **vars(base_config),
+            "num_epochs": 2,
+            "resume_from": str(checkpoint_path),
+        }
+    )
+    train(resumed_config)
+
+    # checkpoint_best.pt after the resumed run must reflect the best
+    # across *both* runs, never worse than what the first run already
+    # found -- resuming must not silently reset best-tracking to
+    # "nothing seen yet" and let a worse epoch overwrite a genuinely
+    # better earlier checkpoint.
+    final_best = torch.load(output_dir / "checkpoint_best.pt", map_location="cpu")[
+        "best_val_loss"
+    ]
+    assert final_best <= saved_best
