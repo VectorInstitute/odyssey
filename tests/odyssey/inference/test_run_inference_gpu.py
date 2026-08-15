@@ -36,6 +36,14 @@ def _write_shards(shard_dir: Path, n_subjects: int, n_events_per_subject: int) -
     rows: List[Tuple[int, str, datetime, Optional[float], Optional[int]]] = []
     for subject_id in range(n_subjects):
         base = T0 + timedelta(days=subject_id)
+        # One admission per subject (real hadm_id, constant across their
+        # events) -- visit-scoped concept supervision is the default now
+        # (odyssey.training.train.TrainingConfig.concept_supervision), and
+        # needs a real hadm_id somewhere to have any visit to supervise at
+        # all; an all-None hadm_id column here previously produced zero
+        # visits, so evaluate_run had nothing to pool and the pipeline
+        # this test exists to validate was silently never exercised.
+        hadm_id = 10_000 + subject_id
         for i in range(n_events_per_subject):
             t = base + timedelta(hours=i)
             if i % 3 == 0:
@@ -45,7 +53,7 @@ def _write_shards(shard_dir: Path, n_subjects: int, n_events_per_subject: int) -
                         "LAB//220045//bpm",
                         t,
                         70.0 + 10 * (subject_id % 5),
-                        None,
+                        hadm_id,
                     )
                 )
             elif i % 3 == 1:
@@ -55,11 +63,11 @@ def _write_shards(shard_dir: Path, n_subjects: int, n_events_per_subject: int) -
                         "LAB//220210//insp_min",
                         t,
                         15.0 + (subject_id % 10),
-                        None,
+                        hadm_id,
                     )
                 )
             else:
-                rows.append((subject_id, f"DIAGNOSIS//{i % 7}", t, None, None))
+                rows.append((subject_id, f"DIAGNOSIS//{i % 7}", t, None, hadm_id))
     frame = pl.DataFrame(
         rows,
         schema={
