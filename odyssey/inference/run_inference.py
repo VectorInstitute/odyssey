@@ -96,7 +96,10 @@ def _latest_checkpoint(run_dir: Path) -> Path:
 
 
 def load_run(
-    run_dir: Union[str, Path], *, device: str = "cuda"
+    run_dir: Union[str, Path],
+    *,
+    device: str = "cuda",
+    checkpoint_path: Optional[Union[str, Path]] = None,
 ) -> Tuple[ConceptBottleneckSequenceModel, Vocabulary, QuantileBinner, TrainingConfig]:
     """Reconstruct a trained model and its tokenization artifacts from a run dir.
 
@@ -104,8 +107,11 @@ def load_run(
     directory: reads ``config.json`` (architecture hyperparameters --
     the training-only fields it also contains, e.g. ``learning_rate``,
     are simply unused by :func:`~odyssey.training.train.build_model`),
-    ``vocabulary.json``, ``quantile_binner.json``, and the latest
-    available checkpoint (see :func:`_latest_checkpoint`).
+    ``vocabulary.json``, ``quantile_binner.json``, and a checkpoint --
+    ``checkpoint_path`` if given (e.g. ``run_dir / "checkpoint_best.pt"``
+    to evaluate the lowest-val-loss checkpoint rather than wherever
+    training happened to stop), else the latest available one (see
+    :func:`_latest_checkpoint`).
     """
     run_dir = Path(run_dir)
     config = TrainingConfig(**json.loads((run_dir / "config.json").read_text()))
@@ -113,7 +119,8 @@ def load_run(
     binner = QuantileBinner.load(run_dir / "quantile_binner.json")
 
     model = build_model(config, vocab_size=len(vocab), num_concepts=len(CONCEPTS))
-    checkpoint = torch.load(_latest_checkpoint(run_dir), map_location=device)
+    checkpoint_path = Path(checkpoint_path) if checkpoint_path else _latest_checkpoint(run_dir)
+    checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint["model"])
     model = model.to(device)
     model.eval()
@@ -342,10 +349,13 @@ def evaluate_run(
     num_lanes: int = 8,
     chunk_size: int = 256,
     device: Optional[str] = None,
+    checkpoint_path: Optional[Union[str, Path]] = None,
 ) -> InferenceResults:
     """End-to-end: load a trained run, score it against a held-out split."""
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    model, vocab, binner, _ = load_run(run_dir, device=device)
+    model, vocab, binner, _ = load_run(
+        run_dir, device=device, checkpoint_path=checkpoint_path
+    )
 
     logger.info("[inference] loading held-out shards from %s", held_out_shard_dir)
     raw_events = load_meds_shards(held_out_shard_dir, max_shards=max_shards)
