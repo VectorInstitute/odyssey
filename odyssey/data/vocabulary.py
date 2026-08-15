@@ -124,7 +124,10 @@ class Vocabulary:
 # odyssey.data.types/ClinicalEventEmbeddings' padding_idx convention);
 # the remaining 8 slots fill the default type_vocab_size=9. Built from the
 # code prefixes actually observed in the MIMIC-IV 3.1 MEDS extraction
-# (odyssey/data/concepts.py's itemid-keyed LAB//... codes fall under LAB).
+# (odyssey/data/concepts.py's itemid-keyed LAB//... codes fall under LAB)
+# plus the eICU extraction's families (specs/eICU.yaml): both sources map
+# into the same small taxonomy, so a model sees "a lab is a lab"
+# regardless of which institution charted it.
 PAD_TYPE = 0
 DIAGNOSIS_TYPE = 1
 MEDICATION_TYPE = 2
@@ -160,6 +163,15 @@ _PREFIX_TO_TYPE: Dict[str, int] = {
     "MEDS_BIRTH": DEMOGRAPHIC_TYPE,
     "MEDS_DEATH": DEMOGRAPHIC_TYPE,
     "DRG": BILLING_TYPE,
+    # eICU families (specs/eICU.yaml). CAREPLAN_*/ALLERGY deliberately fall
+    # through to OTHER_TYPE -- no better slot exists in this taxonomy.
+    "VITALS": LAB_TYPE,
+    "ADMISSION_DIAGNOSIS": DIAGNOSIS_TYPE,
+    "TREATMENT": PROCEDURE_TYPE,
+    "INFUSION_DRUG": MEDICATION_TYPE,
+    "ICU_ADMISSION_WEIGHT": DEMOGRAPHIC_TYPE,
+    "ICU_ADMISSION_HEIGHT": DEMOGRAPHIC_TYPE,
+    "ICU_DISCHARGE_WEIGHT": DEMOGRAPHIC_TYPE,
 }
 
 

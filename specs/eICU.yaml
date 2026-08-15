@@ -1,0 +1,553 @@
+# The complete eICU-CRD 2.0 MEDS ETL, as a MESSY (MEDS-Extract Specification Syntax
+# YAML) spec for MEDS-Extract >= 0.7 -- the same tooling the MIMIC-IV extraction uses
+# (see README "Data pipeline"). Run it by filesystem path (it is not registered as an
+# entry point, deliberately -- it lives with the project that owns it):
+#
+#     # Validate against the public eICU demo (no credentials needed):
+#     uv run meds-extract-run spec=./specs/eICU.yaml output_dir=<out> dataset_key=demo
+#
+#     # Full eICU-CRD 2.0, already downloaded locally:
+#     uv run meds-extract-run spec=./specs/eICU.yaml output_dir=<out> \
+#         do_download=false input_dir=<path_to_eicu_2.0>
+#
+# Ported from the reference `eICU_MEDS` package (PyPI `eicu-meds` 0.0.2,
+# https://github.com/Medical-Event-Data-Standard) -- its `pre_MEDS.py` +
+# `table_preprocessors.yaml` + `event_configs.yaml` pipeline predates MESSY and pins
+# meds-transforms~=0.2.4/polars<1.27, both incompatible with this project's stack, so
+# the same extraction is expressed here declaratively instead. Event code shapes match
+# that reference ETL (VITALS//PERIODIC//..., LAB//{labname}//..., MEDICATION//...), so
+# downstream mappings stay compatible with the community convention; see
+# odyssey/data/code_mapping.py's eICU table for the LOINC translations.
+#
+# Two eICU-specific realities this spec encodes, both taken from the reference ETL:
+#
+# 1. **Subjects are health-system stays.** eICU has no cross-stay patient identity
+#    reliable enough to link on (`uniquepid` is documented as unreliable across
+#    hospitals), so `patienthealthsystemstayid` is the subject id -- one subject per
+#    contiguous hospital stay. Every non-patient table only carries
+#    `patientunitstayid`, so each joins `patient` to reach the subject id.
+#
+# 2. **All times are pseudotimes reconstructed from offsets.** eICU stores only
+#    minute offsets relative to ICU unit admission, plus the hospital-discharge year
+#    and 24h clock times. Following the reference ETL: anchor each stay's hospital
+#    discharge at Dec 31 of `hospitaldischargeyear` at `hospitaldischargetime24`,
+#    derive unit admission by subtracting `hospitaldischargeoffset`, and every event
+#    time as unit admission plus that event's own offset. Absolute dates are therefore
+#    FICTIONAL; only intra-subject relative times are meaningful -- which is exactly
+#    what odyssey's tokenization consumes (time since first event / deltas).
+#
+# Other conventions, matching the MIMIC-IV spec where applicable:
+# - Null components of composite codes are coalesced to 'UNK' (`?? 'UNK'`) so a
+#   missing categorical does not silently drop the event row.
+# - Wide vitals tables (one column per signal, most cells null) guard each signal's
+#   code with `if $x == $x`: a null measurement makes the comparison null, the code
+#   null, and the row dropped -- without the guard every 5-minute vitalPeriodic row
+#   would emit all 16 signal events regardless of which were actually measured.
+# - `hadm_id: $patientunitstayid` on unit-scoped events: odyssey's visit derivation
+#   (odyssey/data/sequences.py) groups events sharing an `hadm_id` into one visit,
+#   and the ICU unit stay is the natural visit unit here.
+
+etl:
+  dataset_name: eICU
+  # No raw_dataset_version fallback here: `sources.dataset_version` below is the
+  # single source of truth (the runner rejects a mismatched duplicate).
+  n_subjects_per_shard: 1000
+
+# Every table's subject id is the health-system stay id -- a raw column on
+# `patient`, a joined-in column everywhere else.
+_defaults:
+  subject_id: $patienthealthsystemstayid
+
+patient:
+  _table:
+    join:
+      hospital:
+        key: hospitalid
+        cols: [numbedscategory, teachingstatus, region]
+    cols:
+      # See the header: Dec 31 of the discharge year + the charted 24h clock time
+      # anchors the stay; everything else chains off it via minute offsets.
+      hospitaldischargetimestamp: >-
+        f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
+      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
+      unitdischargetimestamp: $unitadmittimestamp + $unitdischargeoffset::minutes
+      # `hospitaladmitoffset` is negative (admission precedes unit admission), so
+      # addition is correct here too.
+      hospitaladmittimestamp: $unitadmittimestamp + $hospitaladmitoffset::minutes
+      # `age` is a string with the >89 HIPAA mask; the reference ETL maps it to 90.
+      ageyears: 90 if $age == "> 89" else $age::?int
+      # Born at the year's midpoint, per the reference ETL (age is in whole years).
+      dateofbirth: $unitadmittimestamp - ($ageyears * 365.25 - 182.625)::days
+      timeofdeath: $hospitaldischargetimestamp if $hospitaldischargestatus == "Expired"
+  dob:
+    code: MEDS_BIRTH
+    time: $dateofbirth
+  gender:
+    code: f"GENDER//{$gender ?? 'UNK'}"
+    time: null
+  ethnicity:
+    code: f"RACE//{$ethnicity ?? 'UNK'}"
+    time: null
+  hosp_admission:
+    code: >-
+      f"HOSPITAL_ADMISSION//{$hospitaladmitsource ?? 'UNK'}//{$region ?? 'UNK'}//{$teachingstatus ?? 'UNK'}//{$numbedscategory ?? 'UNK'}"
+    time: $hospitaladmittimestamp
+    hadm_id: $patientunitstayid
+  hosp_discharge:
+    code: >-
+      f"HOSPITAL_DISCHARGE//{$hospitaldischargestatus ?? 'UNK'}//{$hospitaldischargelocation ?? 'UNK'}"
+    time: $hospitaldischargetimestamp
+    hadm_id: $patientunitstayid
+  unit_admission:
+    code: f"ICU_ADMISSION//{$unitadmitsource ?? 'UNK'}//{$unitstaytype ?? 'UNK'}"
+    time: $unitadmittimestamp
+    hadm_id: $patientunitstayid
+  unit_admission_weight:
+    code: '"ICU_ADMISSION_WEIGHT" if $admissionweight == $admissionweight'
+    time: $unitadmittimestamp
+    hadm_id: $patientunitstayid
+    numeric_value: $admissionweight::?float
+  unit_admission_height:
+    code: '"ICU_ADMISSION_HEIGHT" if $admissionheight == $admissionheight'
+    time: $unitadmittimestamp
+    hadm_id: $patientunitstayid
+    numeric_value: $admissionheight::?float
+  unit_discharge:
+    code: >-
+      f"ICU_DISCHARGE//{$unitdischargestatus ?? 'UNK'}//{$unitdischargelocation ?? 'UNK'}"
+    time: $unitdischargetimestamp
+    hadm_id: $patientunitstayid
+  unit_discharge_weight:
+    code: '"ICU_DISCHARGE_WEIGHT" if $dischargeweight == $dischargeweight'
+    time: $unitdischargetimestamp
+    hadm_id: $patientunitstayid
+    numeric_value: $dischargeweight::?float
+  death:
+    code: MEDS_DEATH
+    # Null (non-expired) times drop the row -- the extraction's computed-time filter.
+    time: $timeofdeath
+
+# Shared shape for every offset-timed table below: join `patient` on
+# `patientunitstayid` for the subject id + the three anchor columns, rebuild the
+# anchor chain locally (joins deliver raw right-table columns only), then each
+# event's time is `unitadmittimestamp + <that table's offset column>`.
+
+admissionDx:
+  _table:
+    join:
+      patient:
+        key: patientunitstayid
+        cols:
+          - patienthealthsystemstayid
+          - hospitaldischargeyear
+          - hospitaldischargetime24
+          - hospitaldischargeoffset
+    cols:
+      hospitaldischargetimestamp: >-
+        f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
+      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
+      eventtime: $unitadmittimestamp + $admitdxenteredoffset::minutes
+  admission_diagnosis:
+    code: f"ADMISSION_DIAGNOSIS//{$admitdxname ?? 'UNK'}"
+    time: $eventtime
+    hadm_id: $patientunitstayid
+
+allergy:
+  _table:
+    join:
+      patient:
+        key: patientunitstayid
+        cols:
+          - patienthealthsystemstayid
+          - hospitaldischargeyear
+          - hospitaldischargetime24
+          - hospitaldischargeoffset
+    cols:
+      hospitaldischargetimestamp: >-
+        f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
+      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
+      eventtime: $unitadmittimestamp + $allergyenteredoffset::minutes
+  allergy:
+    code: f"ALLERGY//{$allergytype ?? 'UNK'}"
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    text_value: $allergyname
+
+carePlanGeneral:
+  _table:
+    join:
+      patient:
+        key: patientunitstayid
+        cols:
+          - patienthealthsystemstayid
+          - hospitaldischargeyear
+          - hospitaldischargetime24
+          - hospitaldischargeoffset
+    cols:
+      hospitaldischargetimestamp: >-
+        f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
+      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
+      eventtime: $unitadmittimestamp + $cplitemoffset::minutes
+  cpl_item:
+    code: f"CAREPLAN_GENERAL//{$cplgroup ?? 'UNK'}//{$cplitemvalue ?? 'UNK'}"
+    time: $eventtime
+    hadm_id: $patientunitstayid
+
+carePlanEOL:
+  _table:
+    join:
+      patient:
+        key: patientunitstayid
+        cols:
+          - patienthealthsystemstayid
+          - hospitaldischargeyear
+          - hospitaldischargetime24
+          - hospitaldischargeoffset
+    cols:
+      hospitaldischargetimestamp: >-
+        f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
+      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
+      eventtime: $unitadmittimestamp + $cpleoldiscussionoffset::minutes
+  cpl_eol_discussion:
+    code: CAREPLAN_EOL
+    time: $eventtime
+    hadm_id: $patientunitstayid
+
+carePlanGoal:
+  _table:
+    join:
+      patient:
+        key: patientunitstayid
+        cols:
+          - patienthealthsystemstayid
+          - hospitaldischargeyear
+          - hospitaldischargetime24
+          - hospitaldischargeoffset
+    cols:
+      hospitaldischargetimestamp: >-
+        f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
+      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
+      eventtime: $unitadmittimestamp + $cplgoaloffset::minutes
+  cpl_goal:
+    code: >-
+      f"CAREPLAN_GOAL//{$cplgoalcategory ?? 'UNK'}//{$cplgoalvalue ?? 'UNK'}//{$cplgoalstatus ?? 'UNK'}"
+    time: $eventtime
+    hadm_id: $patientunitstayid
+
+carePlanInfectiousDisease:
+  _table:
+    join:
+      patient:
+        key: patientunitstayid
+        cols:
+          - patienthealthsystemstayid
+          - hospitaldischargeyear
+          - hospitaldischargetime24
+          - hospitaldischargeoffset
+    cols:
+      hospitaldischargetimestamp: >-
+        f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
+      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
+      eventtime: $unitadmittimestamp + $cplinfectdiseaseoffset::minutes
+  cpl_infect_disease:
+    code: >-
+      f"CAREPLAN_INFECTIOUS_DISEASE//{$infectdiseasesite ?? 'UNK'}//{$infectdiseaseassessment ?? 'UNK'}//{$treatment ?? 'UNK'}//{$responsetotherapy ?? 'UNK'}"
+    time: $eventtime
+    hadm_id: $patientunitstayid
+
+diagnosis:
+  _table:
+    join:
+      patient:
+        key: patientunitstayid
+        cols:
+          - patienthealthsystemstayid
+          - hospitaldischargeyear
+          - hospitaldischargetime24
+          - hospitaldischargeoffset
+    cols:
+      hospitaldischargetimestamp: >-
+        f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
+      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
+      eventtime: $unitadmittimestamp + $diagnosisoffset::minutes
+  diagnosis:
+    # eICU's `icd9code` is frequently blank; 'UNK' keeps those rows (the
+    # `diagnosisstring` text still identifies the diagnosis), matching the
+    # reference ETL's null-as-UNK rendering.
+    code: f"DIAGNOSIS//ICD//9//{$icd9code ?? 'UNK'}"
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    text_value: $diagnosisstring
+    diagnosis_priority: $diagnosispriority
+
+infusionDrug:
+  _table:
+    join:
+      patient:
+        key: patientunitstayid
+        cols:
+          - patienthealthsystemstayid
+          - hospitaldischargeyear
+          - hospitaldischargetime24
+          - hospitaldischargeoffset
+    cols:
+      hospitaldischargetimestamp: >-
+        f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
+      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
+      eventtime: $unitadmittimestamp + $infusionoffset::minutes
+  infusion:
+    code: INFUSION_DRUG
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    text_value: $drugname
+    # Free-text rate strings ("OFF", "30 ml/hr") null out under the lenient cast.
+    numeric_value: $infusionrate::?float
+  patient_weight:
+    code: '"SUBJECT_WEIGHT_AT_INFUSION" if $patientweight == $patientweight'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $patientweight::?float
+
+lab:
+  _table:
+    join:
+      patient:
+        key: patientunitstayid
+        cols:
+          - patienthealthsystemstayid
+          - hospitaldischargeyear
+          - hospitaldischargetime24
+          - hospitaldischargeoffset
+    cols:
+      hospitaldischargetimestamp: >-
+        f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
+      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
+      eventtime: $unitadmittimestamp + $labresultoffset::minutes
+  lab:
+    code: f"LAB//{$labname ?? 'UNK'}//{$labmeasurenamesystem ?? 'UNK'}"
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $labresult::?float
+    text_value: $labresulttext
+
+medication:
+  _table:
+    join:
+      patient:
+        key: patientunitstayid
+        cols:
+          - patienthealthsystemstayid
+          - hospitaldischargeyear
+          - hospitaldischargetime24
+          - hospitaldischargeoffset
+    cols:
+      hospitaldischargetimestamp: >-
+        f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
+      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
+      drugstarttimestamp: $unitadmittimestamp + $drugstartoffset::minutes
+      drugstoptimestamp: $unitadmittimestamp + $drugstopoffset::minutes
+  drug_started:
+    code: f"MEDICATION//STARTED//{$drugname ?? 'UNK'}"
+    time: $drugstarttimestamp
+    hadm_id: $patientunitstayid
+    # Dosages are free text ("5 mg"); the lenient cast keeps pure numbers only.
+    numeric_value: $dosage::?float
+  drug_stopped:
+    code: f"MEDICATION//STOPPED//{$drugname ?? 'UNK'}"
+    time: $drugstoptimestamp
+    hadm_id: $patientunitstayid
+
+treatment:
+  _table:
+    join:
+      patient:
+        key: patientunitstayid
+        cols:
+          - patienthealthsystemstayid
+          - hospitaldischargeyear
+          - hospitaldischargetime24
+          - hospitaldischargeoffset
+    cols:
+      hospitaldischargetimestamp: >-
+        f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
+      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
+      eventtime: $unitadmittimestamp + $treatmentoffset::minutes
+  treatment:
+    code: f"TREATMENT//ENTERED//{$treatmentstring ?? 'UNK'}"
+    time: $eventtime
+    hadm_id: $patientunitstayid
+
+vitalAperiodic:
+  _table:
+    join:
+      patient:
+        key: patientunitstayid
+        cols:
+          - patienthealthsystemstayid
+          - hospitaldischargeyear
+          - hospitaldischargetime24
+          - hospitaldischargeoffset
+    cols:
+      hospitaldischargetimestamp: >-
+        f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
+      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
+      eventtime: $unitadmittimestamp + $observationoffset::minutes
+  non_invasive_systolic:
+    code: '"VITALS//APERIODIC//BP//NONINVASIVE_SYSTOLIC" if $noninvasivesystolic == $noninvasivesystolic'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $noninvasivesystolic::?float
+  non_invasive_diastolic:
+    code: '"VITALS//APERIODIC//BP//NONINVASIVE_DIASTOLIC" if $noninvasivediastolic == $noninvasivediastolic'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $noninvasivediastolic::?float
+  non_invasive_mean:
+    code: '"VITALS//APERIODIC//BP//NONINVASIVE_MEAN" if $noninvasivemean == $noninvasivemean'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $noninvasivemean::?float
+  paop:
+    code: '"VITALS//APERIODIC//PAOP" if $paop == $paop'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $paop::?float
+  cardiac_output:
+    code: '"VITALS//APERIODIC//CARDIAC_OUTPUT" if $cardiacoutput == $cardiacoutput'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $cardiacoutput::?float
+  cardiac_input:
+    code: '"VITALS//APERIODIC//CARDIAC_INPUT" if $cardiacinput == $cardiacinput'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $cardiacinput::?float
+  svr:
+    code: '"VITALS//APERIODIC//SVR" if $svr == $svr'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $svr::?float
+  svri:
+    code: '"VITALS//APERIODIC//SVRI" if $svri == $svri'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $svri::?float
+  pvr:
+    code: '"VITALS//APERIODIC//PVR" if $pvr == $pvr'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $pvr::?float
+  pvri:
+    code: '"VITALS//APERIODIC//PVRI" if $pvri == $pvri'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $pvri::?float
+
+vitalPeriodic:
+  _table:
+    join:
+      patient:
+        key: patientunitstayid
+        cols:
+          - patienthealthsystemstayid
+          - hospitaldischargeyear
+          - hospitaldischargetime24
+          - hospitaldischargeoffset
+    cols:
+      hospitaldischargetimestamp: >-
+        f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
+      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
+      eventtime: $unitadmittimestamp + $observationoffset::minutes
+  temperature:
+    code: '"VITALS//PERIODIC//TEMPERATURE" if $temperature == $temperature'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $temperature::?float
+  sao2:
+    code: '"VITALS//PERIODIC//SAO2" if $sao2 == $sao2'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $sao2::?float
+  heart_rate:
+    code: '"VITALS//PERIODIC//HEARTRATE" if $heartrate == $heartrate'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $heartrate::?float
+  respiration:
+    code: '"VITALS//PERIODIC//RESPIRATION" if $respiration == $respiration'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $respiration::?float
+  cvp:
+    code: '"VITALS//PERIODIC//CVP" if $cvp == $cvp'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $cvp::?float
+  etco2:
+    code: '"VITALS//PERIODIC//ETCO2" if $etco2 == $etco2'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $etco2::?float
+  systemic_systolic:
+    code: '"VITALS//PERIODIC//BP//SYSTEMIC_SYSTOLIC" if $systemicsystolic == $systemicsystolic'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $systemicsystolic::?float
+  systemic_diastolic:
+    code: '"VITALS//PERIODIC//BP//SYSTEMIC_DIASTOLIC" if $systemicdiastolic == $systemicdiastolic'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $systemicdiastolic::?float
+  systemic_mean:
+    code: '"VITALS//PERIODIC//BP//SYSTEMIC_MEAN" if $systemicmean == $systemicmean'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $systemicmean::?float
+  pa_systolic:
+    code: '"VITALS//PERIODIC//BP//PULM_ART_SYSTOLIC" if $pasystolic == $pasystolic'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $pasystolic::?float
+  pa_diastolic:
+    code: '"VITALS//PERIODIC//BP//PULM_ART_DIASTOLIC" if $padiastolic == $padiastolic'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $padiastolic::?float
+  pa_mean:
+    code: '"VITALS//PERIODIC//BP//PULM_ART_MEAN" if $pamean == $pamean'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $pamean::?float
+  st1:
+    code: '"VITALS//PERIODIC//ST1" if $st1 == $st1'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $st1::?float
+  st2:
+    code: '"VITALS//PERIODIC//ST2" if $st2 == $st2'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $st2::?float
+  st3:
+    code: '"VITALS//PERIODIC//ST3" if $st3 == $st3'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $st3::?float
+  icp:
+    code: '"VITALS//PERIODIC//ICP" if $icp == $icp'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $icp::?float
+
+sources:
+  dataset_version:
+    dataset: "2.0"
+    demo: "2.0.1"
+  dataset:
+    - type: physionet
+      base_url: https://physionet.org/files/eicu-crd/${sources.dataset_version.dataset}
+      username: ${oc.env:DATASET_DOWNLOAD_USERNAME}
+      password: ${oc.env:DATASET_DOWNLOAD_PASSWORD}
+  demo:
+    - type: physionet
+      base_url: https://physionet.org/files/eicu-crd-demo/${sources.dataset_version.demo}

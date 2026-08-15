@@ -85,6 +85,21 @@ done
 
 Validated end-to-end against the real, credentialed MIMIC-IV 3.1 (364,627 subjects, 148,193 distinct codes) — not just the demo.
 
+### eICU-CRD
+
+eICU (Phase 2, cross-institution) uses the same `meds-extract` tooling with a project-local MESSY spec at [`specs/eICU.yaml`](specs/eICU.yaml) (the reference `eicu-meds` PyPI package predates MESSY and pins an incompatible `meds-transforms`/`polars`, so the extraction is expressed declaratively there instead — see that file's header for the eICU-specific design notes: subjects are health-system stays, and all timestamps are pseudotimes reconstructed from minute offsets, so only intra-subject relative times are meaningful):
+
+```bash
+# No credentials needed — validates the pipeline against the public eICU demo:
+uv run meds-extract-run spec=./specs/eICU.yaml output_dir=<output_dir> dataset_key=demo
+
+# Full eICU-CRD 2.0, already downloaded locally:
+uv run meds-extract-run spec=./specs/eICU.yaml output_dir=<output_dir> \
+    do_download=false input_dir=<path_to_eicu_2.0>
+```
+
+`odyssey/data/code_mapping.py`'s eICU table translates the extraction's code prefixes (`VITALS//PERIODIC//...`, `LAB//{labname}//...`) to the same LOINC codes the MIMIC-IV concept rules are grounded in. The concept *rules* themselves (`odyssey/data/concepts.py`) are still keyed on MIMIC-IV prefixes — parameterizing them per-source via the LOINC layer is the next step for cross-institution concept supervision.
+
 ### Tokenization
 
 `odyssey/data/vocabulary.py` and `odyssey/data/sequences.py` turn raw MEDS events into the batches the model consumes. `odyssey/data/value_binning.py` runs first, folding each numeric-valued event's magnitude into the token itself — `"LAB//220045//bpm"` (a heart-rate reading, any value) becomes `"LAB//220045//bpm::HIGH"` — via curated clinical ranges for the vitals/labs `odyssey/data/concepts.py` already defines thresholds for, and per-code quantile bins (fit on the training split only) elsewhere. Codes with no numeric value (a diagnosis, a procedure) pass through unchanged, since the event's occurrence is already the full signal:
@@ -128,7 +143,7 @@ uv run mypy odyssey
 7. ~~Fold numeric lab/vital values into the token itself (clinical-range + quantile-bin fallback), not code-identity alone~~
 8. Pretrain on real MIMIC-IV 3.1 at scale (GPU), on full patient history via Mamba chunked/TBTT training
 9. Extend extraction to MIMIC-IV-ED
-10. Cross-institution generalization: extend extraction to eICU and [GEMINI](https://geminimedicine.ca/) (multi-hospital, and ICU vs. internal medicine) to test whether patterns learned from MIMIC-IV's single hospital transfer
+10. Cross-institution generalization: extend extraction to eICU and [GEMINI](https://geminimedicine.ca/) (multi-hospital, and ICU vs. internal medicine) to test whether patterns learned from MIMIC-IV's single hospital transfer — eICU MEDS extraction now in place (`specs/eICU.yaml`, validated on the public demo); next: run on full eICU-CRD 2.0, parameterize concept rules per-source via the LOINC mapping layer
 11. Phase 2: an LLM agent (e.g. MedGemma) that reads the concept-annotated forecast and assists a clinician
 
 ### Known concept-rule limitations
