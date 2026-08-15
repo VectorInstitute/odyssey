@@ -12,7 +12,7 @@ expects for concept labels/masks.
 
 import random
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Sequence, Tuple, Union
+from typing import Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar, Union
 
 import polars as pl
 import torch
@@ -20,6 +20,20 @@ import torch
 from odyssey.data.concepts import AnyConceptDefinition, label_concepts
 from odyssey.data.sequences import PatientSequence, build_patient_sequence
 from odyssey.data.vocabulary import Vocabulary
+
+
+_T = TypeVar("_T")
+
+
+# The only columns anything in this pipeline (concept labeling, value
+# binning, sequence building, vocab building) ever reads -- confirmed by
+# grepping every raw-events consumer in odyssey/. A real MIMIC-IV MEDS
+# shard carries 21 columns (drg_severity, emar_id, icustay_id, order_id,
+# route, ... plus this one's used set): loading all of them, not just
+# these 5, was the dominant real memory cost, not shard count. Measured
+# on one real train shard (2.41M rows): 325.5MB total vs. 122MB for just
+# these 5 columns -- the other 16 alone cost more than the 5 that matter.
+_MEDS_EVENT_COLUMNS = ["subject_id", "time", "code", "numeric_value", "hadm_id"]
 
 
 def load_meds_shards(
@@ -33,13 +47,19 @@ def load_meds_shards(
     MIMIC-IV 3.1 extraction's 292 train shards) rather than requiring the
     whole thing every time.
 
-    Uses the lazy/streaming engine to read+concatenate, not
-    ``pl.concat([pl.read_parquet(p) for p in paths])`` -- that held every
-    shard's DataFrame in memory simultaneously *plus* a full concatenated
-    copy, roughly 2x the dataset's true size at peak. Confirmed the hard
-    way: OOM-killed (dmesg-confirmed) at the real full-extraction scale
-    (292 shards, 706M rows, ~85GB peak RSS on an 83GB host), despite a
-    30-shard/72.9M-row subset of the same data working fine.
+    Projects down to :data:`_MEDS_EVENT_COLUMNS` *before* collecting, so
+    Parquet's columnar layout lets Polars skip reading the other ~16
+    columns' data at all, not just drop them after loading -- confirmed
+    the hard way that this, not the read+concat strategy, was the real
+    OOM cause at full-extraction scale (292 shards, 706M rows): switching
+    concat to the lazy/streaming engine alone (avoiding the double
+    materialization of ``pl.concat([pl.read_parquet(p) for p in paths])``)
+    still OOM-killed at the same ~85GB peak RSS on an 83GB host, since the
+    21-column frame was too large on its own regardless of how it was
+    assembled. Falls back to whichever of these columns actually exist
+    (``hadm_id`` is already optional downstream, see
+    :func:`~odyssey.data.sequences.build_patient_sequence`) rather than
+    hardcoding the select and failing on a shard schema that lacks one.
     """
     shard_dir = Path(shard_dir)
     paths = sorted(shard_dir.glob("*.parquet"), key=lambda p: int(p.stem))
@@ -47,12 +67,15 @@ def load_meds_shards(
         paths = paths[:max_shards]
     if not paths:
         raise FileNotFoundError(f"no .parquet shards found in {shard_dir}")
-    return pl.scan_parquet(paths).collect(engine="streaming")
+    lf = pl.scan_parquet(paths)
+    available = set(lf.collect_schema().names())
+    columns = [c for c in _MEDS_EVENT_COLUMNS if c in available]
+    return lf.select(columns).collect(engine="streaming")
 
 
 def _shuffle_buffered(
-    items: Iterator[PatientSequence], *, buffer_size: int, rng: random.Random
-) -> Iterator[PatientSequence]:
+    items: Iterator[_T], *, buffer_size: int, rng: random.Random
+) -> Iterator[_T]:
     """Approximate shuffle over a streaming iterator, bounded to ``buffer_size``.
 
     Standard reservoir-style streaming shuffle (as used by e.g.
@@ -63,9 +86,12 @@ def _shuffle_buffered(
     more than roughly ``buffer_size`` positions from its original spot
     -- but bounded to O(buffer_size) memory regardless of how many
     total items there are, unlike collecting everything to shuffle it
-    exactly.
+    exactly. Generic (not hardcoded to ``PatientSequence``) purely so
+    its own tests can exercise the buffering/ordering behavior with
+    plain, trivially-comparable ints instead of constructing real
+    sequences.
     """
-    buffer: List[PatientSequence] = []
+    buffer: List[_T] = []
     for item in items:
         if len(buffer) < buffer_size:
             buffer.append(item)
