@@ -1,226 +1,261 @@
-<svg width="800" height="200" viewBox="0 0 800 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Odyssey — interpretable clinical foundation models">
+<svg width="800" height="230" viewBox="0 0 800 230" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Odyssey — interpretable clinical foundation models">
   <!--
-    Odyssey logo — the architecture, drawn.
+    Odyssey — a voyage navigated by named stars.
 
-    Left icon reads left-to-right like the model itself:
-      · five patient event streams (the middle one carries an ECG blip,
-        an homage to the previous logo / EHR-Mamba lineage)
-      · streams converge through a narrow waist — the concept bottleneck
-      · they emerge as discrete concept nodes: three known (filled) and
-        one unknown (dashed ring, orthogonality-penalized free capacity)
-      · concepts fan into a single pulsing forecast
+    A celestial navigation chart: the patient's timeline is a dotted
+    voyage route crossing a star chart. The constellation's stars are
+    named clinical concepts (SEPSIS, AKI, SIRS, ...) — you navigate by
+    stars you can name, not by dead reckoning. One dashed violet star is
+    the unknown concept. One constellation line hides a heartbeat.
+    A ghost compass rose sits beneath it all.
 
-    Vector brand palette:
-      magenta   #EB088A   cobalt    #313CFF
-      violet    #8A25C9   turquoise #48C0D9
+    Palette: midnight navy · chart gold · signal cyan · violet · pulse rose
   -->
   <defs>
-
-    <!-- ── Stream paths (also used as motion paths for pulses) ─────── -->
-    <path id="s1" d="M24,44  L120,44  C158,44  172,96  196,100"/>
-    <path id="s2" d="M24,72  L126,72  C160,72  174,98  196,100"/>
-    <path id="s3" d="M24,100 L54,100 L61,106 L67,74 L73,111 L78,100 L196,100"/>
-    <path id="s4" d="M24,128 L126,128 C160,128 174,102 196,100"/>
-    <path id="s5" d="M24,156 L120,156 C158,156 172,104 196,100"/>
-
-    <!-- ── Bottleneck → concept fan-out ────────────────────────────── -->
-    <path id="f1" d="M196,100 C214,100 224,64  244,64"/>
-    <path id="f2" d="M196,100 C216,100 226,88  244,88"/>
-    <path id="f3" d="M196,100 C216,100 226,112 244,112"/>
-    <path id="f4" d="M196,100 C214,100 224,136 244,136"/>
-
-    <!-- ── Concepts → forecast ─────────────────────────────────────── -->
-    <path id="p1" d="M250,64  C272,66  282,94  294,99"/>
-    <path id="p2" d="M250,88  C270,90  282,97  294,100"/>
-    <path id="p3" d="M250,112 C270,110 282,103 294,100"/>
-    <path id="p4" d="M251,136 C272,134 282,106 294,101"/>
-
-    <!-- Streams: magenta → violet → cobalt across the journey -->
-    <linearGradient id="streamg" x1="24" y1="0" x2="196" y2="0" gradientUnits="userSpaceOnUse">
-      <stop offset="0%"   stop-color="#EB088A"/>
-      <stop offset="55%"  stop-color="#8A25C9"/>
-      <stop offset="100%" stop-color="#313CFF"/>
+    <!-- Card background -->
+    <linearGradient id="bgg" x1="0" y1="0" x2="800" y2="230" gradientUnits="userSpaceOnUse">
+      <stop offset="0%"   stop-color="#070C1E"/>
+      <stop offset="55%"  stop-color="#0A1130"/>
+      <stop offset="100%" stop-color="#070E24"/>
     </linearGradient>
 
-    <!-- Fan-out: cobalt → turquoise -->
-    <linearGradient id="fang" x1="196" y1="0" x2="244" y2="0" gradientUnits="userSpaceOnUse">
-      <stop offset="0%"   stop-color="#313CFF"/>
-      <stop offset="100%" stop-color="#48C0D9"/>
+    <!-- Card border -->
+    <linearGradient id="borderg" x1="0" y1="0" x2="800" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0%"   stop-color="#E8C27A"/>
+      <stop offset="45%"  stop-color="#67E8F9"/>
+      <stop offset="100%" stop-color="#A78BFA"/>
     </linearGradient>
 
-    <!-- Wordmark -->
-    <linearGradient id="tg" x1="336" y1="0" x2="700" y2="0" gradientUnits="userSpaceOnUse">
-      <stop offset="0%"   stop-color="#EB088A"/>
-      <stop offset="55%"  stop-color="#8A25C9"/>
-      <stop offset="100%" stop-color="#313CFF"/>
+    <!-- Wordmark: white → pale cyan → chart gold -->
+    <linearGradient id="wm" x1="424" y1="0" x2="790" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0%"   stop-color="#FFFFFF"/>
+      <stop offset="55%"  stop-color="#BCE8FF"/>
+      <stop offset="100%" stop-color="#E8C27A"/>
     </linearGradient>
 
-    <!-- Moving sheen swept across the wordmark -->
-    <linearGradient id="sheen" x1="0" y1="0" x2="240" y2="0" gradientUnits="userSpaceOnUse">
-      <stop offset="0%"   stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset="50%"  stop-color="#ffffff" stop-opacity="0.35"/>
-      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
-      <animateTransform attributeName="gradientTransform" type="translate"
-                        values="120 0; 760 0" dur="5s" repeatCount="indefinite"/>
+    <!-- Rule under the wordmark, fading out -->
+    <linearGradient id="ruleg" x1="427" y1="0" x2="620" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0%"   stop-color="#E8C27A" stop-opacity="0.65"/>
+      <stop offset="100%" stop-color="#E8C27A" stop-opacity="0"/>
     </linearGradient>
 
-    <!-- Ambient glow behind the icon -->
-    <radialGradient id="glowbg" cx="170" cy="100" r="170" gradientUnits="userSpaceOnUse">
-      <stop offset="0%"   stop-color="#8A25C9" stop-opacity="0.10"/>
-      <stop offset="100%" stop-color="#8A25C9" stop-opacity="0"/>
-    </radialGradient>
+    <!-- Four-point star sparkle, centered on origin -->
+    <path id="spark" d="M0,-6 C0.7,-1.8 1.8,-0.7 6,0 C1.8,0.7 0.7,1.8 0,6 C-0.7,1.8 -1.8,0.7 -6,0 C-1.8,-0.7 -0.7,-1.8 0,-6 Z"/>
 
-    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
-      <feGaussianBlur stdDeviation="3" result="b"/>
-      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-    </filter>
-    <filter id="softglow" x="-40%" y="-40%" width="180%" height="180%">
+    <!-- Voyage route: the patient timeline crossing the chart -->
+    <path id="route" d="M36,196 C110,188 130,160 185,142 C240,124 260,96 330,84 C352,80 372,72 396,62"/>
+
+    <filter id="softglow" x="-80%" y="-80%" width="260%" height="260%">
       <feGaussianBlur stdDeviation="1.6" result="b"/>
       <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
-    <filter id="tracerglow" x="-250%" y="-250%" width="600%" height="600%">
-      <feGaussianBlur stdDeviation="4.5" result="b"/>
+    <filter id="glow" x="-120%" y="-120%" width="340%" height="340%">
+      <feGaussianBlur stdDeviation="3" result="b"/>
       <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="blob" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="20"/>
     </filter>
   </defs>
 
-  <!-- Ambient glow -->
-  <rect width="800" height="200" fill="url(#glowbg)"/>
+  <!-- ── Night sky card ────────────────────────────────────────────── -->
+  <rect width="800" height="230" rx="18" fill="url(#bgg)"/>
 
-  <!-- ── Ghost layer (faint echo of the whole graph) ───────────────── -->
-  <g stroke-width="1" fill="none" opacity="0.16" stroke-linecap="round" stroke-linejoin="round">
-    <use href="#s1" stroke="url(#streamg)"/>
-    <use href="#s2" stroke="url(#streamg)"/>
-    <use href="#s3" stroke="url(#streamg)"/>
-    <use href="#s4" stroke="url(#streamg)"/>
-    <use href="#s5" stroke="url(#streamg)"/>
+  <!-- Aurora blobs, drifting slowly -->
+  <g opacity="0.75">
+    <ellipse cx="640" cy="30" rx="230" ry="85" fill="#67E8F9" opacity="0.07" filter="url(#blob)">
+      <animateTransform attributeName="transform" type="translate"
+                        values="0 0; -40 12; 0 0" dur="14s" repeatCount="indefinite"/>
+    </ellipse>
+    <ellipse cx="130" cy="215" rx="210" ry="80" fill="#A78BFA" opacity="0.09" filter="url(#blob)">
+      <animateTransform attributeName="transform" type="translate"
+                        values="0 0; 36 -10; 0 0" dur="17s" repeatCount="indefinite"/>
+    </ellipse>
   </g>
 
-  <!-- ── Event streams ─────────────────────────────────────────────── -->
-  <g stroke="url(#streamg)" stroke-width="2.1" fill="none"
-     stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)" opacity="0.9">
-    <use href="#s1"/>
-    <use href="#s2"/>
-    <use href="#s3"/>
-    <use href="#s4"/>
-    <use href="#s5"/>
+  <!-- Faint great-circle chart arcs -->
+  <g stroke="#9FB4D8" fill="none" stroke-width="1" opacity="0.06">
+    <path d="M0,64 Q400,112 800,52"/>
+    <path d="M0,168 Q400,124 800,176"/>
   </g>
 
-  <!-- Event tokens scattered along the streams -->
-  <g filter="url(#softglow)">
-    <circle cx="46"  cy="44"  r="2.4" fill="#EB088A"/>
-    <circle cx="80"  cy="44"  r="2.0" fill="#8A25C9" opacity="0.85"/>
-    <circle cx="106" cy="44"  r="2.4" fill="#313CFF" opacity="0.9"/>
-    <circle cx="38"  cy="72"  r="2.0" fill="#8A25C9" opacity="0.85"/>
-    <circle cx="94"  cy="72"  r="2.4" fill="#EB088A"/>
-    <circle cx="118" cy="72"  r="2.0" fill="#313CFF" opacity="0.9"/>
-    <circle cx="112" cy="100" r="2.2" fill="#8A25C9" opacity="0.85"/>
-    <circle cx="150" cy="100" r="2.0" fill="#313CFF" opacity="0.9"/>
-    <circle cx="52"  cy="128" r="2.4" fill="#313CFF" opacity="0.9"/>
-    <circle cx="88"  cy="128" r="2.0" fill="#EB088A" opacity="0.9"/>
-    <circle cx="114" cy="128" r="2.4" fill="#8A25C9" opacity="0.85"/>
-    <circle cx="42"  cy="156" r="2.0" fill="#EB088A" opacity="0.9"/>
-    <circle cx="72"  cy="156" r="2.4" fill="#8A25C9" opacity="0.85"/>
-    <circle cx="104" cy="156" r="2.0" fill="#313CFF" opacity="0.9"/>
+  <!-- ── Starfield ─────────────────────────────────────────────────── -->
+  <g fill="#DCE8FF">
+    <circle cx="62"  cy="34"  r="0.9" opacity="0.4"/>
+    <circle cx="118" cy="86"  r="0.7" opacity="0.3"/>
+    <circle cx="156" cy="24"  r="1.1" opacity="0.5"/>
+    <circle cx="238" cy="36"  r="0.7" opacity="0.35"/>
+    <circle cx="300" cy="58"  r="0.9" opacity="0.4"/>
+    <circle cx="342" cy="30"  r="0.7" opacity="0.3"/>
+    <circle cx="58"  cy="132" r="0.7" opacity="0.3"/>
+    <circle cx="92"  cy="178" r="0.9" opacity="0.4"/>
+    <circle cx="176" cy="196" r="0.7" opacity="0.3"/>
+    <circle cx="262" cy="186" r="1.0" opacity="0.4"/>
+    <circle cx="332" cy="160" r="0.7" opacity="0.35"/>
+    <circle cx="368" cy="196" r="0.8" opacity="0.3"/>
+    <circle cx="412" cy="42"  r="0.9" opacity="0.4"/>
+    <circle cx="452" cy="188" r="0.8" opacity="0.35"/>
+    <circle cx="498" cy="30"  r="0.7" opacity="0.3"/>
+    <circle cx="540" cy="196" r="0.9" opacity="0.35"/>
+    <circle cx="586" cy="52"  r="0.7" opacity="0.3"/>
+    <circle cx="628" cy="182" r="0.8" opacity="0.3"/>
+    <circle cx="668" cy="34"  r="1.0" opacity="0.4"/>
+    <circle cx="706" cy="200" r="0.7" opacity="0.3"/>
+    <circle cx="742" cy="60"  r="0.9" opacity="0.4"/>
+    <circle cx="770" cy="150" r="0.7" opacity="0.3"/>
+    <circle cx="722" cy="112" r="0.7" opacity="0.25"/>
+    <circle cx="386" cy="120" r="0.7" opacity="0.25"/>
+    <!-- twinklers -->
+    <circle cx="206" cy="70"  r="1.1" opacity="0.5">
+      <animate attributeName="opacity" values="0.15;0.6;0.15" dur="3.4s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="86"  cy="98"  r="0.9" opacity="0.4">
+      <animate attributeName="opacity" values="0.1;0.5;0.1" dur="4.1s" begin="0.9s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="296" cy="132" r="0.9" opacity="0.4">
+      <animate attributeName="opacity" values="0.1;0.55;0.1" dur="3.8s" begin="1.7s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="616" cy="86"  r="1.0" opacity="0.4">
+      <animate attributeName="opacity" values="0.1;0.5;0.1" dur="4.5s" begin="0.4s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="470" cy="64"  r="0.8" opacity="0.35">
+      <animate attributeName="opacity" values="0.1;0.45;0.1" dur="3.6s" begin="2.3s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="756" cy="196" r="0.9" opacity="0.35">
+      <animate attributeName="opacity" values="0.1;0.5;0.1" dur="4.2s" begin="1.2s" repeatCount="indefinite"/>
+    </circle>
   </g>
 
-  <!-- ECG R-peak node on the middle stream -->
-  <circle cx="67" cy="74" r="3.6" fill="#EB088A" filter="url(#glow)">
-    <animate attributeName="r"       values="3.2;4.6;3.2" dur="1.4s" repeatCount="indefinite"/>
-    <animate attributeName="opacity" values="1;0.5;1"     dur="1.4s" repeatCount="indefinite"/>
-  </circle>
-
-  <!-- ── The bottleneck ────────────────────────────────────────────── -->
-  <circle cx="196" cy="100" r="5" fill="#313CFF" filter="url(#glow)">
-    <animate attributeName="r"       values="4.4;6;4.4" dur="1.4s" repeatCount="indefinite"/>
-    <animate attributeName="opacity" values="0.9;0.55;0.9" dur="1.4s" repeatCount="indefinite"/>
-  </circle>
-
-  <!-- ── Fan-out to concepts ───────────────────────────────────────── -->
-  <g stroke="url(#fang)" stroke-width="1.7" fill="none" stroke-linecap="round" opacity="0.85">
-    <use href="#f1"/>
-    <use href="#f2"/>
-    <use href="#f3"/>
-    <use href="#f4"/>
+  <!-- ── Ghost compass rose ────────────────────────────────────────── -->
+  <g stroke="#9FB4D8" fill="none">
+    <circle cx="200" cy="115" r="80" stroke-width="1" stroke-dasharray="1 9.9" opacity="0.13"/>
+    <circle cx="200" cy="115" r="62" stroke-width="0.7" opacity="0.08"/>
+    <path d="M200,57 L205,115 L200,173 L195,115 Z M142,115 L200,110 L258,115 L200,120 Z"
+          fill="#9FB4D8" stroke="none" opacity="0.07"/>
   </g>
 
-  <!-- Known concepts: three filled nodes -->
-  <circle cx="244" cy="64" r="4.6" fill="#48C0D9" filter="url(#softglow)">
-    <animate attributeName="opacity" values="0.55;1;0.55" dur="2.4s" repeatCount="indefinite"/>
-  </circle>
-  <circle cx="244" cy="88" r="4.6" fill="#313CFF" filter="url(#softglow)">
-    <animate attributeName="opacity" values="0.55;1;0.55" dur="2.4s" begin="0.6s" repeatCount="indefinite"/>
-  </circle>
-  <circle cx="244" cy="112" r="4.6" fill="#48C0D9" filter="url(#softglow)">
-    <animate attributeName="opacity" values="0.55;1;0.55" dur="2.4s" begin="1.2s" repeatCount="indefinite"/>
-  </circle>
+  <!-- ── The voyage route ──────────────────────────────────────────── -->
+  <use href="#route" stroke="#E8C27A" stroke-width="2.4" fill="none" opacity="0.08"/>
+  <use href="#route" stroke="#E8C27A" stroke-width="2" fill="none"
+       stroke-linecap="round" stroke-dasharray="0.1 7" opacity="0.55"/>
 
-  <!-- Unknown concept: slowly rotating dashed ring -->
-  <g filter="url(#softglow)">
-    <circle cx="244" cy="136" r="5.6" fill="none" stroke="#8A25C9" stroke-width="1.7"
-            stroke-dasharray="3.4 3.1">
+  <!-- The ship: a comet with a trailing wake -->
+  <g fill="#FFF3D6">
+    <circle r="2.4" opacity="0" filter="url(#glow)">
+      <animateMotion dur="7s" repeatCount="indefinite"><mpath href="#route"/></animateMotion>
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.06;0.9;1" dur="7s" repeatCount="indefinite"/>
+    </circle>
+    <circle r="1.7" opacity="0" fill="#E8C27A" filter="url(#softglow)">
+      <animateMotion dur="7s" begin="0.14s" repeatCount="indefinite"><mpath href="#route"/></animateMotion>
+      <animate attributeName="opacity" values="0;0.6;0.6;0" keyTimes="0;0.06;0.9;1" dur="7s" begin="0.14s" repeatCount="indefinite"/>
+    </circle>
+    <circle r="1.1" opacity="0" fill="#E8C27A">
+      <animateMotion dur="7s" begin="0.28s" repeatCount="indefinite"><mpath href="#route"/></animateMotion>
+      <animate attributeName="opacity" values="0;0.35;0.35;0" keyTimes="0;0.06;0.9;1" dur="7s" begin="0.28s" repeatCount="indefinite"/>
+    </circle>
+  </g>
+
+  <!-- ── The concept constellation ─────────────────────────────────── -->
+
+  <!-- Constellation lines -->
+  <g stroke="#E8C27A" stroke-width="1" fill="none" stroke-linecap="round" opacity="0.32">
+    <path d="M100,65 L178,42"/>
+    <path d="M178,42 L262,72"/>
+    <path d="M100,65 L128,128"/>
+    <path d="M216,150 L318,120"/>
+    <path d="M262,72 L318,120"/>
+    <animate attributeName="opacity" values="0.24;0.42;0.24" dur="6s" repeatCount="indefinite"/>
+  </g>
+
+  <!-- One constellation line hides a heartbeat -->
+  <path d="M128,128 L156,134 L163,114 L171,158 L178,140 L216,150"
+        stroke="#FB7185" stroke-width="1.4" fill="none"
+        stroke-linecap="round" stroke-linejoin="round" filter="url(#softglow)">
+    <animate attributeName="opacity" values="0.45;0.95;0.45" dur="2.8s" repeatCount="indefinite"/>
+  </path>
+
+  <!-- Named concept stars -->
+  <g fill="#E8C27A">
+    <g transform="translate(100 65)">
+      <use href="#spark" filter="url(#softglow)">
+        <animateTransform attributeName="transform" type="scale" values="1;1.3;1" dur="3.6s" repeatCount="indefinite"/>
+        <animate attributeName="opacity" values="0.8;1;0.8" dur="3.6s" repeatCount="indefinite"/>
+      </use>
+    </g>
+    <g transform="translate(178 42) scale(0.8)">
+      <use href="#spark" filter="url(#softglow)">
+        <animateTransform attributeName="transform" type="scale" values="1;1.3;1" dur="3.2s" begin="0.8s" repeatCount="indefinite"/>
+        <animate attributeName="opacity" values="0.75;1;0.75" dur="3.2s" begin="0.8s" repeatCount="indefinite"/>
+      </use>
+    </g>
+    <g transform="translate(262 72) scale(1.1)">
+      <use href="#spark" filter="url(#softglow)">
+        <animateTransform attributeName="transform" type="scale" values="1;1.25;1" dur="4s" begin="1.5s" repeatCount="indefinite"/>
+        <animate attributeName="opacity" values="0.8;1;0.8" dur="4s" begin="1.5s" repeatCount="indefinite"/>
+      </use>
+    </g>
+    <g transform="translate(128 128) scale(0.9)">
+      <use href="#spark" filter="url(#softglow)">
+        <animateTransform attributeName="transform" type="scale" values="1;1.3;1" dur="3.4s" begin="2.2s" repeatCount="indefinite"/>
+        <animate attributeName="opacity" values="0.75;1;0.75" dur="3.4s" begin="2.2s" repeatCount="indefinite"/>
+      </use>
+    </g>
+    <g transform="translate(216 150) scale(0.75)">
+      <use href="#spark" filter="url(#softglow)">
+        <animateTransform attributeName="transform" type="scale" values="1;1.3;1" dur="3s" begin="0.4s" repeatCount="indefinite"/>
+        <animate attributeName="opacity" values="0.75;1;0.75" dur="3s" begin="0.4s" repeatCount="indefinite"/>
+      </use>
+    </g>
+  </g>
+
+  <!-- The unknown concept: a dashed, slowly turning star you can't name yet -->
+  <g>
+    <circle cx="318" cy="120" r="7.5" fill="none" stroke="#A78BFA" stroke-width="1.5"
+            stroke-dasharray="3.6 3.3" filter="url(#softglow)">
       <animateTransform attributeName="transform" type="rotate"
-                        from="0 244 136" to="360 244 136" dur="9s" repeatCount="indefinite"/>
+                        from="0 318 120" to="360 318 120" dur="11s" repeatCount="indefinite"/>
     </circle>
-    <circle cx="244" cy="136" r="2" fill="#8A25C9" opacity="0.75">
-      <animate attributeName="opacity" values="0.4;0.85;0.4" dur="2.4s" begin="1.8s" repeatCount="indefinite"/>
+    <circle cx="318" cy="120" r="2" fill="#A78BFA">
+      <animate attributeName="opacity" values="0.5;1;0.5" dur="2.8s" repeatCount="indefinite"/>
     </circle>
   </g>
 
-  <!-- ── Concepts → forecast ───────────────────────────────────────── -->
-  <g stroke="#48C0D9" stroke-width="1.1" fill="none" stroke-linecap="round" opacity="0.55">
-    <use href="#p1"/>
-    <use href="#p2"/>
-    <use href="#p3"/>
-    <use href="#p4"/>
+  <!-- Star names: the interpretability -->
+  <g font-family="ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace"
+     font-size="9" letter-spacing="1.4" fill="#9FB4D8" opacity="0.78">
+    <text x="86"  y="50">SEPSIS</text>
+    <text x="190" y="36">AKI</text>
+    <text x="275" y="62">SIRS</text>
+    <text x="112" y="122" text-anchor="end">HYPOXIA</text>
+    <text x="212" y="171">SHOCK</text>
+    <text x="318" y="144" text-anchor="middle" fill="#A78BFA">UNKNOWN</text>
   </g>
 
-  <!-- Forecast: pulsing ring -->
-  <circle cx="296" cy="100" r="8" fill="none" stroke="#48C0D9" stroke-width="1.5">
-    <animate attributeName="r"       values="8;18;8"      dur="2.4s" repeatCount="indefinite"/>
-    <animate attributeName="opacity" values="0.7;0;0.7"   dur="2.4s" repeatCount="indefinite"/>
-  </circle>
-  <circle cx="296" cy="100" r="4.2" fill="#48C0D9" filter="url(#glow)">
-    <animate attributeName="opacity" values="1;0.4;1" dur="2.4s" repeatCount="indefinite"/>
-  </circle>
-
-  <!-- ── Pulses riding the streams into the bottleneck ─────────────── -->
-  <g fill="#48C0D9" filter="url(#tracerglow)">
-    <circle r="3" opacity="0">
-      <animateMotion dur="2.75s" repeatCount="indefinite"><mpath href="#s1"/></animateMotion>
-      <animate attributeName="opacity" values="0;0.9;0.9;0" keyTimes="0;0.1;0.85;1" dur="2.75s" repeatCount="indefinite"/>
-    </circle>
-    <circle r="3" opacity="0">
-      <animateMotion dur="2.75s" begin="0.55s" repeatCount="indefinite"><mpath href="#s2"/></animateMotion>
-      <animate attributeName="opacity" values="0;0.9;0.9;0" keyTimes="0;0.1;0.85;1" dur="2.75s" begin="0.55s" repeatCount="indefinite"/>
-    </circle>
-    <circle r="3" opacity="0">
-      <animateMotion dur="2.75s" begin="1.1s" repeatCount="indefinite"><mpath href="#s3"/></animateMotion>
-      <animate attributeName="opacity" values="0;0.9;0.9;0" keyTimes="0;0.1;0.85;1" dur="2.75s" begin="1.1s" repeatCount="indefinite"/>
-    </circle>
-    <circle r="3" opacity="0">
-      <animateMotion dur="2.75s" begin="1.65s" repeatCount="indefinite"><mpath href="#s4"/></animateMotion>
-      <animate attributeName="opacity" values="0;0.9;0.9;0" keyTimes="0;0.1;0.85;1" dur="2.75s" begin="1.65s" repeatCount="indefinite"/>
-    </circle>
-    <circle r="3" opacity="0">
-      <animateMotion dur="2.75s" begin="2.2s" repeatCount="indefinite"><mpath href="#s5"/></animateMotion>
-      <animate attributeName="opacity" values="0;0.9;0.9;0" keyTimes="0;0.1;0.85;1" dur="2.75s" begin="2.2s" repeatCount="indefinite"/>
-    </circle>
+  <!-- ── Shooting star over the wordmark ───────────────────────────── -->
+  <g opacity="0">
+    <animateMotion dur="9s" repeatCount="indefinite" keyPoints="0;1;1" keyTimes="0;0.05;1" calcMode="linear">
+      <mpath href="#shootpath"/>
+    </animateMotion>
+    <animate attributeName="opacity" values="0;0.9;0;0" keyTimes="0;0.02;0.05;1" dur="9s" repeatCount="indefinite"/>
+    <line x1="-26" y1="-5.4" x2="0" y2="0" stroke="#CFE9FF" stroke-width="1.3" stroke-linecap="round"/>
+    <circle r="1.6" fill="#FFFFFF"/>
   </g>
+  <path id="shootpath" d="M482,26 L706,72" fill="none"/>
 
   <!-- ── Wordmark ──────────────────────────────────────────────────── -->
-  <text x="336" y="124"
-        font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Helvetica, Arial, sans-serif"
-        font-size="84" font-weight="800" letter-spacing="-3"
-        fill="url(#tg)">odyssey</text>
-  <text x="336" y="124"
-        font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Helvetica, Arial, sans-serif"
-        font-size="84" font-weight="800" letter-spacing="-3"
-        fill="url(#sheen)">odyssey</text>
+  <text x="424" y="122"
+        font-family="-apple-system, BlinkMacSystemFont, 'Helvetica Neue', 'Segoe UI', Arial, sans-serif"
+        font-size="56" font-weight="200" letter-spacing="10.5"
+        fill="url(#wm)">ODYSSEY</text>
 
-  <!-- Tagline -->
-  <text x="339" y="154"
-        font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Helvetica, Arial, sans-serif"
-        font-size="12" font-weight="500" letter-spacing="2.6"
-        fill="#8b8ba3">interpretable clinical foundation models</text>
+  <line x1="427" y1="139" x2="620" y2="139" stroke="url(#ruleg)" stroke-width="1"/>
+
+  <text x="427" y="160"
+        font-family="-apple-system, BlinkMacSystemFont, 'Helvetica Neue', 'Segoe UI', Arial, sans-serif"
+        font-size="9" font-weight="500" letter-spacing="2.6"
+        fill="#7C8FB8">INTERPRETABLE CLINICAL FOUNDATION MODELS</text>
+
+  <!-- Card border -->
+  <rect x="0.5" y="0.5" width="799" height="229" rx="17.5" fill="none"
+        stroke="url(#borderg)" stroke-width="1" opacity="0.3"/>
 </svg>
