@@ -405,3 +405,57 @@ def test_batch_and_targets_are_long_tensors() -> None:
     assert chunk.targets.dtype == torch.long
     assert chunk.reset_mask.dtype == torch.bool
     assert chunk.real_mask.dtype == torch.bool
+
+
+# ---------------------------------------------------------------------------
+# Fast-forward resume: odyssey.training.train's steps_into_epoch mechanism
+# discards chunks from a fresh, identically-seeded sampler to reach the
+# position a checkpoint was taken at, rather than resuming that epoch
+# from its own beginning. These tests validate the core assumption that
+# makes that correct: a fresh sampler, fast-forwarded N chunks, produces
+# exactly the same subsequent chunks as one that was simply run for N
+# chunks and then continued -- same patients, seed, num_lanes, chunk_size.
+# ---------------------------------------------------------------------------
+
+
+def _many_patients(n: int, events_each: int) -> List[PatientSequence]:
+    return [_seq(i, events_each) for i in range(n)]
+
+
+def test_fast_forward_matches_continuing_the_original_run() -> None:
+    def make_sampler() -> PackedLaneSampler:
+        return PackedLaneSampler(
+            _patients(_many_patients(60, 20)),
+            num_lanes=4,
+            chunk_size=5,
+            reset_prob=0.3,
+            seed=42,
+        )
+
+    original = make_sampler()
+    for _ in range(10):
+        original.next_chunk()
+    continued_tail = [c.batch.concept_ids.tolist() for c in original]
+
+    fast_forwarded = make_sampler()
+    for _ in range(10):
+        fast_forwarded.next_chunk()
+    fast_forwarded_tail = [c.batch.concept_ids.tolist() for c in fast_forwarded]
+
+    assert continued_tail == fast_forwarded_tail
+    assert len(continued_tail) > 0  # otherwise this test proves nothing
+
+
+def test_fast_forward_past_the_end_of_the_epoch_yields_nothing() -> None:
+    def make_sampler() -> PackedLaneSampler:
+        return PackedLaneSampler(
+            _patients(_many_patients(3, 4)), num_lanes=1, chunk_size=3, seed=0
+        )
+
+    sampler = make_sampler()
+    total_chunks = len(list(sampler))
+
+    fast_forwarded = make_sampler()
+    for _ in range(total_chunks):
+        fast_forwarded.next_chunk()
+    assert fast_forwarded.next_chunk() is None

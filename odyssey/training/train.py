@@ -19,10 +19,17 @@ reconstruct the exact same tokenization without needing the train split
 again.
 
 To resume after an interruption (e.g. a spot-instance preemption), pass
-``--config-json`` with ``"resume_from": "<output_dir>/checkpoint_epoch_N.pt"``
--- resumption is epoch-granular, not step-granular (see ``train()``'s
-docstring on why), so prefer an epoch checkpoint over a ``checkpoint_every``
-one when resuming.
+``--config-json`` with ``"resume_from": "<output_dir>/checkpoint_N.pt"``
+(any checkpoint, periodic or epoch-boundary). Resuming fast-forwards
+the resumed epoch's own deterministically-seeded sampler back to the
+same position the checkpoint was taken at (discarding chunks, no
+gradient steps, so this is cheap) rather than restarting that epoch's
+data from its beginning -- correct only if ``num_lanes``/``chunk_size``/
+``reset_prob``/``seed`` are unchanged from the checkpoint (saved
+alongside it for exactly this check); if they differ, the epoch
+restarts from its own beginning instead, with a warning logged, since
+fast-forwarding down a differently-configured sampler would land on a
+different, not equivalent, position.
 """
 
 import gc
@@ -294,8 +301,27 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
         observability=config.observability_weight,
     )
 
+    # Fields that determine what PackedLaneSampler.next_chunk() actually
+    # produces at a given position, for a given epoch's seed -- saved
+    # alongside every periodic checkpoint so a resume can tell whether
+    # fast-forwarding to the checkpoint's steps_into_epoch would land on
+    # the same position it was taken at, or a different one (e.g. this
+    # run manually restarted with a different num_lanes/chunk_size,
+    # which is exactly what happened partway through the run that
+    # motivated this: batch size was tuned up for GPU utilization mid
+    # -training). Deliberately excludes model/optimizer hyperparameters
+    # (learning_rate etc.), which don't affect the data stream.
+    def _batch_config_fields(cfg: TrainingConfig) -> Dict[str, object]:
+        return {
+            "num_lanes": cfg.num_lanes,
+            "chunk_size": cfg.chunk_size,
+            "reset_prob": cfg.reset_prob,
+            "seed": cfg.seed,
+        }
+
     start_epoch = 0
     global_step = 0
+    steps_into_epoch = 0
     if config.resume_from is not None:
         logger.info("[resume] loading %s", config.resume_from)
         checkpoint = torch.load(config.resume_from, map_location=device)
@@ -303,17 +329,27 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
         if "optimizer" in checkpoint:
             optimizer.load_state_dict(checkpoint["optimizer"])
         global_step = checkpoint["step"]
-        # Resume at the start of the epoch the checkpoint was taken in
-        # (not mid-epoch: PackedLaneSampler has no notion of resuming
-        # from an arbitrary mid-stream position, and restarting the
-        # epoch's sampler from its own deterministic, seeded shuffle is
-        # simple and correct -- only some already-seen data gets
-        # revisited, not a correctness issue). A spot-preemption restart
-        # should pass the *previous* epoch's final checkpoint for this
-        # reason, not a mid-epoch one.
         start_epoch = checkpoint.get("epoch", 0)
+        saved_steps_into_epoch = checkpoint.get("steps_into_epoch", 0)
+        saved_batch_config = checkpoint.get("batch_config")
+        if saved_steps_into_epoch > 0 and saved_batch_config != _batch_config_fields(
+            config
+        ):
+            logger.warning(
+                "[resume] batch config changed since this checkpoint (%s -> %s); "
+                "restarting epoch %d from its own beginning instead of "
+                "fast-forwarding to a now-meaningless position",
+                saved_batch_config,
+                _batch_config_fields(config),
+                start_epoch,
+            )
+        else:
+            steps_into_epoch = saved_steps_into_epoch
         logger.info(
-            "[resume] resuming at epoch=%d, global_step=%d", start_epoch, global_step
+            "[resume] resuming at epoch=%d, global_step=%d, steps_into_epoch=%d",
+            start_epoch,
+            global_step,
+            steps_into_epoch,
         )
 
     def make_train_sampler(epoch: int) -> PackedLaneSampler:
@@ -345,6 +381,18 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
     for epoch in range(start_epoch, config.num_epochs):
         sampler = make_train_sampler(epoch)
         state = None
+        steps_this_epoch = 0
+        if epoch == start_epoch and steps_into_epoch > 0:
+            logger.info(
+                "[resume] fast-forwarding %d chunks (no gradient steps) to reach "
+                "the resume position",
+                steps_into_epoch,
+            )
+            for _ in range(steps_into_epoch):
+                if sampler.next_chunk() is None:
+                    break
+            steps_this_epoch = steps_into_epoch
+
         for chunk in sampler:
             chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
             total, components, state = model.compute_streaming_loss(
@@ -356,6 +404,7 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
             optimizer.step()
             state = _detach_state(state)
             global_step += 1
+            steps_this_epoch += 1
 
             if global_step % config.log_every == 0:
                 fields = {
@@ -396,17 +445,17 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
                         "optimizer": optimizer.state_dict(),
                         "step": global_step,
                         "epoch": epoch,
+                        "steps_into_epoch": steps_this_epoch,
+                        "batch_config": _batch_config_fields(config),
                         "config": asdict(config),
                     },
                     output_dir / f"checkpoint_{global_step}.pt",
                 )
 
         # One checkpoint per completed epoch, independent of
-        # checkpoint_every -- the safe resume point after a spot
-        # preemption (see the resume_from loading above: it resumes at
-        # the start of an epoch, so a mid-epoch checkpoint_every
-        # checkpoint's epoch number would incorrectly skip the rest of
-        # that epoch's data on resume).
+        # checkpoint_every -- steps_into_epoch=0 here since resuming
+        # from this checkpoint starts the *next* epoch at its own
+        # beginning, not partway through this one.
         torch.save(
             {
                 "model": model.state_dict(),
