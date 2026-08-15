@@ -19,17 +19,31 @@ together:
   where the true next token ranked in the model's own prediction.
 """
 
+import json
+import logging
 import random
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import polars as pl
 import torch
 
-from odyssey.data.sequences import PatientSequence, collate_patient_sequences
+from odyssey.data.concepts import CONCEPTS
+from odyssey.data.sequences import (
+    PatientSequence,
+    build_patient_sequence,
+    collate_patient_sequences,
+)
+from odyssey.data.value_binning import add_value_tokens
 from odyssey.data.vocabulary import PAD_ID, Vocabulary
+from odyssey.inference.run_inference import load_run
 from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
+from odyssey.training.data import build_concept_label_dicts, load_meds_shards
 from odyssey.training.train import _move_chunk_to_device
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -215,4 +229,121 @@ def select_diverse_cases(
     return selected
 
 
-__all__ = ["PatientCaseTrace", "extract_patient_case", "select_diverse_cases"]
+def build_case_studies(
+    run_dir: Union[str, Path],
+    held_out_shard_dir: Union[str, Path],
+    *,
+    n_cases: int = 15,
+    max_shards: Optional[int] = None,
+    device: Optional[str] = None,
+    checkpoint_path: Optional[Union[str, Path]] = None,
+) -> List[PatientCaseTrace]:
+    """End-to-end: load a trained run, pick diverse held-out cases, trace each.
+
+    Mirrors :func:`~odyssey.inference.run_inference.evaluate_run`'s
+    load-a-run pattern, but for the qualitative path: selects
+    ``n_cases`` diverse subjects (see :func:`select_diverse_cases`) and
+    runs a full, un-chunked forward pass over each (see
+    :func:`extract_patient_case`).
+    """
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    model, vocab, binner, _ = load_run(run_dir, device=device, checkpoint_path=checkpoint_path)
+
+    logger.info("[case_study] loading held-out shards from %s", held_out_shard_dir)
+    raw_events = load_meds_shards(held_out_shard_dir, max_shards=max_shards)
+
+    logger.info("[case_study] labeling concepts")
+    concept_labels, concept_mask = build_concept_label_dicts(raw_events, CONCEPTS)
+
+    logger.info("[case_study] selecting %d diverse cases", n_cases)
+    subject_ids = select_diverse_cases(raw_events, concept_labels, n_cases=n_cases)
+
+    logger.info("[case_study] binning values")
+    events_binned = add_value_tokens(raw_events, binner)
+    del raw_events
+
+    concept_names = [c.name for c in CONCEPTS]
+    traces: List[PatientCaseTrace] = []
+    for subject_id in subject_ids:
+        logger.info("[case_study] tracing subject %d", subject_id)
+        subject_events = events_binned.filter(pl.col("subject_id") == subject_id)
+        seq = build_patient_sequence(subject_events, vocab)
+        traces.append(
+            extract_patient_case(
+                model,
+                seq,
+                vocab,
+                concept_names,
+                concept_labels=concept_labels.get(subject_id),
+                concept_mask=concept_mask.get(subject_id),
+                device=device,
+            )
+        )
+    return traces
+
+
+@dataclass(frozen=True)
+class _CliArgs:
+    """Parsed CLI args for :func:`build_case_studies`."""
+
+    run_dir: Path
+    held_out_shard_dir: str
+    output_json: Path
+    checkpoint_path: Path
+    n_cases: int
+    max_shards: Optional[int]
+
+
+def _parse_args() -> _CliArgs:
+    import argparse  # noqa: PLC0415
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--run-dir", required=True)
+    parser.add_argument("--held-out-shard-dir", required=True)
+    parser.add_argument("--output-json", required=True)
+    parser.add_argument(
+        "--checkpoint",
+        default=None,
+        help="Checkpoint filename within --run-dir (default: checkpoint_best.pt).",
+    )
+    parser.add_argument("--n-cases", type=int, default=15)
+    parser.add_argument("--max-shards", type=int, default=None)
+    args = parser.parse_args()
+
+    run_dir = Path(args.run_dir)
+    return _CliArgs(
+        run_dir=run_dir,
+        held_out_shard_dir=args.held_out_shard_dir,
+        output_json=Path(args.output_json),
+        checkpoint_path=run_dir / (args.checkpoint or "checkpoint_best.pt"),
+        n_cases=args.n_cases,
+        max_shards=args.max_shards,
+    )
+
+
+if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    cli_args = _parse_args()
+    case_traces = build_case_studies(
+        cli_args.run_dir,
+        cli_args.held_out_shard_dir,
+        n_cases=cli_args.n_cases,
+        max_shards=cli_args.max_shards,
+        checkpoint_path=cli_args.checkpoint_path,
+    )
+    cli_args.output_json.parent.mkdir(parents=True, exist_ok=True)
+    cli_args.output_json.write_text(
+        json.dumps([asdict(trace) for trace in case_traces], indent=2)
+    )
+    logger.info("[case_study] wrote %d cases to %s", len(case_traces), cli_args.output_json)
+
+
+__all__ = [
+    "PatientCaseTrace",
+    "extract_patient_case",
+    "select_diverse_cases",
+    "build_case_studies",
+]
