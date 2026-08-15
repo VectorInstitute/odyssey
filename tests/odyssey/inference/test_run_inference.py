@@ -4,14 +4,22 @@ The real streaming inference path needs EHRHybridBackbone/CUDA, see
 test_run_inference_gpu.py.
 """
 
+import json
 from pathlib import Path
 
 import pytest
 import torch
 
 from odyssey.data.vocabulary import Vocabulary
-from odyssey.inference.run_inference import _latest_checkpoint, _RunningTaskMetrics
+from odyssey.inference.run_inference import (
+    InferenceResults,
+    _latest_checkpoint,
+    _parse_args,
+    _RunningTaskMetrics,
+    results_to_dict,
+)
 from odyssey.training.metrics import (
+    TaskMetrics,
     compute_task_metrics,
     compute_task_metrics_by_code_type,
 )
@@ -98,3 +106,70 @@ def test_latest_checkpoint_picks_highest_step_when_no_final(tmp_path: Path) -> N
 def test_latest_checkpoint_raises_when_none_exist(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         _latest_checkpoint(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# results_to_dict / _parse_args
+# ---------------------------------------------------------------------------
+
+
+def test_results_to_dict_is_plain_json_serializable() -> None:
+    results = InferenceResults(
+        task_metrics=TaskMetrics(
+            cross_entropy=1.0,
+            perplexity=2.7,
+            top1_accuracy=0.5,
+            top5_accuracy=0.8,
+            n_predictions=100,
+        ),
+        task_metrics_by_code_type={},
+        concept_metrics=[],
+        observability_metrics=[],
+        orthogonality=0.1,
+        n_patient_ends_scored=10,
+    )
+
+    got = json.loads(json.dumps(results_to_dict(results)))
+
+    assert got["n_patient_ends_scored"] == 10
+    assert got["task_metrics"]["cross_entropy"] == 1.0
+
+
+def test_parse_args_defaults_checkpoint_to_best(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "prog",
+            "--run-dir",
+            "/runs/x",
+            "--held-out-shard-dir",
+            "/data/held_out",
+            "--output-json",
+            "/out/results.json",
+        ],
+    )
+    args = _parse_args()
+    assert args.checkpoint_path == Path("/runs/x/checkpoint_best.pt")
+    assert args.num_lanes == 8
+    assert args.max_shards is None
+
+
+def test_parse_args_honours_an_explicit_checkpoint_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "prog",
+            "--run-dir",
+            "/runs/x",
+            "--held-out-shard-dir",
+            "/data/held_out",
+            "--output-json",
+            "/out/results.json",
+            "--checkpoint",
+            "checkpoint_final.pt",
+        ],
+    )
+    args = _parse_args()
+    assert args.checkpoint_path == Path("/runs/x/checkpoint_final.pt")

@@ -13,9 +13,19 @@ dependencies = [
     "MIMIC_IV_MEDS",
     # Used directly (not just transitively via MIMIC_IV_MEDS) for concept labeling.
     "polars>=1.30.0",
-    # Model dev. Mac (local, CPU/MPS) installs plain torch; on the GCP A100 host,
-    # install the CUDA wheel matching the driver and add the `cuda` extra below.
-    "torch>=2.12.1",
+    # Model dev. Mac (local, CPU/MPS) installs plain torch, floating freely.
+    # On the GCP A100 host, torch is pinned to an exact cu124 build and
+    # mamba-ssm (below) to an exact version -- discovered the hard way that
+    # letting either float is a real trap here: torch>=2.12.1 alone resolved
+    # to a cu130 build on that host, but the host's system CUDA toolkit is
+    # 12.9 (no nvcc for 13.x), so mamba-ssm's CUDA extension couldn't be
+    # rebuilt against it and torch.utils.cpp_extension hard-fails on any
+    # major-version CUDA mismatch. torch==2.6.0+cu124 is the newest build on
+    # PyTorch's cu124 wheel index (its release series stops there), which
+    # matches CUDA 12.9's nvcc fine (only failed on exact-major mismatches,
+    # not minor). See the `cuda` extra below for the matching mamba-ssm pin.
+    "torch>=2.12.1; sys_platform != 'linux'",
+    "torch==2.6.0; sys_platform == 'linux'",
     # urllib3>=2.7.0 fixes CVE-2026-44431 and CVE-2026-44432
     "urllib3>=2.7.0",
     # idna>=3.15 fixes CVE-2026-45409
@@ -27,9 +37,25 @@ dependencies = [
 
 [project.optional-dependencies]
 # mamba-ssm requires CUDA/nvcc — GCP A100 only, not buildable on Mac.
+# Pinned exact (not >=): 2.3.2 added a Mamba3 module that's imported
+# eagerly by mamba_ssm/__init__.py (so even our own submodule-only
+# imports trigger it) and needs a newer Triton than the one torch==2.6.0
+# bundles. 2.3.0 doesn't have that module. mamba-ssm also ships prebuilt
+# PyPI wheels that silently win over building from source unless forced
+# past -- both --no-build-isolation alone and a plain rebuild picked a
+# prebuilt wheel compiled against a different torch ABI (undefined
+# symbol at import). The install that actually works:
+#   PATH=/usr/local/cuda-12.9/bin:$PATH CUDA_HOME=/usr/local/cuda-12.9 \
+#   MAX_JOBS=12 MAMBA_FORCE_BUILD=TRUE \
 #   uv sync --extra cuda --no-build-isolation
+#   uv pip install --no-build-isolation --no-binary mamba-ssm --no-deps \
+#     --no-cache --reinstall 'mamba-ssm==2.3.0'
+# (--no-binary forces a real source build; MAMBA_FORCE_BUILD skips
+# mamba-ssm's own auto-download-a-prebuilt-wheel shortcut in setup.py;
+# CUDA_HOME must point at a toolkit whose major CUDA version matches
+# torch's, or torch.utils.cpp_extension refuses to build at all.)
 cuda = [
-    "mamba-ssm>=2.3.0",
+    "mamba-ssm==2.3.0",
 ]
 
 # NOTE: transformers/lightning/etc. are intentionally omitted until the
@@ -61,6 +87,18 @@ docs = [
 # Default dependency groups to be installed
 [tool.uv]
 default-groups = ["dev"]
+
+[tool.uv.sources]
+# See the torch==2.6.0 pin's comment above -- only the GCP A100 host
+# (sys_platform == "linux") needs the cu124 build; Mac keeps plain PyPI.
+torch = [
+    { index = "pytorch-cu124", marker = "sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
 
 [tool.mypy]
 ignore_missing_imports = true

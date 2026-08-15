@@ -378,10 +378,79 @@ def evaluate_run(
     )
 
 
+def results_to_dict(results: InferenceResults) -> Dict[str, object]:
+    """Plain-JSON-able view of :class:`InferenceResults` (already all plain types)."""
+    from dataclasses import asdict  # noqa: PLC0415
+
+    return asdict(results)
+
+
+@dataclass(frozen=True)
+class _CliArgs:
+    """Parsed CLI args for :func:`evaluate_run`, mirroring ``training.train``'s CLI."""
+
+    run_dir: Path
+    held_out_shard_dir: str
+    output_json: Path
+    checkpoint_path: Path
+    max_shards: Optional[int]
+    num_lanes: int
+    chunk_size: int
+
+
+def _parse_args() -> _CliArgs:
+    import argparse  # noqa: PLC0415
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--run-dir", required=True)
+    parser.add_argument("--held-out-shard-dir", required=True)
+    parser.add_argument("--output-json", required=True)
+    parser.add_argument(
+        "--checkpoint",
+        default=None,
+        help="Checkpoint filename within --run-dir (default: checkpoint_best.pt).",
+    )
+    parser.add_argument("--max-shards", type=int, default=None)
+    parser.add_argument("--num-lanes", type=int, default=8)
+    parser.add_argument("--chunk-size", type=int, default=256)
+    args = parser.parse_args()
+
+    run_dir = Path(args.run_dir)
+    return _CliArgs(
+        run_dir=run_dir,
+        held_out_shard_dir=args.held_out_shard_dir,
+        output_json=Path(args.output_json),
+        checkpoint_path=run_dir / (args.checkpoint or "checkpoint_best.pt"),
+        max_shards=args.max_shards,
+        num_lanes=args.num_lanes,
+        chunk_size=args.chunk_size,
+    )
+
+
+if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    cli_args = _parse_args()
+    results = evaluate_run(
+        cli_args.run_dir,
+        cli_args.held_out_shard_dir,
+        max_shards=cli_args.max_shards,
+        num_lanes=cli_args.num_lanes,
+        chunk_size=cli_args.chunk_size,
+        checkpoint_path=cli_args.checkpoint_path,
+    )
+    cli_args.output_json.parent.mkdir(parents=True, exist_ok=True)
+    cli_args.output_json.write_text(json.dumps(results_to_dict(results), indent=2))
+    logger.info("[inference] wrote results to %s", cli_args.output_json)
+
+
 __all__ = [
     "InferenceResults",
     "load_run",
     "load_and_bin_held_out",
     "run_streaming_inference",
     "evaluate_run",
+    "results_to_dict",
 ]
