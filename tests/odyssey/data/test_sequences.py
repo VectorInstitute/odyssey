@@ -60,6 +60,22 @@ def test_events_sorted_by_time_regardless_of_input_order() -> None:
     assert seq.time_stamps == [0.0, 1.0, 2.0]
 
 
+def test_same_timestamp_events_keep_a_deterministic_relative_order() -> None:
+    # A lab panel drawn together has no true order, but the tokenized
+    # sequence still needs a fixed, reproducible one (see
+    # build_patient_sequence's docstring) -- ties must keep their
+    # relative order from the input, not depend on Polars' default
+    # (unstable) sort behavior.
+    codes = ["LAB//E//", "LAB//D//", "LAB//C//", "LAB//B//", "LAB//A//"]
+    vocab = Vocabulary.build(codes, min_count=1)
+    events = _events([(1, T0, code, None) for code in codes])
+
+    seq = build_patient_sequence(events, vocab)
+
+    assert seq.concept_ids == [vocab.encode(c) for c in codes]
+    assert seq.time_stamps == [0.0, 0.0, 0.0, 0.0, 0.0]
+
+
 def test_static_timeless_facts_are_dropped() -> None:
     events = _events(
         [
