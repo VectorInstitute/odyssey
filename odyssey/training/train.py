@@ -27,6 +27,7 @@ one when resuming.
 
 import gc
 import json
+import logging
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -48,6 +49,9 @@ from odyssey.training.data import (
     iter_patient_sequences,
     load_meds_shards,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -222,23 +226,27 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(config.seed)
 
-    print(f"[data] loading train shards from {config.train_shard_dir}")
+    logger.info("[data] loading train shards from %s", config.train_shard_dir)
     train_events = load_meds_shards(
         config.train_shard_dir, max_shards=config.max_train_shards
     )
-    print(
-        f"[data] train: {count_subjects(train_events)} subjects, {train_events.height} events"
+    logger.info(
+        "[data] train: %d subjects, %d events",
+        count_subjects(train_events),
+        train_events.height,
     )
 
-    print(f"[data] loading tuning shards from {config.tuning_shard_dir}")
+    logger.info("[data] loading tuning shards from %s", config.tuning_shard_dir)
     tuning_events = load_meds_shards(
         config.tuning_shard_dir, max_shards=config.max_tuning_shards
     )
-    print(
-        f"[data] tuning: {count_subjects(tuning_events)} subjects, {tuning_events.height} events"
+    logger.info(
+        "[data] tuning: %d subjects, %d events",
+        count_subjects(tuning_events),
+        tuning_events.height,
     )
 
-    print("[data] labeling concepts")
+    logger.info("[data] labeling concepts")
     train_labels, train_masks = build_concept_label_dicts(train_events, CONCEPTS)
     tuning_labels, tuning_masks = build_concept_label_dicts(tuning_events, CONCEPTS)
     train_labels = {k: v.to(device) for k, v in train_labels.items()}
@@ -246,7 +254,7 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
     tuning_labels = {k: v.to(device) for k, v in tuning_labels.items()}
     tuning_masks = {k: v.to(device) for k, v in tuning_masks.items()}
 
-    print("[data] fitting quantile binner on train split")
+    logger.info("[data] fitting quantile binner on train split")
     binner = QuantileBinner.fit(
         train_events, n_bins=config.quantile_n_bins, min_count=config.quantile_min_count
     )
@@ -262,20 +270,20 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
     del train_events, tuning_events
     gc.collect()
 
-    print("[data] building vocabulary from train split")
+    logger.info("[data] building vocabulary from train split")
     vocab = build_vocabulary(
         train_events_binned,
         min_count=config.vocab_min_count,
         max_size=config.vocab_max_size,
     )
     vocab.save(output_dir / "vocabulary.json")
-    print(f"[data] vocab size: {len(vocab)}")
+    logger.info("[data] vocab size: %d", len(vocab))
 
     model = build_model(config, vocab_size=len(vocab), num_concepts=len(CONCEPTS)).to(
         device
     )
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"[model] {n_params / 1e6:.1f}M parameters on {device}")
+    logger.info("[model] %.1fM parameters on %s", n_params / 1e6, device)
 
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
@@ -289,7 +297,7 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
     start_epoch = 0
     global_step = 0
     if config.resume_from is not None:
-        print(f"[resume] loading {config.resume_from}")
+        logger.info("[resume] loading %s", config.resume_from)
         checkpoint = torch.load(config.resume_from, map_location=device)
         model.load_state_dict(checkpoint["model"])
         if "optimizer" in checkpoint:
@@ -304,7 +312,9 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
         # should pass the *previous* epoch's final checkpoint for this
         # reason, not a mid-epoch one.
         start_epoch = checkpoint.get("epoch", 0)
-        print(f"[resume] resuming at epoch={start_epoch}, global_step={global_step}")
+        logger.info(
+            "[resume] resuming at epoch=%d, global_step=%d", start_epoch, global_step
+        )
 
     def make_train_sampler(epoch: int) -> PackedLaneSampler:
         patients = iter_patient_sequences(
@@ -329,7 +339,7 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
             patients, num_lanes=config.num_lanes, chunk_size=config.chunk_size
         )
 
-    logger = LossLogger(output_dir / "loss_log.jsonl")
+    loss_logger = LossLogger(output_dir / "loss_log.jsonl")
     start_time = time.time()
 
     for epoch in range(start_epoch, config.num_epochs):
@@ -355,9 +365,9 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
                     "split": "train",
                     **{k: v.item() for k, v in components.items()},
                 }
-                logger.log(**fields)
+                loss_logger.log(**fields)
                 summary = " ".join(f"{k}={v:.4f}" for k, v in components.items())
-                print(f"[train] step={global_step} epoch={epoch} {summary}")
+                logger.info("[train] step=%d epoch=%d %s", global_step, epoch, summary)
 
             if global_step % config.eval_every == 0:
                 val = evaluate_streaming(
@@ -375,9 +385,9 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
                     "split": "tuning",
                     **val,
                 }
-                logger.log(**fields)
+                loss_logger.log(**fields)
                 summary = " ".join(f"{k}={v:.4f}" for k, v in val.items())
-                print(f"[val]   step={global_step} {summary}")
+                logger.info("[val]   step=%d %s", global_step, summary)
 
             if global_step % config.checkpoint_every == 0:
                 torch.save(
@@ -412,9 +422,11 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
         {"model": model.state_dict(), "step": global_step, "config": asdict(config)},
         output_dir / "checkpoint_final.pt",
     )
-    logger.close()
+    loss_logger.close()
     elapsed = time.time() - start_time
-    print(f"[done] {global_step} steps in {elapsed:.1f}s, output in {output_dir}")
+    logger.info(
+        "[done] %d steps in %.1fs, output in %s", global_step, elapsed, output_dir
+    )
     return output_dir
 
 
@@ -454,4 +466,11 @@ def _parse_args() -> TrainingConfig:
 
 
 if __name__ == "__main__":
+    # Only the top-level entry point configures logging -- odyssey.training.train
+    # is also imported as a library (tests, odyssey.inference), which must
+    # never clobber a caller's own logging setup.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     train(_parse_args())

@@ -19,6 +19,7 @@ probe still needs a real design decision, not implemented yet.
 """
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
@@ -51,6 +52,9 @@ from odyssey.training.metrics import (
     orthogonality_diagnostic,
 )
 from odyssey.training.train import TrainingConfig, _move_chunk_to_device, build_model
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -242,15 +246,15 @@ def evaluate_run(
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     model, vocab, binner, _ = load_run(run_dir, device=device)
 
-    print(f"[inference] loading held-out shards from {held_out_shard_dir}")
+    logger.info("[inference] loading held-out shards from %s", held_out_shard_dir)
     raw_events = load_meds_shards(held_out_shard_dir, max_shards=max_shards)
     events_binned = add_value_tokens(raw_events, binner)
 
-    print("[inference] labeling concepts")
+    logger.info("[inference] labeling concepts")
     concept_labels, concept_mask = build_concept_label_dicts(raw_events, CONCEPTS)
     del raw_events
 
-    print("[inference] running streaming inference")
+    logger.info("[inference] running streaming inference")
     return run_streaming_inference(
         model,
         events_binned,
