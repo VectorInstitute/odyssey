@@ -112,6 +112,26 @@ class TrainingConfig:
     seed: int = 0
 
 
+def _atomic_torch_save(obj: object, path: Path) -> None:
+    """Save ``obj`` via ``torch.save``, atomically -- never a partial file.
+
+    ``torch.save`` writes its target path directly and isn't atomic: a
+    process killed mid-write (OOM, spot preemption, any crash) leaves a
+    truncated file at that exact path. A later ``torch.load`` of that
+    path then fails with an ``EOFError`` -- confirmed directly during
+    this project's own training run, where the resulting resume loop
+    kept picking the same corrupted checkpoint on every restart, unable
+    to recover on its own. Writing to a sibling ``.tmp`` path first and
+    renaming it into place afterward avoids this: ``Path.replace`` is
+    atomic on the same filesystem (POSIX), so the target path always
+    either has the previous complete file (if a crash happens before
+    the rename) or the new complete one (after) -- never a partial one.
+    """
+    tmp_path = path.with_name(path.name + ".tmp")
+    torch.save(obj, tmp_path)
+    tmp_path.replace(path)
+
+
 class LossLogger:
     """Append-only JSONL logger for per-step loss components."""
 
@@ -457,7 +477,7 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
                 logger.info("[val]   step=%d %s", global_step, summary)
 
             if global_step % config.checkpoint_every == 0:
-                torch.save(
+                _atomic_torch_save(
                     {
                         "model": model.state_dict(),
                         "optimizer": optimizer.state_dict(),
@@ -474,7 +494,7 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
         # checkpoint_every -- steps_into_epoch=0 here since resuming
         # from this checkpoint starts the *next* epoch at its own
         # beginning, not partway through this one.
-        torch.save(
+        _atomic_torch_save(
             {
                 "model": model.state_dict(),
                 "optimizer": optimizer.state_dict(),
@@ -485,7 +505,7 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0915
             output_dir / f"checkpoint_epoch_{epoch}.pt",
         )
 
-    torch.save(
+    _atomic_torch_save(
         {"model": model.state_dict(), "step": global_step, "config": asdict(config)},
         output_dir / "checkpoint_final.pt",
     )

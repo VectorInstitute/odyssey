@@ -7,6 +7,7 @@ see test_train_gpu.py.
 import json
 from pathlib import Path
 
+import pytest
 import torch
 
 from odyssey.data.types import AuxiliaryInputs, ClinicalSequenceBatch
@@ -14,6 +15,7 @@ from odyssey.models.backbones.base import TimeAwareState
 from odyssey.training.train import (
     LossLogger,
     TrainingConfig,
+    _atomic_torch_save,
     _detach_state,
     _move_chunk_to_device,
 )
@@ -22,6 +24,55 @@ from odyssey.training.train import (
 # ---------------------------------------------------------------------------
 # LossLogger
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# _atomic_torch_save
+# ---------------------------------------------------------------------------
+
+
+def test_atomic_torch_save_writes_a_loadable_file(tmp_path: Path) -> None:
+    path = tmp_path / "checkpoint.pt"
+    _atomic_torch_save({"step": 42}, path)
+
+    assert path.exists()
+    assert torch.load(path, map_location="cpu") == {"step": 42}
+
+
+def test_atomic_torch_save_leaves_no_tmp_file_behind(tmp_path: Path) -> None:
+    path = tmp_path / "checkpoint.pt"
+    _atomic_torch_save({"step": 1}, path)
+
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_atomic_torch_save_never_leaves_a_partial_file_at_the_target_path(
+    tmp_path: Path,
+) -> None:
+    # The failure mode this exists to prevent: a reader must never see a
+    # truncated file at the real path, even if the process died mid-write
+    # -- confirmed for real during this project's own training run (a
+    # crash mid checkpoint-write left a 0-byte checkpoint_N.pt, which
+    # every subsequent resume attempt then failed to load, unable to
+    # self-recover). Simulates that by making torch.save itself raise
+    # partway through -- the target path must not exist, or if it
+    # existed before, must still hold its old, complete contents.
+    path = tmp_path / "checkpoint.pt"
+    _atomic_torch_save({"step": 1}, path)  # an existing, good checkpoint
+
+    with pytest.MonkeyPatch.context() as mp:
+
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("simulated crash mid-write")
+
+        mp.setattr(torch, "save", _boom)
+        with pytest.raises(RuntimeError):
+            _atomic_torch_save({"step": 2}, path)
+
+    # the old, good checkpoint is untouched -- never overwritten with a
+    # partial file, and no leftover .tmp file either.
+    assert torch.load(path, map_location="cpu") == {"step": 1}
+    assert list(tmp_path.iterdir()) == [path]
 
 
 def test_loss_logger_writes_one_json_object_per_line(tmp_path: Path) -> None:
