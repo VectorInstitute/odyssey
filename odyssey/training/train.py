@@ -413,7 +413,14 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
         model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
     )
     pos_weight = None
-    if config.concept_pos_weight:
+    if config.concept_pos_weight and not train_labels:
+        logger.warning(
+            "[loss] concept_pos_weight requested but no %s-scoped labels were "
+            "produced (e.g. no real hadm_id on any event) -- falling back to "
+            "unweighted concept loss",
+            config.concept_supervision,
+        )
+    elif config.concept_pos_weight:
         all_labels = torch.stack(list(train_labels.values()))
         all_masks = torch.stack(list(train_masks.values()))
         n_pos = (all_labels * all_masks).sum(dim=0)
