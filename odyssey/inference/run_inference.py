@@ -20,17 +20,18 @@ probe still needs a real design decision, not implemented yet.
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import polars as pl
 import torch
+import torch.nn.functional as F  # noqa: N812
 
 from odyssey.data.concepts import CONCEPTS
 from odyssey.data.streaming import PackedLaneSampler
 from odyssey.data.value_binning import QuantileBinner, add_value_tokens
-from odyssey.data.vocabulary import PAD_ID, Vocabulary
+from odyssey.data.vocabulary import Vocabulary, code_type
 from odyssey.models.sequence_model import (
     ConceptBottleneckSequenceModel,
     _gather_by_subject,
@@ -47,14 +48,23 @@ from odyssey.training.metrics import (
     TaskMetrics,
     compute_concept_metrics,
     compute_observability_metrics,
-    compute_task_metrics,
-    compute_task_metrics_by_code_type,
     orthogonality_diagnostic,
 )
 from odyssey.training.train import TrainingConfig, _move_chunk_to_device, build_model
 
 
 logger = logging.getLogger(__name__)
+
+_CODE_TYPE_NAMES = {
+    1: "diagnosis",
+    2: "medication",
+    3: "procedure",
+    4: "lab",
+    5: "visit",
+    6: "demographic",
+    7: "billing",
+    8: "other",
+}
 
 
 @dataclass(frozen=True)
@@ -126,6 +136,104 @@ def load_and_bin_held_out(
     return add_value_tokens(events, binner)
 
 
+def _build_type_lookup(vocab: Vocabulary, device: str) -> torch.Tensor:
+    """``(vocab_size,)`` token id -> code-type id, for a vectorized per-chunk lookup.
+
+    Precomputed once rather than decoding each target token on every
+    chunk (real held-out passes have hundreds of thousands of real
+    positions).
+    """
+    lookup = torch.zeros(len(vocab), dtype=torch.long)
+    for token_id, token in vocab.id_to_token.items():
+        lookup[token_id] = code_type(token)
+    return lookup.to(device)
+
+
+@dataclass
+class _RunningBucket:
+    """Cross-entropy/top-k sums for one slice of targets, updated chunk by chunk.
+
+    Sums (not means) so weighted-averaging across chunks of different
+    sizes reduces to a single division at the end -- exactly what
+    ``F.cross_entropy(..., reduction="sum")`` plus a running count gives.
+    """
+
+    ce_sum: float = 0.0
+    hit_sums: Dict[int, int] = field(default_factory=dict)
+    n: int = 0
+
+    def update(
+        self, logits: torch.Tensor, targets: torch.Tensor, top_k: Sequence[int]
+    ) -> None:
+        """``logits`` is ``(n, vocab_size)``, ``targets`` is ``(n,)``: one chunk."""
+        if targets.numel() == 0:
+            return
+        self.n += int(targets.numel())
+        self.ce_sum += float(F.cross_entropy(logits, targets, reduction="sum").item())
+        top_k_preds = logits.topk(max(top_k), dim=-1).indices
+        hits = top_k_preds == targets.unsqueeze(-1)
+        for k in top_k:
+            self.hit_sums[k] = self.hit_sums.get(k, 0) + int(
+                hits[:, :k].any(dim=-1).sum().item()
+            )
+
+    def finalize(self) -> TaskMetrics:
+        """Combine the running sums into one :class:`TaskMetrics`."""
+        if self.n == 0:
+            raise ValueError("no non-ignored predictions to compute metrics over")
+        cross_entropy = self.ce_sum / self.n
+        return TaskMetrics(
+            cross_entropy=cross_entropy,
+            perplexity=float(torch.exp(torch.tensor(cross_entropy))),
+            top1_accuracy=self.hit_sums.get(1, 0) / self.n,
+            top5_accuracy=self.hit_sums.get(5, 0) / self.n,
+            n_predictions=self.n,
+        )
+
+
+class _RunningTaskMetrics:
+    """Streaming equivalent of ``compute_task_metrics``/``..._by_code_type``.
+
+    Those two functions need the full ``(N, vocab_size)`` logits tensor
+    materialized at once -- fine for one training batch, but for a real
+    held-out split with hundreds of thousands of real positions, holding
+    onto every chunk's logits until the very end doesn't scale.
+    Confirmed the hard way: exactly this accumulation pattern (an
+    earlier version of :func:`run_streaming_inference`) OOM-killed the
+    actual training job it happened to be running alongside, evaluating
+    against only 5 real held-out shards. This accumulates the same
+    quantities incrementally instead, holding only running scalars
+    (never more than one chunk's logits at a time -- the same transient
+    cost the model's own forward pass already pays).
+    """
+
+    def __init__(
+        self, vocab: Vocabulary, *, device: str, top_k: Sequence[int] = (1, 5)
+    ) -> None:
+        self._top_k = top_k
+        self._type_lookup = _build_type_lookup(vocab, device)
+        self.overall = _RunningBucket()
+        self.by_type: Dict[str, _RunningBucket] = {}
+
+    def update(self, logits: torch.Tensor, targets: torch.Tensor) -> None:
+        """Fold in one chunk's real-position ``(logits, targets)``."""
+        if targets.numel() == 0:
+            return
+        self.overall.update(logits, targets, self._top_k)
+        target_types = self._type_lookup[targets]
+        for type_id, name in _CODE_TYPE_NAMES.items():
+            type_mask = target_types == type_id
+            if type_mask.any():
+                self.by_type.setdefault(name, _RunningBucket()).update(
+                    logits[type_mask], targets[type_mask], self._top_k
+                )
+
+    def finalize(self) -> Tuple[TaskMetrics, Dict[str, TaskMetrics]]:
+        return self.overall.finalize(), {
+            name: bucket.finalize() for name, bucket in self.by_type.items()
+        }
+
+
 def run_streaming_inference(
     model: ConceptBottleneckSequenceModel,
     events_binned: pl.DataFrame,
@@ -151,8 +259,7 @@ def run_streaming_inference(
         patients, num_lanes=num_lanes, chunk_size=chunk_size, reset_prob=0.0
     )
 
-    all_logits: List[torch.Tensor] = []
-    all_targets: List[torch.Tensor] = []
+    task_stats = _RunningTaskMetrics(vocab, device=device)
     end_subject_ids: List[torch.Tensor] = []
     end_concept_probs: List[torch.Tensor] = []
     end_observability_probs: List[torch.Tensor] = []
@@ -169,8 +276,7 @@ def run_streaming_inference(
 
             real = chunk.real_mask
             if real.any():
-                all_logits.append(logits[real].cpu())
-                all_targets.append(chunk.targets[real].cpu())
+                task_stats.update(logits[real], chunk.targets[real])
 
             if chunk.patient_end.any():
                 end_subject_ids.append(
@@ -197,12 +303,7 @@ def run_streaming_inference(
                     ).cpu()
                 )
 
-    task_logits = torch.cat(all_logits)
-    task_targets = torch.cat(all_targets)
-    task_metrics = compute_task_metrics(task_logits, task_targets, ignore_index=PAD_ID)
-    task_metrics_by_code_type = compute_task_metrics_by_code_type(
-        task_logits, task_targets, vocab, ignore_index=PAD_ID
-    )
+    task_metrics, task_metrics_by_code_type = task_stats.finalize()
 
     subject_ids = torch.cat(end_subject_ids)
     concept_probs = torch.cat(end_concept_probs)
