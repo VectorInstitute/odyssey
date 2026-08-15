@@ -71,7 +71,15 @@ _FALLBACK_LABEL: Dict[str, str] = {
 
 
 def _clinical_label_expr(value_col: str) -> pl.Expr:
-    """Build one polars expression giving the clinical bin label, or null."""
+    """Build one polars expression giving the clinical bin label, or null.
+
+    Null wherever ``value_col`` is null, even for a matching code: a
+    threshold comparison against a null value is null, which
+    ``pl.when`` treats as False, so without an explicit null guard every
+    threshold branch would fall through to the *fallback* label -- and a
+    heart-rate event with a missing reading would silently tokenize as
+    ``::HIGH``.
+    """
     label_expr = pl.lit(None, dtype=pl.Utf8)
     for prefix, cuts in CLINICAL_RANGES.items():
         prefix_label = pl.lit(_FALLBACK_LABEL[prefix])
@@ -82,7 +90,10 @@ def _clinical_label_expr(value_col: str) -> pl.Expr:
                 .otherwise(prefix_label)
             )
         label_expr = (
-            pl.when(pl.col("code").str.starts_with(prefix))
+            pl.when(
+                pl.col("code").str.starts_with(prefix)
+                & pl.col(value_col).is_not_null()
+            )
             .then(prefix_label)
             .otherwise(label_expr)
         )
@@ -150,7 +161,13 @@ class QuantileBinner:
         code_col: str = "code",
         value_col: str = "numeric_value",
     ) -> pl.Series:
-        """Return a ``Utf8`` Series of bin labels, null where no boundary exists."""
+        """Return a ``Utf8`` Series of bin labels.
+
+        Null where no boundary exists for the code, and null where the
+        value itself is null (a null value compares as below every cut
+        point, so without an explicit guard it would silently land in the
+        lowest bin, ``Q1``, instead of staying unbinned).
+        """
         if not self.boundaries:
             return pl.Series([None] * events.height, dtype=pl.Utf8)
 
@@ -174,7 +191,7 @@ class QuantileBinner:
                 (pl.col(value_col) >= pl.col(c)).fill_null(False).cast(pl.Int32)
             )
         joined = joined.with_columns(
-            pl.when(pl.col("_found"))
+            pl.when(pl.col("_found") & pl.col(value_col).is_not_null())
             .then(pl.lit("Q") + (bin_index + 1).cast(pl.Utf8))
             .otherwise(pl.lit(None, dtype=pl.Utf8))
             .alias("_bin")

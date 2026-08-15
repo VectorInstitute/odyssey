@@ -40,6 +40,25 @@ def test_codes_without_numeric_value_pass_through_unchanged() -> None:
     assert out["code"].to_list() == ["PROCEDURE//CT_HEAD", "DIAGNOSIS//A047"]
 
 
+def test_clinical_range_code_with_null_value_passes_through_unchanged() -> None:
+    # A matching code whose reading is missing must NOT be binned: a null
+    # value compares as False against every threshold, which without an
+    # explicit guard falls through to the fallback label -- silently
+    # tokenizing a missing heart-rate reading as "::HIGH".
+    events = _events([("LAB//220045//bpm", None), ("LAB//220045//bpm", 75.0)])
+    out = add_value_tokens(events)
+    assert out["code"].to_list() == ["LAB//220045//bpm", "LAB//220045//bpm::NORMAL"]
+
+
+def test_quantile_binned_code_with_null_value_passes_through_unchanged() -> None:
+    # Same contract on the quantile path: a null value is below every cut
+    # point, so without a guard it would silently land in "::Q1".
+    train = _events([("LAB//UNMAPPED//x", float(v)) for v in range(100)])
+    binner = QuantileBinner.fit(train, n_bins=5, min_count=50)
+    out = add_value_tokens(_events([("LAB//UNMAPPED//x", None)]), binner)
+    assert out["code"].to_list() == ["LAB//UNMAPPED//x"]
+
+
 def test_no_numeric_value_column_is_a_noop() -> None:
     events = pl.DataFrame({"code": ["DIAGNOSIS//A047"]})
     out = add_value_tokens(events)

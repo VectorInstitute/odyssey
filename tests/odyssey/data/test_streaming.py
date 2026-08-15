@@ -171,18 +171,46 @@ def test_patient_end_is_false_on_padding() -> None:
 
 def test_no_padding_waste_when_patient_length_divides_chunk_size() -> None:
     # each patient's length exactly matches chunk_size, so every reset
-    # lands precisely at position 0 of some chunk -- zero padding waste.
-    # A third patient keeps c2 away from the true end of the stream (whose
-    # last token has no real target of its own, a separate, unrelated edge
-    # case -- see test_padding_uses_no_subject_sentinel).
+    # lands precisely at position 0 of some chunk -- zero padding waste
+    # on the *input* side. A third patient keeps c2 away from the true
+    # end of the stream (whose last token has no real target of its own,
+    # a separate, unrelated edge case -- see
+    # test_padding_uses_no_subject_sentinel).
     patients = _patients([_seq(1, 4), _seq(2, 4), _seq(3, 4)])
     sampler = PackedLaneSampler(patients, num_lanes=1, chunk_size=4)
 
     c1 = sampler.next_chunk()
     c2 = sampler.next_chunk()
-    assert c1.real_mask[0].all()
-    assert c2.real_mask[0].all()
+    # every input position is a real token in both chunks...
+    assert (c1.subject_ids[0] != NO_SUBJECT).all()
+    assert (c2.subject_ids[0] != NO_SUBJECT).all()
+    # ...but each chunk's final target would be the *next* patient's first
+    # token -- a prediction across the reset boundary, so it is not real.
+    assert c1.real_mask[0].tolist() == [True, True, True, False]
+    assert c2.real_mask[0].tolist() == [True, True, True, False]
     assert c2.reset_mask[0].tolist() == [True, False, False, False]
+
+
+def test_patient_boundary_at_exact_chunk_end_is_never_a_target() -> None:
+    # Patient 1's length exactly fills the first chunk, so patient 2's
+    # first token sits at the window's final, target-only position. That
+    # (input, target) pair crosses the reset boundary: the model has no
+    # carried state to predict it from, so it must be masked out of both
+    # targets (as PAD, for the loss's ignore_index) and real_mask (for
+    # metric consumers) -- not silently trained on.
+    patients = _patients([_seq(1, 4), _seq(2, 3)])
+    sampler = PackedLaneSampler(patients, num_lanes=1, chunk_size=4)
+
+    c1 = sampler.next_chunk()
+    assert c1.batch.concept_ids[0].tolist() == [1000, 1001, 1002, 1003]
+    assert c1.targets[0].tolist() == [1001, 1002, 1003, PAD_ID]
+    assert c1.real_mask[0].tolist() == [True, True, True, False]
+
+    # patient 2 still starts intact at position 0 of the next chunk, with
+    # its own reset -- no event was lost, only the meaningless target.
+    c2 = sampler.next_chunk()
+    assert c2.batch.concept_ids[0, :3].tolist() == [2000, 2001, 2002]
+    assert bool(c2.reset_mask[0, 0])
 
 
 def test_padding_absorbs_a_patient_transition_within_a_chunk() -> None:

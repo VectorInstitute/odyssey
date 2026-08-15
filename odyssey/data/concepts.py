@@ -63,7 +63,30 @@ from typing import Dict, List, Literal, Optional, Sequence, Set, Tuple, Union
 import polars as pl
 
 
-Direction = Literal["above", "below"]
+Direction = Literal["above", "below", "at_or_above", "at_or_below"]
+"""Which side of a threshold triggers a rule. The ``at_or_*`` variants
+make the threshold value itself qualify -- clinical criteria are precise
+about this (qSOFA is RR *>= 22*, KDIGO Stage 3 is creatinine *>= 4.0*),
+and vitals/labs are often charted as exact integers, so a strict
+inequality would silently miss real boundary readings."""
+
+TrendDirection = Literal["above", "below"]
+"""Direction of a *change* relative to a subject's own baseline
+(:class:`BaselineRelativeRule`): a rise or a fall. Inclusive variants
+don't apply -- the delta/ratio comparison is already ``>=``."""
+
+
+def _threshold_expr(value: pl.Expr, threshold: float, direction: Direction) -> pl.Expr:
+    """One polars comparison expression for a threshold rule's direction."""
+    if direction == "above":
+        return value > threshold
+    if direction == "below":
+        return value < threshold
+    if direction == "at_or_above":
+        return value >= threshold
+    if direction == "at_or_below":
+        return value <= threshold
+    raise ValueError(f"unknown direction: {direction!r}")
 
 
 @dataclass(frozen=True)
@@ -113,7 +136,7 @@ class BaselineRelativeRule:
     """
 
     code_prefix: str
-    direction: Direction
+    direction: TrendDirection
     window_hours: float
     delta: Optional[float] = None
     ratio: Optional[float] = None
@@ -308,7 +331,7 @@ _AKI_STAGE_3 = ConceptDefinition(
         BaselineRelativeRule(
             _CREATININE, ratio=3.0, direction="above", window_hours=168.0
         ),
-        ConceptRule(_CREATININE, 4.0, "above"),
+        ConceptRule(_CREATININE, 4.0, "at_or_above"),  # KDIGO: >= 4.0, inclusive
     ],
     "KDIGO AKI Stage 3 (either trigger): serum creatinine rose to "
     ">= 3.0x an earlier reading within 7 days, OR any reading >= 4.0 "
@@ -350,11 +373,11 @@ _SIRS = CompositeConceptDefinition(
 _QSOFA = CompositeConceptDefinition(
     "qsofa",
     components=[
-        ConceptRule("LAB//220210//", 22.0, "above"),  # RR >= 22
+        ConceptRule("LAB//220210//", 22.0, "at_or_above"),  # RR >= 22
         AnyOf(
             [
-                ConceptRule("LAB//220179//", 100.0, "below"),
-                ConceptRule("LAB//220050//", 100.0, "below"),
+                ConceptRule("LAB//220179//", 100.0, "at_or_below"),
+                ConceptRule("LAB//220050//", 100.0, "at_or_below"),
             ]
         ),  # SBP <= 100
         DerivedGcsTotalRule(
@@ -404,11 +427,7 @@ def _instantaneous_ids(
         & pl.col(value_col).is_not_null()
     )
     observed = set(matched[subject_id_col].to_list())
-    comparison = (
-        pl.col(value_col) > rule.threshold
-        if rule.direction == "above"
-        else pl.col(value_col) < rule.threshold
-    )
+    comparison = _threshold_expr(pl.col(value_col), rule.threshold, rule.direction)
     triggered = set(matched.filter(comparison)[subject_id_col].to_list())
     return observed, triggered
 
@@ -427,11 +446,7 @@ def _sustained_ids(
         & pl.col(value_col).is_not_null()
     )
     observed = set(matched[subject_id_col].to_list())
-    comparison = (
-        pl.col(value_col) > rule.threshold
-        if rule.direction == "above"
-        else pl.col(value_col) < rule.threshold
-    )
+    comparison = _threshold_expr(pl.col(value_col), rule.threshold, rule.direction)
     qualifying = matched.filter(comparison)
     if qualifying.height == 0:
         return observed, set()
@@ -582,9 +597,7 @@ def _derived_gcs_total_ids(
     total = (
         pl.col(value_col) + pl.col(f"{value_col}_verbal") + pl.col(f"{value_col}_motor")
     )
-    comparison = (
-        total < rule.threshold if rule.direction == "below" else total > rule.threshold
-    )
+    comparison = _threshold_expr(total, rule.threshold, rule.direction)
     triggered = set(paired.filter(comparison)[subject_id_col].to_list())
     return observed, triggered
 
