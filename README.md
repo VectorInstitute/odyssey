@@ -14,7 +14,7 @@
 
 ---
 
-Odyssey builds **interpretable** clinical foundation models from Electronic Health Records. Prior work (EHR-Mamba3, [arXiv:2405.14567](https://arxiv.org/abs/2405.14567)) showed that a Mamba SSM trained with next-token prediction over patient event sequences learns strong representations for forecasting — but, like most large sequence models, its predictions aren't inspectable. This iteration adds a **concept bottleneck**: the backbone's hidden state is split into (a) a small set of clinically-grounded, supervised concepts (e.g. "on vasopressors", "acute kidney injury"), and (b) a free "unknown concept" residual that absorbs whatever else the task needs. A patient-timeline forecast can then be explained in terms of the concepts that drove it, instead of an opaque embedding.
+Odyssey builds **interpretable** clinical foundation models from Electronic Health Records. Prior work ([EHRMamba](https://arxiv.org/abs/2405.14567)) showed that a Mamba SSM trained with next-token prediction over patient event sequences learns strong representations for forecasting — but, like most large sequence models, its predictions aren't inspectable. This iteration adds a **concept bottleneck**: the backbone's hidden state is split into (a) a small set of clinically-grounded, supervised concepts (e.g. "on vasopressors", "acute kidney injury"), and (b) a free "unknown concept" residual that absorbs whatever else the task needs. A patient-timeline forecast can then be explained in terms of the concepts that drove it, instead of an opaque embedding.
 
 **Status: active research rebuild, not yet trained on real patient data.** See [Roadmap](#roadmap) below.
 
@@ -157,7 +157,7 @@ The real backbone (`EHRHybridBackbone`, `odyssey/models/backbones/hybrid.py`) ru
 
 ## Citation
 
-If you use Odyssey or EHR-Mamba3 in your research, please cite:
+If you use Odyssey or EHRMamba in your research, please cite:
 
 ```bibtex
 @misc{fallahpour2024ehrmamba,
