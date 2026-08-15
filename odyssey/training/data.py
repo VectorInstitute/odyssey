@@ -32,6 +32,14 @@ def load_meds_shards(
     real but time-bounded subset of a full extraction (e.g. the real
     MIMIC-IV 3.1 extraction's 292 train shards) rather than requiring the
     whole thing every time.
+
+    Uses the lazy/streaming engine to read+concatenate, not
+    ``pl.concat([pl.read_parquet(p) for p in paths])`` -- that held every
+    shard's DataFrame in memory simultaneously *plus* a full concatenated
+    copy, roughly 2x the dataset's true size at peak. Confirmed the hard
+    way: OOM-killed (dmesg-confirmed) at the real full-extraction scale
+    (292 shards, 706M rows, ~85GB peak RSS on an 83GB host), despite a
+    30-shard/72.9M-row subset of the same data working fine.
     """
     shard_dir = Path(shard_dir)
     paths = sorted(shard_dir.glob("*.parquet"), key=lambda p: int(p.stem))
@@ -39,7 +47,7 @@ def load_meds_shards(
         paths = paths[:max_shards]
     if not paths:
         raise FileNotFoundError(f"no .parquet shards found in {shard_dir}")
-    return pl.concat([pl.read_parquet(p) for p in paths])
+    return pl.scan_parquet(paths).collect(engine="streaming")
 
 
 def _shuffle_buffered(
