@@ -24,7 +24,7 @@ cuda_required = pytest.mark.skipif(
 
 import polars as pl  # noqa: E402
 
-from odyssey.inference.run_inference import evaluate_run  # noqa: E402
+from odyssey.inference.run_inference import evaluate_run, load_run  # noqa: E402
 from odyssey.training.train import TrainingConfig, train  # noqa: E402
 
 
@@ -120,3 +120,55 @@ def test_evaluate_run_end_to_end(tmp_path: Path) -> None:
         # every subject has a real observability target -- unlike
         # concept_metrics, n_subjects should exactly match what was scored.
         assert m.n_subjects == results.n_patient_ends_scored
+
+
+@cuda_required
+def test_evaluate_run_honours_an_explicit_checkpoint_path(tmp_path: Path) -> None:
+    # Real usage picks checkpoint_best.pt over wherever training happened
+    # to stop -- prove checkpoint_path is actually the file that gets
+    # loaded, not just accepted and ignored, by deleting every other
+    # checkpoint in the run dir before evaluating: if load_run silently
+    # fell back to _latest_checkpoint's default search, this would raise
+    # FileNotFoundError instead of succeeding.
+    train_dir = tmp_path / "data" / "train"
+    tuning_dir = tmp_path / "data" / "tuning"
+    held_out_dir = tmp_path / "data" / "held_out"
+    _write_shards(train_dir, n_subjects=12, n_events_per_subject=30)
+    _write_shards(tuning_dir, n_subjects=4, n_events_per_subject=30)
+    _write_shards(held_out_dir, n_subjects=6, n_events_per_subject=30)
+
+    run_dir = tmp_path / "run"
+    config = TrainingConfig(
+        train_shard_dir=str(train_dir),
+        tuning_shard_dir=str(tuning_dir),
+        output_dir=str(run_dir),
+        hidden_size=64,
+        num_hidden_layers=2,
+        mamba_state_size=16,
+        mamba_headdim=64,
+        mamba_chunk_size=16,
+        attn_num_heads=8,
+        embedding_dim=8,
+        vocab_min_count=1,
+        quantile_min_count=1,
+        num_lanes=2,
+        chunk_size=8,
+        num_epochs=1,
+        log_every=2,
+        eval_every=5,
+        checkpoint_every=100000,
+    )
+    train(config)
+    best_path = run_dir / "checkpoint_best.pt"
+    assert best_path.exists()
+
+    for other in run_dir.glob("checkpoint_*.pt"):
+        if other != best_path:
+            other.unlink()
+
+    results = evaluate_run(
+        run_dir, held_out_dir, num_lanes=2, chunk_size=8, checkpoint_path=best_path
+    )
+    assert results.n_patient_ends_scored > 0
+
+    _, _, _, _ = load_run(run_dir, checkpoint_path=best_path)
