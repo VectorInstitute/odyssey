@@ -46,6 +46,13 @@
 # - `hadm_id: $patientunitstayid` on unit-scoped events: odyssey's visit derivation
 #   (odyssey/data/sequences.py) groups events sharing an `hadm_id` into one visit,
 #   and the ICU unit stay is the natural visit unit here.
+# - Every offset-derived time is guarded to a +/- 1 year (525,600 minute) window:
+#   raw eICU contains a small number of garbage offsets (0.0008% of events, led by
+#   `drugstopoffset` and `labresultoffset`) that otherwise place single events
+#   centuries away from their stay and blow up per-subject time spans. An
+#   out-of-window offset nulls the computed time, and the extraction's null-time
+#   filter drops the row. Quantified on the full extraction; see research journal
+#   entry 06.
 
 etl:
   dataset_name: eICU
@@ -69,11 +76,11 @@ patient:
       # anchors the stay; everything else chains off it via minute offsets.
       hospitaldischargetimestamp: >-
         f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
-      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
-      unitdischargetimestamp: $unitadmittimestamp + $unitdischargeoffset::minutes
+      unitadmittimestamp: ($hospitaldischargetimestamp - $hospitaldischargeoffset::minutes) if not ($hospitaldischargeoffset >= 525600 or $hospitaldischargeoffset <= -525600)
+      unitdischargetimestamp: ($unitadmittimestamp + $unitdischargeoffset::minutes) if not ($unitdischargeoffset >= 525600 or $unitdischargeoffset <= -525600)
       # `hospitaladmitoffset` is negative (admission precedes unit admission), so
       # addition is correct here too.
-      hospitaladmittimestamp: $unitadmittimestamp + $hospitaladmitoffset::minutes
+      hospitaladmittimestamp: ($unitadmittimestamp + $hospitaladmitoffset::minutes) if not ($hospitaladmitoffset >= 525600 or $hospitaladmitoffset <= -525600)
       # `age` is a string with the >89 HIPAA mask; the reference ETL maps it to 90.
       ageyears: 90 if $age == "> 89" else $age::?int
       # Born at the year's midpoint, per the reference ETL (age is in whole years).
@@ -145,8 +152,8 @@ admissionDx:
     cols:
       hospitaldischargetimestamp: >-
         f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
-      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
-      eventtime: $unitadmittimestamp + $admitdxenteredoffset::minutes
+      unitadmittimestamp: ($hospitaldischargetimestamp - $hospitaldischargeoffset::minutes) if not ($hospitaldischargeoffset >= 525600 or $hospitaldischargeoffset <= -525600)
+      eventtime: ($unitadmittimestamp + $admitdxenteredoffset::minutes) if not ($admitdxenteredoffset >= 525600 or $admitdxenteredoffset <= -525600)
   admission_diagnosis:
     code: f"ADMISSION_DIAGNOSIS//{$admitdxname ?? 'UNK'}"
     time: $eventtime
@@ -165,8 +172,8 @@ allergy:
     cols:
       hospitaldischargetimestamp: >-
         f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
-      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
-      eventtime: $unitadmittimestamp + $allergyenteredoffset::minutes
+      unitadmittimestamp: ($hospitaldischargetimestamp - $hospitaldischargeoffset::minutes) if not ($hospitaldischargeoffset >= 525600 or $hospitaldischargeoffset <= -525600)
+      eventtime: ($unitadmittimestamp + $allergyenteredoffset::minutes) if not ($allergyenteredoffset >= 525600 or $allergyenteredoffset <= -525600)
   allergy:
     code: f"ALLERGY//{$allergytype ?? 'UNK'}"
     time: $eventtime
@@ -186,8 +193,8 @@ carePlanGeneral:
     cols:
       hospitaldischargetimestamp: >-
         f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
-      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
-      eventtime: $unitadmittimestamp + $cplitemoffset::minutes
+      unitadmittimestamp: ($hospitaldischargetimestamp - $hospitaldischargeoffset::minutes) if not ($hospitaldischargeoffset >= 525600 or $hospitaldischargeoffset <= -525600)
+      eventtime: ($unitadmittimestamp + $cplitemoffset::minutes) if not ($cplitemoffset >= 525600 or $cplitemoffset <= -525600)
   cpl_item:
     code: f"CAREPLAN_GENERAL//{$cplgroup ?? 'UNK'}//{$cplitemvalue ?? 'UNK'}"
     time: $eventtime
@@ -206,8 +213,8 @@ carePlanEOL:
     cols:
       hospitaldischargetimestamp: >-
         f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
-      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
-      eventtime: $unitadmittimestamp + $cpleoldiscussionoffset::minutes
+      unitadmittimestamp: ($hospitaldischargetimestamp - $hospitaldischargeoffset::minutes) if not ($hospitaldischargeoffset >= 525600 or $hospitaldischargeoffset <= -525600)
+      eventtime: ($unitadmittimestamp + $cpleoldiscussionoffset::minutes) if not ($cpleoldiscussionoffset >= 525600 or $cpleoldiscussionoffset <= -525600)
   cpl_eol_discussion:
     code: CAREPLAN_EOL
     time: $eventtime
@@ -226,8 +233,8 @@ carePlanGoal:
     cols:
       hospitaldischargetimestamp: >-
         f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
-      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
-      eventtime: $unitadmittimestamp + $cplgoaloffset::minutes
+      unitadmittimestamp: ($hospitaldischargetimestamp - $hospitaldischargeoffset::minutes) if not ($hospitaldischargeoffset >= 525600 or $hospitaldischargeoffset <= -525600)
+      eventtime: ($unitadmittimestamp + $cplgoaloffset::minutes) if not ($cplgoaloffset >= 525600 or $cplgoaloffset <= -525600)
   cpl_goal:
     code: >-
       f"CAREPLAN_GOAL//{$cplgoalcategory ?? 'UNK'}//{$cplgoalvalue ?? 'UNK'}//{$cplgoalstatus ?? 'UNK'}"
@@ -247,8 +254,8 @@ carePlanInfectiousDisease:
     cols:
       hospitaldischargetimestamp: >-
         f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
-      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
-      eventtime: $unitadmittimestamp + $cplinfectdiseaseoffset::minutes
+      unitadmittimestamp: ($hospitaldischargetimestamp - $hospitaldischargeoffset::minutes) if not ($hospitaldischargeoffset >= 525600 or $hospitaldischargeoffset <= -525600)
+      eventtime: ($unitadmittimestamp + $cplinfectdiseaseoffset::minutes) if not ($cplinfectdiseaseoffset >= 525600 or $cplinfectdiseaseoffset <= -525600)
   cpl_infect_disease:
     code: >-
       f"CAREPLAN_INFECTIOUS_DISEASE//{$infectdiseasesite ?? 'UNK'}//{$infectdiseaseassessment ?? 'UNK'}//{$treatment ?? 'UNK'}//{$responsetotherapy ?? 'UNK'}"
@@ -268,8 +275,8 @@ diagnosis:
     cols:
       hospitaldischargetimestamp: >-
         f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
-      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
-      eventtime: $unitadmittimestamp + $diagnosisoffset::minutes
+      unitadmittimestamp: ($hospitaldischargetimestamp - $hospitaldischargeoffset::minutes) if not ($hospitaldischargeoffset >= 525600 or $hospitaldischargeoffset <= -525600)
+      eventtime: ($unitadmittimestamp + $diagnosisoffset::minutes) if not ($diagnosisoffset >= 525600 or $diagnosisoffset <= -525600)
   diagnosis:
     # eICU's `icd9code` is frequently blank; 'UNK' keeps those rows (the
     # `diagnosisstring` text still identifies the diagnosis), matching the
@@ -293,8 +300,8 @@ infusionDrug:
     cols:
       hospitaldischargetimestamp: >-
         f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
-      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
-      eventtime: $unitadmittimestamp + $infusionoffset::minutes
+      unitadmittimestamp: ($hospitaldischargetimestamp - $hospitaldischargeoffset::minutes) if not ($hospitaldischargeoffset >= 525600 or $hospitaldischargeoffset <= -525600)
+      eventtime: ($unitadmittimestamp + $infusionoffset::minutes) if not ($infusionoffset >= 525600 or $infusionoffset <= -525600)
   infusion:
     code: INFUSION_DRUG
     time: $eventtime
@@ -321,8 +328,8 @@ lab:
     cols:
       hospitaldischargetimestamp: >-
         f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
-      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
-      eventtime: $unitadmittimestamp + $labresultoffset::minutes
+      unitadmittimestamp: ($hospitaldischargetimestamp - $hospitaldischargeoffset::minutes) if not ($hospitaldischargeoffset >= 525600 or $hospitaldischargeoffset <= -525600)
+      eventtime: ($unitadmittimestamp + $labresultoffset::minutes) if not ($labresultoffset >= 525600 or $labresultoffset <= -525600)
   lab:
     code: f"LAB//{$labname ?? 'UNK'}//{$labmeasurenamesystem ?? 'UNK'}"
     time: $eventtime
@@ -343,9 +350,9 @@ medication:
     cols:
       hospitaldischargetimestamp: >-
         f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
-      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
-      drugstarttimestamp: $unitadmittimestamp + $drugstartoffset::minutes
-      drugstoptimestamp: $unitadmittimestamp + $drugstopoffset::minutes
+      unitadmittimestamp: ($hospitaldischargetimestamp - $hospitaldischargeoffset::minutes) if not ($hospitaldischargeoffset >= 525600 or $hospitaldischargeoffset <= -525600)
+      drugstarttimestamp: ($unitadmittimestamp + $drugstartoffset::minutes) if not ($drugstartoffset >= 525600 or $drugstartoffset <= -525600)
+      drugstoptimestamp: ($unitadmittimestamp + $drugstopoffset::minutes) if not ($drugstopoffset >= 525600 or $drugstopoffset <= -525600)
   drug_started:
     code: f"MEDICATION//STARTED//{$drugname ?? 'UNK'}"
     time: $drugstarttimestamp
@@ -370,8 +377,8 @@ treatment:
     cols:
       hospitaldischargetimestamp: >-
         f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
-      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
-      eventtime: $unitadmittimestamp + $treatmentoffset::minutes
+      unitadmittimestamp: ($hospitaldischargetimestamp - $hospitaldischargeoffset::minutes) if not ($hospitaldischargeoffset >= 525600 or $hospitaldischargeoffset <= -525600)
+      eventtime: ($unitadmittimestamp + $treatmentoffset::minutes) if not ($treatmentoffset >= 525600 or $treatmentoffset <= -525600)
   treatment:
     code: f"TREATMENT//ENTERED//{$treatmentstring ?? 'UNK'}"
     time: $eventtime
@@ -390,8 +397,8 @@ vitalAperiodic:
     cols:
       hospitaldischargetimestamp: >-
         f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
-      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
-      eventtime: $unitadmittimestamp + $observationoffset::minutes
+      unitadmittimestamp: ($hospitaldischargetimestamp - $hospitaldischargeoffset::minutes) if not ($hospitaldischargeoffset >= 525600 or $hospitaldischargeoffset <= -525600)
+      eventtime: ($unitadmittimestamp + $observationoffset::minutes) if not ($observationoffset >= 525600 or $observationoffset <= -525600)
   non_invasive_systolic:
     code: '"VITALS//APERIODIC//BP//NONINVASIVE_SYSTOLIC" if $noninvasivesystolic == $noninvasivesystolic'
     time: $eventtime
@@ -456,8 +463,8 @@ vitalPeriodic:
     cols:
       hospitaldischargetimestamp: >-
         f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
-      unitadmittimestamp: $hospitaldischargetimestamp - $hospitaldischargeoffset::minutes
-      eventtime: $unitadmittimestamp + $observationoffset::minutes
+      unitadmittimestamp: ($hospitaldischargetimestamp - $hospitaldischargeoffset::minutes) if not ($hospitaldischargeoffset >= 525600 or $hospitaldischargeoffset <= -525600)
+      eventtime: ($unitadmittimestamp + $observationoffset::minutes) if not ($observationoffset >= 525600 or $observationoffset <= -525600)
   temperature:
     code: '"VITALS//PERIODIC//TEMPERATURE" if $temperature == $temperature'
     time: $eventtime
