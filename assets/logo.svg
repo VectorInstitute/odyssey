@@ -1,29 +1,24 @@
 <svg width="800" height="180" viewBox="0 0 800 180" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Odyssey — interpretable clinical foundation models">
   <!--
-    Odyssey logo — an ECG strip that reads like the model.
+    Odyssey logo — a patient timeline that reads like the model.
 
-      solid trace        →  three beads          →  dotted trace
-      observed history      the concept bottleneck   the forecasted next beat
+      solid timeline of events  →  three beads            →  dotted future events
+      observed history (labs,      the concept bottleneck     the forecast
+      meds, dx as timestamped
+      events — the MEDS data
+      model, not a waveform)
+
+    Events above the line: results (labs/vitals). Below: interventions
+    (meds/procedures). The amber event is a flagged abnormal.
 
     Palette: clinical teal #14B8A6 · amber #F59E0B · violet #8B5CF6 · indigo #6366F1
     Mid-tone colors so it reads on both light and dark GitHub themes.
   -->
   <defs>
-    <!-- Hidden continuous path for the tracer dot: history → beads → forecast -->
-    <path id="sweep" d="M30,90 L64,90
-             C66,90 69,76 75,76 C81,76 83,90 86,90
-             L96,90 L100,97 L107,35 L114,103 L119,90
-             L130,90
-             C133,90 137,68 145,68 C153,68 156,90 160,90
-             L222,90
-             L236,90 L240,97 L247,38 L254,102 L259,90
-             L270,90
-             C273,90 277,72 284,72 C291,72 294,90 298,90"/>
-
-    <!-- Forecast trace fades out to the right -->
-    <linearGradient id="fadeg" x1="222" y1="0" x2="298" y2="0" gradientUnits="userSpaceOnUse">
-      <stop offset="0%"   stop-color="#6366F1" stop-opacity="0.9"/>
-      <stop offset="100%" stop-color="#6366F1" stop-opacity="0.1"/>
+    <!-- Forecast fades out to the right -->
+    <linearGradient id="fadeg" x1="222" y1="0" x2="300" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0%"   stop-color="#6366F1" stop-opacity="0.85"/>
+      <stop offset="100%" stop-color="#6366F1" stop-opacity="0.15"/>
     </linearGradient>
 
     <!-- Wordmark: teal → indigo -->
@@ -42,37 +37,62 @@
     </filter>
   </defs>
 
-  <!-- Observed history: solid ECG trace -->
-  <path d="M30,90 L64,90
-           C66,90 69,76 75,76 C81,76 83,90 86,90
-           L96,90 L100,97 L107,35 L114,103 L119,90
-           L130,90
-           C133,90 137,68 145,68 C153,68 156,90 160,90
-           L166,90"
-        stroke="#14B8A6" stroke-width="3" fill="none"
-        stroke-linecap="round" stroke-linejoin="round" filter="url(#softglow)"/>
+  <!-- Observed history: solid timeline -->
+  <path d="M30,90 L168,90" stroke="#14B8A6" stroke-width="3" fill="none"
+        stroke-linecap="round"/>
 
-  <!-- The concept bottleneck: three beads the signal must pass through -->
-  <circle cx="180" cy="90" r="4.5" fill="#14B8A6" filter="url(#softglow)">
+  <!-- Events on the timeline: results above, interventions below -->
+  <g stroke="#14B8A6" stroke-width="2" stroke-linecap="round" opacity="0.75">
+    <line x1="48"  y1="90" x2="48"  y2="70"/>
+    <line x1="66"  y1="90" x2="66"  y2="107"/>
+    <line x1="84"  y1="90" x2="84"  y2="60"/>
+    <line x1="102" y1="90" x2="102" y2="111"/>
+    <line x1="120" y1="90" x2="120" y2="74"/>
+    <line x1="138" y1="90" x2="138" y2="104"/>
+    <line x1="155" y1="90" x2="155" y2="64"/>
+  </g>
+  <g fill="#14B8A6" filter="url(#softglow)">
+    <circle cx="48"  cy="68"  r="3.4"/>
+    <circle cx="66"  cy="109" r="3"/>
+    <circle cx="102" cy="113" r="3.4"/>
+    <circle cx="120" cy="72"  r="3"/>
+    <circle cx="138" cy="106" r="3"/>
+    <circle cx="155" cy="62"  r="3.4"/>
+  </g>
+  <!-- The flagged abnormal result -->
+  <circle cx="84" cy="58" r="4" fill="#F59E0B" filter="url(#softglow)">
+    <animate attributeName="r"       values="3.6;4.8;3.6" dur="2s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values="1;0.6;1"     dur="2s" repeatCount="indefinite"/>
+  </circle>
+
+  <!-- The concept bottleneck: three beads the history distills into -->
+  <circle cx="182" cy="90" r="4.5" fill="#14B8A6" filter="url(#softglow)">
     <animate attributeName="opacity" values="0.6;1;0.6" dur="2.4s" repeatCount="indefinite"/>
   </circle>
-  <circle cx="194" cy="90" r="4.5" fill="#F59E0B" filter="url(#softglow)">
+  <circle cx="196" cy="90" r="4.5" fill="#F59E0B" filter="url(#softglow)">
     <animate attributeName="opacity" values="0.6;1;0.6" dur="2.4s" begin="0.4s" repeatCount="indefinite"/>
   </circle>
-  <circle cx="208" cy="90" r="4.5" fill="#8B5CF6" filter="url(#softglow)">
+  <circle cx="210" cy="90" r="4.5" fill="#8B5CF6" filter="url(#softglow)">
     <animate attributeName="opacity" values="0.6;1;0.6" dur="2.4s" begin="0.8s" repeatCount="indefinite"/>
   </circle>
 
-  <!-- Forecast: the next beat, dotted and fading -->
-  <path d="M222,90 L236,90 L240,97 L247,38 L254,102 L259,90
-           L270,90
-           C273,90 277,72 284,72 C291,72 294,90 298,90"
-        stroke="url(#fadeg)" stroke-width="2.6" fill="none"
-        stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="0.1 6.5"/>
+  <!-- Forecast: predicted events, dotted and fading -->
+  <path d="M224,90 L300,90" stroke="url(#fadeg)" stroke-width="2.6" fill="none"
+        stroke-linecap="round" stroke-dasharray="0.1 6.5"/>
+  <g stroke="url(#fadeg)" stroke-width="1.8" stroke-linecap="round" stroke-dasharray="0.1 4.5" fill="none">
+    <line x1="240" y1="90" x2="240" y2="68"/>
+    <line x1="262" y1="90" x2="262" y2="108"/>
+    <line x1="284" y1="90" x2="284" y2="74"/>
+  </g>
+  <g stroke="url(#fadeg)" stroke-width="1.8" fill="none">
+    <circle cx="240" cy="65"  r="3.4"/>
+    <circle cx="262" cy="111" r="3"/>
+    <circle cx="284" cy="71"  r="3"/>
+  </g>
 
-  <!-- Tracer sweeping the strip, like a live monitor -->
-  <circle r="3.6" fill="#5EEAD4" filter="url(#tracerglow)">
-    <animateMotion dur="4.5s" repeatCount="indefinite"><mpath href="#sweep"/></animateMotion>
+  <!-- "Now" cursor sweeping the chart -->
+  <circle cy="90" r="3.6" fill="#5EEAD4" filter="url(#tracerglow)">
+    <animate attributeName="cx" values="30;300" dur="4.5s" repeatCount="indefinite"/>
     <animate attributeName="opacity" values="0;0.9;0.9;0" keyTimes="0;0.05;0.9;1"
              dur="4.5s" repeatCount="indefinite"/>
   </circle>
