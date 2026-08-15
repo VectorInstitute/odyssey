@@ -17,7 +17,7 @@ from odyssey.data.streaming import PackedLaneSampler, StreamingChunk
 from odyssey.data.types import AuxiliaryInputs, ClinicalSequenceBatch
 from odyssey.models.backbones.base import TimeAwareState
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
-from odyssey.models.concept_bottleneck import ConceptBottleneckLossWeights
+from odyssey.models.concept_bottleneck import ConceptBottleneckLossWeights, concept_loss
 from odyssey.models.sequence_model import (
     BaselineSequenceModel,
     ConceptBottleneckSequenceModel,
@@ -177,6 +177,8 @@ def _make_chunk_with_three_single_token_patients() -> StreamingChunk:
         real_mask=torch.tensor([[True, True, True]]),
         subject_ids=torch.tensor([[1, 2, 3]]),
         patient_end=torch.tensor([[True, True, True]]),
+        visit_ids=torch.tensor([[-1, -1, -1]]),
+        visit_end=torch.tensor([[False, False, False]]),
     )
 
 
@@ -324,3 +326,92 @@ def test_baseline_model_streaming_loss_and_training_loop() -> None:
         losses.append(sum(epoch_losses) / len(epoch_losses))
 
     assert losses[-1] < losses[0] * 0.8
+
+
+# ---------------------------------------------------------------------------
+# Visit-scoped concept supervision
+# ---------------------------------------------------------------------------
+
+
+def _seq_visits(subject_id: int, visit_ids: List[int]) -> PatientSequence:
+    n = len(visit_ids)
+    last = {}
+    for i, v in enumerate(visit_ids):
+        if v != -1:
+            last[v] = i
+    seq = _seq(subject_id, n)
+    seq.visit_ids.extend(visit_ids)
+    seq.visit_ends.extend(v != -1 and last[v] == i for i, v in enumerate(visit_ids))
+    return seq
+
+
+def _visit_labels(keys: List[tuple]) -> Dict[tuple, torch.Tensor]:
+    return {k: torch.randint(0, 2, (NUM_CONCEPTS,)).float() for k in keys}
+
+
+def test_visit_supervision_pools_at_every_visit_end() -> None:
+    model = _make_model()
+    sampler = PackedLaneSampler(
+        _patients([_seq_visits(1, [10, 10, 11, 11])]), num_lanes=1, chunk_size=4
+    )
+    chunk = sampler.next_chunk()
+    labels = _visit_labels([(1, 10), (1, 11)])
+    masks = {k: torch.ones(NUM_CONCEPTS) for k in labels}
+    total, components, _ = model.compute_streaming_loss(
+        chunk, labels, masks, supervision="visit"
+    )
+    assert torch.isfinite(total)
+    assert components["concept_loss"] > 0
+
+
+def test_visit_supervision_ignores_solo_events() -> None:
+    model = _make_model()
+    sampler = PackedLaneSampler(
+        _patients([_seq_visits(1, [-1, -1, -1])]), num_lanes=1, chunk_size=3
+    )
+    chunk = sampler.next_chunk()
+    total, components, _ = model.compute_streaming_loss(
+        chunk, {}, {}, supervision="visit"
+    )
+    # no visit ends -> auxiliary terms are exactly zero, task loss remains
+    assert components["concept_loss"].item() == 0.0
+    assert torch.isfinite(total)
+
+
+def test_visit_supervision_missing_label_raises_clear_error() -> None:
+    model = _make_model()
+    sampler = PackedLaneSampler(
+        _patients([_seq_visits(1, [10, 10])]), num_lanes=1, chunk_size=2
+    )
+    chunk = sampler.next_chunk()
+    try:
+        model.compute_streaming_loss(chunk, {}, None, supervision="visit")
+        raise AssertionError("expected KeyError")
+    except KeyError as exc:
+        assert "visit" in str(exc)
+
+
+def test_stay_supervision_remains_the_default_and_unchanged() -> None:
+    model = _make_model()
+    sampler = PackedLaneSampler(_patients([_seq(1, 3)]), num_lanes=1, chunk_size=4)
+    chunk = sampler.next_chunk()
+    labels = _labels([1])
+    total, components, _ = model.compute_streaming_loss(chunk, labels)
+    assert torch.isfinite(total)
+    assert components["concept_loss"] > 0
+
+
+def test_concept_pos_weight_scales_positive_term() -> None:
+
+    logits = torch.zeros(2, NUM_CONCEPTS)
+    labels = torch.ones(2, NUM_CONCEPTS)  # all positive
+    base = concept_loss(logits, labels)
+    weighted = concept_loss(logits, labels, pos_weight=torch.full((NUM_CONCEPTS,), 2.0))
+    assert torch.isclose(weighted, base * 2.0)
+
+    # negatives are unaffected by pos_weight
+    neg = torch.zeros(2, NUM_CONCEPTS)
+    assert torch.isclose(
+        concept_loss(logits, neg, pos_weight=torch.full((NUM_CONCEPTS,), 2.0)),
+        concept_loss(logits, neg),
+    )

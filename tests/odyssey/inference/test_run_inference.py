@@ -135,7 +135,9 @@ def test_results_to_dict_is_plain_json_serializable() -> None:
     assert got["task_metrics"]["cross_entropy"] == 1.0
 
 
-def test_parse_args_defaults_checkpoint_to_best(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_parse_args_defaults_checkpoint_to_best(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(
         "sys.argv",
         [

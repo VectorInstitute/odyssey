@@ -12,12 +12,14 @@ from odyssey.data.concepts import (
     CONCEPTS,
     AnyOf,
     BaselineRelativeRule,
+    CodeOccurrenceRule,
     CompositeConceptDefinition,
     ConceptDefinition,
     ConceptRule,
     DerivedGcsTotalRule,
     SustainedRule,
     label_concepts,
+    label_concepts_by_visit,
 )
 
 
@@ -690,6 +692,147 @@ def test_aki_stage_3_absolute_creatinine_threshold_is_inclusive() -> None:
     )
     labels = label_concepts(events, [aki_3]).sort("subject_id")
     assert labels["aki_stage_3"].to_list() == [1, 0]
+
+
+def test_code_occurrence_rule_triggers_on_matching_code() -> None:
+    concept = ConceptDefinition(
+        "on_vasopressors_test",
+        [CodeOccurrenceRule(r"norepinephrine|vasopressin")],
+        "test",
+    )
+    events = _events(
+        [
+            (1, "MEDICATION//Norepinephrine 8 mg/250 mL", 1.0),  # triggers
+            (2, "MEDICATION//Acetaminophen 325 mg", 1.0),  # observed, negative
+            (3, "LAB//220045//", 80.0),  # no medication data: unobserved
+        ]
+    )
+    labels = label_concepts(events, [concept]).sort("subject_id")
+    assert labels["on_vasopressors_test"].to_list() == [1, 0, 0]
+    assert labels["on_vasopressors_test_observed"].to_list() == [1, 1, 0]
+
+
+def test_code_occurrence_rule_is_case_insensitive() -> None:
+    concept = ConceptDefinition("vaso", [CodeOccurrenceRule(r"norepinephrine")], "test")
+    events = _events([(1, "MEDICATION//NOREPINEPHRINE", 1.0)])
+    labels = label_concepts(events, [concept])
+    assert labels["vaso"].to_list() == [1]
+
+
+def test_code_occurrence_rule_matches_text_value_when_opted_in() -> None:
+    # eICU charts infusion drug names in text_value under a bare
+    # INFUSION_DRUG code; the rule must reach them when opted in.
+    concept = ConceptDefinition(
+        "vaso",
+        [CodeOccurrenceRule(r"vasopressin", match_text_value=True)],
+        "test",
+    )
+    events = _events([(1, "INFUSION_DRUG", 1.0), (2, "INFUSION_DRUG", 1.0)])
+    events = events.with_columns(
+        pl.Series("text_value", ["Vasopressin 40 units", None])
+    )
+    labels = label_concepts(events, [concept]).sort("subject_id")
+    assert labels["vaso"].to_list() == [1, 0]
+    assert labels["vaso_observed"].to_list() == [1, 1]
+
+
+def test_on_vasopressors_is_registered_and_labels_cleanly() -> None:
+    vaso = next(c for c in CONCEPTS if c.name == "on_vasopressors")
+    events = _events(
+        [
+            (1, "MEDICATION//Levophed", 1.0),
+            (2, "MEDICATION//Metoprolol Tartrate 25 mg", 1.0),
+        ]
+    )
+    labels = label_concepts(events, [vaso]).sort("subject_id")
+    assert labels["on_vasopressors"].to_list() == [1, 0]
+
+
+def _events_with_visits(rows):  # noqa: ANN001, ANN202
+    """rows: (subject_id, code, value, hadm_id_or_None)."""
+    return pl.DataFrame(
+        [(r[0], r[1], r[2], T0, r[3]) for r in rows],
+        schema={
+            "subject_id": pl.Int64,
+            "code": pl.Utf8,
+            "numeric_value": pl.Float32,
+            "time": pl.Datetime,
+            "hadm_id": pl.Int64,
+        },
+        orient="row",
+    )
+
+
+def test_label_concepts_by_visit_scopes_evidence_to_each_visit() -> None:
+    concepts = [
+        ConceptDefinition(
+            "tachycardia", [ConceptRule("LAB//220045//", 100.0, "above")], "HR > 100"
+        )
+    ]
+    events = _events_with_visits(
+        [
+            (1, "LAB//220045//bpm", 130.0, 10),  # visit 10: triggers
+            (1, "LAB//220045//bpm", 80.0, 11),  # visit 11: normal
+            (1, "LAB//220045//bpm", 140.0, None),  # solo event: excluded
+        ]
+    )
+    labels = label_concepts_by_visit(events, concepts).sort("hadm_id")
+    assert labels.height == 2  # solo event contributes no visit row
+    assert labels["subject_id"].to_list() == [1, 1]
+    assert labels["hadm_id"].to_list() == [10, 11]
+    assert labels["tachycardia"].to_list() == [1, 0]
+    assert labels["tachycardia_observed"].to_list() == [1, 1]
+
+
+def test_label_concepts_by_visit_keeps_visits_of_different_subjects_apart() -> None:
+    concepts = [
+        ConceptDefinition(
+            "tachycardia", [ConceptRule("LAB//220045//", 100.0, "above")], "HR > 100"
+        )
+    ]
+    events = _events_with_visits(
+        [
+            (1, "LAB//220045//bpm", 130.0, 10),
+            (2, "LAB//220045//bpm", 80.0, 20),
+        ]
+    )
+    labels = label_concepts_by_visit(events, concepts).sort("subject_id")
+    assert labels["tachycardia"].to_list() == [1, 0]
+
+
+def test_label_concepts_by_visit_baseline_rule_does_not_cross_visits() -> None:
+    concepts = [
+        ConceptDefinition(
+            "aki",
+            [
+                BaselineRelativeRule(
+                    "LAB//RESULT//50912//",
+                    delta=0.3,
+                    direction="above",
+                    window_hours=48.0,
+                )
+            ],
+            "creatinine rose >= 0.3 in 48h",
+        )
+    ]
+    events = pl.DataFrame(
+        [
+            # baseline in visit 10, rise in visit 11, within 48h of each
+            # other: must NOT trigger, since the baseline is visit-scoped.
+            (1, "LAB//RESULT//50912//", 1.0, T0, 10),
+            (1, "LAB//RESULT//50912//", 1.6, T0 + timedelta(hours=10), 11),
+        ],
+        schema={
+            "subject_id": pl.Int64,
+            "code": pl.Utf8,
+            "numeric_value": pl.Float32,
+            "time": pl.Datetime,
+            "hadm_id": pl.Int64,
+        },
+        orient="row",
+    )
+    labels = label_concepts_by_visit(events, concepts)
+    assert labels["aki"].to_list() == [0, 0]
 
 
 def test_default_registry_covers_all_subjects() -> None:

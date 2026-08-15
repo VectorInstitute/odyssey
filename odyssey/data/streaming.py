@@ -66,7 +66,7 @@ from typing import Iterator, List, NamedTuple, Optional
 
 import torch
 
-from odyssey.data.sequences import PatientSequence
+from odyssey.data.sequences import NO_VISIT, PatientSequence
 from odyssey.data.types import AuxiliaryInputs, ClinicalSequenceBatch
 from odyssey.data.vocabulary import PAD_ID
 
@@ -84,6 +84,8 @@ class StreamingChunk(NamedTuple):
     real_mask: torch.Tensor
     subject_ids: torch.Tensor
     patient_end: torch.Tensor
+    visit_ids: torch.Tensor
+    visit_end: torch.Tensor
 
 
 @dataclass
@@ -99,6 +101,8 @@ class _LaneBuffer:
     reset: List[bool] = field(default_factory=list)
     subject_ids: List[int] = field(default_factory=list)
     patient_end: List[bool] = field(default_factory=list)
+    visit_ids: List[int] = field(default_factory=list)
+    visit_end: List[bool] = field(default_factory=list)
 
     def __len__(self) -> int:
         """Return the number of unconsumed tokens in this lane."""
@@ -125,6 +129,14 @@ class _LaneBuffer:
         self.visit_orders.extend(seq.visit_orders)
         self.visit_segments.extend(seq.visit_segments)
         self.subject_ids.extend([seq.subject_id] * n)
+        # Sequences built before visit_ids/visit_ends existed (or test
+        # fixtures that omit them) carry no visit-scoped supervision.
+        self.visit_ids.extend(
+            seq.visit_ids if len(seq.visit_ids) == n else [NO_VISIT] * n
+        )
+        self.visit_end.extend(
+            seq.visit_ends if len(seq.visit_ends) == n else [False] * n
+        )
 
         resets = [False] * n
         resets[0] = True
@@ -153,6 +165,8 @@ class _LaneBuffer:
         del self.reset[:n]
         del self.subject_ids[:n]
         del self.patient_end[:n]
+        del self.visit_ids[:n]
+        del self.visit_end[:n]
 
     def peek_padded(self, k: int) -> "_Window":
         """Return the first ``k`` tokens, padded if fewer than ``k`` remain."""
@@ -169,6 +183,8 @@ class _LaneBuffer:
             reset=self.reset[:n_real] + [False] * pad,
             subject_ids=self.subject_ids[:n_real] + [NO_SUBJECT] * pad,
             patient_end=self.patient_end[:n_real] + [False] * pad,
+            visit_ids=self.visit_ids[:n_real] + [NO_VISIT] * pad,
+            visit_end=self.visit_end[:n_real] + [False] * pad,
             n_real=n_real,
         )
 
@@ -192,6 +208,8 @@ def _repad(window: "_Window", real_len: int) -> "_Window":
         reset=window.reset[:real_len] + [False] * pad,
         subject_ids=window.subject_ids[:real_len] + [NO_SUBJECT] * pad,
         patient_end=window.patient_end[:real_len] + [False] * pad,
+        visit_ids=window.visit_ids[:real_len] + [NO_VISIT] * pad,
+        visit_end=window.visit_end[:real_len] + [False] * pad,
         n_real=real_len,
     )
 
@@ -209,6 +227,8 @@ class _Window:
     reset: List[bool]
     subject_ids: List[int]
     patient_end: List[bool]
+    visit_ids: List[int]
+    visit_end: List[bool]
     n_real: int
 
 
@@ -299,6 +319,8 @@ class PackedLaneSampler:
         reset_full = _stack("reset", torch.bool)
         subject_ids_full = _stack("subject_ids", torch.long)
         patient_end_full = _stack("patient_end", torch.bool)
+        visit_ids_full = _stack("visit_ids", torch.long)
+        visit_end_full = _stack("visit_end", torch.bool)
 
         input_ids = concept_ids_full[:, :-1]
         # A target position that is itself a reset is the first token of a
@@ -336,6 +358,8 @@ class PackedLaneSampler:
             real_mask=real_mask,
             subject_ids=subject_ids_full[:, :-1],
             patient_end=patient_end_full[:, :-1],
+            visit_ids=visit_ids_full[:, :-1],
+            visit_end=visit_end_full[:, :-1],
         )
 
     def __iter__(self) -> Iterator[StreamingChunk]:

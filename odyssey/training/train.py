@@ -55,9 +55,14 @@ from odyssey.data.value_binning import QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import PAD_ID
 from odyssey.models.backbones.base import TimeAwareState
 from odyssey.models.concept_bottleneck import ConceptBottleneckLossWeights
-from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
+from odyssey.models.sequence_model import (
+    ConceptBottleneckSequenceModel,
+    ConceptLabelDict,
+    ConceptSupervision,
+)
 from odyssey.training.data import (
     build_concept_label_dicts,
+    build_visit_concept_label_dicts,
     build_vocabulary,
     count_subjects,
     iter_patient_sequences,
@@ -115,6 +120,22 @@ class TrainingConfig:
     eval_every: int = 200
     eval_max_chunks: int = 50
     checkpoint_every: int = 500
+
+    concept_pos_weight: bool = True
+    """Weight each concept's positive BCE term by its training-split
+    ``n_negative / n_positive`` among observed entries (clamped to
+    [0.2, 10]), so rare concepts (AKI stage 2 at ~5% prevalence)
+    contribute real positive gradient instead of sitting near their base
+    rate. Disable to reproduce the original unweighted loss."""
+
+    concept_supervision: str = "visit"
+    """Where concept supervision applies and how labels are keyed:
+    ``"visit"`` (the default) supervises at every real visit's last event
+    with visit-scoped labels; ``"stay"`` reproduces the original
+    whole-stay-label-at-patient-end behavior (the subset-run baseline in
+    research journal entry 07). Visit scoping exists because entry 07's
+    evaluation showed whole-stay labels demand long-range single-event
+    recall the compressed recurrent state cannot guarantee."""
 
     early_stopping_patience: Optional[int] = None
     """Stop once the combined validation loss (the same task + weighted
@@ -250,11 +271,12 @@ def build_model(
 def evaluate_streaming(
     model: ConceptBottleneckSequenceModel,
     make_sampler: Callable[[], PackedLaneSampler],
-    labels: Dict[int, torch.Tensor],
-    masks: Dict[int, torch.Tensor],
+    labels: ConceptLabelDict,
+    masks: ConceptLabelDict,
     *,
     device: str,
     max_chunks: Optional[int] = None,
+    supervision: ConceptSupervision = "stay",
 ) -> Dict[str, float]:
     """Average loss components over one (partial), gradient-free sampler pass."""
     model.eval()
@@ -268,7 +290,7 @@ def evaluate_streaming(
                 break
             chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
             _, components, state = model.compute_streaming_loss(
-                chunk, labels, masks, state=state
+                chunk, labels, masks, state=state, supervision=supervision
             )
             state = _detach_state(state)
             for key, value in components.items():
@@ -276,6 +298,11 @@ def evaluate_streaming(
             n += 1
     model.train()
     return {key: value / max(n, 1) for key, value in totals.items()}
+
+
+def _labels_to_device(labels: ConceptLabelDict, device: str) -> ConceptLabelDict:
+    """Move every label tensor to ``device``, preserving the dict's key type."""
+    return {k: v.to(device) for k, v in labels.items()}  # type: ignore[return-value]
 
 
 def _combined_val_loss(
@@ -326,13 +353,30 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
         tuning_events.height,
     )
 
-    logger.info("[data] labeling concepts")
-    train_labels, train_masks = build_concept_label_dicts(train_events, CONCEPTS)
-    tuning_labels, tuning_masks = build_concept_label_dicts(tuning_events, CONCEPTS)
-    train_labels = {k: v.to(device) for k, v in train_labels.items()}
-    train_masks = {k: v.to(device) for k, v in train_masks.items()}
-    tuning_labels = {k: v.to(device) for k, v in tuning_labels.items()}
-    tuning_masks = {k: v.to(device) for k, v in tuning_masks.items()}
+    logger.info("[data] labeling concepts (%s-scoped)", config.concept_supervision)
+    train_labels: ConceptLabelDict
+    train_masks: ConceptLabelDict
+    tuning_labels: ConceptLabelDict
+    tuning_masks: ConceptLabelDict
+    if config.concept_supervision == "visit":
+        train_labels, train_masks = build_visit_concept_label_dicts(
+            train_events, CONCEPTS
+        )
+        tuning_labels, tuning_masks = build_visit_concept_label_dicts(
+            tuning_events, CONCEPTS
+        )
+    elif config.concept_supervision == "stay":
+        train_labels, train_masks = build_concept_label_dicts(train_events, CONCEPTS)
+        tuning_labels, tuning_masks = build_concept_label_dicts(tuning_events, CONCEPTS)
+    else:
+        raise ValueError(
+            f"concept_supervision must be 'visit' or 'stay', got "
+            f"{config.concept_supervision!r}"
+        )
+    train_labels = _labels_to_device(train_labels, device)
+    train_masks = _labels_to_device(train_masks, device)
+    tuning_labels = _labels_to_device(tuning_labels, device)
+    tuning_masks = _labels_to_device(tuning_masks, device)
 
     logger.info("[data] fitting quantile binner on train split")
     binner = QuantileBinner.fit(
@@ -368,10 +412,22 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
     )
+    pos_weight = None
+    if config.concept_pos_weight:
+        all_labels = torch.stack(list(train_labels.values()))
+        all_masks = torch.stack(list(train_masks.values()))
+        n_pos = (all_labels * all_masks).sum(dim=0)
+        n_obs = all_masks.sum(dim=0)
+        pos_weight = ((n_obs - n_pos) / n_pos.clamp_min(1.0)).clamp(0.2, 10.0)
+        logger.info(
+            "[loss] concept pos_weight: %s",
+            [round(float(w), 2) for w in pos_weight],
+        )
     loss_weights = ConceptBottleneckLossWeights(
         concept=config.concept_weight,
         orthogonality=config.orthogonality_weight,
         observability=config.observability_weight,
+        concept_pos_weight=pos_weight,
     )
 
     # Fields that determine what PackedLaneSampler.next_chunk() actually
@@ -474,7 +530,12 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
         for chunk in sampler:
             chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
             total, components, state = model.compute_streaming_loss(
-                chunk, train_labels, train_masks, state=state, loss_weights=loss_weights
+                chunk,
+                train_labels,
+                train_masks,
+                state=state,
+                loss_weights=loss_weights,
+                supervision=config.concept_supervision,  # type: ignore[arg-type]
             )
             optimizer.zero_grad()
             total.backward()  # type: ignore[no-untyped-call]
@@ -504,6 +565,7 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
                     tuning_masks,
                     device=device,
                     max_chunks=config.eval_max_chunks,
+                    supervision=config.concept_supervision,  # type: ignore[arg-type]
                 )
                 fields = {
                     "step": global_step,

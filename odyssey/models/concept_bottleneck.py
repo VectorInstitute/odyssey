@@ -173,6 +173,7 @@ def concept_loss(
     concept_logits: torch.Tensor,
     concept_labels: torch.Tensor,
     concept_mask: Optional[torch.Tensor] = None,
+    pos_weight: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Supervised BCE loss over known concepts.
 
@@ -180,9 +181,17 @@ def concept_loss(
     label is uncomputable because the underlying lab was never drawn for
     that patient. ``concept_mask`` (same shape, 1 = observed) excludes
     unobserved entries from the loss rather than penalizing them.
+    ``pos_weight`` is a per-concept ``(num_concepts,)`` positive-class
+    weight (standard ``n_negative / n_positive``): without it, a 4%-
+    prevalence concept like AKI stage 2 contributes almost no positive
+    gradient next to a 90%-prevalence one, and the head can sit near the
+    base rate.
     """
     per_element = F.binary_cross_entropy_with_logits(
-        concept_logits, concept_labels.float(), reduction="none"
+        concept_logits,
+        concept_labels.float(),
+        reduction="none",
+        pos_weight=pos_weight,
     )
     if concept_mask is None:
         return per_element.mean()
@@ -236,6 +245,10 @@ class ConceptBottleneckLossWeights:
     orthogonality: float = 0.1
     observability: float = 0.1
 
+    concept_pos_weight: Optional[torch.Tensor] = None
+    """Optional per-concept ``(num_concepts,)`` positive-class weight for
+    :func:`concept_loss` (see its docstring); ``None`` keeps plain BCE."""
+
 
 def combined_loss(
     task_loss: torch.Tensor,
@@ -265,7 +278,12 @@ def combined_loss(
     logging.
     """
     weights = weights or ConceptBottleneckLossWeights()
-    c_loss = concept_loss(concept_logits, concept_labels, concept_mask)
+    c_loss = concept_loss(
+        concept_logits,
+        concept_labels,
+        concept_mask,
+        pos_weight=weights.concept_pos_weight,
+    )
     o_loss = orthogonality_loss(concept_embeddings, unknown_embedding)
     obs_loss = (
         observability_loss(observability_logits, concept_mask)
