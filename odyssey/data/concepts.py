@@ -101,6 +101,48 @@ class ConceptRule:
 
 
 @dataclass(frozen=True)
+class CodeOccurrenceRule:
+    """The event's *occurrence* is the whole signal: no numeric threshold.
+
+    Triggers for a subject if any event's code matches
+    ``code_pattern`` (a case-insensitive regular expression over the
+    full code string, not a prefix -- medication codes embed free-text
+    drug names mid-string, e.g.
+    ``MEDICATION//Norepinephrine 8 mg/250 mL``, which a prefix can't
+    reach). Unlike every threshold rule, "observed" and "triggered" are
+    the same set here: there is no separate "the lab was drawn but the
+    value was normal" state for an order/administration event. The
+    observed-mask semantics that
+    :func:`~odyssey.models.concept_bottleneck.concept_loss` relies on
+    are preserved by ``observed_pattern``: subjects with at least one
+    event matching it (default: any event in ``observed_families``'s
+    code families) count as observed, so "no vasopressor was given"
+    is a real negative wherever medication data exists at all, rather
+    than every non-triggered subject being masked out of supervision.
+    """
+
+    code_pattern: str
+    """Case-insensitive regex matched against the whole code string."""
+
+    observed_families: Tuple[str, ...] = (
+        "MEDICATION",
+        "INFUSION_DRUG",
+        "INFUSION_START",
+        "INFUSION_END",
+    )
+    """Code families (first ``//`` segment) whose presence marks the
+    subject as observed -- i.e. this kind of data was recorded at all,
+    so an absent match is a genuine negative. Defaults cover both the
+    MIMIC-IV families (MEDICATION, INFUSION_START/END) and eICU's
+    (MEDICATION, INFUSION_DRUG)."""
+
+    match_text_value: bool = False
+    """Also match ``code_pattern`` against the ``text_value`` column
+    when present (eICU charts infusion drug names there, under a bare
+    ``INFUSION_DRUG`` code)."""
+
+
+@dataclass(frozen=True)
 class SustainedRule:
     """A threshold crossing that must recur at least ``min_gap_hours`` apart.
 
@@ -167,7 +209,11 @@ class DerivedGcsTotalRule:
 
 
 ComponentRule = Union[
-    ConceptRule, SustainedRule, BaselineRelativeRule, DerivedGcsTotalRule
+    ConceptRule,
+    SustainedRule,
+    BaselineRelativeRule,
+    DerivedGcsTotalRule,
+    CodeOccurrenceRule,
 ]
 
 
@@ -397,6 +443,30 @@ _QSOFA = CompositeConceptDefinition(
 )
 
 
+# entry 06/07 decision (f): the first occurrence-keyed concept. The drug-name
+# regex reaches both MIMIC-IV medication codes (drug name embedded in the code
+# string) and, via match_text_value, eICU infusion events (bare INFUSION_DRUG
+# code, drug name in text_value). "epinephrine" also matching "norepinephrine"
+# is deliberate; both are vasopressors and Rust regex has no lookbehind.
+# Dobutamine is excluded on purpose: an inotrope, not a vasopressor.
+_ON_VASOPRESSORS = ConceptDefinition(
+    "on_vasopressors",
+    [
+        CodeOccurrenceRule(
+            r"norepinephrine|levophed|epinephrine|vasopressin|phenylephrine"
+            r"|neo-?synephrine|dopamine|angiotensin",
+            match_text_value=True,
+        )
+    ],
+    "Received at least one vasopressor (norepinephrine, epinephrine, "
+    "vasopressin, phenylephrine, dopamine, or angiotensin II) -- the "
+    "canonical shock/deterioration marker, derived from medication and "
+    "infusion events rather than a numeric threshold. 'Observed' means "
+    "the subject has any medication/infusion data at all, so an absent "
+    "match is a genuine negative, not missingness.",
+)
+
+
 CONCEPTS: List[AnyConceptDefinition] = [
     _TACHYCARDIA,
     _BRADYCARDIA,
@@ -412,6 +482,7 @@ CONCEPTS: List[AnyConceptDefinition] = [
     _AKI_STAGE_3,
     _SIRS,
     _QSOFA,
+    _ON_VASOPRESSORS,
 ]
 
 
@@ -640,7 +711,42 @@ def _component_ids(
             value_col=value_col,
             time_col=time_col,
         )
+    if isinstance(rule, CodeOccurrenceRule):
+        return _occurrence_ids(
+            events, rule, subject_id_col=subject_id_col, code_col=code_col
+        )
     raise TypeError(f"unknown component rule type: {type(rule)!r}")
+
+
+def _occurrence_ids(
+    events: pl.DataFrame,
+    rule: CodeOccurrenceRule,
+    *,
+    subject_id_col: str,
+    code_col: str,
+) -> Tuple[Set[int], Set[int]]:
+    """Observed/triggered sets for an occurrence-keyed rule.
+
+    Observed = subjects with any event in ``rule.observed_families``
+    (this kind of data exists at all for them); triggered = subjects
+    with an event whose code (or, opted in, ``text_value``) matches
+    ``rule.code_pattern`` case-insensitively. Triggered subjects are
+    always counted observed, even if the matching code sits outside the
+    declared families -- a match is the strongest possible evidence the
+    data exists.
+    """
+    pattern = f"(?i){rule.code_pattern}"
+    family = pl.col(code_col).str.split("//").list.first()
+    observed = set(
+        events.filter(family.is_in(list(rule.observed_families)))[
+            subject_id_col
+        ].to_list()
+    )
+    match = pl.col(code_col).str.contains(pattern)
+    if rule.match_text_value and "text_value" in events.columns:
+        match = match | pl.col("text_value").str.contains(pattern).fill_null(False)
+    triggered = set(events.filter(match)[subject_id_col].to_list())
+    return observed | triggered, triggered
 
 
 def _composite_component_ids(
@@ -755,3 +861,61 @@ def label_concepts(
         )
 
     return out
+
+
+def label_concepts_by_visit(
+    events: pl.DataFrame,
+    concepts: Sequence[AnyConceptDefinition] = CONCEPTS,
+    *,
+    subject_id_col: str = "subject_id",
+    visit_col: str = "hadm_id",
+    code_col: str = "code",
+    value_col: str = "numeric_value",
+    time_col: str = "time",
+) -> pl.DataFrame:
+    """:func:`label_concepts`, scoped to each visit instead of the whole stay.
+
+    Returns one row per ``(subject_id, visit_col)`` pair present in
+    ``events`` (rows with a null ``visit_col`` -- solo/outpatient events
+    -- are excluded), with the same ``{name}`` / ``{name}_observed``
+    columns, evaluated over only that visit's events.
+
+    This is the label side of visit-scoped concept supervision: a
+    whole-stay "did this ever happen" label asks the model to recall a
+    possibly single event from arbitrarily far back, which a compressed
+    recurrent state cannot guarantee -- the exact failure mode the
+    subset-run evaluation showed for instantaneous vital-sign concepts
+    (weak AUROCs, entangled traces) while windowed concepts thrived.
+    "Did this happen during this visit", supervised at each visit's last
+    event, aligns the label's memory demands with what the architecture
+    actually retains, and grounds many positions per subject instead of
+    one.
+
+    One deliberate semantic narrowing: :class:`BaselineRelativeRule`
+    baselines cannot reach across visits (KDIGO's 48h/7-day creatinine
+    windows evaluate within one admission), matching how the criteria
+    are used clinically during a stay.
+    """
+    scoped = events.filter(pl.col(visit_col).is_not_null())
+    keys = (
+        scoped.select(subject_id_col, visit_col)
+        .unique(maintain_order=True)
+        .with_row_index("_visit_key")
+    )
+    scoped = scoped.join(keys, on=[subject_id_col, visit_col], how="left")
+    labeled = label_concepts(
+        scoped,
+        concepts,
+        subject_id_col="_visit_key",
+        code_col=code_col,
+        value_col=value_col,
+        time_col=time_col,
+    )
+    return (
+        labeled.join(keys, on="_visit_key", how="left")
+        .drop("_visit_key")
+        .select(
+            [subject_id_col, visit_col]
+            + [c for c in labeled.columns if c != "_visit_key"]
+        )
+    )

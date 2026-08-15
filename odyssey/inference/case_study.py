@@ -247,7 +247,9 @@ def build_case_studies(
     :func:`extract_patient_case`).
     """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    model, vocab, binner, _ = load_run(run_dir, device=device, checkpoint_path=checkpoint_path)
+    model, vocab, binner, _ = load_run(
+        run_dir, device=device, checkpoint_path=checkpoint_path
+    )
 
     logger.info("[case_study] loading held-out shards from %s", held_out_shard_dir)
     raw_events = load_meds_shards(held_out_shard_dir, max_shards=max_shards)
@@ -338,7 +340,9 @@ if __name__ == "__main__":
     cli_args.output_json.write_text(
         json.dumps([asdict(trace) for trace in case_traces], indent=2)
     )
-    logger.info("[case_study] wrote %d cases to %s", len(case_traces), cli_args.output_json)
+    logger.info(
+        "[case_study] wrote %d cases to %s", len(case_traces), cli_args.output_json
+    )
 
 
 __all__ = [

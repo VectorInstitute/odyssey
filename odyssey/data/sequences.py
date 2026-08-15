@@ -7,7 +7,7 @@ then pads/collates many subjects into a
 :class:`odyssey.data.types.ClinicalSequenceBatch`.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import polars as pl
@@ -19,6 +19,10 @@ from odyssey.data.vocabulary import PAD_ID, Vocabulary, code_type
 
 BIRTH_CODE = "MEDS_BIRTH"
 HOURS_PER_YEAR = 24.0 * 365.25
+
+# Sentinel visit id for events without a real hadm_id (solo/outpatient
+# events); such positions never carry visit-scoped concept supervision.
+NO_VISIT = -1
 
 
 @dataclass
@@ -39,6 +43,20 @@ class PatientSequence:
     visit_segments: List[int]
     """0 = first event of a visit, 1 = middle, 2 = last (matches
     ClinicalEventEmbeddings' default visit_order_size=3)."""
+
+    visit_ids: List[int] = field(default_factory=list)
+    """Per-token raw visit identifier (``hadm_id``; eICU's unit-stay id
+    plays the same role), or ``NO_VISIT`` for events without one. Keys
+    visit-scoped concept labels
+    (:func:`odyssey.data.concepts.label_concepts_by_visit`); empty on
+    sequences built before this field existed (treated as all
+    ``NO_VISIT``)."""
+
+    visit_ends: List[bool] = field(default_factory=list)
+    """True at the last token of each *real* (``hadm_id``-bearing) visit
+    -- the position where visit-scoped concept supervision applies. The
+    last occurrence across the whole sequence, not per contiguous run,
+    since a visit's events can be interleaved with solo events."""
 
     def __len__(self) -> int:
         """Return the number of events in this sequence."""
@@ -160,6 +178,15 @@ def build_patient_sequence(
     type_ids = [code_type(c) for c in codes]
     visit_orders, visit_segments = _assign_visits(hadm_ids, max_num_visits)
 
+    visit_ids = [NO_VISIT if h is None else int(h) for h in hadm_ids]
+    last_pos: Dict[int, int] = {}
+    for i, vid in enumerate(visit_ids):
+        if vid != NO_VISIT:
+            last_pos[vid] = i
+    visit_ends = [
+        vid != NO_VISIT and last_pos[vid] == i for i, vid in enumerate(visit_ids)
+    ]
+
     if max_seq_len is not None and len(concept_ids) > max_seq_len:
         concept_ids = concept_ids[-max_seq_len:]
         type_ids = type_ids[-max_seq_len:]
@@ -167,6 +194,8 @@ def build_patient_sequence(
         ages = ages[-max_seq_len:]
         visit_orders = visit_orders[-max_seq_len:]
         visit_segments = visit_segments[-max_seq_len:]
+        visit_ids = visit_ids[-max_seq_len:]
+        visit_ends = visit_ends[-max_seq_len:]
 
     return PatientSequence(
         subject_id=subject_id,
@@ -176,6 +205,8 @@ def build_patient_sequence(
         ages=ages,
         visit_orders=visit_orders,
         visit_segments=visit_segments,
+        visit_ids=visit_ids,
+        visit_ends=visit_ends,
     )
 
 

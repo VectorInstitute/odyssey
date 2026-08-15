@@ -10,6 +10,7 @@ import torch
 
 from odyssey.data.sequences import (
     HOURS_PER_YEAR,
+    NO_VISIT,
     build_patient_sequence,
     collate_patient_sequences,
 )
@@ -323,3 +324,66 @@ def test_real_meds_data_tokenizes_and_runs_through_the_model(tmp_path: Path) -> 
     assert torch.isfinite(total)
     total.backward()
     assert model.bottleneck.context_proj.weight.grad is not None
+
+
+# ---------------------------------------------------------------------------
+# visit_ids / visit_ends (visit-scoped concept supervision)
+# ---------------------------------------------------------------------------
+
+
+def test_visit_ids_and_ends_mark_each_real_visits_last_event() -> None:
+
+    events = _events(
+        [
+            (1, T0, "DIAGNOSIS//A", 10),
+            (1, T0 + timedelta(hours=1), "LAB//220045//bpm", 10),
+            (1, T0 + timedelta(hours=2), "MEDICATION//X", 11),
+            (1, T0 + timedelta(hours=3), "DIAGNOSIS//A", 11),
+        ]
+    )
+    seq = build_patient_sequence(events, VOCAB)
+    assert seq.visit_ids == [10, 10, 11, 11]
+    assert seq.visit_ends == [False, True, False, True]
+    assert NO_VISIT not in seq.visit_ids
+
+
+def test_visit_end_is_the_true_last_event_even_when_interleaved() -> None:
+    # A solo event lands between two events of the same visit: the visit's
+    # end must be its LAST event overall, not the end of the first run.
+    events = _events(
+        [
+            (1, T0, "DIAGNOSIS//A", 10),
+            (1, T0 + timedelta(hours=1), "LAB//220045//bpm", None),
+            (1, T0 + timedelta(hours=2), "MEDICATION//X", 10),
+        ]
+    )
+    seq = build_patient_sequence(events, VOCAB)
+    assert seq.visit_ids == [10, -1, 10]
+    assert seq.visit_ends == [False, False, True]
+
+
+def test_solo_events_never_carry_visit_supervision() -> None:
+    events = _events(
+        [
+            (1, T0, "DIAGNOSIS//A", None),
+            (1, T0 + timedelta(hours=1), "MEDICATION//X", None),
+        ]
+    )
+    seq = build_patient_sequence(events, VOCAB)
+    assert seq.visit_ids == [-1, -1]
+    assert seq.visit_ends == [False, False]
+
+
+def test_truncation_slices_visit_fields_consistently() -> None:
+    events = _events(
+        [
+            (1, T0, "DIAGNOSIS//A", 10),
+            (1, T0 + timedelta(hours=1), "LAB//220045//bpm", 10),
+            (1, T0 + timedelta(hours=2), "MEDICATION//X", 11),
+            (1, T0 + timedelta(hours=3), "DIAGNOSIS//A", 11),
+        ]
+    )
+    seq = build_patient_sequence(events, VOCAB, max_seq_len=2)
+    assert len(seq.visit_ids) == 2
+    assert seq.visit_ids == [11, 11]
+    assert seq.visit_ends == [False, True]

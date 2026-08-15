@@ -13,6 +13,7 @@ from odyssey.data.vocabulary import PAD_ID, UNK_ID
 from odyssey.training.data import (
     _shuffle_buffered,
     build_concept_label_dicts,
+    build_visit_concept_label_dicts,
     build_vocabulary,
     count_subjects,
     iter_patient_sequences,
@@ -105,7 +106,13 @@ def test_load_meds_shards_drops_unused_columns(tmp_path: Path) -> None:
 
     out = load_meds_shards(shard_dir)
 
-    assert set(out.columns) == {"subject_id", "code", "time", "numeric_value", "hadm_id"}
+    assert set(out.columns) == {
+        "subject_id",
+        "code",
+        "time",
+        "numeric_value",
+        "hadm_id",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -271,3 +278,33 @@ def test_build_vocabulary_respects_real_code_frequencies() -> None:
     vocab = build_vocabulary(events, min_count=5, max_size=100)
     assert vocab.encode("DIAGNOSIS//frequent") not in (PAD_ID, UNK_ID)
     assert vocab.encode("DIAGNOSIS//rare") == UNK_ID
+
+
+# ---------------------------------------------------------------------------
+# build_visit_concept_label_dicts
+# ---------------------------------------------------------------------------
+
+
+def test_build_visit_concept_label_dicts_keys_and_shapes() -> None:
+
+    concepts = [
+        ConceptDefinition(
+            "tachycardia", [ConceptRule("LAB//220045//", 100.0, "above")], "HR > 100"
+        )
+    ]
+    events = pl.DataFrame(
+        {
+            "subject_id": [1, 1, 1, 2],
+            "time": [datetime(2020, 1, 1)] * 4,
+            "code": ["LAB//220045//bpm"] * 4,
+            "numeric_value": [130.0, 80.0, 90.0, 120.0],
+            "hadm_id": [10, 11, None, 20],
+        }
+    )
+    labels, masks = build_visit_concept_label_dicts(events, concepts)
+    assert set(labels.keys()) == {(1, 10), (1, 11), (2, 20)}  # no solo entry
+    assert labels[(1, 10)].tolist() == [1.0]
+    assert labels[(1, 11)].tolist() == [0.0]
+    assert labels[(2, 20)].tolist() == [1.0]
+    assert masks[(1, 10)].tolist() == [1.0]
+    assert labels[(1, 10)].shape == (len(concepts),)

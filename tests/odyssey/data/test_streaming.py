@@ -487,3 +487,55 @@ def test_fast_forward_past_the_end_of_the_epoch_yields_nothing() -> None:
     for _ in range(total_chunks):
         fast_forwarded.next_chunk()
     assert fast_forwarded.next_chunk() is None
+
+
+# ---------------------------------------------------------------------------
+# visit_ids / visit_end plumbing (visit-scoped concept supervision)
+# ---------------------------------------------------------------------------
+
+
+def _seq_with_visits(subject_id: int, visit_ids: List[int]) -> PatientSequence:
+    n = len(visit_ids)
+    last = {}
+    for i, v in enumerate(visit_ids):
+        if v != -1:
+            last[v] = i
+    return PatientSequence(
+        subject_id=subject_id,
+        concept_ids=[subject_id * 1000 + i for i in range(n)],
+        type_ids=[1] * n,
+        time_stamps=[float(i) for i in range(n)],
+        ages=[30.0] * n,
+        visit_orders=[0] * n,
+        visit_segments=[0] * n,
+        visit_ids=list(visit_ids),
+        visit_ends=[v != -1 and last[v] == i for i, v in enumerate(visit_ids)],
+    )
+
+
+def test_visit_fields_flow_through_chunks_with_padding_sentinels() -> None:
+    patients = _patients([_seq_with_visits(1, [10, 10, 11])])
+    sampler = PackedLaneSampler(patients, num_lanes=1, chunk_size=5)
+    c1 = sampler.next_chunk()
+    assert c1.visit_ids[0].tolist() == [10, 10, 11, -1, -1]
+    assert c1.visit_end[0].tolist() == [False, True, True, False, False]
+
+
+def test_visit_end_lands_in_the_correct_later_chunk() -> None:
+    patients = _patients([_seq_with_visits(1, [10, 10, 10, 10, 11, 11])])
+    sampler = PackedLaneSampler(patients, num_lanes=1, chunk_size=4)
+    c1 = sampler.next_chunk()
+    c2 = sampler.next_chunk()
+    assert c1.visit_end[0].tolist() == [False, False, False, True]
+    assert c2.visit_end[0].tolist()[:2] == [False, True]
+
+
+def test_sequences_without_visit_fields_default_to_no_supervision() -> None:
+    # PatientSequence objects built before visit_ids/visit_ends existed
+    # (e.g. the plain _seq fixture) must stream cleanly with no
+    # visit-scoped supervision positions.
+    patients = _patients([_seq(1, 3)])
+    sampler = PackedLaneSampler(patients, num_lanes=1, chunk_size=3)
+    c1 = sampler.next_chunk()
+    assert c1.visit_ids[0].tolist() == [-1, -1, -1]
+    assert not c1.visit_end.any()

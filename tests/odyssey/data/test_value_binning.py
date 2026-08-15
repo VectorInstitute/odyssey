@@ -9,6 +9,7 @@ from odyssey.data.concepts import (
     CONCEPTS,
     AnyOf,
     BaselineRelativeRule,
+    CodeOccurrenceRule,
     ConceptDefinition,
     ConceptRule,
     DerivedGcsTotalRule,
@@ -166,12 +167,15 @@ def _threshold_rules(concept: ConceptDefinition) -> List[Tuple[str, float]]:
                 if isinstance(sub_rule, (ConceptRule, SustainedRule)):
                     out.append((sub_rule.code_prefix, sub_rule.threshold))
                 elif not isinstance(
-                    sub_rule, (BaselineRelativeRule, DerivedGcsTotalRule)
+                    sub_rule,
+                    (BaselineRelativeRule, DerivedGcsTotalRule, CodeOccurrenceRule),
                 ):
                     raise TypeError(f"unhandled rule type in AnyOf: {type(sub_rule)!r}")
         elif isinstance(rule, (ConceptRule, SustainedRule)):
             out.append((rule.code_prefix, rule.threshold))
-        elif not isinstance(rule, (BaselineRelativeRule, DerivedGcsTotalRule)):
+        elif not isinstance(
+            rule, (BaselineRelativeRule, DerivedGcsTotalRule, CodeOccurrenceRule)
+        ):
             raise TypeError(f"unhandled rule type: {type(rule)!r}")
     return out
 

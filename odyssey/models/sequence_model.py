@@ -27,7 +27,7 @@ Both models support two training regimes:
   Section 05.
 """
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, Literal, Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F  # noqa: N812
@@ -92,6 +92,31 @@ def _gather_by_subject(
             f"no concept labels provided for subject_id {exc.args[0]}, but a "
             "patient_end position in this chunk belongs to them"
         ) from exc
+
+
+def _gather_by_visit(
+    subject_ids: torch.Tensor,
+    visit_ids: torch.Tensor,
+    labels: Dict[Tuple[int, int], torch.Tensor],
+) -> torch.Tensor:
+    """Stack ``labels[(subject_id, visit_id)]`` for each position, in order."""
+    try:
+        return torch.stack(
+            [
+                labels[(sid.item(), vid.item())]
+                for sid, vid in zip(subject_ids, visit_ids)
+            ]
+        )
+    except KeyError as exc:
+        raise KeyError(
+            f"no visit-scoped concept labels for (subject_id, visit_id) "
+            f"{exc.args[0]}, but a visit_end position in this chunk belongs "
+            "to that visit"
+        ) from exc
+
+
+ConceptSupervision = Literal["stay", "visit"]
+ConceptLabelDict = Union[Dict[int, torch.Tensor], Dict[Tuple[int, int], torch.Tensor]]
 
 
 class _SequenceModelBase(nn.Module):
@@ -298,28 +323,41 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
     def compute_streaming_loss(
         self,
         chunk: StreamingChunk,
-        concept_labels: Dict[int, torch.Tensor],
-        concept_mask: Optional[Dict[int, torch.Tensor]] = None,
+        concept_labels: ConceptLabelDict,
+        concept_mask: Optional[ConceptLabelDict] = None,
+        *,
         state: Optional[TimeAwareState] = None,
         loss_weights: Optional[ConceptBottleneckLossWeights] = None,
+        supervision: ConceptSupervision = "stay",
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], TimeAwareState]:
         """Compute next-token + concept + orthogonality + observability loss.
 
-        ``concept_labels``/``concept_mask`` map ``subject_id -> (num_concepts,)``
-        tensors, since a chunk's lanes can each hold fragments of several
-        different patients. Concept supervision only pools at
-        ``chunk.patient_end`` positions -- a patient's true last event, not
-        merely their last position within this chunk (see the module
-        docstring). If no patient ends within this chunk, the concept,
-        orthogonality, and observability loss terms are zero and the total
-        loss is the next-token loss alone.
+        Two supervision modes, selecting both where the bottleneck is
+        pooled and how ``concept_labels``/``concept_mask`` are keyed:
+
+        - ``"stay"``: whole-stay labels keyed ``subject_id ->
+          (num_concepts,)``, pooled once at each patient's true last event
+          (``chunk.patient_end``) -- never merely their last position
+          within a chunk (see the module docstring).
+        - ``"visit"``: visit-scoped labels keyed ``(subject_id, visit_id)
+          -> (num_concepts,)`` (see
+          :func:`odyssey.data.concepts.label_concepts_by_visit`), pooled
+          at every ``chunk.visit_end`` position -- each real visit's last
+          event. Many grounded supervision points per subject instead of
+          one, and a label whose memory demands match what a compressed
+          recurrent state actually retains.
+
+        If no supervision position falls within this chunk, the concept,
+        orthogonality, and observability loss terms are zero and the
+        total loss is the next-token loss alone.
         """
         logits, bottleneck_out, new_state = self(
             chunk.batch, state=state, reset_mask=chunk.reset_mask
         )
         next_token_loss = self._streaming_next_token_loss(logits, chunk.targets)
 
-        if not chunk.patient_end.any():
+        pool_mask = chunk.patient_end if supervision == "stay" else chunk.visit_end
+        if not pool_mask.any():
             zero = next_token_loss.new_zeros(())
             components = {
                 "task_loss": next_token_loss.detach(),
@@ -329,26 +367,39 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
             }
             return next_token_loss, components, new_state
 
-        end_subject_ids = _pool_patient_ends(chunk.subject_ids, chunk.patient_end)
+        end_subject_ids = _pool_patient_ends(chunk.subject_ids, pool_mask)
         pooled_concept_logits = _pool_patient_ends(
-            bottleneck_out.concept_logits, chunk.patient_end
+            bottleneck_out.concept_logits, pool_mask
         )
         pooled_concept_embeddings = _pool_patient_ends(
-            bottleneck_out.concept_embeddings, chunk.patient_end
+            bottleneck_out.concept_embeddings, pool_mask
         )
         pooled_unknown_embedding = _pool_patient_ends(
-            bottleneck_out.unknown_embedding, chunk.patient_end
+            bottleneck_out.unknown_embedding, pool_mask
         )
         pooled_observability_logits = _pool_patient_ends(
-            bottleneck_out.observability_logits, chunk.patient_end
+            bottleneck_out.observability_logits, pool_mask
         )
 
-        labels_batch = _gather_by_subject(end_subject_ids, concept_labels)
-        mask_batch = (
-            _gather_by_subject(end_subject_ids, concept_mask)
-            if concept_mask is not None
-            else None
-        )
+        if supervision == "visit":
+            end_visit_ids = _pool_patient_ends(chunk.visit_ids, pool_mask)
+            labels_batch = _gather_by_visit(
+                end_subject_ids,
+                end_visit_ids,
+                concept_labels,  # type: ignore[arg-type]
+            )
+            mask_batch = (
+                _gather_by_visit(end_subject_ids, end_visit_ids, concept_mask)  # type: ignore[arg-type]
+                if concept_mask is not None
+                else None
+            )
+        else:
+            labels_batch = _gather_by_subject(end_subject_ids, concept_labels)  # type: ignore[arg-type]
+            mask_batch = (
+                _gather_by_subject(end_subject_ids, concept_mask)  # type: ignore[arg-type]
+                if concept_mask is not None
+                else None
+            )
 
         total, components = combined_loss(
             next_token_loss,

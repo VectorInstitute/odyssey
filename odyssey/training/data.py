@@ -17,7 +17,11 @@ from typing import Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar, Uni
 import polars as pl
 import torch
 
-from odyssey.data.concepts import AnyConceptDefinition, label_concepts
+from odyssey.data.concepts import (
+    AnyConceptDefinition,
+    label_concepts,
+    label_concepts_by_visit,
+)
 from odyssey.data.sequences import PatientSequence, build_patient_sequence
 from odyssey.data.vocabulary import Vocabulary
 
@@ -178,6 +182,34 @@ def build_concept_label_dicts(
     return labels, masks
 
 
+def build_visit_concept_label_dicts(
+    events: pl.DataFrame, concepts: Sequence[AnyConceptDefinition]
+) -> Tuple[Dict[Tuple[int, int], torch.Tensor], Dict[Tuple[int, int], torch.Tensor]]:
+    """Visit-scoped labels: ``(subject_id, visit_id) -> (num_concepts,)`` dicts.
+
+    The visit-mode counterpart of :func:`build_concept_label_dicts`,
+    consuming :func:`~odyssey.data.concepts.label_concepts_by_visit` --
+    exactly the keying
+    :meth:`~odyssey.models.sequence_model.ConceptBottleneckSequenceModel.compute_streaming_loss`
+    expects with ``supervision="visit"``. Only real (``hadm_id``-bearing)
+    visits get entries; solo events carry no visit supervision.
+    """
+    labeled = label_concepts_by_visit(events, list(concepts))
+    names = [c.name for c in concepts]
+    label_cols = labeled.select(names).to_numpy()
+    mask_cols = labeled.select([f"{name}_observed" for name in names]).to_numpy()
+    subject_ids = labeled["subject_id"].to_list()
+    visit_ids = labeled["hadm_id"].to_list()
+
+    labels: Dict[Tuple[int, int], torch.Tensor] = {}
+    masks: Dict[Tuple[int, int], torch.Tensor] = {}
+    for i, (subject_id, visit_id) in enumerate(zip(subject_ids, visit_ids)):
+        key = (int(subject_id), int(visit_id))
+        labels[key] = torch.tensor(label_cols[i], dtype=torch.float32)
+        masks[key] = torch.tensor(mask_cols[i], dtype=torch.float32)
+    return labels, masks
+
+
 def count_subjects(events: pl.DataFrame) -> int:
     """Count distinct subjects in ``events`` -- for logging/progress only."""
     return int(events["subject_id"].n_unique())
@@ -209,6 +241,7 @@ __all__ = [
     "load_meds_shards",
     "iter_patient_sequences",
     "build_concept_label_dicts",
+    "build_visit_concept_label_dicts",
     "count_subjects",
     "build_vocabulary",
 ]

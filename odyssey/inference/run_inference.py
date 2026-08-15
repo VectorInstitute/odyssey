@@ -34,11 +34,15 @@ from odyssey.data.value_binning import QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import Vocabulary, code_type
 from odyssey.models.sequence_model import (
     ConceptBottleneckSequenceModel,
+    ConceptLabelDict,
+    ConceptSupervision,
     _gather_by_subject,
+    _gather_by_visit,
     _pool_patient_ends,
 )
 from odyssey.training.data import (
     build_concept_label_dicts,
+    build_visit_concept_label_dicts,
     iter_patient_sequences,
     load_meds_shards,
 )
@@ -119,7 +123,9 @@ def load_run(
     binner = QuantileBinner.load(run_dir / "quantile_binner.json")
 
     model = build_model(config, vocab_size=len(vocab), num_concepts=len(CONCEPTS))
-    checkpoint_path = Path(checkpoint_path) if checkpoint_path else _latest_checkpoint(run_dir)
+    checkpoint_path = (
+        Path(checkpoint_path) if checkpoint_path else _latest_checkpoint(run_dir)
+    )
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint["model"])
     model = model.to(device)
@@ -245,13 +251,14 @@ def run_streaming_inference(
     model: ConceptBottleneckSequenceModel,
     events_binned: pl.DataFrame,
     vocab: Vocabulary,
-    concept_labels: Dict[int, torch.Tensor],
-    concept_mask: Dict[int, torch.Tensor],
+    concept_labels: ConceptLabelDict,
+    concept_mask: ConceptLabelDict,
     *,
     num_lanes: int = 8,
     chunk_size: int = 256,
     device: str = "cuda",
     max_seq_len: Optional[int] = None,
+    supervision: ConceptSupervision = "stay",
 ) -> InferenceResults:
     """Stream held-out patients through ``model`` and score every eval question.
 
@@ -268,6 +275,7 @@ def run_streaming_inference(
 
     task_stats = _RunningTaskMetrics(vocab, device=device)
     end_subject_ids: List[torch.Tensor] = []
+    end_visit_ids: List[torch.Tensor] = []
     end_concept_probs: List[torch.Tensor] = []
     end_observability_probs: List[torch.Tensor] = []
     end_concept_embeddings: List[torch.Tensor] = []
@@ -285,28 +293,30 @@ def run_streaming_inference(
             if real.any():
                 task_stats.update(logits[real], chunk.targets[real])
 
-            if chunk.patient_end.any():
+            pool_mask = chunk.patient_end if supervision == "stay" else chunk.visit_end
+            if pool_mask.any():
                 end_subject_ids.append(
-                    _pool_patient_ends(chunk.subject_ids, chunk.patient_end).cpu()
+                    _pool_patient_ends(chunk.subject_ids, pool_mask).cpu()
+                )
+                end_visit_ids.append(
+                    _pool_patient_ends(chunk.visit_ids, pool_mask).cpu()
                 )
                 end_concept_probs.append(
-                    _pool_patient_ends(
-                        bottleneck_out.concept_probs, chunk.patient_end
-                    ).cpu()
+                    _pool_patient_ends(bottleneck_out.concept_probs, pool_mask).cpu()
                 )
                 end_observability_probs.append(
                     _pool_patient_ends(
-                        bottleneck_out.observability_probs, chunk.patient_end
+                        bottleneck_out.observability_probs, pool_mask
                     ).cpu()
                 )
                 end_concept_embeddings.append(
                     _pool_patient_ends(
-                        bottleneck_out.concept_embeddings, chunk.patient_end
+                        bottleneck_out.concept_embeddings, pool_mask
                     ).cpu()
                 )
                 end_unknown_embedding.append(
                     _pool_patient_ends(
-                        bottleneck_out.unknown_embedding, chunk.patient_end
+                        bottleneck_out.unknown_embedding, pool_mask
                     ).cpu()
                 )
 
@@ -319,8 +329,13 @@ def run_streaming_inference(
     unknown_embedding = torch.cat(end_unknown_embedding)
 
     concept_names = [c.name for c in CONCEPTS]
-    labels = _gather_by_subject(subject_ids, concept_labels)
-    masks = _gather_by_subject(subject_ids, concept_mask)
+    if supervision == "visit":
+        visit_ids = torch.cat(end_visit_ids)
+        labels = _gather_by_visit(subject_ids, visit_ids, concept_labels)  # type: ignore[arg-type]
+        masks = _gather_by_visit(subject_ids, visit_ids, concept_mask)  # type: ignore[arg-type]
+    else:
+        labels = _gather_by_subject(subject_ids, concept_labels)  # type: ignore[arg-type]
+        masks = _gather_by_subject(subject_ids, concept_mask)  # type: ignore[arg-type]
     observed_mask = masks > 0
 
     concept_metrics = compute_concept_metrics(
@@ -353,7 +368,7 @@ def evaluate_run(
 ) -> InferenceResults:
     """End-to-end: load a trained run, score it against a held-out split."""
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    model, vocab, binner, _ = load_run(
+    model, vocab, binner, config = load_run(
         run_dir, device=device, checkpoint_path=checkpoint_path
     )
 
@@ -361,8 +376,16 @@ def evaluate_run(
     raw_events = load_meds_shards(held_out_shard_dir, max_shards=max_shards)
     events_binned = add_value_tokens(raw_events, binner)
 
-    logger.info("[inference] labeling concepts")
-    concept_labels, concept_mask = build_concept_label_dicts(raw_events, CONCEPTS)
+    supervision = getattr(config, "concept_supervision", "stay")
+    logger.info("[inference] labeling concepts (%s-scoped)", supervision)
+    concept_labels: ConceptLabelDict
+    concept_mask: ConceptLabelDict
+    if supervision == "visit":
+        concept_labels, concept_mask = build_visit_concept_label_dicts(
+            raw_events, CONCEPTS
+        )
+    else:
+        concept_labels, concept_mask = build_concept_label_dicts(raw_events, CONCEPTS)
     del raw_events
 
     logger.info("[inference] running streaming inference")
@@ -375,6 +398,7 @@ def evaluate_run(
         num_lanes=num_lanes,
         chunk_size=chunk_size,
         device=device,
+        supervision=supervision,  # type: ignore[arg-type]
     )
 
 
