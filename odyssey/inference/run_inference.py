@@ -322,6 +322,27 @@ def run_streaming_inference(
 
     task_metrics, task_metrics_by_code_type = task_stats.finalize()
 
+    if not end_subject_ids:
+        # No chunk ever had a real pool_mask position -- e.g. supervision
+        # is "visit" but nothing in this split has a real hadm_id, so
+        # chunk.visit_end never fires. Forecasting quality (task_metrics
+        # above) is still valid, since it never depends on pooling; only
+        # the pooled concept/observability/orthogonality questions have
+        # nothing to score.
+        logger.warning(
+            "[inference] no %s-scoped pool positions were ever produced -- "
+            "skipping concept/observability/orthogonality metrics",
+            supervision,
+        )
+        return InferenceResults(
+            task_metrics=task_metrics,
+            task_metrics_by_code_type=task_metrics_by_code_type,
+            concept_metrics=[],
+            observability_metrics=[],
+            orthogonality=float("nan"),
+            n_patient_ends_scored=0,
+        )
+
     subject_ids = torch.cat(end_subject_ids)
     concept_probs = torch.cat(end_concept_probs)
     observability_probs = torch.cat(end_observability_probs)
