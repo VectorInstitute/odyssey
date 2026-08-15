@@ -661,6 +661,37 @@ def test_qsofa_definition_triggers_on_two_of_three_criteria() -> None:
     assert labels["qsofa"].to_list() == [1]
 
 
+def test_qsofa_thresholds_are_inclusive_at_the_boundary() -> None:
+    """Boundary values qualify: qSOFA is RR >= 22 and SBP <= 100.
+
+    Vitals are typically charted as exact integers, so a strict
+    inequality would silently miss real qualifying readings at exactly
+    the documented cutoffs.
+    """
+    qsofa = next(c for c in CONCEPTS if c.name == "qsofa")
+    events = _events(
+        [
+            (1, "LAB//220210//", 22.0, T0),  # exactly RR 22
+            (1, "LAB//220179//", 100.0, T0),  # exactly SBP 100
+        ]
+    )
+    labels = label_concepts(events, [qsofa])
+    assert labels["qsofa"].to_list() == [1]
+
+
+def test_aki_stage_3_absolute_creatinine_threshold_is_inclusive() -> None:
+    """KDIGO Stage 3's absolute trigger is creatinine >= 4.0, inclusive."""
+    aki_3 = next(c for c in CONCEPTS if c.name == "aki_stage_3")
+    events = _events(
+        [
+            (1, "LAB//RESULT//50912//", 4.0, T0),  # exactly 4.0 -- triggers
+            (2, "LAB//RESULT//50912//", 3.9, T0),  # just below -- does not
+        ]
+    )
+    labels = label_concepts(events, [aki_3]).sort("subject_id")
+    assert labels["aki_stage_3"].to_list() == [1, 0]
+
+
 def test_default_registry_covers_all_subjects() -> None:
     events = _events([(1, "LAB//220045//bpm", 75.0), (2, "LAB//220045//bpm", 75.0)])
     labels = label_concepts(events)

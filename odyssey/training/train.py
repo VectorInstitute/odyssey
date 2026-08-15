@@ -150,20 +150,38 @@ def _move_chunk_to_device(chunk: _Movable, device: str) -> _Movable:
 
 
 def _detach_state(state: TimeAwareState) -> TimeAwareState:
-    """Truncate BPTT across chunks for the hybrid backbone's carried state."""
+    """Truncate BPTT across chunks for a backbone's carried recurrent state.
+
+    Backbone-agnostic so the streaming loops here don't require the
+    hybrid backbone specifically: handles ``EHRHybridBackbone``'s
+    :class:`~odyssey.models.backbones.hybrid.HybridState` and the plain
+    tuple-of-tensors state lighter backbones (e.g. ``TinyGRUBackbone``)
+    return. A new backbone with a different state shape must be added
+    here explicitly -- silently not detaching would leak the autograd
+    graph across every chunk of an epoch.
+    """
     from odyssey.models.backbones.hybrid import HybridState  # noqa: PLC0415
 
     recurrent = state.recurrent
-    if not isinstance(recurrent, HybridState):
-        raise TypeError(
-            f"_detach_state expects EHRHybridBackbone's HybridState, got {type(recurrent)!r}"
+    detached_recurrent: object
+    if isinstance(recurrent, HybridState):
+        detached_recurrent = HybridState(
+            {
+                layer_idx: tuple(t.detach() for t in cached)
+                for layer_idx, cached in recurrent.mamba_states.items()
+            }
         )
-    detached = {
-        layer_idx: tuple(t.detach() for t in cached)
-        for layer_idx, cached in recurrent.mamba_states.items()
-    }
+    elif isinstance(recurrent, tuple) and all(
+        isinstance(t, torch.Tensor) for t in recurrent
+    ):
+        detached_recurrent = tuple(t.detach() for t in recurrent)
+    else:
+        raise TypeError(
+            f"_detach_state does not know this backbone's state shape: "
+            f"{type(recurrent)!r}"
+        )
     return TimeAwareState(
-        recurrent=HybridState(detached),
+        recurrent=detached_recurrent,
         prev_time_stamps=state.prev_time_stamps.detach(),
     )
 

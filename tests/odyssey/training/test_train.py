@@ -10,7 +10,13 @@ from pathlib import Path
 import torch
 
 from odyssey.data.types import AuxiliaryInputs, ClinicalSequenceBatch
-from odyssey.training.train import LossLogger, TrainingConfig, _move_chunk_to_device
+from odyssey.models.backbones.base import TimeAwareState
+from odyssey.training.train import (
+    LossLogger,
+    TrainingConfig,
+    _detach_state,
+    _move_chunk_to_device,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +77,37 @@ def test_move_chunk_to_device_passes_through_non_tensor_values() -> None:
     assert _move_chunk_to_device(5, "cpu") == 5
     assert _move_chunk_to_device("x", "cpu") == "x"
     assert _move_chunk_to_device(None, "cpu") is None
+
+
+# ---------------------------------------------------------------------------
+# _detach_state
+# ---------------------------------------------------------------------------
+
+
+def test_detach_state_handles_tuple_of_tensors_backbones() -> None:
+    # TinyGRUBackbone (and any lighter backbone) carries a plain tuple of
+    # tensors -- the streaming loops must be able to truncate BPTT for it,
+    # not only for EHRHybridBackbone's HybridState.
+    h = torch.zeros(2, 4, requires_grad=True) + 1.0  # a non-leaf, grad-carrying tensor
+    state = TimeAwareState(
+        recurrent=(h,), prev_time_stamps=torch.tensor([1.0, 2.0], requires_grad=True)
+    )
+
+    detached = _detach_state(state)
+
+    assert isinstance(detached.recurrent, tuple)
+    assert not detached.recurrent[0].requires_grad
+    assert not detached.prev_time_stamps.requires_grad
+    assert torch.equal(detached.recurrent[0], h)
+
+
+def test_detach_state_rejects_unknown_state_shapes() -> None:
+    state = TimeAwareState(recurrent=object(), prev_time_stamps=torch.tensor([0.0]))
+    try:
+        _detach_state(state)
+        raise AssertionError("expected TypeError")
+    except TypeError:
+        pass
 
 
 # ---------------------------------------------------------------------------

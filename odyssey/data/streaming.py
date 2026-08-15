@@ -301,11 +301,23 @@ class PackedLaneSampler:
         patient_end_full = _stack("patient_end", torch.bool)
 
         input_ids = concept_ids_full[:, :-1]
-        targets = concept_ids_full[:, 1:]
+        # A target position that is itself a reset is the first token of a
+        # new segment (a new patient, or a synthetic missing-history
+        # restart): predicting it from the previous segment's last hidden
+        # state is exactly the across-the-reset-boundary pair the module
+        # docstring rules out. Mid-window resets are already deferred by
+        # the truncation above, so this can only fire at the window's very
+        # last (target-only) position -- when a segment boundary lands
+        # exactly at the end of a full chunk. Masking with PAD_ID makes
+        # the loss's ignore_index skip it; real_mask must agree for
+        # consumers (e.g. inference metrics) that filter on it instead.
+        cross_reset = reset_full[:, 1:]
+        targets = concept_ids_full[:, 1:].masked_fill(cross_reset, PAD_ID)
         # Real means "this position has a valid next-token target", not
         # merely "the input token itself is real" -- the last genuine token
-        # in an exhausted lane is real input but has no real target.
-        real_mask = subject_ids_full[:, 1:] != NO_SUBJECT
+        # in an exhausted lane is real input but has no real target, and
+        # neither does an input whose next token sits across a reset.
+        real_mask = (subject_ids_full[:, 1:] != NO_SUBJECT) & ~cross_reset
 
         batch = ClinicalSequenceBatch(
             concept_ids=input_ids,
