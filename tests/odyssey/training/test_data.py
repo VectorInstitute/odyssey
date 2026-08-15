@@ -80,6 +80,34 @@ def test_load_meds_shards_raises_when_directory_has_no_shards(tmp_path: Path) ->
         load_meds_shards(empty_dir)
 
 
+def test_load_meds_shards_drops_unused_columns(tmp_path: Path) -> None:
+    # Real MIMIC-IV MEDS shards carry ~16 extra columns (drg_severity,
+    # icustay_id, order_id, ...) nothing in this pipeline reads -- loading
+    # them anyway was the dominant real memory cost at full-extraction
+    # scale (OOM-confirmed via dmesg), not row count. Widen the schema
+    # here and confirm they get projected away before collecting, not
+    # just left unused.
+    shard_dir = tmp_path / "train"
+    shard_dir.mkdir()
+    pl.DataFrame(
+        {
+            "subject_id": [1],
+            "code": ["A"],
+            "time": [T0],
+            "numeric_value": [None],
+            "hadm_id": [None],
+            "icustay_id": [999],
+            "drg_severity": [1],
+            "text_value": ["unused"],
+        },
+        schema_overrides={"numeric_value": pl.Float32, "hadm_id": pl.Int64},
+    ).write_parquet(shard_dir / "0.parquet")
+
+    out = load_meds_shards(shard_dir)
+
+    assert set(out.columns) == {"subject_id", "code", "time", "numeric_value", "hadm_id"}
+
+
 # ---------------------------------------------------------------------------
 # iter_patient_sequences
 # ---------------------------------------------------------------------------
@@ -235,10 +263,11 @@ def test_build_vocabulary_respects_real_code_frequencies() -> None:
     # materializing the full column as a Python list (see its docstring on
     # why) -- this checks that path actually produces min_count-correct
     # frequency filtering, not just that it runs.
-    events = _events(
-        [(i % 3, "DIAGNOSIS//frequent", T0, None, None) for i in range(10)]
-        + [(0, "DIAGNOSIS//rare", T0, None, None)]
-    )
+    rows: List[_EventRow] = []
+    for i in range(10):
+        rows.append((i % 3, "DIAGNOSIS//frequent", T0, None, None))
+    rows.append((0, "DIAGNOSIS//rare", T0, None, None))
+    events = _events(rows)
     vocab = build_vocabulary(events, min_count=5, max_size=100)
     assert vocab.encode("DIAGNOSIS//frequent") not in (PAD_ID, UNK_ID)
     assert vocab.encode("DIAGNOSIS//rare") == UNK_ID
