@@ -488,11 +488,11 @@ def build_intervention_finding(
 
     d_truth, d_flip, d_random = delta("truth"), delta("flip"), delta("random")
     d_zero_known, d_zero_unknown = delta("zero_known"), delta("zero_unknown")
+    truth_row = by_mode.get("truth") or {}
+    band = truth_row.get("uncertain_band")
+    disp = {m: (by_mode.get(m) or {}).get("mean_abs_displacement") for m in by_mode}
 
-    mediates = d_truth is not None and d_flip is not None and d_truth > d_flip + 1e-4
-    reads_direction = (
-        d_flip is not None and d_random is not None and d_flip < d_random - 1e-4
-    )
+    mediates = d_truth is not None and d_flip is not None and d_truth > d_flip + 1e-3
     decorative = (
         d_zero_known is not None
         and abs(d_zero_known) < 0.005
@@ -505,37 +505,51 @@ def build_intervention_finding(
         f"top-1 {base:.1%}."
     ]
     if d_truth is not None and d_flip is not None:
-        parts.append(
-            f" Feeding the running ground truth (true from each concept's "
-            f"first-trigger time on) moves it {d_truth:+.1%}, feeding the "
-            f"flipped label {d_flip:+.1%} -- "
-            + (
-                "the model reads the concept channel in the right direction."
-                if mediates
-                else "little separation between correct and inverted "
-                "concept values, so the task head isn't leaning on this "
-                "channel the way the architecture intends."
-            )
-        )
-        if d_truth < -0.005:
+        if band is not None:
             parts.append(
-                " Note that even correct values cost accuracy: a hard 0/1 "
-                "override replaces the model's own soft running probability, "
-                "so it is itself a perturbation, and the truth-vs-flip gap "
-                "(not truth-vs-baseline) is the direction signal."
+                f" Values were injected only where the model's own concept "
+                f"probability sat within {band:.2f} of 0.5, so the running "
+                f"ground truth and its flip displace the bottleneck equally "
+                f"(mean displacement "
+                f"{disp.get('truth', float('nan')):.2f} vs "
+                f"{disp.get('flip', float('nan')):.2f}) and the comparison "
+                f"is a pure test of direction: truth moves top-1 "
+                f"{d_truth:+.1%}, flip {d_flip:+.1%}"
+                + (f", random {d_random:+.1%}" if d_random is not None else "")
+                + " -- "
+                + (
+                    "the task head reads the concept values in the intended direction."
+                    if mediates
+                    else "no separation: at equal perturbation size the task "
+                    "head does not distinguish correct from inverted concept "
+                    "values, so the concept probabilities are not the causal "
+                    "lever the CEM design intends (task signal reaches the "
+                    "head through the concept embeddings, not through the "
+                    "calibrated probability). Intervention-aware training "
+                    "(CEM's RandInt: randomly substitute running labels for "
+                    "the mixing probability during training) is the standard "
+                    "remedy."
+                )
             )
-    if d_flip is not None and d_random is not None:
-        parts.append(
-            f" Random values move it {d_random:+.1%}; "
-            + (
-                "flipped labels hurt more than random noise, so direction "
-                "specifically matters, not just stability."
-                if reads_direction
-                else "flipped labels land close to random noise, so this "
-                "is picking up general perturbation sensitivity more than "
-                "reading concept direction."
+        else:
+            parts.append(
+                f" Feeding the running ground truth (true from each concept's "
+                f"first-trigger time on) moves it {d_truth:+.1%}, feeding the "
+                f"flipped label {d_flip:+.1%}"
+                + (f", random values {d_random:+.1%}" if d_random is not None else "")
+                + ". Read these with care: a hard 0/1 override displaces the "
+                "model's own probability p by 1-p toward the true pole and by "
+                "p toward the other, so truth and flip are perturbations of "
+                "different sizes"
+                + (
+                    f" (mean displacement {disp['truth']:.2f} vs {disp['flip']:.2f})"
+                    if disp.get("truth") is not None and disp.get("flip") is not None
+                    else ""
+                )
+                + " and their accuracy deltas conflate direction with "
+                "magnitude; re-run with --uncertain-band for the "
+                "magnitude-controlled direction test."
             )
-        )
     if d_zero_known is not None and d_zero_unknown is not None:
         parts.append(
             f" Zeroing the known-concept channel moves it {d_zero_known:+.1%} "
