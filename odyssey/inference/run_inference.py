@@ -188,12 +188,17 @@ def load_run(
     vocab = Vocabulary.load(run_dir / "vocabulary.json")
     binner = QuantileBinner.load(run_dir / "quantile_binner.json")
 
-    concepts = concepts_for_source(getattr(config, "source", "mimic_iv"))
-    model = build_model(config, vocab_size=len(vocab), num_concepts=len(concepts))
     checkpoint_path = (
         Path(checkpoint_path) if checkpoint_path else _latest_checkpoint(run_dir)
     )
     checkpoint = torch.load(checkpoint_path, map_location=device)
+    # A run predating a config field gets that field's *current* default
+    # from the dataclass, which can disagree with the checkpoint's actual
+    # architecture; the checkpoint is the authority on what heads exist.
+    config.time_to_event = any(k.startswith("time_head.") for k in checkpoint["model"])
+
+    concepts = concepts_for_source(getattr(config, "source", "mimic_iv"))
+    model = build_model(config, vocab_size=len(vocab), num_concepts=len(concepts))
     model.load_state_dict(checkpoint["model"])
     model = model.to(device)
     model.eval()
