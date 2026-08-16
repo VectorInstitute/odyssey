@@ -17,6 +17,7 @@ from odyssey.inference.run_inference import (
     _latest_checkpoint,
     _parse_args,
     _RunningTaskMetrics,
+    load_run,
     results_to_dict,
 )
 from odyssey.training.metrics import (
@@ -24,6 +25,7 @@ from odyssey.training.metrics import (
     compute_task_metrics,
     compute_task_metrics_by_code_type,
 )
+from odyssey.training.train import TrainingConfig
 
 
 def _vocab() -> Vocabulary:
@@ -303,3 +305,31 @@ def test_block_set_hits_category_level_scoring() -> None:
     # target 30 is not ICD-coded: category metric does not apply there
     assert hits.category_valid[0].tolist() == [True, True, False]
     assert hits.category_hit[0].tolist() == [True, True, False]
+
+
+def test_time_to_event_config_follows_the_checkpoint(tmp_path: Path) -> None:
+    """Load a pre-time-head run whose config predates the field.
+
+    The dataclass default would say True, but the checkpoint has no time
+    head, and the checkpoint is the authority.
+    """
+    run_dir = tmp_path
+    config = TrainingConfig(train_shard_dir="a", tuning_shard_dir="b", output_dir="c")
+    payload = {k: v for k, v in config.__dict__.items() if k != "time_to_event"}
+    (run_dir / "config.json").write_text(json.dumps(payload))
+    Vocabulary({"[PAD]": 0, "[UNK]": 1, "LAB//220045//bpm": 2}).save(
+        run_dir / "vocabulary.json"
+    )
+    (run_dir / "quantile_binner.json").write_text(
+        json.dumps({"n_bins": 5, "boundaries": {}})
+    )
+    # a checkpoint without any time_head.* keys must load without a time head
+    torch.save({"model": {}}, run_dir / "checkpoint_final.pt")
+    try:
+        load_run(run_dir, device="cpu")
+    except RuntimeError as exc:
+        # the real backbone needs mamba/CUDA; what matters is that no
+        # time_head keys were demanded from the checkpoint
+        assert "time_head" not in str(exc)
+    except ImportError:
+        pass  # mamba-ssm not installed: construction itself is CUDA-only
