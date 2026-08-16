@@ -376,6 +376,59 @@ _FAMILY_IDS = (
 )  # diagnosis, medication, procedure, lab, visit, billing
 
 
+class _SubjectHistory:
+    """One subject's timed events, preprocessed for O(log n) feature lookups."""
+
+    def __init__(
+        self,
+        hours: np.ndarray,
+        codes: List[str],
+        hadms: List[Optional[int]],
+        prefixes: Sequence[str],
+    ) -> None:
+        self.hours = hours
+        self.hadms = np.array([-1 if h is None else int(h) for h in hadms])
+        family_index = {f: i for i, f in enumerate(_FAMILY_IDS)}
+        one_hot = np.zeros((len(codes), len(_FAMILY_IDS)), dtype=np.int32)
+        # per curated prefix: hours and ordinal bins of matching events
+        prefix_hours: List[List[float]] = [[] for _ in prefixes]
+        prefix_bins: List[List[float]] = [[] for _ in prefixes]
+        for i, code in enumerate(codes):
+            f_idx = family_index.get(code_type(code))
+            if f_idx is not None:
+                one_hot[i, f_idx] = 1
+            if "::" not in code:
+                continue
+            base, bin_ = code.rsplit("::", 1)
+            ordinal = _BIN_ORDINAL.get(bin_)
+            if ordinal is None:
+                continue
+            for p_idx, prefix in enumerate(prefixes):
+                if base.startswith(prefix):
+                    prefix_hours[p_idx].append(float(hours[i]))
+                    prefix_bins[p_idx].append(ordinal)
+        self.cum_counts = np.vstack(
+            [np.zeros((1, len(_FAMILY_IDS)), dtype=np.int32), one_hot.cumsum(axis=0)]
+        )
+        self.prefix_hours = [np.array(h, dtype=np.float64) for h in prefix_hours]
+        self.prefix_bins = [np.array(b, dtype=np.float32) for b in prefix_bins]
+
+    def visit_start(self, visit_id: int, fallback: float) -> float:
+        mask = self.hadms == visit_id
+        return float(self.hours[mask].min()) if mask.any() else fallback
+
+    def features_at(self, now: float, out: np.ndarray, offset: int) -> None:
+        """Fill latest-bin and trailing-24h-count features into ``out``."""
+        for p_idx, (ph, pb) in enumerate(zip(self.prefix_hours, self.prefix_bins)):
+            k = int(np.searchsorted(ph, now, side="left"))
+            if k > 0:
+                out[offset + p_idx] = pb[k - 1]
+        n_prefix = len(self.prefix_hours)
+        hi = int(np.searchsorted(self.hours, now, side="left"))
+        lo = int(np.searchsorted(self.hours, now - 24.0, side="left"))
+        out[offset + n_prefix :] = self.cum_counts[hi] - self.cum_counts[lo]
+
+
 def baseline_features(
     events_binned: pl.DataFrame,
     index_rows: Sequence[IndexRow],
@@ -387,7 +440,9 @@ def baseline_features(
     Columns: hours since visit start, age (years, if birth known), latest
     ordinal clinical bin per curated vital/lab prefix (NaN if never), and
     trailing-24h event counts per code family. All computable by hand
-    from the same record; nothing from the model.
+    from the same record; nothing from the model. Each subject's history
+    is preprocessed once (cumulative family counts, per-prefix bin
+    arrays), so each row costs a few binary searches.
     """
     ranges, _ = clinical_ranges_for_source(source)
     prefixes = sorted(ranges)
@@ -409,28 +464,32 @@ def baseline_features(
     origin_map = dict(
         zip(origins["subject_id"].to_list(), origins["_origin"].to_list())
     )
-
-    per_subject: Dict[int, pl.DataFrame] = {}
+    needed = {row.subject_id for row in index_rows}
+    histories: Dict[int, _SubjectHistory] = {}
     for key, frame in timed.select("subject_id", "_hours", "code", "hadm_id").group_by(
         "subject_id", maintain_order=True
     ):
-        per_subject[int(key[0])] = frame.sort("_hours")
+        sid = int(key[0])
+        if sid not in needed:
+            continue
+        ordered = frame.sort("_hours")
+        histories[sid] = _SubjectHistory(
+            ordered["_hours"].to_numpy(),
+            ordered["code"].to_list(),
+            ordered["hadm_id"].to_list(),
+            prefixes,
+        )
 
     n_feat = 2 + len(prefixes) + len(_FAMILY_IDS)
     out = np.full((len(index_rows), n_feat), np.nan, dtype=np.float32)
     visit_start_cache: Dict[Tuple[int, int], float] = {}
     for r, row in enumerate(index_rows):
-        history = per_subject.get(row.subject_id)
+        history = histories.get(row.subject_id)
         if history is None:
             continue
-        hours = history["_hours"].to_numpy()
-        codes = history["code"].to_list()
-        hadms = history["hadm_id"].to_list()
-        upto = int(np.searchsorted(hours, row.time_hours, side="left"))
         key = (row.subject_id, row.visit_id)
         if key not in visit_start_cache:
-            vs = [h for h, v in zip(hours, hadms) if v == row.visit_id]
-            visit_start_cache[key] = float(min(vs)) if vs else row.time_hours
+            visit_start_cache[key] = history.visit_start(row.visit_id, row.time_hours)
         out[r, 0] = row.time_hours - visit_start_cache[key]
         b = birth_map.get(row.subject_id)
         o = origin_map.get(row.subject_id)
@@ -438,38 +497,39 @@ def baseline_features(
             out[r, 1] = ((o - b).total_seconds() / 3600.0 + row.time_hours) / (
                 24 * 365.25
             )
-        latest, counts = _history_features(
-            codes[:upto], hours[:upto], row.time_hours, prefixes
-        )
-        for p_idx, val in latest.items():
-            out[r, 2 + p_idx] = val
-        out[r, 2 + len(prefixes) :] = counts
+        history.features_at(row.time_hours, out[r], 2)
     return out
 
 
-def _history_features(
-    codes: Sequence[str],
-    hours: np.ndarray,
-    now: float,
-    prefixes: Sequence[str],
-) -> Tuple[Dict[int, float], np.ndarray]:
-    """Latest clinical bin per curated prefix and trailing-24h family counts."""
-    latest: Dict[int, float] = {}
-    counts = np.zeros(len(_FAMILY_IDS), dtype=np.float32)
-    family_index = {f: i for i, f in enumerate(_FAMILY_IDS)}
-    for code, hour in zip(codes, hours):
-        f_idx = family_index.get(code_type(code))
-        if f_idx is not None and hour >= now - 24.0:
-            counts[f_idx] += 1
-        if "::" not in code:
-            continue
-        base, bin_ = code.rsplit("::", 1)
-        if bin_ not in _BIN_ORDINAL:
-            continue
-        for p_idx, prefix in enumerate(prefixes):
-            if base.startswith(prefix):
-                latest[p_idx] = _BIN_ORDINAL[bin_]
-    return latest, counts
+def features_for_events(
+    events_binned: pl.DataFrame,
+    rows: Dict[str, List[IndexRow]],
+    *,
+    source: str = "mimic_iv",
+) -> Dict[str, np.ndarray]:
+    """Baseline features per event, computed once over the union of index rows.
+
+    Index rows are the same landmarks for every event (only the outcome
+    differs), so features are computed once and re-indexed per event.
+    """
+    unique: Dict[Tuple[int, int, float], int] = {}
+    union: List[IndexRow] = []
+    for event_rows in rows.values():
+        for r in event_rows:
+            k = (r.subject_id, r.visit_id, r.time_hours)
+            if k not in unique:
+                unique[k] = len(union)
+                union.append(r)
+    if not union:
+        return {}
+    feats = baseline_features(events_binned, union, source=source)
+    return {
+        name: feats[
+            [unique[(r.subject_id, r.visit_id, r.time_hours)] for r in event_rows]
+        ]
+        for name, event_rows in rows.items()
+        if event_rows
+    }
 
 
 class BaselineModel:
@@ -511,10 +571,11 @@ def fit_baselines(
 ) -> Dict[Tuple[str, float], BaselineModel]:
     """One gradient-boosted classifier per (event, horizon) on baseline features."""
     models: Dict[Tuple[str, float], BaselineModel] = {}
+    features = features_for_events(train_events_binned, train_rows, source=source)
     for name, rows in train_rows.items():
         if not rows:
             continue
-        x_all = baseline_features(train_events_binned, rows, source=source)
+        x_all = features[name]
         for h in horizons:
             y = np.array(
                 [outcome_at_horizon(r, train_times[name], h) for r in rows],
@@ -764,11 +825,7 @@ def evaluate_alerts(
         baselines = fit_baselines(
             train_binned, train_rows, train_times, horizons=horizons, source=source
         )
-        features_by_event = {
-            name: baseline_features(binned, event_rows, source=source)
-            for name, event_rows in rows.items()
-            if event_rows
-        }
+        features_by_event = features_for_events(binned, rows, source=source)
 
     return score_alerts(
         rows,
