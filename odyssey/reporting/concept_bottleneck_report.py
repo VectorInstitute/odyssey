@@ -472,15 +472,9 @@ def build_intervention_finding(
     d_truth, d_flip, d_random = delta("truth"), delta("flip"), delta("random")
     d_zero_known, d_zero_unknown = delta("zero_known"), delta("zero_unknown")
 
-    mediates = (
-        d_truth is not None
-        and d_flip is not None
-        and d_truth > d_flip + 1e-4
-    )
+    mediates = d_truth is not None and d_flip is not None and d_truth > d_flip + 1e-4
     reads_direction = (
-        d_flip is not None
-        and d_random is not None
-        and d_flip < d_random - 1e-4
+        d_flip is not None and d_random is not None and d_flip < d_random - 1e-4
     )
     decorative = (
         d_zero_known is not None
