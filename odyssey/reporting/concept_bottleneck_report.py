@@ -308,11 +308,18 @@ def build_payload(inputs: ReportInputs) -> Dict[str, Any]:
 
     inference = inputs.inference_results
     tm = inference["task_metrics"]
-    n_held_out_patients = (
+    n_pool_positions = (
         inference["observability_metrics"][0]["n_subjects"]
         if inference["observability_metrics"]
         else inference["n_patient_ends_scored"]
     )
+    # ObservabilityMetrics.n_subjects is really "how many pooled positions
+    # were scored" -- under stay-scoped supervision that's one per patient
+    # (a true patient count), but under visit-scoped supervision it's one
+    # per real admission, which can exceed the held-out patient count for
+    # patients with multiple stays. Label it accurately either way rather
+    # than always calling it "patients".
+    pool_unit = "visits" if config.concept_supervision == "visit" else "patients"
 
     last_step = train_records[-1]["step"]
     total_elapsed_s = train_records[-1]["elapsed_s"]
@@ -334,7 +341,7 @@ def build_payload(inputs: ReportInputs) -> Dict[str, Any]:
             "Best val loss",
             f"{best_val_loss:.3f}" if best_val_loss is not None else "n/a",
         ],
-        ["Held-out test", f"{_fmt_count(tm['n_predictions'])} predictions · {n_held_out_patients:,} patients"],
+        ["Held-out test", f"{_fmt_count(tm['n_predictions'])} predictions · {n_pool_positions:,} {pool_unit}"],
         ["Concept supervision", config.concept_supervision],
     ]
 
@@ -350,7 +357,7 @@ def build_payload(inputs: ReportInputs) -> Dict[str, Any]:
     )
     quant_desc = (
         f"Scored once, after training, against the full held-out test split -- "
-        f"{n_held_out_patients:,} patients, {tm['n_predictions']:,} forecast "
+        f"{n_pool_positions:,} {pool_unit}, {tm['n_predictions']:,} forecast "
         f"positions scored, never seen during training or validation."
     )
     qualitative_desc = (
