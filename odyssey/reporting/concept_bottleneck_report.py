@@ -424,12 +424,29 @@ def build_findings(
     om = [c for c in inference["observability_metrics"] if c.get("auroc") is not None]
     mean_auroc = sum(c["auroc"] for c in om) / len(om) if om else float("nan")
     rates = [c["observed_rate"] for c in inference["observability_metrics"]]
+    # Vitals-derived concepts are only observed where chartevents exist,
+    # i.e. ICU stays; on a visit-scoped evaluation their observed rate is
+    # roughly the ICU fraction of visits and their observability AUROC is
+    # largely "is this an ICU visit" -- easy, and worth saying so.
+    low_rate = [
+        c for c in inference["observability_metrics"] if c["observed_rate"] < 0.25
+    ]
     observability = (
         f"<b>The observability head knows what gets measured.</b> Mean AUROC "
         f"{mean_auroc:.2f} across {len(om)} concepts, against observed rates "
         f"ranging {min(rates):.0%} to {max(rates):.0%}: predicting whether a "
         f"concept will be measured at all is itself informative signal "
         f"(missingness in EHR data is clinical, not random)."
+        + (
+            f" Read the near-perfect scores with care: {len(low_rate)} concepts "
+            f"are observed in under 25% of visits because their signals are "
+            f"only charted in the ICU, so for those the head is largely "
+            f"recognizing an ICU stay. The lab-derived concepts (creatinine, "
+            f"lactate, WBC), observed across the wards, are the more telling "
+            f"test."
+            if low_rate
+            else ""
+        )
     )
 
     findings = {
