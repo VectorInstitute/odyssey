@@ -30,9 +30,10 @@ import torch.nn.functional as F  # noqa: N812
 
 from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.concepts import AnyConceptDefinition, concepts_for_source
-from odyssey.data.streaming import PackedLaneSampler
+from odyssey.data.streaming import PackedLaneSampler, StreamingChunk
 from odyssey.data.value_binning import QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import Vocabulary, code_type
+from odyssey.models.concept_bottleneck import ConceptBottleneckOutput
 from odyssey.models.sequence_model import (
     ConceptBottleneckSequenceModel,
     ConceptLabelDict,
@@ -40,6 +41,12 @@ from odyssey.models.sequence_model import (
     _gather_by_subject,
     _gather_by_visit,
     _pool_patient_ends,
+)
+from odyssey.models.time_to_event import (
+    gap_survival_valid_mask,
+    gap_to_bin,
+    hazard_log_likelihood,
+    probability_within,
 )
 from odyssey.training.data import (
     build_concept_label_dicts,
@@ -51,6 +58,7 @@ from odyssey.training.metrics import (
     ConceptMetrics,
     ObservabilityMetrics,
     TaskMetrics,
+    TimeMetrics,
     compute_concept_metrics,
     compute_observability_metrics,
     orthogonality_diagnostic,
@@ -82,6 +90,63 @@ class InferenceResults:
     observability_metrics: List[ObservabilityMetrics]
     orthogonality: float
     n_patient_ends_scored: int
+    time_metrics: Optional[TimeMetrics] = None
+    """Time-to-next-event scoring; None for models without a time head."""
+
+
+# Horizons are bin edges of DEFAULT_TIME_BIN_EDGES_HOURS so P(within h) is exact.
+_TIME_HORIZONS_HOURS: Dict[str, float] = {"1h": 1.0, "8h": 8.0, "24h": 24.0}
+
+
+class _RunningTimeMetrics:
+    """Streaming accumulator for :class:`TimeMetrics` (see that docstring)."""
+
+    def __init__(self, edges: Sequence[float]) -> None:
+        self.edges = list(edges)
+        self.nll_sum = 0.0
+        self.n = 0
+        self.same_correct = 0
+        self.same_observed = 0
+        self.pred_within = dict.fromkeys(_TIME_HORIZONS_HOURS, 0.0)
+        self.obs_within = dict.fromkeys(_TIME_HORIZONS_HOURS, 0)
+
+    def update(
+        self, hazard_logits: torch.Tensor, gap_hours: torch.Tensor, valid: torch.Tensor
+    ) -> None:
+        if not bool(valid.any()):
+            return
+        logits = hazard_logits[valid]
+        gaps = gap_hours[valid]
+        target_bin = gap_to_bin(gaps.clamp_min(0.0), self.edges)
+        ll = hazard_log_likelihood(logits, target_bin)
+        self.nll_sum += float(-ll.sum().item())
+        self.n += int(gaps.numel())
+        p_same = torch.sigmoid(logits[:, 0])
+        same = gaps <= 0
+        self.same_correct += int(((p_same > 0.5) == same).sum().item())
+        self.same_observed += int(same.sum().item())
+        for label, horizon in _TIME_HORIZONS_HOURS.items():
+            self.pred_within[label] += float(
+                probability_within(logits, self.edges, horizon).sum().item()
+            )
+            self.obs_within[label] += int((gaps <= horizon).sum().item())
+
+    def finalize(self) -> Optional[TimeMetrics]:
+        if self.n == 0:
+            return None
+        return TimeMetrics(
+            nll=self.nll_sum / self.n,
+            n_positions=self.n,
+            same_instant_accuracy=self.same_correct / self.n,
+            same_instant_rate=self.same_observed / self.n,
+            calibration={
+                label: {
+                    "predicted": self.pred_within[label] / self.n,
+                    "observed": self.obs_within[label] / self.n,
+                }
+                for label in _TIME_HORIZONS_HOURS
+            },
+        )
 
 
 def _latest_checkpoint(run_dir: Path) -> Path:
@@ -443,6 +508,39 @@ class _RunningTaskMetrics:
         }
 
 
+@dataclass
+class _PooledEnds:
+    """Per-chunk pooled bottleneck readouts at supervision positions, on CPU."""
+
+    subject_ids: List[torch.Tensor] = field(default_factory=list)
+    visit_ids: List[torch.Tensor] = field(default_factory=list)
+    concept_probs: List[torch.Tensor] = field(default_factory=list)
+    observability_probs: List[torch.Tensor] = field(default_factory=list)
+    concept_embeddings: List[torch.Tensor] = field(default_factory=list)
+    unknown_embedding: List[torch.Tensor] = field(default_factory=list)
+
+    def append(
+        self,
+        chunk: StreamingChunk,
+        out: ConceptBottleneckOutput,
+        pool_mask: torch.Tensor,
+    ) -> None:
+        self.subject_ids.append(_pool_patient_ends(chunk.subject_ids, pool_mask).cpu())
+        self.visit_ids.append(_pool_patient_ends(chunk.visit_ids, pool_mask).cpu())
+        self.concept_probs.append(
+            _pool_patient_ends(out.concept_probs, pool_mask).cpu()
+        )
+        self.observability_probs.append(
+            _pool_patient_ends(out.observability_probs, pool_mask).cpu()
+        )
+        self.concept_embeddings.append(
+            _pool_patient_ends(out.concept_embeddings, pool_mask).cpu()
+        )
+        self.unknown_embedding.append(
+            _pool_patient_ends(out.unknown_embedding, pool_mask).cpu()
+        )
+
+
 def run_streaming_inference(
     model: ConceptBottleneckSequenceModel,
     events_binned: pl.DataFrame,
@@ -476,12 +574,9 @@ def run_streaming_inference(
     )
 
     task_stats = _RunningTaskMetrics(vocab, device=device)
-    end_subject_ids: List[torch.Tensor] = []
-    end_visit_ids: List[torch.Tensor] = []
-    end_concept_probs: List[torch.Tensor] = []
-    end_observability_probs: List[torch.Tensor] = []
-    end_concept_embeddings: List[torch.Tensor] = []
-    end_unknown_embedding: List[torch.Tensor] = []
+    time_head = getattr(model, "time_head", None)
+    time_stats = _RunningTimeMetrics(time_head.edges) if time_head is not None else None
+    pooled = _PooledEnds()
 
     state = None
     with torch.no_grad():
@@ -492,6 +587,12 @@ def run_streaming_inference(
             )
 
             real = chunk.real_mask
+            if time_stats is not None and time_head is not None:
+                hazard_logits = time_head(bottleneck_out.bottleneck)
+                gap, gap_valid = gap_survival_valid_mask(
+                    chunk.batch.aux.time_stamps, real
+                )
+                time_stats.update(hazard_logits, gap, gap_valid)
             if real.any():
                 set_hits = task_stats.block_set_hits(
                     logits.argmax(dim=-1),
@@ -508,34 +609,11 @@ def run_streaming_inference(
 
             pool_mask = chunk.patient_end if supervision == "stay" else chunk.visit_end
             if pool_mask.any():
-                end_subject_ids.append(
-                    _pool_patient_ends(chunk.subject_ids, pool_mask).cpu()
-                )
-                end_visit_ids.append(
-                    _pool_patient_ends(chunk.visit_ids, pool_mask).cpu()
-                )
-                end_concept_probs.append(
-                    _pool_patient_ends(bottleneck_out.concept_probs, pool_mask).cpu()
-                )
-                end_observability_probs.append(
-                    _pool_patient_ends(
-                        bottleneck_out.observability_probs, pool_mask
-                    ).cpu()
-                )
-                end_concept_embeddings.append(
-                    _pool_patient_ends(
-                        bottleneck_out.concept_embeddings, pool_mask
-                    ).cpu()
-                )
-                end_unknown_embedding.append(
-                    _pool_patient_ends(
-                        bottleneck_out.unknown_embedding, pool_mask
-                    ).cpu()
-                )
+                pooled.append(chunk, bottleneck_out, pool_mask)
 
     task_metrics, task_metrics_by_code_type = task_stats.finalize()
 
-    if not end_subject_ids:
+    if not pooled.subject_ids:
         # No chunk ever had a real pool_mask position -- e.g. supervision
         # is "visit" but nothing in this split has a real hadm_id, so
         # chunk.visit_end never fires. Forecasting quality (task_metrics
@@ -554,17 +632,18 @@ def run_streaming_inference(
             observability_metrics=[],
             orthogonality=float("nan"),
             n_patient_ends_scored=0,
+            time_metrics=time_stats.finalize() if time_stats is not None else None,
         )
 
-    subject_ids = torch.cat(end_subject_ids)
-    concept_probs = torch.cat(end_concept_probs)
-    observability_probs = torch.cat(end_observability_probs)
-    concept_embeddings = torch.cat(end_concept_embeddings)
-    unknown_embedding = torch.cat(end_unknown_embedding)
+    subject_ids = torch.cat(pooled.subject_ids)
+    concept_probs = torch.cat(pooled.concept_probs)
+    observability_probs = torch.cat(pooled.observability_probs)
+    concept_embeddings = torch.cat(pooled.concept_embeddings)
+    unknown_embedding = torch.cat(pooled.unknown_embedding)
 
     concept_names = [c.name for c in concepts]
     if supervision == "visit":
-        visit_ids = torch.cat(end_visit_ids)
+        visit_ids = torch.cat(pooled.visit_ids)
         labels = _gather_by_visit(subject_ids, visit_ids, concept_labels)  # type: ignore[arg-type]
         masks = _gather_by_visit(subject_ids, visit_ids, concept_mask)  # type: ignore[arg-type]
     else:
@@ -587,6 +666,7 @@ def run_streaming_inference(
         observability_metrics=observability_metrics,
         orthogonality=orthogonality,
         n_patient_ends_scored=int(subject_ids.shape[0]),
+        time_metrics=time_stats.finalize() if time_stats is not None else None,
     )
 
 

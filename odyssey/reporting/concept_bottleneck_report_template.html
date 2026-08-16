@@ -589,6 +589,19 @@ footer {
     </div>
     <div class="finding" id="finding-task" style="margin-bottom:2rem;"></div>
 
+    <div id="time-section" style="display:none;">
+      <h3 style="font-size:1rem;font-weight:700;margin:0 0 0.75rem;">Time to next event</h3>
+      <p class="section-desc" style="margin-top:0;margin-bottom:1rem;">
+        The hazard head forecasts <em>when</em> the next event arrives. Calibration compares the mean
+        predicted probability that the next event falls within each horizon against the observed
+        fraction; "same instant" is whether the current bundle continues (a gap of zero).
+      </p>
+      <div class="table-wrap" style="margin-bottom:0.5rem;">
+        <table id="time-table"></table>
+      </div>
+      <div class="finding" id="finding-time" style="margin-bottom:2rem;"></div>
+    </div>
+
     <h3 style="font-size:1rem;font-weight:700;margin:0 0 0.75rem;">Concept quality</h3>
     <p class="section-desc" style="margin-top:0;margin-bottom:1rem;">
       How well the bottleneck's concept probabilities match each concept's own rule-derived label,
@@ -675,7 +688,7 @@ footer {
     document.getElementById("n-concepts-blurb").textContent = nConcepts + " known clinical concepts";
     document.getElementById("n-cases-blurb").textContent = DATA.cases.length;
     document.getElementById("training-desc").textContent = DATA.training_desc;
-    ["training", "task", "concepts", "observability"].forEach((key) => {
+    ["training", "task", "time", "concepts", "observability"].forEach((key) => {
       const target = document.getElementById("finding-" + key);
       const text = DATA.findings && DATA.findings[key];
       if (target && text) {
@@ -866,6 +879,38 @@ footer {
   })();
 
   /* ---------------------------------------------------------- code-type table */
+
+  (function renderTimeTable() {
+    const tm = DATA.inference_results.time_metrics;
+    if (!tm) return;
+    document.getElementById("time-section").style.display = "";
+    const table = document.getElementById("time-table");
+    const thead = el("thead", {}, [el("tr", {}, [
+      el("th", {}, ["Horizon"]),
+      el("th", { class: "num" }, ["Predicted P(within)"]),
+      el("th", { class: "num" }, ["Observed"]),
+    ])]);
+    const tbody = el("tbody");
+    tbody.appendChild(el("tr", {}, [
+      el("td", {}, ["Same instant (bundle continues)"]),
+      el("td", { class: "num" }, [fmtPct(tm.same_instant_accuracy) + " acc."]),
+      el("td", { class: "num" }, [fmtPct(tm.same_instant_rate) + " of positions"]),
+    ]));
+    Object.entries(tm.calibration).forEach(([h, c]) => {
+      tbody.appendChild(el("tr", {}, [
+        el("td", {}, ["Within " + h]),
+        el("td", { class: "num" }, [fmtPct(c.predicted)]),
+        el("td", { class: "num" }, [fmtPct(c.observed)]),
+      ]));
+    });
+    tbody.appendChild(el("tr", {}, [
+      el("td", {}, ["Gap NLL (nats, " + fmtInt(tm.n_positions) + " positions)"]),
+      el("td", { class: "num" }, [fmt(tm.nll, 3)]),
+      el("td", { class: "num" }, [""]),
+    ]));
+    table.appendChild(thead);
+    table.appendChild(tbody);
+  })();
 
   (function renderCodeTypeTable() {
     const table = document.getElementById("code-type-table");

@@ -27,7 +27,8 @@ Both models support two training regimes:
   Section 05.
 """
 
-from typing import Dict, Literal, Optional, Tuple, Union
+from dataclasses import dataclass
+from typing import Dict, Literal, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn.functional as F  # noqa: N812
@@ -43,6 +44,100 @@ from odyssey.models.concept_bottleneck import (
     ConceptBottleneckOutput,
     combined_loss,
 )
+from odyssey.models.time_to_event import (
+    TimeToEventHead,
+    gap_survival_valid_mask,
+    hazard_nll,
+)
+
+
+@dataclass
+class ForecastObjective:
+    """How the next-event forecasting loss is formed over a streaming chunk.
+
+    The record is a sequence of *bundles* -- events sharing one
+    timestamp (a lab panel, a medication order set, the diagnoses coded
+    at discharge) with no meaningful order inside a bundle. Plain
+    next-token cross-entropy grades the model on that arbitrary
+    within-bundle order and, because labs are ~85% of positions, is
+    dominated by them. This objective fixes both:
+
+    - ``bundle_invariant``: at each position the likelihood credited is
+      the total probability of every *not-yet-emitted* member of the
+      target's bundle (``-log sum_{v in remaining} p(v)``), so the model
+      is asked "which events are coming at this instant", not "which one
+      did the ETL happen to write first". Reduces exactly to cross-entropy
+      for singleton bundles and lower-bounds it otherwise. Matches the
+      set-based evaluation in :mod:`odyssey.inference.run_inference`.
+    - ``family_weights`` / ``token_types``: per-position weights by the
+      target's code family (``token_types`` maps token id -> family id,
+      ``family_weights`` maps family id -> weight), normalized inside the
+      loss so its scale stays a weighted mean. Lets medications,
+      procedures, diagnoses and billing carry real gradient.
+    - ``time_weight``: weight of the time-to-next-event hazard loss
+      (:mod:`odyssey.models.time_to_event`), if the model has a time head.
+
+    The default instance reproduces the original objective exactly.
+    """
+
+    bundle_invariant: bool = False
+    family_weights: Optional[torch.Tensor] = None
+    token_types: Optional[torch.Tensor] = None
+    time_weight: float = 0.0
+
+
+def _bundle_log_likelihood(
+    logp: torch.Tensor,
+    targets: torch.Tensor,
+    times: torch.Tensor,
+    subject_ids: torch.Tensor,
+    real: torch.Tensor,
+) -> torch.Tensor:
+    """``log sum_{v in remaining bundle members} p_i(v)`` per position, ``(L, T)``.
+
+    Bundles are recovered from the chunk's input timestamps exactly as
+    the set-based evaluation does (the target at position ``j`` is the
+    input at ``j+1``; sequences are time-sorted per subject, so a bundle
+    is a contiguous run). "Remaining" means members at positions ``j >= i``
+    of the same bundle: earlier members have already been emitted as
+    inputs, so a good model has no business predicting them again.
+    Duplicate tokens within the remaining members count once (the first
+    remaining occurrence), so the credited mass never exceeds one. The
+    final lane position has no in-chunk target time and is scored as a
+    singleton (plain cross-entropy). Positions that are not ``real`` get 0.
+    """
+    lanes, chunk = targets.shape
+    device = targets.device
+    safe_targets = targets.clamp_min(0)
+
+    tgt_t = times[:, 1:]
+    tgt_s = subject_ids[:, 1:]
+    new_block = torch.ones_like(tgt_s, dtype=torch.bool)
+    new_block[:, 1:] = (tgt_t[:, 1:] != tgt_t[:, :-1]) | (tgt_s[:, 1:] != tgt_s[:, :-1])
+    block_id = torch.zeros(lanes, chunk, dtype=torch.long, device=device)
+    block_id[:, : chunk - 1] = new_block.long().cumsum(dim=1)
+    block_id[:, chunk - 1] = (
+        chunk + 1
+    )  # unique: no in-chunk block for the last position
+
+    # G[l, i, j] = log p_i(target_j)
+    gathered = logp.gather(2, safe_targets.unsqueeze(1).expand(lanes, chunk, chunk))
+    same_block = block_id.unsqueeze(2) == block_id.unsqueeze(1)  # (L, i, j)
+    pos = torch.arange(chunk, device=device)
+    j_ge_i = pos.unsqueeze(0) >= pos.unsqueeze(1)  # (i, j)
+    member = same_block & j_ge_i.unsqueeze(0) & real.unsqueeze(1)
+    # Duplicate suppression: drop j if some j' in [i, j) of the same bundle
+    # carries the same token. E[l, j', j] flags j' < j with equal tokens;
+    # a reverse cumsum over j' answers "any j' >= i" for every i.
+    equal = safe_targets.unsqueeze(2) == safe_targets.unsqueeze(1)  # (L, j', j)
+    j_lt = pos.unsqueeze(1) < pos.unsqueeze(0)  # (j', j)
+    earlier_twin = equal & j_lt.unsqueeze(0) & same_block & real.unsqueeze(2)
+    dup = earlier_twin.flip(1).cumsum(1).flip(1) > 0  # (L, i, j)
+    member = member & ~dup
+
+    neg_inf = torch.finfo(gathered.dtype).min
+    ll = torch.logsumexp(gathered.masked_fill(~member, neg_inf), dim=-1)
+    return torch.where(real, ll, torch.zeros_like(ll))
 
 
 def _pool_last_non_padding(
@@ -194,6 +289,63 @@ class _SequenceModelBase(nn.Module):
             ignore_index=self.padding_idx,
         )
 
+    def _streaming_task_loss(
+        self,
+        logits: torch.Tensor,
+        chunk: StreamingChunk,
+        objective: ForecastObjective,
+    ) -> torch.Tensor:
+        """Next-event loss under ``objective`` (see :class:`ForecastObjective`).
+
+        With the default objective this equals
+        :meth:`_streaming_next_token_loss` (up to the family weighting
+        being trivially uniform).
+        """
+        targets = chunk.targets
+        real = chunk.real_mask & (targets != self.padding_idx)
+        if not bool(real.any()):
+            return logits.sum() * 0.0
+        if not objective.bundle_invariant and objective.family_weights is None:
+            return self._streaming_next_token_loss(logits, targets)
+
+        logp = F.log_softmax(logits, dim=-1)
+        if objective.bundle_invariant:
+            per_position = -_bundle_log_likelihood(
+                logp,
+                targets,
+                chunk.batch.aux.time_stamps,
+                chunk.subject_ids,
+                real,
+            )
+        else:
+            per_position = -logp.gather(-1, targets.clamp_min(0).unsqueeze(-1)).squeeze(
+                -1
+            )
+        weights = real.to(per_position.dtype)
+        if objective.family_weights is not None:
+            if objective.token_types is None:
+                raise ValueError(
+                    "family_weights needs token_types (token id -> family)"
+                )
+            families = objective.token_types[targets.clamp_min(0)]
+            weights = weights * objective.family_weights[families].to(weights.dtype)
+        return (per_position * weights).sum() / weights.sum()
+
+    def _streaming_time_loss(
+        self,
+        time_head: Optional[TimeToEventHead],
+        features: torch.Tensor,
+        chunk: StreamingChunk,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """Hazard NLL for time-to-next-event, and the hazard logits (or None)."""
+        if time_head is None:
+            return features.sum() * 0.0, None
+        hazard_logits = time_head(features)
+        gap, valid = gap_survival_valid_mask(
+            chunk.batch.aux.time_stamps, chunk.real_mask
+        )
+        return hazard_nll(hazard_logits, gap, valid, time_head.edges), hazard_logits
+
 
 class BaselineSequenceModel(_SequenceModelBase):
     """Next-token prediction directly from the backbone: no concept bottleneck."""
@@ -204,10 +356,33 @@ class BaselineSequenceModel(_SequenceModelBase):
         vocab_size: int,
         *,
         padding_idx: int = 0,
+        time_bin_edges: Optional[Sequence[float]] = None,
     ) -> None:
-        """Initialize the baseline sequence model."""
+        """Initialize the baseline sequence model.
+
+        ``time_bin_edges`` adds a time-to-next-event hazard head over the
+        backbone hidden state (see :mod:`odyssey.models.time_to_event`).
+        """
         super().__init__(backbone, padding_idx=padding_idx)
         self.lm_head = nn.Linear(backbone.hidden_size, vocab_size)
+        self.time_head: Optional[TimeToEventHead] = (
+            TimeToEventHead(backbone.hidden_size, time_bin_edges)
+            if time_bin_edges is not None
+            else None
+        )
+
+    def forward_features(
+        self,
+        batch: ClinicalSequenceBatch,
+        state: Optional[TimeAwareState] = None,
+        reset_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, TimeAwareState]:
+        """Return ``(next-token logits, hidden states, new backbone state)``."""
+        hidden_states, new_state = self.backbone(
+            batch, state=state, reset_mask=reset_mask
+        )
+        logits: torch.Tensor = self.lm_head(hidden_states)
+        return logits, hidden_states, new_state
 
     def forward(
         self,
@@ -216,10 +391,9 @@ class BaselineSequenceModel(_SequenceModelBase):
         reset_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, TimeAwareState]:
         """Return ``(next-token logits, new backbone state)``."""
-        hidden_states, new_state = self.backbone(
+        logits, _, new_state = self.forward_features(
             batch, state=state, reset_mask=reset_mask
         )
-        logits: torch.Tensor = self.lm_head(hidden_states)
         return logits, new_state
 
     def compute_loss(
@@ -234,11 +408,22 @@ class BaselineSequenceModel(_SequenceModelBase):
         self,
         chunk: StreamingChunk,
         state: Optional[TimeAwareState] = None,
+        *,
+        objective: Optional[ForecastObjective] = None,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], TimeAwareState]:
-        """Compute next-token loss over one packed, chunked training step."""
-        logits, new_state = self(chunk.batch, state=state, reset_mask=chunk.reset_mask)
-        loss = self._streaming_next_token_loss(logits, chunk.targets)
-        return loss, {"task_loss": loss.detach()}, new_state
+        """Compute the forecasting loss over one packed, chunked training step."""
+        objective = objective or ForecastObjective()
+        logits, hidden, new_state = self.forward_features(
+            chunk.batch, state=state, reset_mask=chunk.reset_mask
+        )
+        task_loss = self._streaming_task_loss(logits, chunk, objective)
+        time_loss, _ = self._streaming_time_loss(self.time_head, hidden, chunk)
+        total = task_loss + objective.time_weight * time_loss
+        return (
+            total,
+            {"task_loss": task_loss.detach(), "time_loss": time_loss.detach()},
+            new_state,
+        )
 
 
 class ConceptBottleneckSequenceModel(_SequenceModelBase):
@@ -253,8 +438,14 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         *,
         padding_idx: int = 0,
         concept_dropout: float = 0.1,
+        time_bin_edges: Optional[Sequence[float]] = None,
     ) -> None:
-        """Initialize the concept-bottleneck sequence model."""
+        """Initialize the concept-bottleneck sequence model.
+
+        ``time_bin_edges`` adds a time-to-next-event hazard head that reads
+        the bottleneck output (so timing forecasts flow through the
+        concepts too); see :mod:`odyssey.models.time_to_event`.
+        """
         super().__init__(backbone, padding_idx=padding_idx)
         self.bottleneck = ConceptBottleneck(
             hidden_size=backbone.hidden_size,
@@ -262,7 +453,13 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
             embedding_dim=embedding_dim,
             concept_dropout=concept_dropout,
         )
-        self.lm_head = nn.Linear((num_concepts + 1) * embedding_dim, vocab_size)
+        bottleneck_dim = (num_concepts + 1) * embedding_dim
+        self.lm_head = nn.Linear(bottleneck_dim, vocab_size)
+        self.time_head: Optional[TimeToEventHead] = (
+            TimeToEventHead(bottleneck_dim, time_bin_edges)
+            if time_bin_edges is not None
+            else None
+        )
 
     def forward(
         self,
@@ -338,6 +535,7 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         loss_weights: Optional[ConceptBottleneckLossWeights] = None,
         supervision: ConceptSupervision = "stay",
         intervention: Optional[BottleneckIntervention] = None,
+        objective: Optional[ForecastObjective] = None,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], TimeAwareState]:
         """Compute next-token + concept + orthogonality + observability loss.
 
@@ -370,24 +568,30 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         that at deployment overriding a concept actually moves the
         forecast.
         """
+        objective = objective or ForecastObjective()
         logits, bottleneck_out, new_state = self(
             chunk.batch,
             state=state,
             reset_mask=chunk.reset_mask,
             intervention=intervention,
         )
-        next_token_loss = self._streaming_next_token_loss(logits, chunk.targets)
+        next_token_loss = self._streaming_task_loss(logits, chunk, objective)
+        time_loss, _ = self._streaming_time_loss(
+            self.time_head, bottleneck_out.bottleneck, chunk
+        )
+        forecast_loss = next_token_loss + objective.time_weight * time_loss
 
         pool_mask = chunk.patient_end if supervision == "stay" else chunk.visit_end
         if not pool_mask.any():
             zero = next_token_loss.new_zeros(())
             components = {
                 "task_loss": next_token_loss.detach(),
+                "time_loss": time_loss.detach(),
                 "concept_loss": zero,
                 "orthogonality_loss": zero,
                 "observability_loss": zero,
             }
-            return next_token_loss, components, new_state
+            return forecast_loss, components, new_state
 
         end_subject_ids = _pool_patient_ends(chunk.subject_ids, pool_mask)
         pooled_concept_logits = _pool_patient_ends(
@@ -424,7 +628,7 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
             )
 
         total, components = combined_loss(
-            next_token_loss,
+            forecast_loss,
             pooled_concept_logits,
             labels_batch,
             pooled_concept_embeddings,
@@ -433,4 +637,8 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
             concept_mask=mask_batch,
             weights=loss_weights,
         )
+        # combined_loss reports the forecast term it was handed as
+        # "task_loss"; split time back out so logs show both.
+        components["task_loss"] = next_token_loss.detach()
+        components["time_loss"] = time_loss.detach()
         return total, components, new_state

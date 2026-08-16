@@ -47,20 +47,23 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Dict, Optional, TypeVar
 
+import polars as pl
 import torch
 
 from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.concepts import concepts_for_source
 from odyssey.data.streaming import PackedLaneSampler
 from odyssey.data.value_binning import QuantileBinner, add_value_tokens
-from odyssey.data.vocabulary import PAD_ID
+from odyssey.data.vocabulary import PAD_ID, Vocabulary
 from odyssey.models.backbones.base import TimeAwareState
 from odyssey.models.concept_bottleneck import ConceptBottleneckLossWeights
 from odyssey.models.sequence_model import (
     ConceptBottleneckSequenceModel,
     ConceptLabelDict,
     ConceptSupervision,
+    ForecastObjective,
 )
+from odyssey.models.time_to_event import DEFAULT_TIME_BIN_EDGES_HOURS
 from odyssey.training.data import (
     build_concept_first_times,
     build_concept_label_dicts,
@@ -68,8 +71,10 @@ from odyssey.training.data import (
     build_visit_concept_label_dicts,
     build_vocabulary,
     count_subjects,
+    family_loss_weights,
     iter_patient_sequences,
     load_meds_shards,
+    token_type_lookup,
 )
 from odyssey.training.running_labels import randint_intervention
 
@@ -160,6 +165,29 @@ class TrainingConfig:
     research journal entry 07). Visit scoping exists because entry 07's
     evaluation showed whole-stay labels demand long-range single-event
     recall the compressed recurrent state cannot guarantee."""
+
+    bundle_invariant_loss: bool = True
+    """Score each position by the total probability of every not-yet-
+    emitted member of the target's same-timestamp bundle instead of the
+    single next token in ETL order (see
+    odyssey.models.sequence_model.ForecastObjective). Off reproduces
+    plain next-token cross-entropy."""
+
+    family_balance_alpha: float = 0.5
+    """Per-family loss weights proportional to (family share of training
+    targets) ** -alpha, normalized to mean 1 over targets and capped at
+    family_weight_cap. 0 disables (labs, 85% of positions, then dominate
+    the gradient); 1 would be full inverse frequency. 0.5 is a square-root
+    tempering."""
+
+    family_weight_cap: float = 20.0
+
+    time_to_event: bool = True
+    """Add the time-to-next-event hazard head (odyssey.models.time_to_event)
+    and its loss, weighted by time_weight. Off reproduces the previous
+    what-only model."""
+
+    time_weight: float = 1.0
 
     randint_prob: float = 0.25
     """Intervention-aware training (CEM's RandInt): at every training
@@ -300,6 +328,40 @@ def build_model(
         num_concepts=num_concepts,
         embedding_dim=config.embedding_dim,
         padding_idx=PAD_ID,
+        time_bin_edges=(
+            DEFAULT_TIME_BIN_EDGES_HOURS
+            if getattr(config, "time_to_event", False)
+            else None
+        ),
+    )
+
+
+def build_objective(
+    config: TrainingConfig,
+    vocab: Vocabulary,
+    train_events_binned: pl.DataFrame,
+    device: str,
+) -> ForecastObjective:
+    """Construct the :class:`ForecastObjective` a run trains and validates with."""
+    family_weights = None
+    token_types = None
+    if config.family_balance_alpha > 0.0:
+        token_types = token_type_lookup(vocab).to(device)
+        family_weights = family_loss_weights(
+            train_events_binned,
+            alpha=config.family_balance_alpha,
+            cap=config.family_weight_cap,
+        ).to(device)
+        logger.info(
+            "[loss] family weights (alpha=%.2f): %s",
+            config.family_balance_alpha,
+            {k: round(float(v), 2) for k, v in enumerate(family_weights.tolist()) if v},
+        )
+    return ForecastObjective(
+        bundle_invariant=config.bundle_invariant_loss,
+        family_weights=family_weights,
+        token_types=token_types,
+        time_weight=config.time_weight if config.time_to_event else 0.0,
     )
 
 
@@ -312,6 +374,7 @@ def evaluate_streaming(
     device: str,
     max_chunks: Optional[int] = None,
     supervision: ConceptSupervision = "stay",
+    objective: Optional[ForecastObjective] = None,
 ) -> Dict[str, float]:
     """Average loss components over one (partial), gradient-free sampler pass."""
     model.eval()
@@ -325,7 +388,12 @@ def evaluate_streaming(
                 break
             chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
             _, components, state = model.compute_streaming_loss(
-                chunk, labels, masks, state=state, supervision=supervision
+                chunk,
+                labels,
+                masks,
+                state=state,
+                supervision=supervision,
+                objective=objective,
             )
             state = _detach_state(state)
             for key, value in components.items():
@@ -341,7 +409,9 @@ def _labels_to_device(labels: ConceptLabelDict, device: str) -> ConceptLabelDict
 
 
 def _combined_val_loss(
-    components: Dict[str, float], weights: ConceptBottleneckLossWeights
+    components: Dict[str, float],
+    weights: ConceptBottleneckLossWeights,
+    time_weight: float = 0.0,
 ) -> float:
     """Compute the same task + weighted-auxiliary combination the training loss uses.
 
@@ -353,6 +423,7 @@ def _combined_val_loss(
     """
     return (
         components["task_loss"]
+        + time_weight * components.get("time_loss", 0.0)
         + weights.concept * components.get("concept_loss", 0.0)
         + weights.orthogonality * components.get("orthogonality_loss", 0.0)
         + weights.observability * components.get("observability_loss", 0.0)
@@ -464,6 +535,7 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
     vocab.save(output_dir / "vocabulary.json")
     logger.info("[data] vocab size: %d", len(vocab))
 
+    objective = build_objective(config, vocab, train_events_binned, device)
     model = build_model(config, vocab_size=len(vocab), num_concepts=len(concepts)).to(
         device
     )
@@ -616,6 +688,7 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
                 loss_weights=loss_weights,
                 supervision=config.concept_supervision,  # type: ignore[arg-type]
                 intervention=intervention,
+                objective=objective,
             )
             optimizer.zero_grad()
             total.backward()  # type: ignore[no-untyped-call]
@@ -646,6 +719,7 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
                     device=device,
                     max_chunks=config.eval_max_chunks,
                     supervision=config.concept_supervision,  # type: ignore[arg-type]
+                    objective=objective,
                 )
                 fields = {
                     "step": global_step,
@@ -658,7 +732,7 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
                 summary = " ".join(f"{k}={v:.4f}" for k, v in val.items())
                 logger.info("[val]   step=%d %s", global_step, summary)
 
-                val_loss = _combined_val_loss(val, loss_weights)
+                val_loss = _combined_val_loss(val, loss_weights, objective.time_weight)
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     evals_without_improvement = 0

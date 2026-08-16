@@ -24,7 +24,7 @@ from odyssey.data.concepts import (
     label_concepts_by_visit,
 )
 from odyssey.data.sequences import BIRTH_CODE, PatientSequence, build_patient_sequence
-from odyssey.data.vocabulary import Vocabulary
+from odyssey.data.vocabulary import Vocabulary, code_type
 
 
 _T = TypeVar("_T")
@@ -290,6 +290,52 @@ def build_concept_first_times(
         ]
         out[int(subject_id)] = torch.tensor(hours, dtype=torch.float32)
     return out
+
+
+def token_type_lookup(vocab: Vocabulary) -> torch.Tensor:
+    """``(vocab_size,)`` token id -> code-family id (see :func:`code_type`)."""
+    lookup = torch.zeros(len(vocab), dtype=torch.long)
+    for token_id, token in vocab.id_to_token.items():
+        lookup[token_id] = code_type(token)
+    return lookup
+
+
+def family_loss_weights(
+    events: pl.DataFrame, *, alpha: float, cap: float = 20.0, code_col: str = "code"
+) -> torch.Tensor:
+    """Per-family loss weights ``(share of events) ** -alpha``, mean-1 normalized.
+
+    ``share`` is each code family's fraction of ``events`` (the training
+    split's tokenized events, a proxy for its share of forecast targets),
+    so with ``alpha=1`` every family contributes equally to the loss and
+    with ``alpha=0`` the weights are uniform. Normalized so the weighted
+    mean over events is 1 (the loss keeps its scale), then capped at
+    ``cap`` so a family that is 0.1% of positions cannot dominate a
+    batch on its own. Indexed by family id; families absent from
+    ``events`` get weight 0.
+    """
+    unique_codes = events[code_col].unique()
+    families = pl.Series([code_type(c) for c in unique_codes.to_list()], dtype=pl.Int64)
+    fam_of_code = pl.DataFrame({code_col: unique_codes, "_family": families})
+    counts = (
+        events.select(code_col)
+        .join(fam_of_code, on=code_col, how="left")
+        .group_by("_family")
+        .len()
+    )
+    fam_ids = [int(f) for f in counts["_family"].to_list()]
+    n_families = max(fam_ids) + 1
+    n = torch.zeros(n_families, dtype=torch.float64)
+    for fam, cnt in zip(fam_ids, counts["len"].to_list()):
+        n[fam] = float(cnt)
+    share = n / n.sum()
+    raw = torch.where(
+        share > 0, share.clamp_min(1e-12) ** (-alpha), torch.zeros_like(share)
+    )
+    # normalize: sum_f share_f * w_f = 1
+    scale = (share * raw).sum()
+    weights = torch.where(scale > 0, raw / scale, raw)
+    return weights.clamp_max(cap).to(torch.float32)
 
 
 def count_subjects(events: pl.DataFrame) -> int:
