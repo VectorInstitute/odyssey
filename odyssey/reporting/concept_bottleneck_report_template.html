@@ -1,5 +1,5 @@
 <meta charset="utf-8">
-<title>Concept Trace</title>
+<title>Concept-Bottleneck EHR Sequence Model - Odyssey Research Journal</title>
 
 <style>
 :root {
@@ -378,7 +378,7 @@ td.code { font-family: var(--font-mono); font-size: 0.8rem; }
 .case-detail {
   /* Grid items default to a content-based min-width (not 0), so a wide
      child (the forecast table, the monitor strips) can push this whole
-     column -- and the page -- past the viewport instead of scrolling
+     column (and the page) past the viewport instead of scrolling
      inside its own .table-wrap/.monitor. This is the actual fix; those
      already have overflow-x: auto but it only engages once their
      ancestor stops growing to fit them. */
@@ -453,7 +453,7 @@ td.code { font-family: var(--font-mono); font-size: 0.8rem; }
 .monitor-row canvas {
   /* The backing-store `width`/`height` attributes (set in JS for a
      sharp retina bitmap) are large pixel values with no CSS width to
-     override them -- a flex item's min-width defaults to its content
+     override them; a flex item's min-width defaults to its content
      size, and for a replaced element like canvas that's the attribute
      size, not the flex-basis. Without min-width: 0 the canvas (and
      everything after it) pushed the whole page wider than the
@@ -486,6 +486,29 @@ footer {
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
+
+.finding {
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: 0 8px 8px 0;
+  padding: 0.75rem 1rem;
+  margin: 1.1rem 0 0.4rem;
+  font-size: 0.88rem;
+  line-height: 1.55;
+  color: var(--ink);
+}
+.finding .tag {
+  display: inline-block; font-size: 0.66rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.05em;
+  background: var(--accent); color: #fff;
+  border-radius: 4px; padding: 0.1rem 0.4rem; margin-right: 0.5rem;
+}
+.finding:empty { display: none; }
+.disclaimer {
+  background: var(--warn-soft); border: 1px solid var(--warn);
+  border-radius: 8px; padding: 0.7rem 1rem; margin-top: 1rem;
+  font-size: 0.85rem; color: var(--ink);
+}
 </style>
 
 <header class="top">
@@ -493,12 +516,17 @@ footer {
     <p class="eyebrow">Training &amp; Evaluation Report</p>
     <h1 class="title">Concept-Bottleneck EHR Sequence Model</h1>
     <p class="subtitle">
-      A Mamba-based clinical event forecaster trained with an interpretable concept bottleneck —
+      A Mamba-based clinical event forecaster trained with an interpretable concept bottleneck:
       <span id="n-concepts-blurb">known clinical concepts</span> (SIRS, qSOFA, AKI staging, vital-sign thresholds) plus a residual
       unknown channel. This report covers the training run's loss trajectory, held-out quantitative
       evaluation, and <span id="n-cases-blurb">several</span> diverse patient case traces.
     </p>
     <ul class="run-meta" id="run-meta"></ul>
+    <div class="disclaimer"><b>Local-only.</b> The case-trace section contains
+    patient-level detail; PhysioNet's Data Use Agreement restricts sharing
+    patient-level data outside credentialed access. Write this report only under
+    a gitignored path (the builder's docstring says the same), never anywhere
+    published.</div>
   </div>
 </header>
 
@@ -518,6 +546,7 @@ footer {
     </div>
     <p class="section-desc" id="training-desc"></p>
     <div class="chart-grid" id="loss-charts"></div>
+    <div class="finding" id="finding-training"></div>
   </section>
 
   <section class="report" id="quantitative">
@@ -528,18 +557,20 @@ footer {
     <div class="stat-grid" id="headline-stats"></div>
 
     <h3 style="font-size:1rem;font-weight:700;margin:0 0 0.75rem;">Forecasting accuracy by code type</h3>
-    <div class="table-wrap" style="margin-bottom:2rem;">
+    <div class="table-wrap" style="margin-bottom:0.5rem;">
       <table id="code-type-table"></table>
     </div>
+    <div class="finding" id="finding-task" style="margin-bottom:2rem;"></div>
 
     <h3 style="font-size:1rem;font-weight:700;margin:0 0 0.75rem;">Concept quality</h3>
     <p class="section-desc" style="margin-top:0;margin-bottom:1rem;">
       How well the bottleneck's concept probabilities match each concept's own rule-derived label,
       among held-out patients where that concept was actually observed.
     </p>
-    <div class="table-wrap" style="margin-bottom:2rem;">
+    <div class="table-wrap" style="margin-bottom:0.5rem;">
       <table id="concept-table"></table>
     </div>
+    <div class="finding" id="finding-concepts" style="margin-bottom:2rem;"></div>
 
     <h3 style="font-size:1rem;font-weight:700;margin:0 0 0.75rem;">Observability</h3>
     <p class="section-desc" style="margin-top:0;margin-bottom:1rem;">
@@ -547,9 +578,10 @@ footer {
       <em>whether</em> a concept will be measured at all for this patient? Scored against
       whether real data was ever observed for that concept, independent of the label's value.
     </p>
-    <div class="table-wrap">
+    <div class="table-wrap" style="margin-bottom:0.5rem;">
       <table id="observability-table"></table>
     </div>
+    <div class="finding" id="finding-observability"></div>
   </section>
 
   <section class="report" id="qualitative">
@@ -567,7 +599,7 @@ footer {
 
 <footer>
   <div class="container">
-    <p>Concept Trace — generated from a single training + held-out evaluation run of the odyssey concept-bottleneck EHR-Mamba pipeline. Detail rows and forecast codes are sampled, not exhaustive, per patient trace.</p>
+    <p>Generated from a single training and held-out evaluation run of the odyssey concept-bottleneck pipeline. Detail rows and forecast codes are sampled per patient trace, not exhaustive.</p>
   </div>
 </footer>
 
@@ -579,9 +611,9 @@ footer {
   const raw = document.getElementById("dashboard-data").textContent;
   const DATA = JSON.parse(raw);
 
-  const fmt = (x, d) => (x === null || x === undefined ? "—" : Number(x).toFixed(d === undefined ? 3 : d));
-  const fmtInt = (x) => (x === null || x === undefined ? "—" : Number(x).toLocaleString("en-US"));
-  const fmtPct = (x, d) => (x === null || x === undefined ? "—" : (Number(x) * 100).toFixed(d === undefined ? 1 : d) + "%");
+  const fmt = (x, d) => (x === null || x === undefined ? "\u2013" : Number(x).toFixed(d === undefined ? 3 : d));
+  const fmtInt = (x) => (x === null || x === undefined ? "\u2013" : Number(x).toLocaleString("en-US"));
+  const fmtPct = (x, d) => (x === null || x === undefined ? "\u2013" : (Number(x) * 100).toFixed(d === undefined ? 1 : d) + "%");
 
   function el(tag, attrs, children) {
     const e = document.createElement(tag);
@@ -605,6 +637,15 @@ footer {
     document.getElementById("n-concepts-blurb").textContent = nConcepts + " known clinical concepts";
     document.getElementById("n-cases-blurb").textContent = DATA.cases.length;
     document.getElementById("training-desc").textContent = DATA.training_desc;
+    ["training", "task", "concepts", "observability"].forEach((key) => {
+      const target = document.getElementById("finding-" + key);
+      const text = DATA.findings && DATA.findings[key];
+      if (target && text) {
+        // Trusted content: the payload is generated by this repo's own
+        // builder from run artifacts, never from external input.
+        target.innerHTML = '<span class="tag">Reading</span>' + text;
+      }
+    });
     document.getElementById("quant-desc").textContent = DATA.quant_desc;
     document.getElementById("qualitative-desc").textContent = DATA.qualitative_desc;
   })();
@@ -630,7 +671,7 @@ footer {
     { key: "task_loss", label: "Task loss (next-event forecasting)", color: "var(--accent)" },
     { key: "concept_loss", label: "Concept-supervision loss", color: "#7A5FC4" },
     { key: "orthogonality_loss", label: "Orthogonality loss", color: "#C4785F" },
-    { key: "observability_loss", label: "Observability loss", color: "#5FA3C4" },
+    { key: "observability_loss", label: "Observability loss", color: "#0D9488" },
   ];
 
   function movingAverage(arr, window) {
@@ -743,7 +784,7 @@ footer {
     const tc = DATA.loss_curves.train, vc = DATA.loss_curves.val;
     LOSS_TERMS.forEach((term) => {
       const card = el("div", { class: "chart-card" });
-      // Last 15-pt smoothed value, not the raw final point -- most steps
+      // Last 15-pt smoothed value, not the raw final point: most steps
       // legitimately log 0.0 for concept/orthogonality/observability loss
       // (only chunks with a patient_end contribute those terms), so the
       // single last raw point is noisy and can misleadingly read as "solved".
@@ -922,7 +963,7 @@ footer {
     return [r, g, b];
   }
 
-  // Canvas 2D's fillStyle is resolved outside the DOM cascade -- it cannot
+  // Canvas 2D's fillStyle is resolved outside the DOM cascade; it cannot
   // parse var()/color-mix() referencing custom properties, silently falling
   // back to black. Resolve the accent token to concrete RGB once instead.
   function accentRgb() {

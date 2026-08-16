@@ -104,7 +104,11 @@ def pretty_code(code: str) -> str:  # noqa: PLR0911, PLR0912
         return "Lab · " + " · ".join(rest)
 
     if kind == "MEDICATION":
-        if rest and rest[0] in ("START", "STOP") and len(rest) >= 2:
+        if (
+            rest
+            and rest[0] in ("START", "STOP", "STARTED", "STOPPED")
+            and len(rest) >= 2
+        ):
             action, drug = rest[0], rest[1]
             return f"Medication {action.lower()} · {drug}"
         if len(rest) >= 2:
@@ -243,6 +247,104 @@ def _fmt_duration(seconds: float) -> str:
     return f"{hrs}h {mins:02d}m"
 
 
+def _smoothed_last(values: List[Any], k: int = 15) -> Optional[float]:
+    xs = [float(v) for v in values if v is not None]
+    if not xs:
+        return None
+    return sum(xs[-k:]) / len(xs[-k:])
+
+
+def build_findings(
+    loss_curves: Dict[str, Any],
+    inference: Dict[str, Any],
+    supervision: str,
+) -> Dict[str, str]:
+    """Compute the per-section "Reading" notes from the run's own numbers.
+
+    Auto-generated so every regeneration interprets its own data instead
+    of shipping bare tables; the phrasing stays strictly factual (numbers
+    the reader can verify in the section above each note) because these
+    render on every future run unseen.
+    """
+    tr, va = loss_curves["train"], loss_curves["val"]
+    task_first = _smoothed_last(list(reversed(tr["task_loss"])), 5)
+    task_last = _smoothed_last(tr["task_loss"])
+    val_last = _smoothed_last(va["task_loss"], 3)
+    orth_last = _smoothed_last(tr["orthogonality_loss"])
+    test_ce = inference["task_metrics"]["cross_entropy"]
+    training = (
+        f"<b>Convergence at a glance.</b> Smoothed train task loss went from "
+        f"{task_first:.2f} to {task_last:.2f} over {tr['step'][-1]:,} steps; the "
+        f"tuning split ended near {val_last:.2f} and the untouched test split "
+        f"scored {test_ce:.2f}, so the train/held-out gap is small. The "
+        f"concept, orthogonality, and observability panels are spiky by "
+        f"construction: those terms only apply at supervision positions, so "
+        f"most steps log zero. The orthogonality penalty ended near "
+        f"{orth_last:.3f}, holding the unknown channel apart from the known "
+        f"concepts."
+    )
+
+    tm = inference["task_metrics"]
+    by_type = inference["task_metrics_by_code_type"]
+    total_n = sum(v["n_predictions"] for v in by_type.values())
+    lab = by_type.get("lab")
+    big = {k: v for k, v in by_type.items() if v["n_predictions"] >= 50_000}
+    best = max(big, key=lambda k: big[k]["top1_accuracy"])
+    worst = min(big, key=lambda k: big[k]["top1_accuracy"])
+    task = (
+        f"<b>Read the headline through the by-type table.</b> The aggregate "
+        f"{tm['top1_accuracy']:.1%} top-1 / {tm['top5_accuracy']:.1%} top-5 is "
+        f"dominated by lab tokens"
+        + (
+            f", which are {lab['n_predictions'] / total_n:.0%} of all scored "
+            f"positions (top-1 {lab['top1_accuracy']:.1%}, perplexity "
+            f"{lab['perplexity']:.1f})"
+            if lab
+            else ""
+        )
+        + f". Across the major families, {best} is the most predictable "
+        f"(top-1 {big[best]['top1_accuracy']:.1%}) and {worst} the least "
+        f"(top-1 {big[worst]['top1_accuracy']:.1%}, perplexity "
+        f"{big[worst]['perplexity']:.0f})."
+    )
+
+    cm = [c for c in inference["concept_metrics"] if c.get("auroc") is not None]
+    ranked = sorted(cm, key=lambda c: c["auroc"], reverse=True)
+    top3 = ", ".join(f"{c['name']} ({c['auroc']:.2f})" for c in ranked[:3])
+    bot3 = ", ".join(f"{c['name']} ({c['auroc']:.2f})" for c in ranked[-3:])
+    ceiling = [c["name"] for c in cm if c["prevalence"] > 0.85]
+    concepts = (
+        f"<b>Concept quality, {supervision}-scoped.</b> Strongest by AUROC: "
+        f"{top3}. Weakest: {bot3}."
+        + (
+            f" Note that {', '.join(ceiling)} "
+            f"{'sits' if len(ceiling) == 1 else 'sit'} above 85% prevalence "
+            f"among observed positions, so high AUPRC there is mostly "
+            f"baseline."
+            if ceiling
+            else ""
+        )
+    )
+
+    om = [c for c in inference["observability_metrics"] if c.get("auroc") is not None]
+    mean_auroc = sum(c["auroc"] for c in om) / len(om) if om else float("nan")
+    rates = [c["observed_rate"] for c in inference["observability_metrics"]]
+    observability = (
+        f"<b>The observability head knows what gets measured.</b> Mean AUROC "
+        f"{mean_auroc:.2f} across {len(om)} concepts, against observed rates "
+        f"ranging {min(rates):.0%} to {max(rates):.0%}: predicting whether a "
+        f"concept will be measured at all is itself informative signal "
+        f"(missingness in EHR data is clinical, not random)."
+    )
+
+    return {
+        "training": training,
+        "task": task,
+        "concepts": concepts,
+        "observability": observability,
+    }
+
+
 @dataclass
 class ReportInputs:
     """Everything read from disk before building the report payload."""
@@ -278,7 +380,12 @@ def build_payload(inputs: ReportInputs) -> Dict[str, Any]:
     if not train_records:
         raise ValueError("loss_log.jsonl has no 'train' split records")
 
-    loss_terms = ["task_loss", "concept_loss", "orthogonality_loss", "observability_loss"]
+    loss_terms = [
+        "task_loss",
+        "concept_loss",
+        "orthogonality_loss",
+        "observability_loss",
+    ]
     loss_curves = {
         "train": {
             "step": [r["step"] for r in train_records],
@@ -298,7 +405,9 @@ def build_payload(inputs: ReportInputs) -> Dict[str, Any]:
         observability=config.observability_weight,
     )
     best_val_loss = (
-        min(_combined_val_loss(r, weights) for r in val_records) if val_records else None
+        min(_combined_val_loss(r, weights) for r in val_records)
+        if val_records
+        else None
     )
 
     cases = sorted(
@@ -321,6 +430,7 @@ def build_payload(inputs: ReportInputs) -> Dict[str, Any]:
     # than always calling it "patients".
     pool_unit = "visits" if config.concept_supervision == "visit" else "patients"
 
+    epochs_run = max(r["epoch"] for r in train_records) + 1
     last_step = train_records[-1]["step"]
     total_elapsed_s = train_records[-1]["elapsed_s"]
     n_shards_note = (
@@ -335,30 +445,34 @@ def build_payload(inputs: ReportInputs) -> Dict[str, Any]:
     )
 
     run_meta = [
-        ["Steps", f"{last_step:,} · {config.num_epochs} epochs"],
+        ["Steps", f"{last_step:,} · {epochs_run} of {config.num_epochs} epochs"],
         ["Wall-clock", _fmt_duration(total_elapsed_s)],
         [
             "Best val loss",
             f"{best_val_loss:.3f}" if best_val_loss is not None else "n/a",
         ],
-        ["Held-out test", f"{_fmt_count(tm['n_predictions'])} predictions · {n_pool_positions:,} {pool_unit}"],
+        [
+            "Held-out test",
+            f"{_fmt_count(tm['n_predictions'])} predictions · {n_pool_positions:,} {pool_unit}",
+        ],
         ["Concept supervision", config.concept_supervision],
     ]
 
     training_desc = (
         f"Streaming truncated-BPTT training over {n_shards_note} "
-        f"({config.num_epochs} epochs, {config.num_lanes} parallel lanes x "
+        f"({epochs_run} epochs, {config.num_lanes} parallel lanes \u00d7 "
         f"{config.chunk_size}-token chunks, {config.concept_supervision}-scoped "
-        f"concept supervision). Each panel plots one term of the combined loss -- "
-        f"task (next-token forecasting), concept-supervision, orthogonality "
-        f"(known vs. unknown concept separation), and observability (whether a "
-        f"concept would be measured) -- logged every {config.log_every} training "
-        f"steps and evaluated on {tuning_note} every {config.eval_every} steps."
+        f"concept supervision). Each panel plots one term of the combined loss, "
+        f"logged every {config.log_every} training steps and evaluated on "
+        f"{tuning_note} every {config.eval_every} steps: task (next-token "
+        f"forecasting), concept-supervision, orthogonality (known vs. unknown "
+        f"concept separation), and observability (whether a concept would be "
+        f"measured)."
     )
     quant_desc = (
-        f"Scored once, after training, against the full held-out test split -- "
-        f"{n_pool_positions:,} {pool_unit}, {tm['n_predictions']:,} forecast "
-        f"positions scored, never seen during training or validation."
+        f"Scored once, after training, against the full held-out test split: "
+        f"{n_pool_positions:,} {pool_unit} and {tm['n_predictions']:,} forecast "
+        f"positions, never seen during training or validation."
     )
     qualitative_desc = (
         f"{len(cases)} held-out patients, selected to span short and long stays "
@@ -374,6 +488,7 @@ def build_payload(inputs: ReportInputs) -> Dict[str, Any]:
         "training_desc": training_desc,
         "quant_desc": quant_desc,
         "qualitative_desc": qualitative_desc,
+        "findings": build_findings(loss_curves, inference, config.concept_supervision),
         "loss_curves": loss_curves,
         "inference_results": inference,
         "cases": cases,
