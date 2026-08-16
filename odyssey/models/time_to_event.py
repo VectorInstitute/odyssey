@@ -108,6 +108,79 @@ def hazard_log_likelihood(
     return survive_before + hit
 
 
+def censored_hazard_log_likelihood(
+    hazard_logits: torch.Tensor, target_bin: torch.Tensor, observed: torch.Tensor
+) -> torch.Tensor:
+    """Log-likelihood with right censoring, per position.
+
+    Observed rows (``observed`` True): the event landed in ``target_bin``,
+    scored by :func:`hazard_log_likelihood`. Censored rows: follow-up ran
+    out inside ``target_bin`` without the event, so all that is known is
+    survival through every earlier bin: ``sum_{b < B} log(1 - h_b)``
+    (the standard discrete-time survival contribution; the partially
+    observed bin itself is not credited).
+    """
+    log_1mh = F.logsigmoid(-hazard_logits)
+    num_bins = hazard_logits.shape[-1]
+    bins = torch.arange(num_bins, device=hazard_logits.device)
+    before = (bins < target_bin.unsqueeze(-1)).to(log_1mh.dtype)
+    survive_before = (log_1mh * before).sum(dim=-1)
+    full = hazard_log_likelihood(hazard_logits, target_bin)
+    return torch.where(observed, full, survive_before)
+
+
+class EventHazardHeads(nn.Module):
+    """One discrete-time hazard per named event: features -> (events, bins).
+
+    The alert-grade counterpart of :class:`TimeToEventHead`: instead of
+    "when is the next event of any kind", each head answers "when does
+    *this* event (vasopressor start, ICU admission, ...) first occur",
+    trained with right censoring at the end of follow-up, so calibrated
+    ``P(event within h)`` and full survival curves read off it directly.
+    """
+
+    def __init__(
+        self,
+        in_features: int,
+        event_names: Sequence[str],
+        edges: Sequence[float] = DEFAULT_TIME_BIN_EDGES_HOURS,
+    ) -> None:
+        """Initialize one hazard vector per event over ``len(edges) + 2`` bins."""
+        super().__init__()
+        self.event_names: List[str] = list(event_names)
+        self.edges: List[float] = list(edges)
+        self.num_bins = len(self.edges) + 2
+        self.proj = nn.Linear(in_features, len(self.event_names) * self.num_bins)
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        """Return ``(..., num_events, num_bins)`` hazard logits."""
+        out: torch.Tensor = self.proj(features)
+        return out.view(*features.shape[:-1], len(self.event_names), self.num_bins)
+
+
+def event_hazard_nll(
+    hazard_logits: torch.Tensor,
+    gap_hours: torch.Tensor,
+    observed: torch.Tensor,
+    at_risk: torch.Tensor,
+    edges: Sequence[float],
+) -> torch.Tensor:
+    """Mean censored NLL over at-risk (position, event) entries; zero-graph if none.
+
+    ``hazard_logits`` ``(..., E, B)``; ``gap_hours`` ``(..., E)`` is the
+    time from the position to the event's onset (observed) or to the end
+    of follow-up (censored); ``observed`` and ``at_risk`` are ``(..., E)``
+    bools. Entries not at risk (the event already happened, or no
+    follow-up information) contribute nothing.
+    """
+    if not bool(at_risk.any()):
+        return hazard_logits.sum() * 0.0
+    target_bin = gap_to_bin(gap_hours.clamp_min(0.0), edges)
+    ll = censored_hazard_log_likelihood(hazard_logits, target_bin, observed)
+    weight = at_risk.to(ll.dtype)
+    return -(ll * weight).sum() / weight.sum()
+
+
 def hazard_nll(
     hazard_logits: torch.Tensor,
     gap_hours: torch.Tensor,
@@ -174,7 +247,10 @@ def gap_survival_valid_mask(
 
 __all__: List[str] = [
     "DEFAULT_TIME_BIN_EDGES_HOURS",
+    "EventHazardHeads",
     "TimeToEventHead",
+    "censored_hazard_log_likelihood",
+    "event_hazard_nll",
     "gap_to_bin",
     "hazard_log_likelihood",
     "hazard_nll",

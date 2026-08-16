@@ -28,7 +28,7 @@ Both models support two training regimes:
 """
 
 from dataclasses import dataclass
-from typing import Dict, Literal, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Dict, Literal, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn.functional as F  # noqa: N812
@@ -45,10 +45,16 @@ from odyssey.models.concept_bottleneck import (
     combined_loss,
 )
 from odyssey.models.time_to_event import (
+    EventHazardHeads,
     TimeToEventHead,
+    event_hazard_nll,
     gap_survival_valid_mask,
     hazard_nll,
 )
+
+
+if TYPE_CHECKING:  # the targets live in training; avoid a runtime import cycle
+    from odyssey.training.event_targets import EventHazardTargets
 
 
 @dataclass
@@ -76,6 +82,10 @@ class ForecastObjective:
       procedures, diagnoses and billing carry real gradient.
     - ``time_weight``: weight of the time-to-next-event hazard loss
       (:mod:`odyssey.models.time_to_event`), if the model has a time head.
+    - ``event_hazard_weight``: weight of the per-event hazard loss (time
+      to vasopressor start, ICU admission, ...), if the model has event
+      heads; the targets come per chunk from
+      :mod:`odyssey.training.event_targets`.
 
     The default instance reproduces the original objective exactly.
     """
@@ -84,6 +94,7 @@ class ForecastObjective:
     family_weights: Optional[torch.Tensor] = None
     token_types: Optional[torch.Tensor] = None
     time_weight: float = 0.0
+    event_hazard_weight: float = 0.0
 
 
 def _bundle_log_likelihood(
@@ -331,6 +342,24 @@ class _SequenceModelBase(nn.Module):
             weights = weights * objective.family_weights[families].to(weights.dtype)
         return (per_position * weights).sum() / weights.sum()
 
+    def _streaming_event_loss(
+        self,
+        event_heads: Optional[EventHazardHeads],
+        features: torch.Tensor,
+        event_targets: Optional["EventHazardTargets"],
+    ) -> torch.Tensor:
+        """Censored hazard NLL over the per-event heads (zero-graph if absent)."""
+        if event_heads is None or event_targets is None:
+            return features.sum() * 0.0
+        hazard_logits = event_heads(features)
+        return event_hazard_nll(
+            hazard_logits,
+            event_targets.gap_hours,
+            event_targets.observed,
+            event_targets.at_risk,
+            event_heads.edges,
+        )
+
     def _streaming_time_loss(
         self,
         time_head: Optional[TimeToEventHead],
@@ -357,17 +386,28 @@ class BaselineSequenceModel(_SequenceModelBase):
         *,
         padding_idx: int = 0,
         time_bin_edges: Optional[Sequence[float]] = None,
+        event_names: Optional[Sequence[str]] = None,
     ) -> None:
         """Initialize the baseline sequence model.
 
         ``time_bin_edges`` adds a time-to-next-event hazard head over the
-        backbone hidden state (see :mod:`odyssey.models.time_to_event`).
+        backbone hidden state (see :mod:`odyssey.models.time_to_event`);
+        ``event_names`` adds per-event hazard heads (same bins).
         """
         super().__init__(backbone, padding_idx=padding_idx)
         self.lm_head = nn.Linear(backbone.hidden_size, vocab_size)
         self.time_head: Optional[TimeToEventHead] = (
             TimeToEventHead(backbone.hidden_size, time_bin_edges)
             if time_bin_edges is not None
+            else None
+        )
+        self.event_heads: Optional[EventHazardHeads] = (
+            EventHazardHeads(
+                backbone.hidden_size,
+                event_names,
+                time_bin_edges if time_bin_edges is not None else (),
+            )
+            if event_names
             else None
         )
 
@@ -410,6 +450,7 @@ class BaselineSequenceModel(_SequenceModelBase):
         state: Optional[TimeAwareState] = None,
         *,
         objective: Optional[ForecastObjective] = None,
+        event_targets: Optional["EventHazardTargets"] = None,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], TimeAwareState]:
         """Compute the forecasting loss over one packed, chunked training step."""
         objective = objective or ForecastObjective()
@@ -418,10 +459,19 @@ class BaselineSequenceModel(_SequenceModelBase):
         )
         task_loss = self._streaming_task_loss(logits, chunk, objective)
         time_loss, _ = self._streaming_time_loss(self.time_head, hidden, chunk)
-        total = task_loss + objective.time_weight * time_loss
+        event_loss = self._streaming_event_loss(self.event_heads, hidden, event_targets)
+        total = (
+            task_loss
+            + objective.time_weight * time_loss
+            + objective.event_hazard_weight * event_loss
+        )
         return (
             total,
-            {"task_loss": task_loss.detach(), "time_loss": time_loss.detach()},
+            {
+                "task_loss": task_loss.detach(),
+                "time_loss": time_loss.detach(),
+                "event_loss": event_loss.detach(),
+            },
             new_state,
         )
 
@@ -439,12 +489,14 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         padding_idx: int = 0,
         concept_dropout: float = 0.1,
         time_bin_edges: Optional[Sequence[float]] = None,
+        event_names: Optional[Sequence[str]] = None,
     ) -> None:
         """Initialize the concept-bottleneck sequence model.
 
         ``time_bin_edges`` adds a time-to-next-event hazard head that reads
         the bottleneck output (so timing forecasts flow through the
-        concepts too); see :mod:`odyssey.models.time_to_event`.
+        concepts too); ``event_names`` adds per-event hazard heads on the
+        same bins and features; see :mod:`odyssey.models.time_to_event`.
         """
         super().__init__(backbone, padding_idx=padding_idx)
         self.bottleneck = ConceptBottleneck(
@@ -458,6 +510,15 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         self.time_head: Optional[TimeToEventHead] = (
             TimeToEventHead(bottleneck_dim, time_bin_edges)
             if time_bin_edges is not None
+            else None
+        )
+        self.event_heads: Optional[EventHazardHeads] = (
+            EventHazardHeads(
+                bottleneck_dim,
+                event_names,
+                time_bin_edges if time_bin_edges is not None else (),
+            )
+            if event_names
             else None
         )
 
@@ -536,6 +597,7 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         supervision: ConceptSupervision = "stay",
         intervention: Optional[BottleneckIntervention] = None,
         objective: Optional[ForecastObjective] = None,
+        event_targets: Optional["EventHazardTargets"] = None,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], TimeAwareState]:
         """Compute next-token + concept + orthogonality + observability loss.
 
@@ -579,7 +641,14 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         time_loss, _ = self._streaming_time_loss(
             self.time_head, bottleneck_out.bottleneck, chunk
         )
-        forecast_loss = next_token_loss + objective.time_weight * time_loss
+        event_loss = self._streaming_event_loss(
+            self.event_heads, bottleneck_out.bottleneck, event_targets
+        )
+        forecast_loss = (
+            next_token_loss
+            + objective.time_weight * time_loss
+            + objective.event_hazard_weight * event_loss
+        )
 
         pool_mask = chunk.patient_end if supervision == "stay" else chunk.visit_end
         if not pool_mask.any():
@@ -587,6 +656,7 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
             components = {
                 "task_loss": next_token_loss.detach(),
                 "time_loss": time_loss.detach(),
+                "event_loss": event_loss.detach(),
                 "concept_loss": zero,
                 "orthogonality_loss": zero,
                 "observability_loss": zero,
@@ -641,4 +711,5 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         # "task_loss"; split time back out so logs show both.
         components["task_loss"] = next_token_loss.detach()
         components["time_loss"] = time_loss.detach()
+        components["event_loss"] = event_loss.detach()
         return total, components, new_state

@@ -50,6 +50,7 @@ from typing import Callable, Dict, Optional, TypeVar
 import polars as pl
 import torch
 
+from odyssey.data.alert_events import ALERT_EVENTS, all_event_times
 from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.concepts import concepts_for_source
 from odyssey.data.streaming import PackedLaneSampler
@@ -76,6 +77,7 @@ from odyssey.training.data import (
     load_meds_shards,
     token_type_lookup,
 )
+from odyssey.training.event_targets import EventTimeTables, event_hazard_targets
 from odyssey.training.running_labels import randint_intervention
 
 
@@ -188,6 +190,17 @@ class TrainingConfig:
     what-only model."""
 
     time_weight: float = 1.0
+
+    event_hazards: bool = True
+    """Add per-event hazard heads (time to vasopressor start, ICU admission,
+    acute kidney injury, death; odyssey.data.alert_events.ALERT_EVENTS)
+    trained with right censoring, so calibrated P(event within h) and
+    survival curves read off the model directly. This is what makes the
+    general forecaster usable for alerts; the alert evaluation harness
+    scores these heads against bespoke per-event GBM baselines. Off
+    reproduces a model with no alert-grade output."""
+
+    event_hazard_weight: float = 1.0
 
     randint_prob: float = 0.25
     """Intervention-aware training (CEM's RandInt): at every training
@@ -333,6 +346,11 @@ def build_model(
             if getattr(config, "time_to_event", False)
             else None
         ),
+        event_names=(
+            [a.name for a in ALERT_EVENTS]
+            if getattr(config, "event_hazards", False)
+            else None
+        ),
     )
 
 
@@ -363,6 +381,7 @@ def build_objective(
         family_weights=family_weights,
         token_types=token_types,
         time_weight=config.time_weight if config.time_to_event else 0.0,
+        event_hazard_weight=config.event_hazard_weight if config.event_hazards else 0.0,
     )
 
 
@@ -376,6 +395,7 @@ def evaluate_streaming(
     max_chunks: Optional[int] = None,
     supervision: ConceptSupervision = "stay",
     objective: Optional[ForecastObjective] = None,
+    event_tables: Optional[EventTimeTables] = None,
 ) -> Dict[str, float]:
     """Average loss components over one (partial), gradient-free sampler pass."""
     model.eval()
@@ -395,6 +415,11 @@ def evaluate_streaming(
                 state=state,
                 supervision=supervision,
                 objective=objective,
+                event_targets=(
+                    event_hazard_targets(chunk, event_tables)
+                    if event_tables is not None
+                    else None
+                ),
             )
             state = _detach_state(state)
             for key, value in components.items():
@@ -413,6 +438,7 @@ def _combined_val_loss(
     components: Dict[str, float],
     weights: ConceptBottleneckLossWeights,
     time_weight: float = 0.0,
+    event_hazard_weight: float = 0.0,
 ) -> float:
     """Compute the same task + weighted-auxiliary combination the training loss uses.
 
@@ -425,6 +451,7 @@ def _combined_val_loss(
     return (
         components["task_loss"]
         + time_weight * components.get("time_loss", 0.0)
+        + event_hazard_weight * components.get("event_loss", 0.0)
         + weights.concept * components.get("concept_loss", 0.0)
         + weights.orthogonality * components.get("orthogonality_loss", 0.0)
         + weights.observability * components.get("observability_loss", 0.0)
@@ -495,6 +522,17 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
         raise ValueError(
             f"concept_supervision must be 'visit' or 'stay', got "
             f"{config.concept_supervision!r}"
+        )
+    train_event_tables: Optional[EventTimeTables] = None
+    tuning_event_tables: Optional[EventTimeTables] = None
+    if config.event_hazards:
+        logger.info("[data] computing alert-event onset/censoring times")
+        event_names = [a.name for a in ALERT_EVENTS]
+        train_event_tables = EventTimeTables(
+            all_event_times(train_events, ALERT_EVENTS, config.source), event_names
+        )
+        tuning_event_tables = EventTimeTables(
+            all_event_times(tuning_events, ALERT_EVENTS, config.source), event_names
         )
     train_labels = _labels_to_device(train_labels, device)
     train_masks = _labels_to_device(train_masks, device)
@@ -690,6 +728,11 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
                 supervision=config.concept_supervision,  # type: ignore[arg-type]
                 intervention=intervention,
                 objective=objective,
+                event_targets=(
+                    event_hazard_targets(chunk, train_event_tables)
+                    if train_event_tables is not None
+                    else None
+                ),
             )
             optimizer.zero_grad()
             total.backward()  # type: ignore[no-untyped-call]
@@ -721,6 +764,7 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
                     max_chunks=config.eval_max_chunks,
                     supervision=config.concept_supervision,  # type: ignore[arg-type]
                     objective=objective,
+                    event_tables=tuning_event_tables,
                 )
                 fields = {
                     "step": global_step,
@@ -733,7 +777,12 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
                 summary = " ".join(f"{k}={v:.4f}" for k, v in val.items())
                 logger.info("[val]   step=%d %s", global_step, summary)
 
-                val_loss = _combined_val_loss(val, loss_weights, objective.time_weight)
+                val_loss = _combined_val_loss(
+                    val,
+                    loss_weights,
+                    objective.time_weight,
+                    objective.event_hazard_weight,
+                )
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     evals_without_improvement = 0

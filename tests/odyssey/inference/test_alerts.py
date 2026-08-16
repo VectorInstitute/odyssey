@@ -7,15 +7,17 @@ import numpy as np
 import polars as pl
 import torch
 
+from odyssey.data.alert_events import (
+    ALERT_EVENTS,
+    AlertEvent,
+    EventTimes,
+    all_event_times,
+)
 from odyssey.data.concepts import concepts_for_source
 from odyssey.data.value_binning import add_value_tokens
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.alerts import (
-    ALERT_EVENTS,
-    AlertEvent,
-    EventTimes,
     IndexRow,
-    _all_event_times,
     _index_rows_from_events,
     _visit_starts,
     baseline_features,
@@ -26,6 +28,7 @@ from odyssey.inference.alerts import (
 )
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
 from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
+from odyssey.models.time_to_event import DEFAULT_TIME_BIN_EDGES_HOURS
 
 
 T0 = datetime(2024, 1, 1)
@@ -91,7 +94,7 @@ def _model(vocab_size: int, num_concepts: int) -> ConceptBottleneckSequenceModel
 
 def test_event_times_and_outcomes() -> None:
     events = _events(8)
-    times = _all_event_times(events, ALERT_EVENTS, "mimic_iv")
+    times = all_event_times(events, ALERT_EVENTS, "mimic_iv")
     vaso = times["vasopressor_start"]
     # subject 2 starts norepinephrine at hour 14; subject 1 never
     assert vaso.onset[(2, 1002)] == 14.0
@@ -115,7 +118,7 @@ def test_harness_end_to_end_with_planted_signal() -> None:
     vocab = _vocab(binned)
     concepts = concepts_for_source("mimic_iv")
     model = _model(len(vocab), len(concepts))
-    times = _all_event_times(events, ALERT_EVENTS, "mimic_iv")
+    times = all_event_times(events, ALERT_EVENTS, "mimic_iv")
     rows = collect_model_scores(
         model,
         binned,
@@ -184,3 +187,49 @@ def test_subject_scoped_event_ignores_visit() -> None:
     assert AlertEvent(
         "death", code_prefix="MEDS_DEATH", subject_scoped=True
     ).subject_scoped
+
+
+def test_hazard_scorer_reports_probability_metrics() -> None:
+    events = _events(16)
+    binned = add_value_tokens(events)
+    vocab = _vocab(binned)
+    concepts = concepts_for_source("mimic_iv")
+    torch.manual_seed(0)
+    model = ConceptBottleneckSequenceModel(
+        backbone=TinyGRUBackbone(
+            vocab_size=len(vocab), hidden_size=8, num_layers=1, padding_idx=0
+        ),
+        vocab_size=len(vocab),
+        num_concepts=len(concepts),
+        embedding_dim=4,
+        padding_idx=0,
+        time_bin_edges=DEFAULT_TIME_BIN_EDGES_HOURS,
+        event_names=[a.name for a in ALERT_EVENTS],
+    )
+    times = all_event_times(events, ALERT_EVENTS, "mimic_iv")
+    rows = collect_model_scores(
+        model,
+        binned,
+        vocab,
+        [c.name for c in concepts],
+        ALERT_EVENTS,
+        visit_start=_visit_starts(events),
+        landmark_hours=4.0,
+        num_lanes=2,
+        chunk_size=16,
+        device="cpu",
+        horizons=(8.0, 24.0),
+    )
+    assert all(
+        "hazard@8h" in r.scores and "hazard@24h" in r.scores for r in rows["death"]
+    )
+    results = score_alerts(rows, times, horizons=(8.0, 24.0))
+    hazard = [r for r in results if r.scorer == "hazard"]
+    assert hazard, "hazard scorer should be reported"
+    for r in hazard:
+        assert r.brier is not None and r.calibration
+        assert 0.0 <= r.auroc <= 1.0
+    # each hazard row scores its own horizon only: no 8h probability at 24h
+    assert {(r.event, r.horizon_hours) for r in hazard} <= {
+        (e, h) for e in rows for h in (8.0, 24.0)
+    }
