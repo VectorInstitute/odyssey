@@ -175,14 +175,24 @@ class _RunningBucket:
     ce_sum: float = 0.0
     hit_sums: Dict[int, int] = field(default_factory=dict)
     n: int = 0
+    set_hit_sum: int = 0
+    n_set: int = 0
 
     def update(
-        self, logits: torch.Tensor, targets: torch.Tensor, top_k: Sequence[int]
+        self,
+        logits: torch.Tensor,
+        targets: torch.Tensor,
+        top_k: Sequence[int],
+        set_valid: Optional[torch.Tensor] = None,
+        set_hit: Optional[torch.Tensor] = None,
     ) -> None:
         """``logits`` is ``(n, vocab_size)``, ``targets`` is ``(n,)``: one chunk."""
         if targets.numel() == 0:
             return
         self.n += int(targets.numel())
+        if set_valid is not None and set_hit is not None:
+            self.n_set += int(set_valid.sum().item())
+            self.set_hit_sum += int(set_hit.sum().item())
         self.ce_sum += float(F.cross_entropy(logits, targets, reduction="sum").item())
         top_k_preds = logits.topk(max(top_k), dim=-1).indices
         hits = top_k_preds == targets.unsqueeze(-1)
@@ -202,7 +212,57 @@ class _RunningBucket:
             top1_accuracy=self.hit_sums.get(1, 0) / self.n,
             top5_accuracy=self.hit_sums.get(5, 0) / self.n,
             n_predictions=self.n,
+            set_top1_accuracy=(self.set_hit_sum / self.n_set if self.n_set else None),
+            n_set_predictions=self.n_set or None,
         )
+
+
+def _block_set_hits(
+    top1: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    times: torch.Tensor,
+    subject_ids: torch.Tensor,
+    real_mask: torch.Tensor,
+    vocab_size: int,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Per-position "top-1 named some event in the target's time block".
+
+    Sequences are time-sorted per subject, so a same-timestamp event block
+    is a contiguous run; block membership is recoverable from the chunk's
+    own input timestamps (the target at position ``j`` is the input token
+    at ``j+1``). Fully vectorized: each position gets a composite
+    ``block_id * vocab_size + token`` key, and ``torch.isin`` of predicted
+    keys against target keys answers membership with no Python loops. The
+    final position of each lane has no in-chunk target timestamp and is
+    excluded (`n_set_predictions` counts what remains); blocks never span
+    subjects because a subject change starts a new block.
+    """
+    lanes, chunk = targets.shape
+    tgt_t = times[:, 1:]
+    tgt_s = subject_ids[:, 1:]
+    tgt = targets[:, : chunk - 1]
+    pred = top1[:, : chunk - 1]
+    valid = real_mask[:, : chunk - 1]
+
+    new_block = torch.ones_like(tgt_s, dtype=torch.bool)
+    new_block[:, 1:] = (tgt_t[:, 1:] != tgt_t[:, :-1]) | (tgt_s[:, 1:] != tgt_s[:, :-1])
+    lane_offset = torch.arange(lanes, device=targets.device).unsqueeze(1) * (chunk + 1)
+    block_id = new_block.long().cumsum(dim=1) + lane_offset
+
+    member_keys = torch.where(
+        valid,
+        block_id * vocab_size + tgt,
+        torch.full_like(tgt, -1),
+    )
+    query_keys = block_id * vocab_size + pred
+    hit = torch.isin(query_keys, member_keys) & valid
+
+    set_valid = torch.zeros_like(real_mask)
+    set_hit = torch.zeros_like(real_mask)
+    set_valid[:, : chunk - 1] = valid
+    set_hit[:, : chunk - 1] = hit
+    return set_valid, set_hit
 
 
 class _RunningTaskMetrics:
@@ -229,17 +289,27 @@ class _RunningTaskMetrics:
         self.overall = _RunningBucket()
         self.by_type: Dict[str, _RunningBucket] = {}
 
-    def update(self, logits: torch.Tensor, targets: torch.Tensor) -> None:
+    def update(
+        self,
+        logits: torch.Tensor,
+        targets: torch.Tensor,
+        set_valid: Optional[torch.Tensor] = None,
+        set_hit: Optional[torch.Tensor] = None,
+    ) -> None:
         """Fold in one chunk's real-position ``(logits, targets)``."""
         if targets.numel() == 0:
             return
-        self.overall.update(logits, targets, self._top_k)
+        self.overall.update(logits, targets, self._top_k, set_valid, set_hit)
         target_types = self._type_lookup[targets]
         for type_id, name in _CODE_TYPE_NAMES.items():
             type_mask = target_types == type_id
             if type_mask.any():
                 self.by_type.setdefault(name, _RunningBucket()).update(
-                    logits[type_mask], targets[type_mask], self._top_k
+                    logits[type_mask],
+                    targets[type_mask],
+                    self._top_k,
+                    set_valid[type_mask] if set_valid is not None else None,
+                    set_hit[type_mask] if set_hit is not None else None,
                 )
 
     def finalize(self) -> Tuple[TaskMetrics, Dict[str, TaskMetrics]]:
@@ -292,7 +362,20 @@ def run_streaming_inference(
 
             real = chunk.real_mask
             if real.any():
-                task_stats.update(logits[real], chunk.targets[real])
+                set_valid, set_hit = _block_set_hits(
+                    logits.argmax(dim=-1),
+                    chunk.targets,
+                    times=chunk.batch.aux.time_stamps,
+                    subject_ids=chunk.subject_ids,
+                    real_mask=real,
+                    vocab_size=logits.shape[-1],
+                )
+                task_stats.update(
+                    logits[real],
+                    chunk.targets[real],
+                    set_valid[real],
+                    set_hit[real],
+                )
 
             pool_mask = chunk.patient_end if supervision == "stay" else chunk.visit_end
             if pool_mask.any():
