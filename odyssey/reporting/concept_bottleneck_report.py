@@ -489,7 +489,8 @@ def build_intervention_finding(
     ]
     if d_truth is not None and d_flip is not None:
         parts.append(
-            f" Feeding ground truth moves it {d_truth:+.1%}, feeding the "
+            f" Feeding the running ground truth (true from each concept's "
+            f"first-trigger time on) moves it {d_truth:+.1%}, feeding the "
             f"flipped label {d_flip:+.1%} -- "
             + (
                 "the model reads the concept channel in the right direction."
@@ -499,6 +500,13 @@ def build_intervention_finding(
                 "channel the way the architecture intends."
             )
         )
+        if d_truth < -0.005:
+            parts.append(
+                " Note that even correct values cost accuracy: a hard 0/1 "
+                "override replaces the model's own soft running probability, "
+                "so it is itself a perturbation, and the truth-vs-flip gap "
+                "(not truth-vs-baseline) is the direction signal."
+            )
     if d_flip is not None and d_random is not None:
         parts.append(
             f" Random values move it {d_random:+.1%}; "
@@ -684,7 +692,11 @@ def build_payload(inputs: ReportInputs) -> Dict[str, Any]:
             "move next-event accuracy. Each mode re-runs the identical "
             "held-out streaming pass with the bottleneck edited a different "
             "way -- see each row's tooltip for exactly what it does -- and "
-            "top-1 accuracy is compared back to the unedited baseline."
+            "top-1 accuracy is compared back to the unedited baseline. "
+            "Injected values are running labels: a concept is fed as present "
+            "only from its first-trigger time onward, so what the model is "
+            "told at each moment is what is true at that moment, not a "
+            "retrospective fact about the whole visit."
         )
 
     return {

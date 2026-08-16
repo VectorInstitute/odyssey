@@ -29,10 +29,13 @@ and comparing task metrics across modes:
   performance survives ``zero_known`` is interpretable-in-name-only --
   the concepts would be a decorative side channel.
 
-Intervened values are applied per position from the same visit- or
-stay-scoped label dictionaries used for supervision, gated by the
-observed mask (unobserved concepts keep the model's own probability, in
-every mode -- there is no ground truth to feed there).
+Intervened values are applied per position as *running* labels: the
+visit- (or stay-) scoped label, but true only from the concept's
+first-trigger time onward, so what is fed at each position is what is
+true as of that moment rather than a retrospective fact about the whole
+visit (see :func:`_position_labels`). Everything is gated by the
+observed mask: unobserved concepts keep the model's own probability, in
+every mode -- there is no ground truth to feed there.
 """
 
 import json
@@ -62,7 +65,9 @@ from odyssey.models.sequence_model import (
     ConceptSupervision,
 )
 from odyssey.training.data import (
+    build_concept_first_times,
     build_concept_label_dicts,
+    build_visit_concept_first_times,
     build_visit_concept_label_dicts,
     iter_patient_sequences,
     load_meds_shards,
@@ -102,13 +107,23 @@ def _position_labels(
     chunk: StreamingChunk,
     concept_labels: ConceptLabelDict,
     concept_mask: ConceptLabelDict,
+    concept_first_times: ConceptLabelDict,
     *,
     supervision: ConceptSupervision,
     num_concepts: int,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Per-position ground-truth labels and observed-masks for one chunk.
+    """Per-position *running* ground-truth labels and observed-masks.
 
     Returns ``(labels, observed)``, each ``(lanes, T, num_concepts)``.
+    A concept is labeled true at a position only from its first-trigger
+    time onward (``concept_first_times``, hours on the sequence's own
+    time origin) -- the value that is actually true as of that moment.
+    The whole-visit label is retrospective ("it happened at some point
+    during this visit"), and injecting it before the event occurs would
+    feed the bottleneck a fact about the future that the model's running
+    concept state has no business knowing; an earlier version of this
+    harness did exactly that, and "truth" hurt more than "flip" purely
+    because, before the event, the flipped label was the accurate one.
     Positions with no dictionary entry (padding lanes, events outside
     any visit under visit scoping) get ``observed = 0`` everywhere, so
     no intervention applies there and the model's own probability is
@@ -116,8 +131,6 @@ def _position_labels(
     """
     sid = chunk.subject_ids
     lanes, chunk_len = sid.shape
-    labels_out = torch.zeros(lanes, chunk_len, num_concepts)
-    observed_out = torch.zeros(lanes, chunk_len, num_concepts)
 
     if supervision == "visit":
         keys = torch.stack([sid, chunk.visit_ids], dim=-1).reshape(-1, 2)
@@ -133,6 +146,12 @@ def _position_labels(
     # never calls this, so this was silent until "truth" ran for real).
     unique_labels = torch.zeros(unique_keys.shape[0], num_concepts, device=sid.device)
     unique_observed = torch.zeros(unique_keys.shape[0], num_concepts, device=sid.device)
+    # -inf default: a key with no first-time entry passes its label
+    # through unchanged (the retrospective fallback documented on
+    # run_streaming_intervention).
+    unique_first = torch.full(
+        (unique_keys.shape[0], num_concepts), float("-inf"), device=sid.device
+    )
     for i, key in enumerate(unique_keys.tolist()):
         lookup = (key[0], key[1]) if supervision == "visit" else key[0]
         label = concept_labels.get(lookup)  # type: ignore[arg-type]
@@ -142,9 +161,15 @@ def _position_labels(
         mask = concept_mask.get(lookup)  # type: ignore[arg-type]
         if mask is not None:
             unique_observed[i] = mask.float().to(sid.device)
+        first = concept_first_times.get(lookup)  # type: ignore[arg-type]
+        if first is not None:
+            unique_first[i] = first.float().to(sid.device)
 
-    labels_out = unique_labels[inverse].view(lanes, chunk_len, num_concepts)
+    labels_visit = unique_labels[inverse].view(lanes, chunk_len, num_concepts)
     observed_out = unique_observed[inverse].view(lanes, chunk_len, num_concepts)
+    first_times = unique_first[inverse].view(lanes, chunk_len, num_concepts)
+    now = chunk.batch.aux.time_stamps.unsqueeze(-1)  # (lanes, T, 1) hours
+    labels_out = labels_visit * (now >= first_times).float()
     return labels_out, observed_out
 
 
@@ -153,6 +178,7 @@ def _chunk_intervention(
     mode: str,
     concept_labels: ConceptLabelDict,
     concept_mask: ConceptLabelDict,
+    concept_first_times: ConceptLabelDict,
     *,
     supervision: ConceptSupervision,
     num_concepts: int,
@@ -171,6 +197,7 @@ def _chunk_intervention(
         chunk,
         concept_labels,
         concept_mask,
+        concept_first_times,
         supervision=supervision,
         num_concepts=num_concepts,
     )
@@ -195,6 +222,7 @@ def run_streaming_intervention(
     concept_mask: ConceptLabelDict,
     *,
     mode: str,
+    concept_first_times: Optional[ConceptLabelDict] = None,
     supervision: ConceptSupervision = "stay",
     num_lanes: int = 8,
     chunk_size: int = 256,
@@ -207,13 +235,26 @@ def run_streaming_intervention(
     The identical streaming pass as
     :func:`~odyssey.inference.run_inference.run_streaming_inference`
     (same sampler, same state carrying), with the bottleneck edited per
-    :data:`INTERVENTION_MODES`. Deterministic for a given ``seed``
-    (which only the ``random`` mode consumes).
+    :data:`INTERVENTION_MODES`. ``concept_first_times`` (from
+    :func:`~odyssey.training.data.build_visit_concept_first_times` or
+    its stay-scoped twin) turns the retrospective labels into running
+    ones, see :func:`_position_labels`; without it the retrospective
+    labels are injected as-is at every position, which is only valid for
+    concepts that are constant across the sequence. Deterministic for a
+    given ``seed`` (which only the ``random`` mode consumes).
     """
     if mode not in INTERVENTION_MODES:
         raise ValueError(
             f"unknown intervention mode {mode!r}; known: {INTERVENTION_MODES}"
         )
+    if concept_first_times is None:
+        if mode in ("truth", "flip"):
+            logger.warning(
+                "[interventions] mode %r without concept_first_times: injecting "
+                "retrospective labels at every position (not running labels)",
+                mode,
+            )
+        concept_first_times = {}
     model.eval()
     num_concepts = model.bottleneck.num_concepts
     patients = iter_patient_sequences(events_binned, vocab, max_seq_len=max_seq_len)
@@ -239,6 +280,7 @@ def run_streaming_intervention(
                 mode,
                 concept_labels,
                 concept_mask,
+                concept_first_times,
                 supervision=supervision,
                 num_concepts=num_concepts,
                 device=device,
@@ -333,12 +375,15 @@ def evaluate_interventions(
     supervision: ConceptSupervision = getattr(config, "concept_supervision", "stay")
     concept_labels: ConceptLabelDict
     concept_mask: ConceptLabelDict
+    concept_first_times: ConceptLabelDict
     if supervision == "visit":
         concept_labels, concept_mask = build_visit_concept_label_dicts(
             raw_events, concepts
         )
+        concept_first_times = build_visit_concept_first_times(raw_events, concepts)
     else:
         concept_labels, concept_mask = build_concept_label_dicts(raw_events, concepts)
+        concept_first_times = build_concept_first_times(raw_events, concepts)
     del raw_events
 
     results = []
@@ -352,6 +397,7 @@ def evaluate_interventions(
                 concept_labels,
                 concept_mask,
                 mode=mode,
+                concept_first_times=concept_first_times,
                 supervision=supervision,
                 num_lanes=num_lanes,
                 chunk_size=chunk_size,

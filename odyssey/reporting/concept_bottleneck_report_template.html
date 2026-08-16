@@ -872,6 +872,7 @@ footer {
     const rows = Object.entries(DATA.inference_results.task_metrics_by_code_type)
       .sort((a, b) => b[1].n_predictions - a[1].n_predictions);
     const hasSet = rows.some(([, m]) => m.set_top1_accuracy != null);
+    const hasCat = rows.some(([, m]) => m.category_set_top1_accuracy != null);
     const thead = el("thead", {}, [el("tr", {}, [
       el("th", {}, ["Code type"]),
       el("th", { class: "num" }, ["Predictions"]),
@@ -879,9 +880,18 @@ footer {
       el("th", { class: "num" }, ["Top-1"]),
       hasSet ? el("th", { class: "num", title:
         "Top-1 scored against the target's same-timestamp event block: " +
-        "correct if the prediction names any event recorded at the same " +
-        "instant as the true next event. Exact top-1 additionally grades " +
-        "the arbitrary within-block charting order." }, ["Set top-1"]) : null,
+        "correct if the prediction names any event of the target's own " +
+        "family recorded at the same instant as the true next event. Exact " +
+        "top-1 additionally grades the arbitrary within-block charting " +
+        "order." }, ["Set top-1"]) : null,
+      hasCat ? el("th", { class: "num", title:
+        "Set top-1 at ICD 3-character category level, for ICD-coded " +
+        "diagnosis and procedure targets only: correct if the prediction's " +
+        "category (I50 for I5023) matches some same-family event in the " +
+        "block. The icd3 vocabulary backoff makes a frequent full code and " +
+        "its category token compete for probability mass; this asks whether " +
+        "the model knows the kind of diagnosis or procedure coming." },
+        ["Category set top-1"]) : null,
       el("th", {}, ["Top-5"]),
     ])]);
     const tbody = el("tbody");
@@ -893,6 +903,9 @@ footer {
         el("td", { class: "num" }, [fmtPct(m.top1_accuracy)]),
         hasSet ? el("td", { class: "num" }, [
           m.set_top1_accuracy != null ? fmtPct(m.set_top1_accuracy) : "\u2013",
+        ]) : null,
+        hasCat ? el("td", { class: "num" }, [
+          m.category_set_top1_accuracy != null ? fmtPct(m.category_set_top1_accuracy) : "\u2013",
         ]) : null,
         el("td", {}, [el("div", { class: "bar-cell" }, [
           el("div", { class: "bar-track" }, [el("div", { class: "bar-fill", style: `width:${(m.top5_accuracy * 100).toFixed(1)}%` })]),
@@ -1260,8 +1273,8 @@ footer {
 
   const MODE_INFO = {
     none: ["Baseline", "Unedited model -- must reproduce the standard evaluation's numbers."],
-    truth: ["Ground truth fed in", "Each known concept's mixing probability replaced by its rule-derived label, wherever observed."],
-    flip: ["Label flipped", "Same positions as truth, but fed 1 − label -- the mirror image."],
+    truth: ["Running truth fed in", "Each known concept's mixing probability replaced by its running rule-derived label (present only from its first-trigger time onward), wherever observed."],
+    flip: ["Label flipped", "Same positions as truth, but fed 1 − running label -- the mirror image."],
     random: ["Random noise", "Same positions, but fed a coin flip -- separates “any perturbation hurts” from “wrong information hurts.”"],
     zero_known: ["Known channel zeroed", "The known-concept mixed embedding zeroed out -- the completeness probe."],
     zero_unknown: ["Unknown channel zeroed", "The residual unknown-concept embedding zeroed out -- the mirror completeness probe."],

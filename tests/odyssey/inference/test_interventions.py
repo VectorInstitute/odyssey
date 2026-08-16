@@ -6,13 +6,20 @@ from typing import Dict, Tuple
 import polars as pl
 import torch
 
+from odyssey.data.concepts import concepts_for_source
+from odyssey.data.streaming import PackedLaneSampler
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.interventions import (
     INTERVENTION_MODES,
+    _position_labels,
     run_streaming_intervention,
 )
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
 from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
+from odyssey.training.data import (
+    build_visit_concept_first_times,
+    iter_patient_sequences,
+)
 
 
 T0 = datetime(2024, 1, 1)
@@ -152,3 +159,48 @@ def test_unobserved_concepts_are_never_intervened() -> None:
     assert truth.n_intervened_positions == 0
     assert truth.mean_task_loss == baseline.mean_task_loss
     assert truth.top1_accuracy == baseline.top1_accuracy
+
+
+def test_running_labels_are_false_before_first_trigger() -> None:
+    """A concept is injected as 1 only from its first-trigger time on."""
+    vocab = _vocab()
+    labels, masks = _labels_and_masks()
+    # Subject 1's concept 0 first triggers at hour 10 (events are hourly),
+    # concept 2 at hour 0; concept 1 never (label 0, inf).
+    first = {
+        1: torch.tensor([10.0, float("inf"), 0.0]),
+        2: torch.tensor([float("inf")] * 3),
+        3: torch.tensor([0.0, 5.0, float("inf")]),
+    }
+    seqs = iter_patient_sequences(_events(), vocab)
+    sampler = PackedLaneSampler(seqs, num_lanes=1, chunk_size=64, reset_prob=0.0)
+    chunk = next(iter(sampler))
+    pos_labels, observed = _position_labels(
+        chunk, labels, masks, first, supervision="stay", num_concepts=NUM_CONCEPTS
+    )
+    sid = chunk.subject_ids[0]
+    times = chunk.batch.aux.time_stamps[0]
+    s1 = sid == 1
+    # concept 0 for subject 1: 0 before hour 10, 1 from hour 10 on
+    assert torch.equal(pos_labels[0, s1, 0], (times[s1] >= 10.0).float())
+    # concept 2 for subject 1: 1 everywhere (triggered at hour 0)
+    assert pos_labels[0, s1, 2].eq(1.0).all()
+    # concept 1 for subject 1: label 0 -> 0 everywhere
+    assert pos_labels[0, s1, 1].eq(0.0).all()
+    assert observed[0, s1].eq(1.0).all()
+
+
+def test_first_time_builders_align_with_sequence_time_origin() -> None:
+    concepts = [c for c in concepts_for_source("mimic_iv") if c.name == "tachycardia"]
+    events = pl.DataFrame(
+        {
+            "subject_id": [1, 1, 1],
+            "code": ["LAB//50912//x", "LAB//220045//bpm", "LAB//220045//bpm"],
+            "numeric_value": [1.0, 80.0, 130.0],
+            "time": [T0, T0 + timedelta(hours=2), T0 + timedelta(hours=7)],
+            "hadm_id": [10, 10, 10],
+        }
+    )
+    first = build_visit_concept_first_times(events, concepts)
+    # 7 hours after the subject's first event (the creatinine at T0).
+    assert first[(1, 10)].tolist() == [7.0]

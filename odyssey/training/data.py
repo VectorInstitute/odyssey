@@ -11,6 +11,7 @@ expects for concept labels/masks.
 """
 
 import random
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar, Union
 
@@ -22,7 +23,7 @@ from odyssey.data.concepts import (
     label_concepts,
     label_concepts_by_visit,
 )
-from odyssey.data.sequences import PatientSequence, build_patient_sequence
+from odyssey.data.sequences import BIRTH_CODE, PatientSequence, build_patient_sequence
 from odyssey.data.vocabulary import Vocabulary
 
 
@@ -208,6 +209,87 @@ def build_visit_concept_label_dicts(
         labels[key] = torch.tensor(label_cols[i], dtype=torch.float32)
         masks[key] = torch.tensor(mask_cols[i], dtype=torch.float32)
     return labels, masks
+
+
+# Hours before a patient's first event: a first-trigger time strictly earlier
+# than any position, so a running label "true from first_time on" is true
+# everywhere -- used only for concepts whose label is 0 (never triggered),
+# where the running label is false everywhere; the sentinel is +inf there.
+NEVER_TRIGGERED = float("inf")
+
+
+def _first_event_hours(events: pl.DataFrame) -> Dict[int, datetime]:
+    """Each subject's sequence time origin: its first non-birth, timed event.
+
+    Must match :func:`~odyssey.data.sequences.build_patient_sequence`,
+    which sets ``time_stamps`` as hours since exactly this event, so
+    first-trigger times converted against it line up with chunk
+    ``time_stamps`` position-for-position.
+    """
+    origins = (
+        events.filter(pl.col("time").is_not_null() & (pl.col("code") != BIRTH_CODE))
+        .group_by("subject_id")
+        .agg(pl.col("time").min().alias("_origin"))
+    )
+    return dict(zip(origins["subject_id"].to_list(), origins["_origin"].to_list()))
+
+
+def build_visit_concept_first_times(
+    events: pl.DataFrame, concepts: Sequence[AnyConceptDefinition]
+) -> Dict[Tuple[int, int], torch.Tensor]:
+    """Per-visit first-trigger times, in hours since the subject's first event.
+
+    Keyed ``(subject_id, visit_id) -> (num_concepts,)``, on the same time
+    origin as sequence ``time_stamps``. ``inf`` where the concept never
+    triggered in that visit. Together with the visit labels this yields a
+    per-position *running* label: concept ``k`` is true at a position
+    with time stamp ``t`` iff ``t >= first_times[k]`` -- the label that
+    is actually true as of that moment, unlike the whole-visit label,
+    which is retrospective.
+    """
+    labeled = label_concepts_by_visit(events, list(concepts), include_first_time=True)
+    origins = _first_event_hours(events)
+    names = [c.name for c in concepts]
+    subject_ids = labeled["subject_id"].to_list()
+    visit_ids = labeled["hadm_id"].to_list()
+    first_cols = [labeled[f"{name}_first_time"].to_list() for name in names]
+
+    out: Dict[Tuple[int, int], torch.Tensor] = {}
+    for i, (subject_id, visit_id) in enumerate(zip(subject_ids, visit_ids)):
+        origin = origins[subject_id]
+        hours = [
+            NEVER_TRIGGERED
+            if col[i] is None
+            else (col[i] - origin).total_seconds() / 3600.0
+            for col in first_cols
+        ]
+        out[(int(subject_id), int(visit_id))] = torch.tensor(hours, dtype=torch.float32)
+    return out
+
+
+def build_concept_first_times(
+    events: pl.DataFrame, concepts: Sequence[AnyConceptDefinition]
+) -> Dict[int, torch.Tensor]:
+    """Stay-scoped counterpart of :func:`build_visit_concept_first_times`."""
+    labeled = label_concepts(events, list(concepts), include_first_time=True)
+    origins = _first_event_hours(events)
+    names = [c.name for c in concepts]
+    subject_ids = labeled["subject_id"].to_list()
+    first_cols = [labeled[f"{name}_first_time"].to_list() for name in names]
+
+    out: Dict[int, torch.Tensor] = {}
+    for i, subject_id in enumerate(subject_ids):
+        origin = origins.get(subject_id)
+        if origin is None:
+            continue
+        hours = [
+            NEVER_TRIGGERED
+            if col[i] is None
+            else (col[i] - origin).total_seconds() / 3600.0
+            for col in first_cols
+        ]
+        out[int(subject_id)] = torch.tensor(hours, dtype=torch.float32)
+    return out
 
 
 def count_subjects(events: pl.DataFrame) -> int:
