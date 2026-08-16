@@ -379,6 +379,8 @@ def _main() -> None:
     )
     parser.add_argument("--max-shards", type=int, default=None)
     parser.add_argument("--modes", nargs="*", default=list(INTERVENTION_MODES))
+    parser.add_argument("--num-lanes", type=int, default=8)
+    parser.add_argument("--chunk-size", type=int, default=256)
     args = parser.parse_args()
 
     run_dir = Path(args.run_dir)
@@ -387,6 +389,8 @@ def _main() -> None:
         args.held_out_shard_dir,
         modes=args.modes,
         max_shards=args.max_shards,
+        num_lanes=args.num_lanes,
+        chunk_size=args.chunk_size,
         checkpoint_path=run_dir / (args.checkpoint or "checkpoint_best.pt"),
     )
     out = Path(args.output_json)
