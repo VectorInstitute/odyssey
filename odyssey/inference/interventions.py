@@ -125,17 +125,23 @@ def _position_labels(
         keys = sid.reshape(-1, 1)
     unique_keys, inverse = torch.unique(keys, dim=0, return_inverse=True)
 
-    unique_labels = torch.zeros(unique_keys.shape[0], num_concepts)
-    unique_observed = torch.zeros(unique_keys.shape[0], num_concepts)
+    # unique_keys/inverse live on chunk.subject_ids's device (cuda for a
+    # real run); indexing a tensor with a device-mismatched index tensor
+    # raises, so build these on the same device from the start rather
+    # than the CPU default -- confirmed the hard way, only reachable once
+    # a chunk actually has a real intervention to apply (mode="none"
+    # never calls this, so this was silent until "truth" ran for real).
+    unique_labels = torch.zeros(unique_keys.shape[0], num_concepts, device=sid.device)
+    unique_observed = torch.zeros(unique_keys.shape[0], num_concepts, device=sid.device)
     for i, key in enumerate(unique_keys.tolist()):
         lookup = (key[0], key[1]) if supervision == "visit" else key[0]
         label = concept_labels.get(lookup)  # type: ignore[arg-type]
         if label is None:
             continue
-        unique_labels[i] = label.float().cpu()
+        unique_labels[i] = label.float().to(sid.device)
         mask = concept_mask.get(lookup)  # type: ignore[arg-type]
         if mask is not None:
-            unique_observed[i] = mask.float().cpu()
+            unique_observed[i] = mask.float().to(sid.device)
 
     labels_out = unique_labels[inverse].view(lanes, chunk_len, num_concepts)
     observed_out = unique_observed[inverse].view(lanes, chunk_len, num_concepts)
