@@ -1,0 +1,186 @@
+"""Tests for the alert (time-to-event) evaluation harness."""
+
+from datetime import datetime, timedelta
+from typing import List, Optional, Tuple
+
+import numpy as np
+import polars as pl
+import torch
+
+from odyssey.data.concepts import concepts_for_source
+from odyssey.data.value_binning import add_value_tokens
+from odyssey.data.vocabulary import Vocabulary
+from odyssey.inference.alerts import (
+    ALERT_EVENTS,
+    AlertEvent,
+    EventTimes,
+    IndexRow,
+    _all_event_times,
+    _index_rows_from_events,
+    _visit_starts,
+    baseline_features,
+    collect_model_scores,
+    fit_baselines,
+    outcome_at_horizon,
+    score_alerts,
+)
+from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
+from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
+
+
+T0 = datetime(2024, 1, 1)
+
+
+def _events(n_subjects: int = 24) -> pl.DataFrame:
+    """Build hourly heart-rate readings with a planted deterioration signal.
+
+    Every other subject spikes at hour 12 and starts norepinephrine at
+    hour 14; every fourth also gets an ICU admission at hour 6.
+    """
+    rows: List[Tuple[int, str, datetime, Optional[float], int]] = []
+    for sid in range(1, n_subjects + 1):
+        hadm = 1000 + sid
+        for h in range(24):
+            hr = 80.0
+            if sid % 2 == 0 and h >= 12:
+                hr = 130.0
+            rows.append((sid, "LAB//220045//bpm", T0 + timedelta(hours=h), hr, hadm))
+        if sid % 2 == 0:
+            rows.append(
+                (
+                    sid,
+                    "MEDICATION//norepinephrine//Administered",
+                    T0 + timedelta(hours=14),
+                    None,
+                    hadm,
+                )
+            )
+        if sid % 4 == 0:
+            rows.append(
+                (sid, "ICU_ADMISSION//MICU", T0 + timedelta(hours=6), None, hadm)
+            )
+    return pl.DataFrame(
+        rows,
+        schema={
+            "subject_id": pl.Int64,
+            "code": pl.Utf8,
+            "time": pl.Datetime,
+            "numeric_value": pl.Float32,
+            "hadm_id": pl.Int64,
+        },
+        orient="row",
+    )
+
+
+def _vocab(events_binned: pl.DataFrame) -> Vocabulary:
+    return Vocabulary.build(events_binned["code"].to_list(), min_count=1)
+
+
+def _model(vocab_size: int, num_concepts: int) -> ConceptBottleneckSequenceModel:
+    torch.manual_seed(0)
+    return ConceptBottleneckSequenceModel(
+        backbone=TinyGRUBackbone(
+            vocab_size=vocab_size, hidden_size=8, num_layers=1, padding_idx=0
+        ),
+        vocab_size=vocab_size,
+        num_concepts=num_concepts,
+        embedding_dim=4,
+        padding_idx=0,
+    )
+
+
+def test_event_times_and_outcomes() -> None:
+    events = _events(8)
+    times = _all_event_times(events, ALERT_EVENTS, "mimic_iv")
+    vaso = times["vasopressor_start"]
+    # subject 2 starts norepinephrine at hour 14; subject 1 never
+    assert vaso.onset[(2, 1002)] == 14.0
+    assert (1, 1001) not in vaso.onset
+    icu = times["icu_admission"]
+    assert icu.onset[(4, 1004)] == 6.0
+    # outcomes for subject 2 at t=10: within 8h -> yes; at t=2, 8h -> no
+    row = IndexRow(2, 1002, 10.0)
+    assert outcome_at_horizon(row, vaso, 8.0) == 1
+    assert outcome_at_horizon(IndexRow(2, 1002, 2.0), vaso, 8.0) == 0
+    # after onset: not at risk
+    assert outcome_at_horizon(IndexRow(2, 1002, 15.0), vaso, 8.0) is None
+    # subject 1 at t=20 with 8h horizon: follow-up ends at 23h -> censored
+    assert outcome_at_horizon(IndexRow(1, 1001, 20.0), vaso, 8.0) is None
+    assert outcome_at_horizon(IndexRow(1, 1001, 10.0), vaso, 8.0) == 0
+
+
+def test_harness_end_to_end_with_planted_signal() -> None:
+    events = _events(24)
+    binned = add_value_tokens(events)
+    vocab = _vocab(binned)
+    concepts = concepts_for_source("mimic_iv")
+    model = _model(len(vocab), len(concepts))
+    times = _all_event_times(events, ALERT_EVENTS, "mimic_iv")
+    rows = collect_model_scores(
+        model,
+        binned,
+        vocab,
+        [c.name for c in concepts],
+        ALERT_EVENTS,
+        visit_start=_visit_starts(events),
+        landmark_hours=4.0,
+        num_lanes=2,
+        chunk_size=16,
+        device="cpu",
+    )
+    # landmarks every 4h over 24h -> ~6 per visit
+    assert len(rows["vasopressor_start"]) >= 24 * 5
+    assert all(
+        "concept" in r.scores and "next_mass" in r.scores
+        for r in rows["vasopressor_start"]
+    )
+    assert all("concept" not in r.scores for r in rows["icu_admission"])
+
+    # baseline: fit on the same synthetic data (a separate split in real use)
+    train_rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+    baselines = fit_baselines(binned, train_rows, times, horizons=(8.0,))
+    feats = {name: baseline_features(binned, rs) for name, rs in rows.items() if rs}
+    results = score_alerts(
+        rows,
+        times,
+        horizons=(8.0,),
+        baselines=baselines,
+        baseline_features_by_event=feats,
+    )
+    by = {(r.event, r.scorer): r for r in results}
+    # the planted signal (HR HIGH from hour 12) separates the landmark-12
+    # positives; the landmark-8 positives (onset at 14, within 8h) still
+    # look normal, so the ceiling here is well short of 1 but far above chance
+    gbm = by[("vasopressor_start", "baseline_gbm")]
+    assert gbm.auroc is not None and gbm.auroc > 0.75
+    assert gbm.brier is not None and gbm.calibration
+    # untrained model scores exist and are valid AUROCs
+    assert 0.0 <= by[("vasopressor_start", "concept")].auroc <= 1.0
+    assert 0.0 <= by[("vasopressor_start", "next_mass")].auroc <= 1.0
+    # censoring is counted, never silently dropped
+    assert gbm.n_censored > 0
+
+
+def test_baseline_features_shape_and_content() -> None:
+    events = _events(4)
+    binned = add_value_tokens(events)
+    rows = [IndexRow(2, 1002, 13.0), IndexRow(1, 1001, 1.0)]
+    x = baseline_features(binned, rows)
+    assert x.shape[0] == 2
+    # hours since visit start
+    assert x[0, 0] == 13.0 and x[1, 0] == 1.0
+    # subject 2 at hour 13 has HR HIGH as latest bin (ordinal 1)
+    prefixes_start = 2
+    assert 1.0 in x[0, prefixes_start:]
+    assert not np.isnan(x[0, -6:]).any()  # counts present
+
+
+def test_subject_scoped_event_ignores_visit() -> None:
+    times = EventTimes(
+        onset={(7, -1): 30.0}, censor={(7, -1): 40.0}, subject_scoped=True
+    )
+    assert outcome_at_horizon(IndexRow(7, 999, 25.0), times, 8.0) == 1
+    assert outcome_at_horizon(IndexRow(7, 999, 10.0), times, 8.0) == 0
+    assert AlertEvent(
+        "death", code_prefix="MEDS_DEATH", subject_scoped=True
+    ).subject_scoped
