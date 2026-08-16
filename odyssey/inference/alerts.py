@@ -1,0 +1,847 @@
+"""Alert evaluation: does the general model forecast specific events in time.
+
+The project's claim is that one sequence forecaster replaces bespoke
+single-task models. This module tests that claim the way those models
+are judged: for a handful of events that matter clinically (vasopressor
+start, ICU admission, acute kidney injury, death), score the probability
+that the event happens within a horizon (8h, 24h, 72h) from many index
+times inside each visit, on held-out patients, with time-dependent
+discrimination (AUROC), Brier score and calibration -- against a bespoke
+gradient-boosted classifier trained on hand-built features for exactly
+that event and horizon.
+
+Design, briefly:
+
+- **Events** are defined once (:data:`ALERT_EVENTS`): either the first
+  trigger of a concept from the same rule registry the bottleneck is
+  supervised with (vasopressor start, AKI), or the first occurrence of a
+  code family (ICU admission, death). Death is subject-scoped (it is not
+  tied to a visit); the others are visit-scoped.
+- **Index times** are landmark positions: within each visit, the first
+  event of every ``landmark_hours`` bucket while the patient is still at
+  risk (event not yet happened) and observation continues. Positions
+  after the event are not "at risk" and are excluded; positions whose
+  observation ends before ``t + horizon`` without the event are
+  right-censored and excluded from that horizon (administrative
+  censoring; reported as ``n_censored`` so it is never hidden).
+- **Model scores** at index times come from one streaming pass: for
+  concept-defined events the bottleneck's concept probability (the
+  model's running belief), and for every event the next-event
+  probability mass on the event's own tokens. Neither is a calibrated
+  "within h" probability, so they are scored on AUROC only; the
+  per-event hazard heads that give calibrated survival curves are the
+  modeling half of this stage and plug into the same harness.
+- **Baseline** (:func:`fit_baselines`): per event and horizon, a
+  ``HistGradientBoostingClassifier`` on features anyone would hand-build
+  for that task -- latest clinical bin of each curated vital/lab, event
+  counts by family over the trailing 24h, hours into the visit, age --
+  fitted on training shards, scored on the same held-out index times.
+
+Everything patient-level stays in memory or under gitignored paths.
+"""
+
+import json
+import logging
+import re
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple, Union
+
+import numpy as np
+import polars as pl
+import torch
+from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.metrics import brier_score_loss, roc_auc_score
+
+from odyssey.data.code_normalization import maybe_normalize
+from odyssey.data.concepts import concepts_for_source, label_concepts_by_visit
+from odyssey.data.sequences import BIRTH_CODE
+from odyssey.data.streaming import NO_SUBJECT, PackedLaneSampler
+from odyssey.data.value_binning import add_value_tokens, clinical_ranges_for_source
+from odyssey.data.vocabulary import Vocabulary, code_type
+from odyssey.inference.run_inference import load_run
+from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
+from odyssey.training.data import iter_patient_sequences, load_meds_shards
+from odyssey.training.train import _move_chunk_to_device
+
+
+logger = logging.getLogger(__name__)
+
+HORIZONS_HOURS: Tuple[float, ...] = (8.0, 24.0, 72.0)
+
+
+@dataclass(frozen=True)
+class AlertEvent:
+    """One clinically meaningful event whose onset is forecast."""
+
+    name: str
+    concept: Optional[str] = None
+    """Concept whose first-trigger time defines onset (visit-scoped)."""
+
+    code_prefix: Optional[str] = None
+    """Code family whose first occurrence defines onset."""
+
+    subject_scoped: bool = False
+    """Onset and censoring are taken over the subject's whole record
+    rather than the visit (death is not tied to a hadm_id)."""
+
+    token_regex: Optional[str] = None
+    """Regex over vocabulary tokens naming this event's own next-event
+    tokens, for the next-event-mass score. Defaults to ``^code_prefix``."""
+
+
+ALERT_EVENTS: Tuple[AlertEvent, ...] = (
+    AlertEvent(
+        "vasopressor_start",
+        concept="on_vasopressors",
+        token_regex=(
+            r"norepinephrine|levophed|epinephrine|vasopressin|phenylephrine"
+            r"|neo-?synephrine|dopamine|angiotensin"
+        ),
+    ),
+    AlertEvent("icu_admission", code_prefix="ICU_ADMISSION"),
+    AlertEvent("acute_kidney_injury", concept="acute_kidney_injury"),
+    AlertEvent("death", code_prefix="MEDS_DEATH", subject_scoped=True),
+)
+
+
+# ---------------------------------------------------------------------------
+# Onset and censoring times
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class EventTimes:
+    """Onset / censoring per key, all in hours on the sequence time origin."""
+
+    onset: Dict[Tuple[int, int], float]
+    """(subject_id, visit_id) -> onset hours; missing = never observed.
+    For subject-scoped events the visit_id is ignored (all visits of the
+    subject share the subject's onset)."""
+
+    censor: Dict[Tuple[int, int], float]
+    """(subject_id, visit_id) -> last observed time (end of follow-up)."""
+
+    subject_scoped: bool
+
+
+def _origin_hours(events: pl.DataFrame) -> pl.DataFrame:
+    """subject_id -> first timed non-birth event (the sequence time origin)."""
+    return (
+        events.filter(pl.col("time").is_not_null() & (pl.col("code") != BIRTH_CODE))
+        .group_by("subject_id")
+        .agg(pl.col("time").min().alias("_origin"))
+    )
+
+
+def _hours_since_origin(
+    frame: pl.DataFrame, col: str, origins: pl.DataFrame
+) -> pl.DataFrame:
+    return frame.join(origins, on="subject_id", how="left").with_columns(
+        ((pl.col(col) - pl.col("_origin")).dt.total_seconds() / 3600.0).alias(col)
+    )
+
+
+def event_times(
+    events: pl.DataFrame,
+    alert: AlertEvent,
+    *,
+    concept_first_times: Optional[pl.DataFrame] = None,
+) -> EventTimes:
+    """Onset and censoring times for ``alert`` over ``events``.
+
+    ``concept_first_times`` is the output of
+    :func:`~odyssey.data.concepts.label_concepts_by_visit` with
+    ``include_first_time=True``, shared across concept-defined events so
+    it is computed once.
+    """
+    origins = _origin_hours(events)
+    timed = events.filter(pl.col("time").is_not_null() & (pl.col("code") != BIRTH_CODE))
+    if alert.subject_scoped:
+        last = timed.group_by("subject_id").agg(pl.col("time").max().alias("_last"))
+        last = _hours_since_origin(last, "_last", origins)
+        censor = {
+            (int(s), -1): float(t) for s, t in zip(last["subject_id"], last["_last"])
+        }
+    else:
+        visits = timed.filter(pl.col("hadm_id").is_not_null())
+        last = visits.group_by("subject_id", "hadm_id").agg(
+            pl.col("time").max().alias("_last")
+        )
+        last = _hours_since_origin(last, "_last", origins)
+        censor = {
+            (int(s), int(v)): float(t)
+            for s, v, t in zip(last["subject_id"], last["hadm_id"], last["_last"])
+        }
+
+    onset: Dict[Tuple[int, int], float] = {}
+    if alert.concept is not None:
+        if concept_first_times is None:
+            raise ValueError(f"alert {alert.name!r} needs concept_first_times")
+        col = f"{alert.concept}_first_time"
+        frame = concept_first_times.filter(pl.col(col).is_not_null()).select(
+            "subject_id", "hadm_id", col
+        )
+        frame = _hours_since_origin(frame, col, origins)
+        onset = {
+            (int(s), int(v)): float(t)
+            for s, v, t in zip(frame["subject_id"], frame["hadm_id"], frame[col])
+        }
+    elif alert.code_prefix is not None:
+        hits = timed.filter(pl.col("code").str.starts_with(alert.code_prefix))
+        if alert.subject_scoped:
+            first = hits.group_by("subject_id").agg(pl.col("time").min().alias("_t"))
+            first = _hours_since_origin(first, "_t", origins)
+            onset = {
+                (int(s), -1): float(t) for s, t in zip(first["subject_id"], first["_t"])
+            }
+        else:
+            hits = hits.filter(pl.col("hadm_id").is_not_null())
+            first = hits.group_by("subject_id", "hadm_id").agg(
+                pl.col("time").min().alias("_t")
+            )
+            first = _hours_since_origin(first, "_t", origins)
+            onset = {
+                (int(s), int(v)): float(t)
+                for s, v, t in zip(first["subject_id"], first["hadm_id"], first["_t"])
+            }
+    else:
+        raise ValueError(
+            f"alert {alert.name!r} defines neither concept nor code_prefix"
+        )
+    return EventTimes(onset=onset, censor=censor, subject_scoped=alert.subject_scoped)
+
+
+# ---------------------------------------------------------------------------
+# Index times and outcomes
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class IndexRow:
+    """One (subject, visit, time) at which risk is assessed."""
+
+    subject_id: int
+    visit_id: int
+    time_hours: float
+    scores: Dict[str, float] = field(default_factory=dict)
+    """scorer name -> risk score for the event under evaluation."""
+
+
+def outcome_at_horizon(
+    row: IndexRow, times: EventTimes, horizon: float
+) -> Optional[int]:
+    """Return the horizon outcome for one index row.
+
+    1 if the event occurs in ``(t, t+h]``, 0 if observation reaches
+    ``t+h`` without it, None if censored (observation ends first) or the
+    row is not at risk (the event already happened).
+    """
+    key = (row.subject_id, -1 if times.subject_scoped else row.visit_id)
+    onset = times.onset.get(key)
+    if onset is not None and onset <= row.time_hours:
+        return None  # already happened: not at risk
+    if onset is not None and onset <= row.time_hours + horizon:
+        return 1
+    censor = times.censor.get(key)
+    if censor is None or censor < row.time_hours + horizon:
+        return None  # follow-up ends before the horizon
+    return 0
+
+
+def _landmark_mask(
+    time_hours: torch.Tensor,
+    subject_ids: torch.Tensor,
+    visit_ids: torch.Tensor,
+    landmark_hours: float,
+    visit_start_hours: torch.Tensor,
+) -> torch.Tensor:
+    """First real position of each visit's ``landmark_hours`` bucket, per lane."""
+    bucket = torch.floor((time_hours - visit_start_hours) / landmark_hours)
+    prev_bucket = torch.full_like(bucket, -1.0)
+    prev_bucket[:, 1:] = bucket[:, :-1]
+    same_visit = torch.zeros_like(subject_ids, dtype=torch.bool)
+    same_visit[:, 1:] = (subject_ids[:, 1:] == subject_ids[:, :-1]) & (
+        visit_ids[:, 1:] == visit_ids[:, :-1]
+    )
+    new_bucket = (bucket != prev_bucket) | ~same_visit
+    return new_bucket & (subject_ids != NO_SUBJECT) & (visit_ids >= 0)
+
+
+# ---------------------------------------------------------------------------
+# Model scores at index times
+# ---------------------------------------------------------------------------
+
+
+def _event_token_mask(
+    vocab: Vocabulary, alert: AlertEvent, device: str
+) -> torch.Tensor:
+    pattern = alert.token_regex or (
+        f"^{re.escape(alert.code_prefix)}" if alert.code_prefix else None
+    )
+    mask = torch.zeros(len(vocab), dtype=torch.bool)
+    if pattern is None:
+        return mask.to(device)
+    rx = re.compile(pattern, re.IGNORECASE)
+    for token_id, token in vocab.id_to_token.items():
+        if rx.search(token):
+            mask[token_id] = True
+    return mask.to(device)
+
+
+def collect_model_scores(
+    model: ConceptBottleneckSequenceModel,
+    events_binned: pl.DataFrame,
+    vocab: Vocabulary,
+    concept_names: Sequence[str],
+    alerts: Sequence[AlertEvent],
+    *,
+    visit_start: Dict[Tuple[int, int], float],
+    landmark_hours: float = 4.0,
+    num_lanes: int = 8,
+    chunk_size: int = 256,
+    device: str = "cuda",
+) -> Dict[str, List[IndexRow]]:
+    """One streaming pass; per alert, index rows with model risk scores.
+
+    Scores per row: ``concept`` (the alert's concept probability, if it
+    has one) and ``next_mass`` (softmax mass on the alert's tokens).
+    """
+    model.eval()
+    concept_index = {name: i for i, name in enumerate(concept_names)}
+    token_masks = {a.name: _event_token_mask(vocab, a, device) for a in alerts}
+    rows: Dict[str, List[IndexRow]] = {a.name: [] for a in alerts}
+    patients = iter_patient_sequences(events_binned, vocab)
+    sampler = PackedLaneSampler(
+        patients, num_lanes=num_lanes, chunk_size=chunk_size, reset_prob=0.0
+    )
+
+    state = None
+    with torch.no_grad():
+        for chunk in sampler:
+            chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
+            logits, out, state = model(
+                chunk.batch, state=state, reset_mask=chunk.reset_mask
+            )
+            sids = chunk.subject_ids
+            vids = chunk.visit_ids
+            times = chunk.batch.aux.time_stamps
+            # visit start per position, via the unique (subject, visit)
+            # keys in this chunk (a few hundred lookups, not one per token)
+            keys = torch.stack([sids, vids], dim=-1).reshape(-1, 2)
+            unique_keys, inverse = torch.unique(keys, dim=0, return_inverse=True)
+            unique_starts = torch.tensor(
+                [
+                    visit_start.get((int(s), int(v)), 0.0)
+                    for s, v in unique_keys.tolist()
+                ],
+                dtype=times.dtype,
+                device=times.device,
+            )
+            starts = unique_starts[inverse].view_as(times)
+            keep = _landmark_mask(times, sids, vids, landmark_hours, starts)
+            if not keep.any():
+                continue
+            probs = torch.softmax(logits[keep], dim=-1)
+            kept_sids = sids[keep].tolist()
+            kept_vids = vids[keep].tolist()
+            kept_times = times[keep].tolist()
+            for alert in alerts:
+                mass = probs[:, token_masks[alert.name]].sum(dim=-1).tolist()
+                concept_p = (
+                    out.concept_probs[keep][:, concept_index[alert.concept]].tolist()
+                    if alert.concept in concept_index
+                    else None
+                )
+                for k, (s, v, t) in enumerate(zip(kept_sids, kept_vids, kept_times)):
+                    scores = {"next_mass": float(mass[k])}
+                    if concept_p is not None:
+                        scores["concept"] = float(concept_p[k])
+                    rows[alert.name].append(IndexRow(int(s), int(v), float(t), scores))
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Baseline features and models
+# ---------------------------------------------------------------------------
+
+_BIN_ORDINAL = {"LOW": -1.0, "NORMAL": 0.0, "HIGH": 1.0, "CRITICAL": 2.0}
+_FAMILY_IDS = (
+    1,
+    2,
+    3,
+    4,
+    5,
+    7,
+)  # diagnosis, medication, procedure, lab, visit, billing
+
+
+def baseline_features(
+    events_binned: pl.DataFrame,
+    index_rows: Sequence[IndexRow],
+    *,
+    source: str = "mimic_iv",
+) -> np.ndarray:
+    """Hand-built features at each index row, from events strictly before it.
+
+    Columns: hours since visit start, age (years, if birth known), latest
+    ordinal clinical bin per curated vital/lab prefix (NaN if never), and
+    trailing-24h event counts per code family. All computable by hand
+    from the same record; nothing from the model.
+    """
+    ranges, _ = clinical_ranges_for_source(source)
+    prefixes = sorted(ranges)
+    origins = _origin_hours(events_binned)
+    timed = events_binned.filter(pl.col("time").is_not_null()).join(
+        origins, on="subject_id", how="left"
+    )
+    timed = timed.with_columns(
+        ((pl.col("time") - pl.col("_origin")).dt.total_seconds() / 3600.0).alias(
+            "_hours"
+        )
+    )
+    birth = (
+        events_binned.filter(pl.col("code") == BIRTH_CODE)
+        .group_by("subject_id")
+        .agg(pl.col("time").min().alias("_birth"))
+    )
+    birth_map = dict(zip(birth["subject_id"].to_list(), birth["_birth"].to_list()))
+    origin_map = dict(
+        zip(origins["subject_id"].to_list(), origins["_origin"].to_list())
+    )
+
+    per_subject: Dict[int, pl.DataFrame] = {}
+    for key, frame in timed.select("subject_id", "_hours", "code", "hadm_id").group_by(
+        "subject_id", maintain_order=True
+    ):
+        per_subject[int(key[0])] = frame.sort("_hours")
+
+    n_feat = 2 + len(prefixes) + len(_FAMILY_IDS)
+    out = np.full((len(index_rows), n_feat), np.nan, dtype=np.float32)
+    visit_start_cache: Dict[Tuple[int, int], float] = {}
+    for r, row in enumerate(index_rows):
+        history = per_subject.get(row.subject_id)
+        if history is None:
+            continue
+        hours = history["_hours"].to_numpy()
+        codes = history["code"].to_list()
+        hadms = history["hadm_id"].to_list()
+        upto = int(np.searchsorted(hours, row.time_hours, side="left"))
+        key = (row.subject_id, row.visit_id)
+        if key not in visit_start_cache:
+            vs = [h for h, v in zip(hours, hadms) if v == row.visit_id]
+            visit_start_cache[key] = float(min(vs)) if vs else row.time_hours
+        out[r, 0] = row.time_hours - visit_start_cache[key]
+        b = birth_map.get(row.subject_id)
+        o = origin_map.get(row.subject_id)
+        if b is not None and o is not None:
+            out[r, 1] = ((o - b).total_seconds() / 3600.0 + row.time_hours) / (
+                24 * 365.25
+            )
+        latest, counts = _history_features(
+            codes[:upto], hours[:upto], row.time_hours, prefixes
+        )
+        for p_idx, val in latest.items():
+            out[r, 2 + p_idx] = val
+        out[r, 2 + len(prefixes) :] = counts
+    return out
+
+
+def _history_features(
+    codes: Sequence[str],
+    hours: np.ndarray,
+    now: float,
+    prefixes: Sequence[str],
+) -> Tuple[Dict[int, float], np.ndarray]:
+    """Latest clinical bin per curated prefix and trailing-24h family counts."""
+    latest: Dict[int, float] = {}
+    counts = np.zeros(len(_FAMILY_IDS), dtype=np.float32)
+    family_index = {f: i for i, f in enumerate(_FAMILY_IDS)}
+    for code, hour in zip(codes, hours):
+        f_idx = family_index.get(code_type(code))
+        if f_idx is not None and hour >= now - 24.0:
+            counts[f_idx] += 1
+        if "::" not in code:
+            continue
+        base, bin_ = code.rsplit("::", 1)
+        if bin_ not in _BIN_ORDINAL:
+            continue
+        for p_idx, prefix in enumerate(prefixes):
+            if base.startswith(prefix):
+                latest[p_idx] = _BIN_ORDINAL[bin_]
+    return latest, counts
+
+
+class BaselineModel:
+    """A fitted GBM plus the all-missing columns it had to fill at fit time.
+
+    ``HistGradientBoostingClassifier`` handles missing values natively,
+    which is what we want (missingness is informative), but its binner
+    cannot fit a column that is missing everywhere (a curated lab that
+    never appears in the fitting shards). Such a column carries no
+    information, so it is filled with 0 at fit and, for consistency, at
+    prediction.
+    """
+
+    def __init__(
+        self, clf: HistGradientBoostingClassifier, fill_columns: np.ndarray
+    ) -> None:
+        self.clf = clf
+        self.fill_columns = fill_columns
+
+    def _prepare(self, x: np.ndarray) -> np.ndarray:
+        x = np.array(x, dtype=np.float32, copy=True)
+        x[:, self.fill_columns] = np.nan_to_num(x[:, self.fill_columns], nan=0.0)
+        return x
+
+    def predict_proba(self, x: np.ndarray) -> np.ndarray:
+        """Positive-class probabilities, ``(n,)``."""
+        proba: np.ndarray = self.clf.predict_proba(self._prepare(x))[:, 1]
+        return proba
+
+
+def fit_baselines(
+    train_events_binned: pl.DataFrame,
+    train_rows: Dict[str, List[IndexRow]],
+    train_times: Dict[str, EventTimes],
+    *,
+    horizons: Sequence[float] = HORIZONS_HOURS,
+    source: str = "mimic_iv",
+    seed: int = 0,
+) -> Dict[Tuple[str, float], BaselineModel]:
+    """One gradient-boosted classifier per (event, horizon) on baseline features."""
+    models: Dict[Tuple[str, float], BaselineModel] = {}
+    for name, rows in train_rows.items():
+        if not rows:
+            continue
+        x_all = baseline_features(train_events_binned, rows, source=source)
+        for h in horizons:
+            y = np.array(
+                [outcome_at_horizon(r, train_times[name], h) for r in rows],
+                dtype=object,
+            )
+            keep = np.array([v is not None for v in y])
+            if keep.sum() < 50 or len({int(v) for v in y[keep]}) < 2:
+                continue
+            x_fit = x_all[keep]
+            fill_columns = np.isnan(x_fit).all(axis=0)
+            clf = HistGradientBoostingClassifier(random_state=seed, max_iter=200)
+            baseline = BaselineModel(clf, fill_columns)
+            clf.fit(baseline._prepare(x_fit), y[keep].astype(int))
+            models[(name, h)] = baseline
+    return models
+
+
+# ---------------------------------------------------------------------------
+# Metrics
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class AlertMetrics:
+    """Time-dependent metrics for one (event, horizon, scorer)."""
+
+    event: str
+    horizon_hours: float
+    scorer: str
+    n_at_risk: int
+    n_positive: int
+    n_censored: int
+    auroc: Optional[float]
+    brier: Optional[float] = None
+    """Only for scorers that output horizon probabilities (the baseline)."""
+    calibration: Optional[List[Dict[str, float]]] = None
+    """Decile bins of predicted probability: mean predicted vs observed."""
+
+
+def _calibration(
+    pred: np.ndarray, y: np.ndarray, n_bins: int = 10
+) -> List[Dict[str, float]]:
+    order = np.argsort(pred)
+    bins = np.array_split(order, n_bins)
+    return [
+        {
+            "predicted": float(pred[b].mean()),
+            "observed": float(y[b].mean()),
+            "n": int(len(b)),
+        }
+        for b in bins
+        if len(b) > 0
+    ]
+
+
+def score_alerts(
+    rows: Dict[str, List[IndexRow]],
+    times: Dict[str, EventTimes],
+    *,
+    horizons: Sequence[float] = HORIZONS_HOURS,
+    baselines: Optional[Dict[Tuple[str, float], BaselineModel]] = None,
+    baseline_features_by_event: Optional[Dict[str, np.ndarray]] = None,
+) -> List[AlertMetrics]:
+    """Score every (event, horizon, scorer) present in ``rows``."""
+    results: List[AlertMetrics] = []
+    for name, event_rows in rows.items():
+        if not event_rows:
+            continue
+        for h in horizons:
+            outcomes = [outcome_at_horizon(r, times[name], h) for r in event_rows]
+            n_censored = sum(1 for o in outcomes if o is None)
+            keep = [i for i, o in enumerate(outcomes) if o is not None]
+            y = np.array([outcomes[i] for i in keep], dtype=int)
+            if len(keep) == 0 or y.min() == y.max():
+                continue
+            scorer_names = sorted({k for r in event_rows for k in r.scores})
+            for scorer in scorer_names:
+                pred = np.array(
+                    [event_rows[i].scores.get(scorer, np.nan) for i in keep],
+                    dtype=float,
+                )
+                ok = ~np.isnan(pred)
+                if ok.sum() == 0 or y[ok].min() == y[ok].max():
+                    continue
+                results.append(
+                    AlertMetrics(
+                        event=name,
+                        horizon_hours=h,
+                        scorer=scorer,
+                        n_at_risk=int(ok.sum()),
+                        n_positive=int(y[ok].sum()),
+                        n_censored=n_censored,
+                        auroc=float(roc_auc_score(y[ok], pred[ok])),
+                    )
+                )
+            if (
+                baselines is not None
+                and (name, h) in baselines
+                and baseline_features_by_event
+            ):
+                x = baseline_features_by_event[name][keep]
+                p = baselines[(name, h)].predict_proba(x)
+                results.append(
+                    AlertMetrics(
+                        event=name,
+                        horizon_hours=h,
+                        scorer="baseline_gbm",
+                        n_at_risk=int(len(keep)),
+                        n_positive=int(y.sum()),
+                        n_censored=n_censored,
+                        auroc=float(roc_auc_score(y, p)),
+                        brier=float(brier_score_loss(y, p)),
+                        calibration=_calibration(p, y),
+                    )
+                )
+    return results
+
+
+# ---------------------------------------------------------------------------
+# End to end
+# ---------------------------------------------------------------------------
+
+
+def _visit_starts(events: pl.DataFrame) -> Dict[Tuple[int, int], float]:
+    origins = _origin_hours(events)
+    starts = (
+        events.filter(pl.col("time").is_not_null() & pl.col("hadm_id").is_not_null())
+        .group_by("subject_id", "hadm_id")
+        .agg(pl.col("time").min().alias("_start"))
+    )
+    starts = _hours_since_origin(starts, "_start", origins)
+    return {
+        (int(s), int(v)): float(t)
+        for s, v, t in zip(starts["subject_id"], starts["hadm_id"], starts["_start"])
+    }
+
+
+def _all_event_times(
+    raw_events: pl.DataFrame, alerts: Sequence[AlertEvent], source: str
+) -> Dict[str, EventTimes]:
+    concepts = concepts_for_source(source)
+    needed = [c for c in concepts if any(a.concept == c.name for a in alerts)]
+    first = (
+        label_concepts_by_visit(raw_events, needed, include_first_time=True)
+        if needed
+        else None
+    )
+    return {
+        a.name: event_times(raw_events, a, concept_first_times=first) for a in alerts
+    }
+
+
+def _index_rows_from_events(
+    events_binned: pl.DataFrame,
+    alerts: Sequence[AlertEvent],
+    *,
+    landmark_hours: float,
+) -> Dict[str, List[IndexRow]]:
+    """Landmark index rows straight from events (no model), for baseline fitting."""
+    origins = _origin_hours(events_binned)
+    timed = (
+        events_binned.filter(
+            pl.col("time").is_not_null() & pl.col("hadm_id").is_not_null()
+        )
+        .join(origins, on="subject_id", how="left")
+        .with_columns(
+            ((pl.col("time") - pl.col("_origin")).dt.total_seconds() / 3600.0).alias(
+                "_hours"
+            )
+        )
+        .sort("subject_id", "_hours")
+    )
+    starts = timed.group_by("subject_id", "hadm_id").agg(
+        pl.col("_hours").min().alias("_start")
+    )
+    timed = timed.join(starts, on=["subject_id", "hadm_id"], how="left").with_columns(
+        ((pl.col("_hours") - pl.col("_start")) // landmark_hours).alias("_bucket")
+    )
+    firsts = timed.group_by("subject_id", "hadm_id", "_bucket").agg(
+        pl.col("_hours").min().alias("_t")
+    )
+    rows = [
+        IndexRow(int(s), int(v), float(t))
+        for s, v, t in zip(firsts["subject_id"], firsts["hadm_id"], firsts["_t"])
+    ]
+    return {a.name: list(rows) for a in alerts}
+
+
+def evaluate_alerts(
+    run_dir: Union[str, Path],
+    held_out_shard_dir: Union[str, Path],
+    *,
+    baseline_shard_dir: Optional[Union[str, Path]] = None,
+    max_shards: Optional[int] = None,
+    max_baseline_shards: Optional[int] = None,
+    alerts: Sequence[AlertEvent] = ALERT_EVENTS,
+    horizons: Sequence[float] = HORIZONS_HOURS,
+    landmark_hours: float = 4.0,
+    num_lanes: int = 8,
+    chunk_size: int = 256,
+    device: Optional[str] = None,
+    checkpoint_path: Optional[Union[str, Path]] = None,
+) -> List[AlertMetrics]:
+    """End to end: model scores + optional GBM baselines, scored on held-out."""
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    model, vocab, binner, config = load_run(
+        run_dir, device=device, checkpoint_path=checkpoint_path
+    )
+    source = getattr(config, "source", "mimic_iv")
+    concept_names = [c.name for c in concepts_for_source(source)]
+
+    raw = load_meds_shards(held_out_shard_dir, max_shards=max_shards)
+    raw = maybe_normalize(raw, enabled=getattr(config, "normalize_medications", False))
+    times = _all_event_times(raw, alerts, source)
+    visit_start = _visit_starts(raw)
+    binned = add_value_tokens(raw, binner, source=source)
+    del raw
+
+    logger.info("[alerts] collecting model scores at %.0fh landmarks", landmark_hours)
+    rows = collect_model_scores(
+        model,
+        binned,
+        vocab,
+        concept_names,
+        alerts,
+        visit_start=visit_start,
+        landmark_hours=landmark_hours,
+        num_lanes=num_lanes,
+        chunk_size=chunk_size,
+        device=device,
+    )
+
+    baselines = None
+    features_by_event = None
+    if baseline_shard_dir is not None:
+        logger.info("[alerts] fitting GBM baselines on %s", baseline_shard_dir)
+        train_raw = load_meds_shards(baseline_shard_dir, max_shards=max_baseline_shards)
+        train_raw = maybe_normalize(
+            train_raw, enabled=getattr(config, "normalize_medications", False)
+        )
+        train_times = _all_event_times(train_raw, alerts, source)
+        train_binned = add_value_tokens(train_raw, binner, source=source)
+        del train_raw
+        train_rows = _index_rows_from_events(
+            train_binned, alerts, landmark_hours=landmark_hours
+        )
+        baselines = fit_baselines(
+            train_binned, train_rows, train_times, horizons=horizons, source=source
+        )
+        features_by_event = {
+            name: baseline_features(binned, event_rows, source=source)
+            for name, event_rows in rows.items()
+            if event_rows
+        }
+
+    return score_alerts(
+        rows,
+        times,
+        horizons=horizons,
+        baselines=baselines,
+        baseline_features_by_event=features_by_event,
+    )
+
+
+def _main() -> None:
+    import argparse  # noqa: PLC0415
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--run-dir", required=True)
+    parser.add_argument("--held-out-shard-dir", required=True)
+    parser.add_argument("--output-json", required=True)
+    parser.add_argument("--baseline-shard-dir", default=None)
+    parser.add_argument("--max-shards", type=int, default=None)
+    parser.add_argument("--max-baseline-shards", type=int, default=None)
+    parser.add_argument("--landmark-hours", type=float, default=4.0)
+    parser.add_argument("--num-lanes", type=int, default=8)
+    parser.add_argument("--chunk-size", type=int, default=256)
+    parser.add_argument("--checkpoint", default=None)
+    args = parser.parse_args()
+    run_dir = Path(args.run_dir)
+    results = evaluate_alerts(
+        run_dir,
+        args.held_out_shard_dir,
+        baseline_shard_dir=args.baseline_shard_dir,
+        max_shards=args.max_shards,
+        max_baseline_shards=args.max_baseline_shards,
+        landmark_hours=args.landmark_hours,
+        num_lanes=args.num_lanes,
+        chunk_size=args.chunk_size,
+        checkpoint_path=run_dir / (args.checkpoint or "checkpoint_best.pt"),
+    )
+    out = Path(args.output_json)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps([asdict(r) for r in results], indent=2))
+    for r in results:
+        logger.info(
+            "[alerts] %-22s %5.0fh %-12s auroc=%.3f brier=%s n=%d pos=%d cens=%d",
+            r.event,
+            r.horizon_hours,
+            r.scorer,
+            r.auroc if r.auroc is not None else float("nan"),
+            f"{r.brier:.4f}" if r.brier is not None else "-",
+            r.n_at_risk,
+            r.n_positive,
+            r.n_censored,
+        )
+
+
+if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+    _main()
+
+
+__all__ = [
+    "ALERT_EVENTS",
+    "HORIZONS_HOURS",
+    "AlertEvent",
+    "AlertMetrics",
+    "EventTimes",
+    "IndexRow",
+    "event_times",
+    "outcome_at_horizon",
+    "collect_model_scores",
+    "baseline_features",
+    "fit_baselines",
+    "score_alerts",
+    "evaluate_alerts",
+]
