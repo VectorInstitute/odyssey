@@ -561,6 +561,7 @@ footer {
     <a href="#training" class="active">01 · Training</a>
     <a href="#quantitative">02 · Quantitative Eval</a>
     <a href="#qualitative">03 · Case Traces</a>
+    <a href="#interventions" id="nav-interventions" style="display:none;">04 · Interventions</a>
   </div>
 </nav>
 
@@ -619,6 +620,17 @@ footer {
       <div class="case-rail" id="case-rail"></div>
       <div class="case-detail" id="case-detail"></div>
     </div>
+  </section>
+
+  <section class="report" id="interventions" style="display:none;">
+    <div class="section-head">
+      <h2 class="section-title"><span class="num">04</span> Causal Interventions</h2>
+    </div>
+    <p class="section-desc" id="interventions-desc"></p>
+    <div class="table-wrap" style="margin-bottom:0.5rem;">
+      <table id="interventions-table"></table>
+    </div>
+    <div class="finding" id="finding-interventions"></div>
   </section>
 
 </main>
@@ -1243,5 +1255,59 @@ footer {
   renderCaseRail();
   renderCaseDetail();
   window.addEventListener("resize", () => { renderCaseDetail(); });
+
+  /* ---------------------------------------------------------- interventions */
+
+  const MODE_INFO = {
+    none: ["Baseline", "Unedited model -- must reproduce the standard evaluation's numbers."],
+    truth: ["Ground truth fed in", "Each known concept's mixing probability replaced by its rule-derived label, wherever observed."],
+    flip: ["Label flipped", "Same positions as truth, but fed 1 − label -- the mirror image."],
+    random: ["Random noise", "Same positions, but fed a coin flip -- separates “any perturbation hurts” from “wrong information hurts.”"],
+    zero_known: ["Known channel zeroed", "The known-concept mixed embedding zeroed out -- the completeness probe."],
+    zero_unknown: ["Unknown channel zeroed", "The residual unknown-concept embedding zeroed out -- the mirror completeness probe."],
+  };
+
+  (function renderInterventions() {
+    if (!DATA.interventions || !DATA.interventions.length) return;
+    document.getElementById("nav-interventions").style.display = "";
+    document.getElementById("interventions").style.display = "";
+    document.getElementById("interventions-desc").textContent = DATA.interventions_desc || "";
+
+    const rows = DATA.interventions;
+    const base = (rows.find((r) => r.mode === "none") || rows[0]).top1_accuracy;
+
+    const table = document.getElementById("interventions-table");
+    table.appendChild(el("thead", {}, [el("tr", {}, [
+      el("th", {}, ["Mode"]),
+      el("th", { class: "num" }, ["Top-1"]),
+      el("th", { class: "num" }, ["Δ vs. baseline"]),
+      el("th", { class: "num" }, ["Mean task loss"]),
+      el("th", { class: "num" }, ["Intervened positions"]),
+    ])]));
+    const tbody = el("tbody");
+    rows.forEach((r) => {
+      const [label, desc] = MODE_INFO[r.mode] || [r.mode, ""];
+      const delta = r.top1_accuracy - base;
+      const deltaStr = r.mode === "none" ? "—" : (delta >= 0 ? "+" : "") + (delta * 100).toFixed(1) + "%";
+      const deltaColor = r.mode === "none" ? "var(--ink-faint)" : delta > 0.002 ? "var(--good)" : delta < -0.002 ? "var(--critical)" : "var(--ink-muted)";
+      tbody.appendChild(el("tr", {}, [
+        el("td", { style: "white-space:normal;" }, [
+          el("div", { style: "font-weight:600;white-space:normal;" }, [label]),
+          el("div", { style: "font-size:0.74rem;color:var(--ink-faint);max-width:22rem;white-space:normal;" }, [desc]),
+        ]),
+        el("td", { class: "num" }, [fmtPct(r.top1_accuracy)]),
+        el("td", { class: "num", style: `color:${deltaColor};font-weight:700;` }, [deltaStr]),
+        el("td", { class: "num" }, [fmt(r.mean_task_loss, 3)]),
+        el("td", { class: "num" }, [fmtInt(r.n_intervened_positions)]),
+      ]));
+    });
+    table.appendChild(tbody);
+
+    const target = document.getElementById("finding-interventions");
+    const text = DATA.findings && DATA.findings.interventions;
+    if (target && text) {
+      target.innerHTML = '<span class="tag">Reading</span>' + text;
+    }
+  })();
 })();
 </script>

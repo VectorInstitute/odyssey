@@ -14,7 +14,11 @@ Usage (see each upstream CLI's own --help for how to produce its input):
         --run-dir ~/runs/subset_run_v2 \
         --inference-results ~/runs/subset_run_v2/inference_results.json \
         --case-studies ~/runs/subset_run_v2/case_studies.json \
+        --interventions ~/runs/subset_run_v2/interventions.json \
         --output-html research_journal/07_concept_bottleneck_results_subset.html
+
+``--interventions`` (odyssey.inference.interventions's output) is
+optional -- older runs without it still render, just without section 04.
 
 The output HTML embeds real patient-level detail (event timelines, per-
 patient forecasts) -- always write it under ``research_journal/``
@@ -348,6 +352,7 @@ def build_findings(
     loss_curves: Dict[str, Any],
     inference: Dict[str, Any],
     supervision: str,
+    interventions: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, str]:
     """Compute the per-section "Reading" notes from the run's own numbers.
 
@@ -427,12 +432,106 @@ def build_findings(
         f"(missingness in EHR data is clinical, not random)."
     )
 
-    return {
+    findings = {
         "training": training,
         "task": task,
         "concepts": concepts,
         "observability": observability,
     }
+    interventions_note = build_intervention_finding(interventions)
+    if interventions_note is not None:
+        findings["interventions"] = interventions_note
+    return findings
+
+
+def build_intervention_finding(
+    interventions: Optional[List[Dict[str, Any]]],
+) -> Optional[str]:
+    """Auto-interpret the causal-intervention sweep, if this run has one.
+
+    The claim a concept bottleneck makes is that concepts *mediate*
+    prediction -- ``truth``/``flip`` should move accuracy in the expected
+    direction if the model actually reads the concept channel, and
+    ``zero_known`` should hurt if the concepts carry real task signal
+    rather than being a decorative side channel. This states what the
+    numbers show, in either direction, rather than assuming the claim
+    held.
+    """
+    if not interventions:
+        return None
+    by_mode = {r["mode"]: r for r in interventions}
+    none = by_mode.get("none")
+    if none is None:
+        return None
+    base = none["top1_accuracy"]
+
+    def delta(mode: str) -> Optional[float]:
+        r = by_mode.get(mode)
+        return None if r is None else r["top1_accuracy"] - base
+
+    d_truth, d_flip, d_random = delta("truth"), delta("flip"), delta("random")
+    d_zero_known, d_zero_unknown = delta("zero_known"), delta("zero_unknown")
+
+    mediates = (
+        d_truth is not None
+        and d_flip is not None
+        and d_truth > d_flip + 1e-4
+    )
+    reads_direction = (
+        d_flip is not None
+        and d_random is not None
+        and d_flip < d_random - 1e-4
+    )
+    decorative = (
+        d_zero_known is not None
+        and abs(d_zero_known) < 0.005
+        and d_zero_unknown is not None
+        and abs(d_zero_unknown) >= 0.005
+    )
+
+    parts = [
+        f"<b>Does the bottleneck actually mediate prediction?</b> Baseline "
+        f"top-1 {base:.1%}."
+    ]
+    if d_truth is not None and d_flip is not None:
+        parts.append(
+            f" Feeding ground truth moves it {d_truth:+.1%}, feeding the "
+            f"flipped label {d_flip:+.1%} -- "
+            + (
+                "the model reads the concept channel in the right direction."
+                if mediates
+                else "little separation between correct and inverted "
+                "concept values, so the task head isn't leaning on this "
+                "channel the way the architecture intends."
+            )
+        )
+    if d_flip is not None and d_random is not None:
+        parts.append(
+            f" Random values move it {d_random:+.1%}; "
+            + (
+                "flipped labels hurt more than random noise, so direction "
+                "specifically matters, not just stability."
+                if reads_direction
+                else "flipped labels land close to random noise, so this "
+                "is picking up general perturbation sensitivity more than "
+                "reading concept direction."
+            )
+        )
+    if d_zero_known is not None and d_zero_unknown is not None:
+        parts.append(
+            f" Zeroing the known-concept channel moves it {d_zero_known:+.1%} "
+            f"and zeroing the unknown channel {d_zero_unknown:+.1%} -- "
+            + (
+                "the supervised concepts are load-bearing for the task "
+                "head, not a decorative side channel."
+                if not decorative
+                else "task performance survives losing the known-concept "
+                "channel almost intact, which is the completeness "
+                "probe's warning sign: the interpretable channel isn't "
+                "where the task signal actually lives."
+            )
+        )
+    return "".join(parts)
 
 
 @dataclass
@@ -443,10 +542,14 @@ class ReportInputs:
     loss_records: List[Dict[str, Any]]
     inference_results: Dict[str, Any]
     cases: List[Dict[str, Any]]
+    interventions: Optional[List[Dict[str, Any]]] = None
 
 
 def load_inputs(
-    run_dir: Path, inference_results_path: Path, case_studies_path: Path
+    run_dir: Path,
+    inference_results_path: Path,
+    case_studies_path: Path,
+    interventions_path: Optional[Path] = None,
 ) -> ReportInputs:
     """Read a run's config/loss log plus its inference/case-study output files."""
     config = TrainingConfig(**json.loads((run_dir / "config.json").read_text()))
@@ -454,11 +557,15 @@ def load_inputs(
         loss_records = [json.loads(line) for line in f if line.strip()]
     inference_results = json.loads(inference_results_path.read_text())
     cases = json.loads(case_studies_path.read_text())
+    interventions = (
+        json.loads(interventions_path.read_text()) if interventions_path else None
+    )
     return ReportInputs(
         config=config,
         loss_records=loss_records,
         inference_results=inference_results,
         cases=cases,
+        interventions=interventions,
     )
 
 
@@ -573,15 +680,31 @@ def build_payload(inputs: ReportInputs) -> Dict[str, Any]:
         f"model's next-event forecast at sampled points in the stay."
     )
 
+    interventions_desc = None
+    if inputs.interventions:
+        interventions_desc = (
+            "The one architectural claim a concept bottleneck makes beyond "
+            "ordinary sequence modeling: the task head reads a mixture steered "
+            "by the concept probabilities, so editing them should causally "
+            "move next-event accuracy. Each mode re-runs the identical "
+            "held-out streaming pass with the bottleneck edited a different "
+            "way -- see each row's tooltip for exactly what it does -- and "
+            "top-1 accuracy is compared back to the unedited baseline."
+        )
+
     return {
         "run_meta": run_meta,
         "training_desc": training_desc,
         "quant_desc": quant_desc,
         "qualitative_desc": qualitative_desc,
-        "findings": build_findings(loss_curves, inference, config.concept_supervision),
+        "interventions_desc": interventions_desc,
+        "findings": build_findings(
+            loss_curves, inference, config.concept_supervision, inputs.interventions
+        ),
         "loss_curves": loss_curves,
         "inference_results": inference,
         "cases": cases,
+        "interventions": inputs.interventions,
     }
 
 
@@ -597,6 +720,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--run-dir", required=True, type=Path)
     parser.add_argument("--inference-results", required=True, type=Path)
     parser.add_argument("--case-studies", required=True, type=Path)
+    parser.add_argument(
+        "--interventions",
+        type=Path,
+        default=None,
+        help="odyssey.inference.interventions's output JSON (optional).",
+    )
     parser.add_argument("--output-html", required=True, type=Path)
     return parser.parse_args()
 
@@ -604,7 +733,9 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     """CLI entry point: build and write the report from --run-dir + its eval outputs."""
     args = _parse_args()
-    inputs = load_inputs(args.run_dir, args.inference_results, args.case_studies)
+    inputs = load_inputs(
+        args.run_dir, args.inference_results, args.case_studies, args.interventions
+    )
     payload = build_payload(inputs)
     html = render_html(payload)
     args.output_html.parent.mkdir(parents=True, exist_ok=True)
