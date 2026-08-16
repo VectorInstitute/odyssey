@@ -859,11 +859,17 @@ footer {
     const table = document.getElementById("code-type-table");
     const rows = Object.entries(DATA.inference_results.task_metrics_by_code_type)
       .sort((a, b) => b[1].n_predictions - a[1].n_predictions);
+    const hasSet = rows.some(([, m]) => m.set_top1_accuracy != null);
     const thead = el("thead", {}, [el("tr", {}, [
       el("th", {}, ["Code type"]),
       el("th", { class: "num" }, ["Predictions"]),
       el("th", { class: "num" }, ["Cross-entropy"]),
       el("th", { class: "num" }, ["Top-1"]),
+      hasSet ? el("th", { class: "num", title:
+        "Top-1 scored against the target's same-timestamp event block: " +
+        "correct if the prediction names any event recorded at the same " +
+        "instant as the true next event. Exact top-1 additionally grades " +
+        "the arbitrary within-block charting order." }, ["Set top-1"]) : null,
       el("th", {}, ["Top-5"]),
     ])]);
     const tbody = el("tbody");
@@ -873,6 +879,9 @@ footer {
         el("td", { class: "num" }, [fmtInt(m.n_predictions)]),
         el("td", { class: "num" }, [fmt(m.cross_entropy, 3)]),
         el("td", { class: "num" }, [fmtPct(m.top1_accuracy)]),
+        hasSet ? el("td", { class: "num" }, [
+          m.set_top1_accuracy != null ? fmtPct(m.set_top1_accuracy) : "\u2013",
+        ]) : null,
         el("td", {}, [el("div", { class: "bar-cell" }, [
           el("div", { class: "bar-track" }, [el("div", { class: "bar-fill", style: `width:${(m.top5_accuracy * 100).toFixed(1)}%` })]),
           el("span", { style: "font-family:var(--font-mono);font-size:0.78rem;color:var(--ink-muted);" }, [fmtPct(m.top5_accuracy)]),

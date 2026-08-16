@@ -13,6 +13,7 @@ import torch
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.run_inference import (
     InferenceResults,
+    _block_set_hits,
     _latest_checkpoint,
     _parse_args,
     _RunningTaskMetrics,
@@ -175,3 +176,58 @@ def test_parse_args_honours_an_explicit_checkpoint_name(
     )
     args = _parse_args()
     assert args.checkpoint_path == Path("/runs/x/checkpoint_final.pt")
+
+
+# ---------------------------------------------------------------------------
+# _block_set_hits: set-based scoring over same-timestamp event blocks
+# ---------------------------------------------------------------------------
+
+
+def test_block_set_hits_counts_within_block_predictions() -> None:
+
+    # One lane, 5 targets. Input times (positions 0..5): targets 0-2 share
+    # time 1.0 (one block: tokens 11,12,13), targets 3-4 share time 2.0
+    # (block: tokens 14,15).
+    targets = torch.tensor([[11, 12, 13, 14, 15]])
+    # times for target j = input time at j+1
+    times_full = torch.tensor([[0.0, 1.0, 1.0, 1.0, 2.0, 2.0]])
+    subject_ids = torch.ones(1, 6, dtype=torch.long)
+    real = torch.ones(1, 5, dtype=torch.bool)
+
+    # predictions: 13 (in block 1), 11 (in block 1), 99 (miss), 14
+    # (block 2; note token 15 sits at the final position, whose target
+    # time is outside the chunk, so it is invisible to block membership:
+    # the documented boundary approximation)
+    top1 = torch.tensor([[13, 11, 99, 14, 14]])
+    set_valid, set_hit = _block_set_hits(
+        top1,
+        targets,
+        times=times_full[:, :5],
+        subject_ids=subject_ids[:, :5],
+        real_mask=real,
+        vocab_size=100,
+    )
+    # the final position has no in-chunk target time: excluded
+    assert set_valid[0].tolist() == [True, True, True, True, False]
+    assert set_hit[0].tolist() == [True, True, False, True, False]
+
+
+def test_block_set_hits_blocks_never_span_subjects() -> None:
+
+    # Two patients back to back, same timestamps: token 20 belongs to
+    # subject 2's block, so subject 1's prediction of 20 must not count.
+    targets = torch.tensor([[10, 20, 21]])
+    times_full = torch.tensor([[5.0, 5.0, 5.0, 5.0]])
+    subject_ids = torch.tensor([[1, 1, 2, 2]])
+    real = torch.ones(1, 3, dtype=torch.bool)
+    top1 = torch.tensor([[20, 10, 21]])
+    _, set_hit = _block_set_hits(
+        top1,
+        targets,
+        times=times_full[:, :3],
+        subject_ids=subject_ids[:, :3],
+        real_mask=real,
+        vocab_size=100,
+    )
+    # position 0: predicted 20, but target block for subject 1 is {10} -> miss
+    assert set_hit[0, 0].item() is False

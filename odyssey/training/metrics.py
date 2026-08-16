@@ -56,6 +56,21 @@ class TaskMetrics:
     n_predictions: int
     """How many non-ignored positions this was computed over."""
 
+    set_top1_accuracy: Optional[float] = None
+    """Top-1 scored against the target's same-timestamp event block: a
+    prediction counts if it names any event recorded at the same instant
+    as the true next event. Exact-next scoring grades the model on the
+    arbitrary within-block charting order (a discharge's ~22 diagnosis
+    codes share one timestamp, capping exact-next diagnosis accuracy near
+    6% even for a perfect model guessing uniformly within blocks); set
+    scoring measures whether the model knows what happens next, not where
+    the ETL put it inside the block. None where the evaluation path
+    cannot see block structure."""
+
+    n_set_predictions: Optional[int] = None
+    """Positions the set-based metric covered (block membership is only
+    visible within a chunk, so chunk-boundary positions are excluded)."""
+
 
 def compute_task_metrics(
     logits: torch.Tensor,
