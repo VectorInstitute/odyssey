@@ -334,4 +334,9 @@ def test_family_loss_weights_follow_family_shares() -> None:
         atol=1e-5,
     )
     uniform = family_loss_weights(events, alpha=0.0)
-    assert torch.allclose(uniform[uniform > 0], torch.ones(5))
+    assert torch.allclose(uniform, torch.ones_like(uniform))
+    # families absent from the events (here 5, 6, 8) still get an entry,
+    # with the neutral weight 1, when n_families asks for them
+    padded = family_loss_weights(events, alpha=1.0, n_families=9)
+    assert padded.shape == (9,)
+    assert padded[8].item() == 1.0

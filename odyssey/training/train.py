@@ -351,6 +351,7 @@ def build_objective(
             train_events_binned,
             alpha=config.family_balance_alpha,
             cap=config.family_weight_cap,
+            n_families=int(token_types.max().item()) + 1,
         ).to(device)
         logger.info(
             "[loss] family weights (alpha=%.2f): %s",

@@ -301,7 +301,12 @@ def token_type_lookup(vocab: Vocabulary) -> torch.Tensor:
 
 
 def family_loss_weights(
-    events: pl.DataFrame, *, alpha: float, cap: float = 20.0, code_col: str = "code"
+    events: pl.DataFrame,
+    *,
+    alpha: float,
+    cap: float = 20.0,
+    code_col: str = "code",
+    n_families: Optional[int] = None,
 ) -> torch.Tensor:
     """Per-family loss weights ``(share of events) ** -alpha``, mean-1 normalized.
 
@@ -311,8 +316,11 @@ def family_loss_weights(
     with ``alpha=0`` the weights are uniform. Normalized so the weighted
     mean over events is 1 (the loss keeps its scale), then capped at
     ``cap`` so a family that is 0.1% of positions cannot dominate a
-    batch on its own. Indexed by family id; families absent from
-    ``events`` get weight 0.
+    batch on its own. Indexed by family id over ``n_families`` entries
+    (at least every family seen in ``events``; pass the vocabulary's
+    ``token_type_lookup(vocab).max() + 1`` so every token id the loss can
+    see has an entry); families absent from ``events`` get the neutral
+    weight 1.
     """
     unique_codes = events[code_col].unique()
     families = pl.Series([code_type(c) for c in unique_codes.to_list()], dtype=pl.Int64)
@@ -324,7 +332,7 @@ def family_loss_weights(
         .len()
     )
     fam_ids = [int(f) for f in counts["_family"].to_list()]
-    n_families = max(fam_ids) + 1
+    n_families = max(max(fam_ids) + 1, n_families or 0)
     n = torch.zeros(n_families, dtype=torch.float64)
     for fam, cnt in zip(fam_ids, counts["len"].to_list()):
         n[fam] = float(cnt)
@@ -335,6 +343,7 @@ def family_loss_weights(
     # normalize: sum_f share_f * w_f = 1
     scale = (share * raw).sum()
     weights = torch.where(scale > 0, raw / scale, raw)
+    weights = torch.where(share > 0, weights, torch.ones_like(weights))
     return weights.clamp_max(cap).to(torch.float32)
 
 
