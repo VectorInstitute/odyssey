@@ -14,11 +14,27 @@
 
 ---
 
-Odyssey builds **interpretable** clinical foundation models from Electronic Health Records. Prior work ([EHRMamba](https://arxiv.org/abs/2405.14567)) showed that a Mamba SSM trained with next-token prediction over patient event sequences learns strong representations for forecasting — but, like most large sequence models, its predictions aren't inspectable. This iteration adds a **concept bottleneck**: the backbone's hidden state is split into (a) a small set of clinically-grounded, supervised concepts (e.g. "on vasopressors", "acute kidney injury"), and (b) a free "unknown concept" residual that absorbs whatever else the task needs. A patient-timeline forecast can then be explained in terms of the concepts that drove it, instead of an opaque embedding.
+## Goal
 
-**Status: active research rebuild, not yet trained on real patient data.** See [Roadmap](#roadmap) below.
+Odyssey builds clinical foundation models for electronic health records whose predictions a clinician can inspect, question, and correct.
 
-## Architecture (target)
+The starting point is a sequence model that reads a patient's whole record as one timeline of events (labs, vitals, medications, diagnoses, procedures, admissions) and forecasts what happens next, the way a language model forecasts the next word. Prior work ([EHRMamba](https://arxiv.org/abs/2405.14567)) showed this learns strong representations, but its forecasts are opaque: nothing in the model says *why* a patient is predicted to deteriorate.
+
+Odyssey puts a **concept bottleneck** between the sequence model and its forecasts. Everything the model predicts must pass through a small set of named clinical concepts (tachycardia, hypotension, acute kidney injury, SIRS, on vasopressors, ...) plus one unnamed residual channel. That gives three things a black box cannot:
+
+1. **A readout a clinician can check.** At every moment in the timeline the model states, for each concept, its probability that the patient is in that state. Those probabilities are supervised against rule-derived clinical labels and scored on held-out patients, so their accuracy is measured, not assumed.
+2. **An explanation for each forecast.** Because forecasts flow through the concepts, a prediction can be traced to the concept activations that drove it.
+3. **A lever.** A clinician who disagrees with the model ("this patient is not on vasopressors") can override a concept and watch the forecast update. Whether the concepts really are the lever, rather than a decorative side channel, is itself tested with causal interventions, and the results are reported honestly either way.
+
+The pipeline is built to be portable across health systems. One codebase extracts, tokenizes, labels concepts, trains and evaluates on MIMIC-IV and on eICU (clinical knowledge is written once, keyed by LOINC, and expanded per source). Those two datasets prove the pipeline travels; cross-hospital generalization is assessed on [GEMINI](https://geminimedicine.ca/), a multi-hospital inpatient dataset.
+
+**What success looks like.** On patients the model has never seen: forecasting quality close to an unconstrained model of the same size (the bottleneck costs little); concept probabilities that track the patient's real state; interventions that move forecasts in the clinically expected direction; and all of the above holding across hospitals, not just the one the model was trained on. The end state is an assistant a clinician can interrogate in terms of the concepts, and correct.
+
+**What this is not.** Not a diagnostic system, not trained on outcome labels, and not a claim of interpretability by construction: every interpretability property above has a test, and the research journal records where the model currently falls short.
+
+**Status: active research.** Trained and evaluated on MIMIC-IV subsets; the eICU pipeline is validated end to end; full-scale MIMIC-IV training and GEMINI are next. See [Roadmap](#roadmap).
+
+## Architecture
 
 ```
 MIMIC-IV 3.1 (hosp + icu)
@@ -141,15 +157,15 @@ uv run mypy odyssey
 5. ~~Run the real MEDS extraction on full, credentialed MIMIC-IV 3.1 (364,627 subjects)~~
 6. ~~Build patient-sequence tokenization (MEDS events -> the token/type/time/age/visit-order sequences the model consumes)~~
 7. ~~Fold numeric lab/vital values into the token itself (clinical-range + quantile-bin fallback), not code-identity alone~~
-8. Pretrain on real MIMIC-IV 3.1 at scale (GPU), on full patient history via Mamba chunked/TBTT training
+8. ~~Streaming truncated-BPTT training and evaluation over full patient histories (subset runs on MIMIC-IV, with visit-scoped concept supervision, set-based next-event scoring, and causal-intervention evaluation)~~; next: intervention-aware training so the concept probabilities become the causal lever, then full-scale MIMIC-IV pretraining
 9. Extend extraction to MIMIC-IV-ED
-10. ~~Multi-dataset pipeline: the same extraction/tokenization/concept pipeline running on eICU as well as MIMIC-IV~~ — done: `specs/eICU.yaml`, validated on the full eICU-CRD 2.0 (166K stays, 856M events); next: parameterize concept rules per-source via the LOINC mapping layer
+10. ~~Multi-dataset pipeline: the same extraction/tokenization/concept pipeline running on eICU as well as MIMIC-IV~~ — done: `specs/eICU.yaml`, validated on the full eICU-CRD 2.0 (166K stays, 856M events); concept rules and clinical value bins are canonical (LOINC-keyed) and expanded per source
 11. Cross-hospital/health-system generalization: extend the pipeline to [GEMINI](https://geminimedicine.ca/) (~30 hospitals, inpatient/general internal medicine) — the multi-hospital dataset where generalization is actually assessed; MIMIC-IV and eICU serve as pipeline-portability targets, not as a train-on-one/test-on-the-other experiment
 12. Phase 2: an LLM agent (e.g. MedGemma) that reads the concept-annotated forecast and assists a clinician
 
 ### Known concept-rule limitations
 
-Current v1 concept thresholds are single-timepoint, not sustained-criteria (real clinical definitions usually require e.g. persistence over a time window). On the full real dataset, `tachypnea` (RR > 20) triggers for 96.5% of subjects with respiratory-rate data — too loose to be a useful signal as-is, and worth recalibrating (e.g. against a sustained/windowed version, or a stricter threshold) before relying on it for supervision.
+Concept labels are rule-derived, per visit, and evaluated over a visit's whole window (did this happen during the visit), with each concept's first-trigger time also recorded so a running "true as of now" label exists for interventions. Sustained/windowed criteria are used where a single reading over-triggers (`sustained_tachypnea`, KDIGO creatinine windows); GCS-dependent criteria are unavailable on eICU until its nurse-charting table is extracted; urine-output-based AKI staging and full SOFA/NEWS2 are not implemented.
 
 ### GPU notes
 
