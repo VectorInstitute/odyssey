@@ -63,7 +63,7 @@ yet express. See research_journal/04_concept_pipeline.html, Section 08,
 import logging
 import warnings
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Dict, List, Literal, Optional, Sequence, Set, Tuple, Union
 
 import polars as pl
@@ -742,20 +742,42 @@ CANONICAL_CONCEPTS: List[AnyCanonicalConcept] = [
 CONCEPTS: List[AnyConceptDefinition] = concepts_for_source("mimic_iv")
 
 
+# subject (or visit key) -> the earliest time a rule/concept was satisfied.
+FirstTimes = Dict[int, datetime]
+
+
+def _first_times(frame: pl.DataFrame, subject_id_col: str, time_col: str) -> FirstTimes:
+    """Earliest ``time_col`` per subject in ``frame`` (a set of qualifying rows)."""
+    if frame.height == 0:
+        return {}
+    firsts = frame.group_by(subject_id_col).agg(pl.col(time_col).min().alias("_t"))
+    return dict(zip(firsts[subject_id_col].to_list(), firsts["_t"].to_list()))
+
+
+def _merge_min(into: FirstTimes, other: FirstTimes) -> None:
+    """Fold ``other`` into ``into``, keeping the earlier time per key."""
+    for sid, t in other.items():
+        prev = into.get(sid)
+        if prev is None or t < prev:
+            into[sid] = t
+
+
 def _instantaneous_ids(
     events: pl.DataFrame,
     rule: ConceptRule,
+    *,
     subject_id_col: str,
     code_col: str,
     value_col: str,
-) -> Tuple[Set[int], Set[int]]:
+    time_col: str,
+) -> Tuple[Set[int], FirstTimes]:
     matched = events.filter(
         pl.col(code_col).str.starts_with(rule.code_prefix)
         & pl.col(value_col).is_not_null()
     )
     observed = set(matched[subject_id_col].to_list())
     comparison = _threshold_expr(pl.col(value_col), rule.threshold, rule.direction)
-    triggered = set(matched.filter(comparison)[subject_id_col].to_list())
+    triggered = _first_times(matched.filter(comparison), subject_id_col, time_col)
     return observed, triggered
 
 
@@ -767,7 +789,7 @@ def _sustained_ids(
     code_col: str,
     value_col: str,
     time_col: str,
-) -> Tuple[Set[int], Set[int]]:
+) -> Tuple[Set[int], FirstTimes]:
     matched = events.filter(
         pl.col(code_col).str.starts_with(rule.code_prefix)
         & pl.col(value_col).is_not_null()
@@ -776,13 +798,16 @@ def _sustained_ids(
     comparison = _threshold_expr(pl.col(value_col), rule.threshold, rule.direction)
     qualifying = matched.filter(comparison)
     if qualifying.height == 0:
-        return observed, set()
+        return observed, {}
 
-    span = qualifying.group_by(subject_id_col).agg(
-        (pl.col(time_col).max() - pl.col(time_col).min()).alias("_span")
-    )
+    # The rule is satisfied at the earliest qualifying reading that is at
+    # least min_gap after the subject's first qualifying reading; the
+    # earliest-vs-latest span check is the same criterion evaluated at
+    # the last reading.
     min_gap = timedelta(hours=rule.min_gap_hours)
-    triggered = set(span.filter(pl.col("_span") >= min_gap)[subject_id_col].to_list())
+    first_qualifying = pl.col(time_col).min().over(subject_id_col)
+    satisfied = qualifying.filter(pl.col(time_col) - first_qualifying >= min_gap)
+    triggered = _first_times(satisfied, subject_id_col, time_col)
     return observed, triggered
 
 
@@ -794,7 +819,7 @@ def _baseline_relative_ids(
     code_col: str,
     value_col: str,
     time_col: str,
-) -> Tuple[Set[int], Set[int]]:
+) -> Tuple[Set[int], FirstTimes]:
     """Check whether any reading exceeds an earlier one (within window) by delta/ratio.
 
     Uses a per-subject rolling extreme (min for direction="above", max for
@@ -823,7 +848,7 @@ def _baseline_relative_ids(
     )
     observed = set(matched[subject_id_col].to_list())
     if matched.height == 0:
-        return observed, set()
+        return observed, {}
 
     window_size = timedelta(hours=rule.window_hours)
     baseline_expr = (
@@ -851,10 +876,10 @@ def _baseline_relative_ids(
         )
         comparison = delta_expr >= rule.delta
 
-    triggered = set(
-        matched.filter(pl.col("_baseline").is_not_null() & comparison)[
-            subject_id_col
-        ].to_list()
+    triggered = _first_times(
+        matched.filter(pl.col("_baseline").is_not_null() & comparison),
+        subject_id_col,
+        time_col,
     )
     return observed, triggered
 
@@ -867,7 +892,7 @@ def _derived_gcs_total_ids(
     code_col: str,
     value_col: str,
     time_col: str,
-) -> Tuple[Set[int], Set[int]]:
+) -> Tuple[Set[int], FirstTimes]:
     def _component(prefix: str) -> pl.DataFrame:
         return (
             events.filter(
@@ -887,7 +912,7 @@ def _derived_gcs_total_ids(
         | set(motor[subject_id_col].to_list())
     )
     if eye.height == 0 or verbal.height == 0 or motor.height == 0:
-        return observed, set()
+        return observed, {}
 
     tolerance = timedelta(minutes=rule.max_component_gap_minutes)
     # eye/verbal/motor are each already sorted by [subject_id_col, time_col]
@@ -919,13 +944,13 @@ def _derived_gcs_total_ids(
         )
     paired = paired.filter(pl.col(f"{value_col}_motor").is_not_null())
     if paired.height == 0:
-        return observed, set()
+        return observed, {}
 
     total = (
         pl.col(value_col) + pl.col(f"{value_col}_verbal") + pl.col(f"{value_col}_motor")
     )
     comparison = _threshold_expr(total, rule.threshold, rule.direction)
-    triggered = set(paired.filter(comparison)[subject_id_col].to_list())
+    triggered = _first_times(paired.filter(comparison), subject_id_col, time_col)
     return observed, triggered
 
 
@@ -937,9 +962,16 @@ def _component_ids(
     code_col: str,
     value_col: str,
     time_col: str,
-) -> Tuple[Set[int], Set[int]]:
+) -> Tuple[Set[int], FirstTimes]:
     if isinstance(rule, ConceptRule):
-        return _instantaneous_ids(events, rule, subject_id_col, code_col, value_col)
+        return _instantaneous_ids(
+            events,
+            rule,
+            subject_id_col=subject_id_col,
+            code_col=code_col,
+            value_col=value_col,
+            time_col=time_col,
+        )
     if isinstance(rule, SustainedRule):
         return _sustained_ids(
             events,
@@ -969,7 +1001,11 @@ def _component_ids(
         )
     if isinstance(rule, CodeOccurrenceRule):
         return _occurrence_ids(
-            events, rule, subject_id_col=subject_id_col, code_col=code_col
+            events,
+            rule,
+            subject_id_col=subject_id_col,
+            code_col=code_col,
+            time_col=time_col,
         )
     raise TypeError(f"unknown component rule type: {type(rule)!r}")
 
@@ -980,7 +1016,8 @@ def _occurrence_ids(
     *,
     subject_id_col: str,
     code_col: str,
-) -> Tuple[Set[int], Set[int]]:
+    time_col: str,
+) -> Tuple[Set[int], FirstTimes]:
     """Observed/triggered sets for an occurrence-keyed rule.
 
     Observed = subjects with any event in ``rule.observed_families``
@@ -1001,8 +1038,8 @@ def _occurrence_ids(
     match = pl.col(code_col).str.contains(pattern)
     if rule.match_text_value and "text_value" in events.columns:
         match = match | pl.col("text_value").str.contains(pattern).fill_null(False)
-    triggered = set(events.filter(match)[subject_id_col].to_list())
-    return observed | triggered, triggered
+    triggered = _first_times(events.filter(match), subject_id_col, time_col)
+    return observed | set(triggered), triggered
 
 
 def _composite_component_ids(
@@ -1013,10 +1050,10 @@ def _composite_component_ids(
     code_col: str,
     value_col: str,
     time_col: str,
-) -> Tuple[Set[int], Set[int]]:
+) -> Tuple[Set[int], FirstTimes]:
     if isinstance(component, AnyOf):
         observed: Set[int] = set()
-        triggered: Set[int] = set()
+        triggered: FirstTimes = {}
         for rule in component.rules:
             obs, trig = _component_ids(
                 events,
@@ -1027,7 +1064,7 @@ def _composite_component_ids(
                 time_col=time_col,
             )
             observed |= obs
-            triggered |= trig
+            _merge_min(triggered, trig)
         return observed, triggered
     return _component_ids(
         events,
@@ -1047,6 +1084,7 @@ def label_concepts(
     code_col: str = "code",
     value_col: str = "numeric_value",
     time_col: str = "time",
+    include_first_time: bool = False,
 ) -> pl.DataFrame:
     """Derive per-subject concept labels and an observed-mask from MEDS events.
 
@@ -1061,16 +1099,26 @@ def label_concepts(
     history, not necessarily simultaneously -- see that class's
     docstring), and ``{name}_observed`` is 1 if at least one component
     had at least one matching measurement.
+
+    With ``include_first_time``, a ``{name}_first_time`` Datetime column
+    is added: the earliest time at which the concept became satisfied
+    (null where the label is 0). For a simple concept that is the
+    earliest rule firing; for a composite it is the moment the
+    ``min_criteria``-th criterion first fired -- the first instant a
+    clinician tallying the score would have called it met. This is what
+    lets a whole-visit label be turned into a valid *running* label at
+    any position: "true from ``first_time`` on, false before".
     """
     subject_ids = events.select(subject_id_col).unique()
     out = subject_ids
 
     for concept in concepts:
+        first_times: FirstTimes = {}
         if isinstance(concept, CompositeConceptDefinition):
             if not concept.components:
                 raise ValueError(f"concept {concept.name!r} has no components defined")
             observed_ids: Set[int] = set()
-            criteria_met_count: Dict[int, int] = {}
+            criteria_times: Dict[int, List[datetime]] = {}
             for component in concept.components:
                 obs, trig = _composite_component_ids(
                     events,
@@ -1081,18 +1129,15 @@ def label_concepts(
                     time_col=time_col,
                 )
                 observed_ids |= obs
-                for sid in trig:
-                    criteria_met_count[sid] = criteria_met_count.get(sid, 0) + 1
-            triggered_ids = {
-                sid
-                for sid, count in criteria_met_count.items()
-                if count >= concept.min_criteria
-            }
+                for sid, t in trig.items():
+                    criteria_times.setdefault(sid, []).append(t)
+            for sid, times in criteria_times.items():
+                if len(times) >= concept.min_criteria:
+                    first_times[sid] = sorted(times)[concept.min_criteria - 1]
         else:
             if not concept.rules:
                 raise ValueError(f"concept {concept.name!r} has no rules defined")
             observed_ids = set()
-            triggered_ids = set()
             for rule in concept.rules:
                 obs, trig = _component_ids(
                     events,
@@ -1103,7 +1148,8 @@ def label_concepts(
                     time_col=time_col,
                 )
                 observed_ids |= obs
-                triggered_ids |= trig
+                _merge_min(first_times, trig)
+        triggered_ids = set(first_times)
 
         out = out.with_columns(
             pl.col(subject_id_col)
@@ -1115,6 +1161,18 @@ def label_concepts(
             .cast(pl.Int8)
             .alias(f"{concept.name}_observed"),
         )
+        if include_first_time:
+            first_frame = pl.DataFrame(
+                {
+                    subject_id_col: list(first_times.keys()),
+                    f"{concept.name}_first_time": list(first_times.values()),
+                },
+                schema={
+                    subject_id_col: out.schema[subject_id_col],
+                    f"{concept.name}_first_time": pl.Datetime("us"),
+                },
+            )
+            out = out.join(first_frame, on=subject_id_col, how="left")
 
     return out
 
@@ -1128,6 +1186,7 @@ def label_concepts_by_visit(
     code_col: str = "code",
     value_col: str = "numeric_value",
     time_col: str = "time",
+    include_first_time: bool = False,
 ) -> pl.DataFrame:
     """:func:`label_concepts`, scoped to each visit instead of the whole stay.
 
@@ -1166,6 +1225,7 @@ def label_concepts_by_visit(
         code_col=code_col,
         value_col=value_col,
         time_col=time_col,
+        include_first_time=include_first_time,
     )
     return (
         labeled.join(keys, on="_visit_key", how="left")

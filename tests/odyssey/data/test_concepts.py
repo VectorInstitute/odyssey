@@ -993,3 +993,83 @@ def test_eicu_expansion_labels_real_shaped_events() -> None:
     labels = label_concepts(events, concepts).sort("subject_id")
     assert labels["fever"].to_list() == [1, 0]
     assert labels["tachycardia"].to_list() == [0, 1]
+
+
+# ---------------------------------------------------------------------------
+# include_first_time: when did the concept become satisfied?
+# ---------------------------------------------------------------------------
+
+
+def test_first_time_is_the_earliest_qualifying_reading() -> None:
+    concepts = [c for c in CONCEPTS if c.name == "tachycardia"]
+    events = _events(
+        [
+            (1, "LAB//220045//bpm", 80.0, T0),
+            (1, "LAB//220045//bpm", 120.0, T0 + timedelta(hours=5)),
+            (1, "LAB//220045//bpm", 130.0, T0 + timedelta(hours=9)),
+            (2, "LAB//220045//bpm", 70.0, T0),
+        ]
+    )
+    labels = label_concepts(events, concepts, include_first_time=True).sort(
+        "subject_id"
+    )
+    assert labels["tachycardia"].to_list() == [1, 0]
+    assert labels["tachycardia_first_time"].to_list() == [
+        T0 + timedelta(hours=5),
+        None,
+    ]
+
+
+def test_sustained_first_time_is_when_the_gap_is_first_met() -> None:
+    concepts = [c for c in CONCEPTS if c.name == "sustained_tachypnea"]
+    events = _events(
+        [
+            (1, "LAB//220210//insp/min", 25.0, T0),
+            (1, "LAB//220210//insp/min", 25.0, T0 + timedelta(minutes=30)),
+            (1, "LAB//220210//insp/min", 25.0, T0 + timedelta(hours=2)),
+            (1, "LAB//220210//insp/min", 25.0, T0 + timedelta(hours=3)),
+        ]
+    )
+    labels = label_concepts(events, concepts, include_first_time=True)
+    # Not at 30 min (span 0.5h < 1h); satisfied at the 2h reading.
+    assert labels["sustained_tachypnea_first_time"][0] == T0 + timedelta(hours=2)
+
+
+def test_composite_first_time_is_when_min_criteria_is_reached() -> None:
+    sirs = next(c for c in CONCEPTS if c.name == "sirs")
+    events = _events(
+        [
+            (1, "LAB//220045//bpm", 95.0, T0 + timedelta(hours=1)),  # HR > 90
+            (1, "LAB//220210//insp/min", 25.0, T0 + timedelta(hours=6)),  # RR > 20
+            (1, "LAB//223762//C", 39.0, T0 + timedelta(hours=9)),  # fever
+        ]
+    )
+    labels = label_concepts(events, [sirs], include_first_time=True)
+    assert labels["sirs"][0] == 1
+    # Second criterion fires at 6h: that is when SIRS (>= 2 of 4) is met.
+    assert labels["sirs_first_time"][0] == T0 + timedelta(hours=6)
+
+
+def test_first_time_respects_visit_scoping() -> None:
+    concepts = [c for c in CONCEPTS if c.name == "tachycardia"]
+    events = pl.DataFrame(
+        {
+            "subject_id": [1, 1, 1, 1],
+            "code": ["LAB//220045//bpm"] * 4,
+            "numeric_value": [120.0, 80.0, 80.0, 130.0],
+            "time": [
+                T0,
+                T0 + timedelta(hours=1),
+                T0 + timedelta(days=30),
+                T0 + timedelta(days=30, hours=4),
+            ],
+            "hadm_id": [10, 10, 20, 20],
+        }
+    )
+    labels = label_concepts_by_visit(events, concepts, include_first_time=True).sort(
+        "hadm_id"
+    )
+    assert labels["tachycardia_first_time"].to_list() == [
+        T0,
+        T0 + timedelta(days=30, hours=4),
+    ]

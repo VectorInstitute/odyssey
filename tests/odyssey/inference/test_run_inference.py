@@ -184,36 +184,38 @@ def test_parse_args_honours_an_explicit_checkpoint_name(
 
 
 def test_block_set_hits_counts_within_block_predictions() -> None:
-
     # One lane, 5 targets. Input times (positions 0..5): targets 0-2 share
     # time 1.0 (one block: tokens 11,12,13), targets 3-4 share time 2.0
-    # (block: tokens 14,15).
+    # (block: tokens 14,15). All tokens are one family here.
     targets = torch.tensor([[11, 12, 13, 14, 15]])
     # times for target j = input time at j+1
     times_full = torch.tensor([[0.0, 1.0, 1.0, 1.0, 2.0, 2.0]])
     subject_ids = torch.ones(1, 6, dtype=torch.long)
     real = torch.ones(1, 5, dtype=torch.bool)
+    one_family = torch.ones(100, dtype=torch.long)
 
     # predictions: 13 (in block 1), 11 (in block 1), 99 (miss), 14
     # (block 2; note token 15 sits at the final position, whose target
     # time is outside the chunk, so it is invisible to block membership:
     # the documented boundary approximation)
     top1 = torch.tensor([[13, 11, 99, 14, 14]])
-    set_valid, set_hit = _block_set_hits(
+    hits = _block_set_hits(
         top1,
         targets,
         times=times_full[:, :5],
         subject_ids=subject_ids[:, :5],
         real_mask=real,
         vocab_size=100,
+        type_lookup=one_family,
     )
     # the final position has no in-chunk target time: excluded
-    assert set_valid[0].tolist() == [True, True, True, True, False]
-    assert set_hit[0].tolist() == [True, True, False, True, False]
+    assert hits.set_valid[0].tolist() == [True, True, True, True, False]
+    assert hits.set_hit[0].tolist() == [True, True, False, True, False]
+    # no category lookup: category flags stay all-False
+    assert not hits.category_valid.any()
 
 
 def test_block_set_hits_blocks_never_span_subjects() -> None:
-
     # Two patients back to back, same timestamps: token 20 belongs to
     # subject 2's block, so subject 1's prediction of 20 must not count.
     targets = torch.tensor([[10, 20, 21]])
@@ -221,13 +223,83 @@ def test_block_set_hits_blocks_never_span_subjects() -> None:
     subject_ids = torch.tensor([[1, 1, 2, 2]])
     real = torch.ones(1, 3, dtype=torch.bool)
     top1 = torch.tensor([[20, 10, 21]])
-    _, set_hit = _block_set_hits(
+    hits = _block_set_hits(
         top1,
         targets,
         times=times_full[:, :3],
         subject_ids=subject_ids[:, :3],
         real_mask=real,
         vocab_size=100,
+        type_lookup=torch.ones(100, dtype=torch.long),
     )
     # position 0: predicted 20, but target block for subject 1 is {10} -> miss
-    assert set_hit[0, 0].item() is False
+    assert hits.set_hit[0, 0].item() is False
+
+
+def test_block_set_hits_require_the_targets_own_family() -> None:
+    """A discharge block holds diagnoses AND the discharge/billing tokens.
+
+    Predicting the discharge token at a diagnosis target must not count
+    as a diagnosis set-hit: membership is restricted to the target's own
+    family, so a set-hit says the model named an event of that family.
+    """
+    # block at time 1.0: tokens 11 (diagnosis), 12 (diagnosis), 30 (visit)
+    targets = torch.tensor([[11, 12, 30, 40]])
+    times_full = torch.tensor([[0.0, 1.0, 1.0, 1.0, 2.0]])
+    subject_ids = torch.ones(1, 5, dtype=torch.long)
+    real = torch.ones(1, 4, dtype=torch.bool)
+    families = torch.zeros(100, dtype=torch.long)
+    families[[11, 12]] = 1  # diagnosis
+    families[[30]] = 5  # visit
+    families[[40]] = 4  # lab
+    # at target 11 predict 30 (visit token in the same block): NOT a hit;
+    # at target 12 predict 11 (diagnosis in the block): hit;
+    # at target 30 predict 12 (diagnosis, but target family is visit): NOT
+    # a hit -- the family is the target's, in both directions.
+    top1 = torch.tensor([[30, 11, 12, 40]])
+    hits = _block_set_hits(
+        top1,
+        targets,
+        times=times_full[:, :4],
+        subject_ids=subject_ids[:, :4],
+        real_mask=real,
+        vocab_size=100,
+        type_lookup=families,
+    )
+    assert hits.set_hit[0].tolist() == [False, True, False, False]
+
+
+def test_block_set_hits_category_level_scoring() -> None:
+    """Category flags credit the right 3-char ICD category within the block."""
+    # tokens: 11 = I5023, 12 = I50 (its category token), 13 = E11 (other
+    # category); 30 = a non-ICD token.
+    targets = torch.tensor([[11, 13, 30]])
+    times_full = torch.tensor([[0.0, 1.0, 1.0, 1.0]])
+    subject_ids = torch.ones(1, 4, dtype=torch.long)
+    real = torch.ones(1, 3, dtype=torch.bool)
+    families = torch.zeros(100, dtype=torch.long)
+    families[[11, 12, 13]] = 1
+    families[30] = 5
+    categories = torch.full((100,), -1, dtype=torch.long)
+    categories[[11, 12]] = 0  # I50
+    categories[13] = 1  # E11
+    # at target I5023 predict I50 (parent): exact/set miss, category hit;
+    # at target E11 predict I50: category miss (I50 in block, but E11 also
+    # in block? no: block members' categories are {I50, E11}; predicted
+    # I50's category IS in the block) -> category hit is a set-style hit.
+    top1 = torch.tensor([[12, 12, 12]])
+    hits = _block_set_hits(
+        top1,
+        targets,
+        times=times_full[:, :3],
+        subject_ids=subject_ids[:, :3],
+        real_mask=real,
+        vocab_size=100,
+        type_lookup=families,
+        category_lookup=categories,
+        n_categories=2,
+    )
+    assert hits.set_hit[0].tolist() == [False, False, False]
+    # target 30 is not ICD-coded: category metric does not apply there
+    assert hits.category_valid[0].tolist() == [True, True, False]
+    assert hits.category_hit[0].tolist() == [True, True, False]

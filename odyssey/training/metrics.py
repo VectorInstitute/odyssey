@@ -71,6 +71,19 @@ class TaskMetrics:
     """Positions the set-based metric covered (block membership is only
     visible within a chunk, so chunk-boundary positions are excluded)."""
 
+    category_set_top1_accuracy: Optional[float] = None
+    """Set-based top-1 at ICD 3-character category level, for ICD-coded
+    diagnosis/procedure targets: the top-1's category matches some
+    same-family event in the target's block. Under the ``icd3``
+    vocabulary backoff a frequent full code and its category token both
+    exist, so probability mass splits between ``I5023`` and ``I50``;
+    this asks whether the model knows the kind of diagnosis or procedure
+    coming, independent of that split. None where no ICD-coded targets
+    were scored."""
+
+    n_category_predictions: Optional[int] = None
+    """ICD-coded positions the category-level metric covered."""
+
 
 def compute_task_metrics(
     logits: torch.Tensor,

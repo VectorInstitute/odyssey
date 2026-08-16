@@ -22,7 +22,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 import polars as pl
 import torch
@@ -166,6 +166,47 @@ def _build_type_lookup(vocab: Vocabulary, device: str) -> torch.Tensor:
     return lookup.to(device)
 
 
+def _build_category_lookup(vocab: Vocabulary, device: str) -> Tuple[torch.Tensor, int]:
+    """``(vocab_size,)`` token id -> ICD 3-character category id, or -1.
+
+    Every ICD-coded diagnosis/procedure token (a full code or an ``icd3``
+    backoff category token alike) maps to the integer id of its 3-char
+    category, so ``I5023`` and ``I50`` share one id; every other token
+    gets -1. Returns the lookup and the number of category ids.
+    """
+    lookup = torch.full((len(vocab),), -1, dtype=torch.long)
+    categories: Dict[str, int] = {}
+    for token_id, token in vocab.id_to_token.items():
+        parts = token.split("//")
+        if (
+            len(parts) == 4
+            and parts[0] in ("DIAGNOSIS", "PROCEDURE")
+            and parts[1] == "ICD"
+        ):
+            key = "//".join([*parts[:3], parts[3][:3]])
+            lookup[token_id] = categories.setdefault(key, len(categories))
+    return lookup.to(device), len(categories)
+
+
+class BlockSetHits(NamedTuple):
+    """Per-position set-based scoring flags, all ``(lanes, chunk)`` bool."""
+
+    set_valid: torch.Tensor
+    """Position has an in-chunk target time block (everything but the
+    final lane position)."""
+
+    set_hit: torch.Tensor
+    """Top-1 names some event of the *target's own family* recorded at
+    the same instant as the true next event."""
+
+    category_valid: torch.Tensor
+    """``set_valid`` and the target is an ICD-coded token."""
+
+    category_hit: torch.Tensor
+    """Top-1's ICD 3-character category matches some same-family event
+    in the target's block."""
+
+
 @dataclass
 class _RunningBucket:
     """Cross-entropy/top-k sums for one slice of targets, updated chunk by chunk.
@@ -180,22 +221,29 @@ class _RunningBucket:
     n: int = 0
     set_hit_sum: int = 0
     n_set: int = 0
+    category_hit_sum: int = 0
+    n_category: int = 0
 
     def update(
         self,
         logits: torch.Tensor,
         targets: torch.Tensor,
         top_k: Sequence[int],
-        set_valid: Optional[torch.Tensor] = None,
-        set_hit: Optional[torch.Tensor] = None,
+        set_hits: Optional[BlockSetHits] = None,
     ) -> None:
-        """``logits`` is ``(n, vocab_size)``, ``targets`` is ``(n,)``: one chunk."""
+        """``logits`` is ``(n, vocab_size)``, ``targets`` is ``(n,)``: one chunk.
+
+        ``set_hits`` carries the matching ``(n,)``-shaped slices of the
+        chunk's :class:`BlockSetHits`.
+        """
         if targets.numel() == 0:
             return
         self.n += int(targets.numel())
-        if set_valid is not None and set_hit is not None:
-            self.n_set += int(set_valid.sum().item())
-            self.set_hit_sum += int(set_hit.sum().item())
+        if set_hits is not None:
+            self.n_set += int(set_hits.set_valid.sum().item())
+            self.set_hit_sum += int(set_hits.set_hit.sum().item())
+            self.n_category += int(set_hits.category_valid.sum().item())
+            self.category_hit_sum += int(set_hits.category_hit.sum().item())
         self.ce_sum += float(F.cross_entropy(logits, targets, reduction="sum").item())
         top_k_preds = logits.topk(max(top_k), dim=-1).indices
         hits = top_k_preds == targets.unsqueeze(-1)
@@ -217,6 +265,10 @@ class _RunningBucket:
             n_predictions=self.n,
             set_top1_accuracy=(self.set_hit_sum / self.n_set if self.n_set else None),
             n_set_predictions=self.n_set or None,
+            category_set_top1_accuracy=(
+                self.category_hit_sum / self.n_category if self.n_category else None
+            ),
+            n_category_predictions=self.n_category or None,
         )
 
 
@@ -228,18 +280,38 @@ def _block_set_hits(
     subject_ids: torch.Tensor,
     real_mask: torch.Tensor,
     vocab_size: int,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+    type_lookup: torch.Tensor,
+    category_lookup: Optional[torch.Tensor] = None,
+    n_categories: int = 0,
+) -> BlockSetHits:
     """Per-position "top-1 named some event in the target's time block".
 
     Sequences are time-sorted per subject, so a same-timestamp event block
     is a contiguous run; block membership is recoverable from the chunk's
     own input timestamps (the target at position ``j`` is the input token
     at ``j+1``). Fully vectorized: each position gets a composite
-    ``block_id * vocab_size + token`` key, and ``torch.isin`` of predicted
-    keys against target keys answers membership with no Python loops. The
-    final position of each lane has no in-chunk target timestamp and is
-    excluded (`n_set_predictions` counts what remains); blocks never span
-    subjects because a subject change starts a new block.
+    ``(block_id, family) * vocab_size + token`` key, and ``torch.isin`` of
+    predicted keys against target keys answers membership with no Python
+    loops. The final position of each lane has no in-chunk target
+    timestamp and is excluded (`n_set_predictions` counts what remains);
+    blocks never span subjects because a subject change starts a new
+    block.
+
+    Membership is restricted to the *target's own code family*: a
+    discharge block holds the ~22 diagnosis codes together with the
+    discharge event and DRG billing at the same instant, and without the
+    restriction a diagnosis target could be "set-hit" by predicting the
+    discharge token -- crediting the diagnosis family with a prediction
+    that says nothing about diagnoses. With it, a diagnosis set-hit means
+    the model named a diagnosis that is in the block.
+
+    ``category_lookup`` (see :func:`_build_category_lookup`) adds a second,
+    coarser flag for ICD-coded targets: the top-1's 3-character category
+    matches some same-family block member's. Under the ``icd3`` vocabulary
+    backoff a frequent full code and its category token coexist, so
+    probability mass splits between ``I5023`` and ``I50``; category
+    scoring asks whether the model knows the *kind* of diagnosis or
+    procedure coming, independent of that split.
     """
     lanes, chunk = targets.shape
     tgt_t = times[:, 1:]
@@ -253,19 +325,42 @@ def _block_set_hits(
     lane_offset = torch.arange(lanes, device=targets.device).unsqueeze(1) * (chunk + 1)
     block_id = new_block.long().cumsum(dim=1) + lane_offset
 
+    # Blocks are keyed by (block, target family): a member only counts for
+    # queries whose target shares its family, and a query token matches a
+    # member only if it *is* that member, so a hit implies the top-1 is
+    # in the block and of the target's family.
+    tgt_family = type_lookup[tgt]
+    n_families = int(type_lookup.max().item()) + 1
+    block_family = block_id * n_families + tgt_family
     member_keys = torch.where(
-        valid,
-        block_id * vocab_size + tgt,
-        torch.full_like(tgt, -1),
+        valid, block_family * vocab_size + tgt, torch.full_like(tgt, -1)
     )
-    query_keys = block_id * vocab_size + pred
+    query_keys = block_family * vocab_size + pred
     hit = torch.isin(query_keys, member_keys) & valid
 
     set_valid = torch.zeros_like(real_mask)
     set_hit = torch.zeros_like(real_mask)
     set_valid[:, : chunk - 1] = valid
     set_hit[:, : chunk - 1] = hit
-    return set_valid, set_hit
+
+    category_valid = torch.zeros_like(real_mask)
+    category_hit = torch.zeros_like(real_mask)
+    if category_lookup is not None and n_categories > 0:
+        tgt_cat = category_lookup[tgt]
+        pred_cat = category_lookup[pred]
+        cat_valid = valid & (tgt_cat >= 0)
+        cat_members = torch.where(
+            cat_valid,
+            block_family * n_categories + tgt_cat,
+            torch.full_like(tgt, -1),
+        )
+        # An out-of-hierarchy top-1 (pred_cat == -1) can never match.
+        cat_query = block_family * n_categories + pred_cat.clamp_min(0)
+        cat_hit = torch.isin(cat_query, cat_members) & cat_valid & (pred_cat >= 0)
+        category_valid[:, : chunk - 1] = cat_valid
+        category_hit[:, : chunk - 1] = cat_hit
+
+    return BlockSetHits(set_valid, set_hit, category_valid, category_hit)
 
 
 class _RunningTaskMetrics:
@@ -288,22 +383,48 @@ class _RunningTaskMetrics:
         self, vocab: Vocabulary, *, device: str, top_k: Sequence[int] = (1, 5)
     ) -> None:
         self._top_k = top_k
-        self._type_lookup = _build_type_lookup(vocab, device)
+        self.type_lookup = _build_type_lookup(vocab, device)
+        self.category_lookup, self.n_categories = _build_category_lookup(vocab, device)
         self.overall = _RunningBucket()
         self.by_type: Dict[str, _RunningBucket] = {}
+
+    def block_set_hits(
+        self,
+        top1: torch.Tensor,
+        targets: torch.Tensor,
+        *,
+        times: torch.Tensor,
+        subject_ids: torch.Tensor,
+        real_mask: torch.Tensor,
+    ) -> BlockSetHits:
+        """:func:`_block_set_hits` with this evaluation's own lookups."""
+        return _block_set_hits(
+            top1,
+            targets,
+            times=times,
+            subject_ids=subject_ids,
+            real_mask=real_mask,
+            vocab_size=int(self.type_lookup.shape[0]),
+            type_lookup=self.type_lookup,
+            category_lookup=self.category_lookup,
+            n_categories=self.n_categories,
+        )
 
     def update(
         self,
         logits: torch.Tensor,
         targets: torch.Tensor,
-        set_valid: Optional[torch.Tensor] = None,
-        set_hit: Optional[torch.Tensor] = None,
+        set_hits: Optional[BlockSetHits] = None,
     ) -> None:
-        """Fold in one chunk's real-position ``(logits, targets)``."""
+        """Fold in one chunk's real-position ``(logits, targets)``.
+
+        ``set_hits`` holds the same real-position slice of the chunk's
+        :class:`BlockSetHits`.
+        """
         if targets.numel() == 0:
             return
-        self.overall.update(logits, targets, self._top_k, set_valid, set_hit)
-        target_types = self._type_lookup[targets]
+        self.overall.update(logits, targets, self._top_k, set_hits)
+        target_types = self.type_lookup[targets]
         for type_id, name in _CODE_TYPE_NAMES.items():
             type_mask = target_types == type_id
             if type_mask.any():
@@ -311,8 +432,9 @@ class _RunningTaskMetrics:
                     logits[type_mask],
                     targets[type_mask],
                     self._top_k,
-                    set_valid[type_mask] if set_valid is not None else None,
-                    set_hit[type_mask] if set_hit is not None else None,
+                    BlockSetHits(*(flag[type_mask] for flag in set_hits))
+                    if set_hits is not None
+                    else None,
                 )
 
     def finalize(self) -> Tuple[TaskMetrics, Dict[str, TaskMetrics]]:
@@ -371,19 +493,17 @@ def run_streaming_inference(
 
             real = chunk.real_mask
             if real.any():
-                set_valid, set_hit = _block_set_hits(
+                set_hits = task_stats.block_set_hits(
                     logits.argmax(dim=-1),
                     chunk.targets,
                     times=chunk.batch.aux.time_stamps,
                     subject_ids=chunk.subject_ids,
                     real_mask=real,
-                    vocab_size=logits.shape[-1],
                 )
                 task_stats.update(
                     logits[real],
                     chunk.targets[real],
-                    set_valid[real],
-                    set_hit[real],
+                    BlockSetHits(*(flag[real] for flag in set_hits)),
                 )
 
             pool_mask = chunk.patient_end if supervision == "stay" else chunk.visit_end
