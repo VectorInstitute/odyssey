@@ -50,7 +50,7 @@ from typing import Callable, Dict, Optional, TypeVar
 import torch
 
 from odyssey.data.code_normalization import maybe_normalize
-from odyssey.data.concepts import CONCEPTS
+from odyssey.data.concepts import concepts_for_source
 from odyssey.data.streaming import PackedLaneSampler
 from odyssey.data.value_binning import QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import PAD_ID
@@ -96,6 +96,14 @@ class TrainingConfig:
     embedding_dim: int = 32
 
     # Tokenization
+    source: str = "mimic_iv"
+    """Which institution's extraction the shards come from ("mimic_iv",
+    "eicu", "gemini"). Picks the per-source expansion of the canonical
+    concept registry (odyssey.data.concepts.concepts_for_source) and of
+    the curated clinical bin ranges
+    (odyssey.data.value_binning.clinical_ranges_for_source); the rest of
+    the pipeline is source-independent."""
+
     vocab_min_count: int = 5
     vocab_max_size: int = 20_000
     vocab_backoff: Optional[str] = "icd3"
@@ -371,21 +379,27 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
     if config.normalize_medications:
         logger.info("[data] medication codes normalized to ingredient level")
 
-    logger.info("[data] labeling concepts (%s-scoped)", config.concept_supervision)
+    concepts = concepts_for_source(config.source)
+    logger.info(
+        "[data] labeling %d concepts (%s-scoped, source=%s)",
+        len(concepts),
+        config.concept_supervision,
+        config.source,
+    )
     train_labels: ConceptLabelDict
     train_masks: ConceptLabelDict
     tuning_labels: ConceptLabelDict
     tuning_masks: ConceptLabelDict
     if config.concept_supervision == "visit":
         train_labels, train_masks = build_visit_concept_label_dicts(
-            train_events, CONCEPTS
+            train_events, concepts
         )
         tuning_labels, tuning_masks = build_visit_concept_label_dicts(
-            tuning_events, CONCEPTS
+            tuning_events, concepts
         )
     elif config.concept_supervision == "stay":
-        train_labels, train_masks = build_concept_label_dicts(train_events, CONCEPTS)
-        tuning_labels, tuning_masks = build_concept_label_dicts(tuning_events, CONCEPTS)
+        train_labels, train_masks = build_concept_label_dicts(train_events, concepts)
+        tuning_labels, tuning_masks = build_concept_label_dicts(tuning_events, concepts)
     else:
         raise ValueError(
             f"concept_supervision must be 'visit' or 'stay', got "
@@ -401,8 +415,8 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
         train_events, n_bins=config.quantile_n_bins, min_count=config.quantile_min_count
     )
     binner.save(output_dir / "quantile_binner.json")
-    train_events_binned = add_value_tokens(train_events, binner)
-    tuning_events_binned = add_value_tokens(tuning_events, binner)
+    train_events_binned = add_value_tokens(train_events, binner, source=config.source)
+    tuning_events_binned = add_value_tokens(tuning_events, binner, source=config.source)
     # The unbinned events are never needed again -- everything for the
     # rest of this (potentially many-hour) run reads from the binned
     # copies instead. Without this, both copies of every split stay
@@ -422,7 +436,7 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
     vocab.save(output_dir / "vocabulary.json")
     logger.info("[data] vocab size: %d", len(vocab))
 
-    model = build_model(config, vocab_size=len(vocab), num_concepts=len(CONCEPTS)).to(
+    model = build_model(config, vocab_size=len(vocab), num_concepts=len(concepts)).to(
         device
     )
     n_params = sum(p.numel() for p in model.parameters())

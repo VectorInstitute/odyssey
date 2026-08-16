@@ -29,7 +29,7 @@ import torch
 import torch.nn.functional as F  # noqa: N812
 
 from odyssey.data.code_normalization import maybe_normalize
-from odyssey.data.concepts import CONCEPTS
+from odyssey.data.concepts import AnyConceptDefinition, concepts_for_source
 from odyssey.data.streaming import PackedLaneSampler
 from odyssey.data.value_binning import QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import Vocabulary, code_type
@@ -123,7 +123,8 @@ def load_run(
     vocab = Vocabulary.load(run_dir / "vocabulary.json")
     binner = QuantileBinner.load(run_dir / "quantile_binner.json")
 
-    model = build_model(config, vocab_size=len(vocab), num_concepts=len(CONCEPTS))
+    concepts = concepts_for_source(getattr(config, "source", "mimic_iv"))
+    model = build_model(config, vocab_size=len(vocab), num_concepts=len(concepts))
     checkpoint_path = (
         Path(checkpoint_path) if checkpoint_path else _latest_checkpoint(run_dir)
     )
@@ -139,15 +140,17 @@ def load_and_bin_held_out(
     binner: QuantileBinner,
     *,
     max_shards: Optional[int] = None,
+    source: str = "mimic_iv",
 ) -> pl.DataFrame:
     """Load a held-out MEDS split and apply the *train-fit* binner to it.
 
     Never re-fits the binner here -- using the train split's own
     quantile boundaries on held-out data is the whole point of
-    evaluating on genuinely unseen data.
+    evaluating on genuinely unseen data. ``source`` must match the
+    training run's (it picks the curated clinical bin prefixes).
     """
     events = load_meds_shards(shard_dir, max_shards=max_shards)
-    return add_value_tokens(events, binner)
+    return add_value_tokens(events, binner, source=source)
 
 
 def _build_type_lookup(vocab: Vocabulary, device: str) -> torch.Tensor:
@@ -330,6 +333,7 @@ def run_streaming_inference(
     device: str = "cuda",
     max_seq_len: Optional[int] = None,
     supervision: ConceptSupervision = "stay",
+    concepts: Optional[Sequence[AnyConceptDefinition]] = None,
 ) -> InferenceResults:
     """Stream held-out patients through ``model`` and score every eval question.
 
@@ -337,7 +341,12 @@ def run_streaming_inference(
     :func:`~odyssey.training.data.build_concept_label_dicts`'s
     ``subject_id -> (num_concepts,)`` shape, built from the *unbinned*
     held-out events (concept labeling never looks at value tokens).
+    ``concepts`` must be the same definitions those labels were built
+    from (defaults to the MIMIC-IV expansion of the canonical registry,
+    matching the training default).
     """
+    if concepts is None:
+        concepts = concepts_for_source("mimic_iv")
     model.eval()
     patients = iter_patient_sequences(events_binned, vocab, max_seq_len=max_seq_len)
     sampler = PackedLaneSampler(
@@ -433,7 +442,7 @@ def run_streaming_inference(
     concept_embeddings = torch.cat(end_concept_embeddings)
     unknown_embedding = torch.cat(end_unknown_embedding)
 
-    concept_names = [c.name for c in CONCEPTS]
+    concept_names = [c.name for c in concepts]
     if supervision == "visit":
         visit_ids = torch.cat(end_visit_ids)
         labels = _gather_by_visit(subject_ids, visit_ids, concept_labels)  # type: ignore[arg-type]
@@ -482,18 +491,22 @@ def evaluate_run(
     raw_events = maybe_normalize(
         raw_events, enabled=getattr(config, "normalize_medications", False)
     )
-    events_binned = add_value_tokens(raw_events, binner)
+    source = getattr(config, "source", "mimic_iv")
+    concepts = concepts_for_source(source)
+    events_binned = add_value_tokens(raw_events, binner, source=source)
 
     supervision = getattr(config, "concept_supervision", "stay")
-    logger.info("[inference] labeling concepts (%s-scoped)", supervision)
+    logger.info(
+        "[inference] labeling concepts (%s-scoped, source=%s)", supervision, source
+    )
     concept_labels: ConceptLabelDict
     concept_mask: ConceptLabelDict
     if supervision == "visit":
         concept_labels, concept_mask = build_visit_concept_label_dicts(
-            raw_events, CONCEPTS
+            raw_events, concepts
         )
     else:
-        concept_labels, concept_mask = build_concept_label_dicts(raw_events, CONCEPTS)
+        concept_labels, concept_mask = build_concept_label_dicts(raw_events, concepts)
     del raw_events
 
     logger.info("[inference] running streaming inference")
@@ -507,6 +520,7 @@ def evaluate_run(
         chunk_size=chunk_size,
         device=device,
         supervision=supervision,  # type: ignore[arg-type]
+        concepts=concepts,
     )
 
 

@@ -3,12 +3,17 @@
 A registry of clinically-recognizable vital-sign/lab abnormalities,
 derived from a MEDS event table to supervise
 :class:`odyssey.models.concept_bottleneck.ConceptBottleneck`.
-Itemids are MIMIC-IV's, matching the itemids used by the widely-cited
-`MIT-LCP/mimic-code <https://github.com/MIT-LCP/mimic-code>`_ concept
-queries; the MEDS ETL keys chartevents on ``LAB//{itemid}//`` and
-labevents on ``LAB//RESULT//{itemid}//`` -- see
-:mod:`odyssey.data.code_mapping` for the LOINC mapping that makes these
-rules portable to other institutions.
+
+The clinical knowledge lives in :data:`CANONICAL_CONCEPTS`, written once
+against LOINC codes -- the portable, institution-agnostic vocabulary --
+and :func:`concepts_for_source` expands it to the concrete MEDS code
+prefixes one source's extraction uses (MIMIC-IV's
+``LAB//{itemid}//``/``LAB//RESULT//{itemid}//``, eICU's ``VITALS//...``
+and ``LAB//{labname}//``), via the per-source mapping tables in
+:mod:`odyssey.data.code_mapping`. :data:`CONCEPTS` is the MIMIC-IV
+expansion, kept as the module-level default. Thresholds match the
+widely-cited `MIT-LCP/mimic-code
+<https://github.com/MIT-LCP/mimic-code>`_ concept queries.
 
 Labels are per-subject (did this ever happen across the subject's full
 extracted window), not per-timepoint -- extend once the patient sequence
@@ -55,12 +60,18 @@ yet express. See research_journal/04_concept_pipeline.html, Section 08,
 "still open".
 """
 
+import logging
 import warnings
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Dict, List, Literal, Optional, Sequence, Set, Tuple, Union
 
 import polars as pl
+
+from odyssey.data.code_mapping import prefixes_for_loinc, unit_for
+
+
+logger = logging.getLogger(__name__)
 
 
 # Which side of a threshold triggers a rule. The `at_or_*` variants make
@@ -265,225 +276,470 @@ AnyConceptDefinition = Union[ConceptDefinition, CompositeConceptDefinition]
 
 
 # ---------------------------------------------------------------------------
-# Simple instantaneous vital-sign/lab concepts (v1, kept): no known
-# over-triggering problem, so an instantaneous threshold remains
-# appropriate -- see the module docstring for which v1 concepts were
-# upgraded instead (tachypnea, acute_kidney_injury).
+# Canonical (source-agnostic) concept registry.
+#
+# Clinical knowledge is written ONCE here, keyed by LOINC codes -- the
+# portable vocabulary -- never by any single institution's item
+# identifiers. :func:`concepts_for_source` resolves each LOINC to the
+# concrete MEDS code prefixes a source's extraction uses (via
+# :mod:`odyssey.data.code_mapping`) and produces the prefix-keyed
+# concrete definitions everything downstream consumes. A criterion whose
+# LOINC has no mapping in a source (e.g. GCS in eICU, whose spec does
+# not extract nurseCharting yet) is dropped for that source with a
+# logged warning; a composite survives as long as it retains at least
+# ``min_criteria`` criteria, matching how the entry-06 eICU analysis
+# translated the registry by hand.
 # ---------------------------------------------------------------------------
 
-_TACHYCARDIA = ConceptDefinition(
-    "tachycardia",
-    [ConceptRule("LAB//220045//", 100.0, "above")],
-    "Heart rate > 100 bpm.",
-)
-_BRADYCARDIA = ConceptDefinition(
-    "bradycardia",
-    [ConceptRule("LAB//220045//", 60.0, "below")],
-    "Heart rate < 60 bpm.",
-)
-_HYPOTENSION = ConceptDefinition(
-    "hypotension",
-    [
-        ConceptRule("LAB//220179//", 90.0, "below"),  # non-invasive systolic BP
-        ConceptRule("LAB//220050//", 90.0, "below"),  # arterial systolic BP
-    ],
-    "Systolic blood pressure < 90 mmHg.",
-)
-_HYPERTENSION = ConceptDefinition(
-    "hypertension",
-    [
-        ConceptRule("LAB//220179//", 140.0, "above"),
-        ConceptRule("LAB//220050//", 140.0, "above"),
-    ],
-    "Systolic blood pressure > 140 mmHg.",
-)
-_HYPOXIA = ConceptDefinition(
-    "hypoxia",
-    [ConceptRule("LAB//220277//", 92.0, "below")],
-    "SpO2 < 92%.",
-)
-_FEVER = ConceptDefinition(
-    "fever",
-    [
-        ConceptRule("LAB//223761//", 100.4, "above"),  # Fahrenheit
-        ConceptRule("LAB//223762//", 38.0, "above"),  # Celsius
-    ],
-    "Temperature > 100.4F / 38.0C.",
-)
-_HYPOTHERMIA = ConceptDefinition(
-    "hypothermia",
-    [
-        ConceptRule("LAB//223761//", 96.8, "below"),
-        ConceptRule("LAB//223762//", 36.0, "below"),
-    ],
-    "Temperature < 96.8F / 36.0C.",
-)
-_ELEVATED_LACTATE = ConceptDefinition(
-    "elevated_lactate",
-    [ConceptRule("LAB//RESULT//50813//", 2.0, "above")],
-    "Serum lactate > 2.0 mmol/L.",
-)
 
-# ---------------------------------------------------------------------------
-# v2: upgraded from v1's single-instantaneous-threshold proxies.
-# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class LoincThreshold:
+    """Canonical form of :class:`ConceptRule`: threshold keyed by LOINC.
 
-_SUSTAINED_TACHYPNEA = ConceptDefinition(
-    "sustained_tachypnea",
-    [SustainedRule("LAB//220210//", 20.0, "above", min_gap_hours=1.0)],
-    "Respiratory rate > 20 breaths/min, recurring at least 1 hour apart -- "
-    "replaces v1's single-instantaneous-reading 'tachypnea', which "
-    "triggered for 96.5% of subjects with respiratory-rate data in the "
-    "real MIMIC-IV extraction (too loose to be a useful signal; a single "
-    "transient spike, e.g. during one stressful procedure, was "
-    "indistinguishable from true sustained tachypnea).",
-)
+    ``loincs`` may list several codes when distinct measurements are
+    clinically interchangeable for the rule (non-invasive 76534-7 and
+    arterial 8480-6 systolic BP); inside a composite, a multi-prefix
+    expansion is wrapped in :class:`AnyOf` so it still counts as one
+    criterion. Exactly one of ``threshold`` (unit-unambiguous signals)
+    or ``unit_thresholds`` (unit-split signals: temperature is charted
+    in Fahrenheit or Celsius depending on source and itemid, with the
+    same LOINC 8310-5) must be given; unit tags come from
+    :func:`odyssey.data.code_mapping.unit_for`.
+    """
 
-_CREATININE = "LAB//RESULT//50912//"
+    loincs: Tuple[str, ...]
+    direction: Direction
+    threshold: Optional[float] = None
+    unit_thresholds: Optional[Tuple[Tuple[str, float], ...]] = None
 
-_ACUTE_KIDNEY_INJURY = ConceptDefinition(
-    "acute_kidney_injury",
-    [
-        BaselineRelativeRule(
-            _CREATININE, delta=0.3, direction="above", window_hours=48.0
-        ),
-        BaselineRelativeRule(
-            _CREATININE, ratio=1.5, direction="above", window_hours=168.0
-        ),
-    ],
-    "KDIGO AKI Stage 1 (either trigger): serum creatinine rose by >= 0.3 "
-    "mg/dL within 48 hours, OR rose to >= 1.5x an earlier reading within "
-    "7 days (168h). Replaces v1's 'creatinine > 1.5 mg/dL' single-value "
-    "proxy, which ignored a patient's own baseline. See aki_stage_2 and "
-    "aki_stage_3 for higher severity; urine-output-based staging is not "
-    "implemented -- see 'still open'.",
-)
-
-_AKI_STAGE_2 = ConceptDefinition(
-    "aki_stage_2",
-    [
-        BaselineRelativeRule(
-            _CREATININE, ratio=2.0, direction="above", window_hours=168.0
-        )
-    ],
-    "KDIGO AKI Stage 2: serum creatinine rose to >= 2.0x an earlier "
-    "reading within 7 days. Urine-output-based staging (<0.5 mL/kg/h for "
-    ">= 12h) is not implemented -- see 'still open'.",
-)
-
-_AKI_STAGE_3 = ConceptDefinition(
-    "aki_stage_3",
-    [
-        BaselineRelativeRule(
-            _CREATININE, ratio=3.0, direction="above", window_hours=168.0
-        ),
-        ConceptRule(_CREATININE, 4.0, "at_or_above"),  # KDIGO: >= 4.0, inclusive
-    ],
-    "KDIGO AKI Stage 3 (either trigger): serum creatinine rose to "
-    ">= 3.0x an earlier reading within 7 days, OR any reading >= 4.0 "
-    "mg/dL. Renal-replacement-therapy initiation and urine-output-based "
-    "staging (<0.3 mL/kg/h for >= 24h, or anuria for >= 12h) are not "
-    "implemented -- see 'still open'.",
-)
-
-_SIRS = CompositeConceptDefinition(
-    "sirs",
-    components=[
-        AnyOf(
-            [
-                ConceptRule("LAB//223761//", 100.4, "above"),
-                ConceptRule("LAB//223762//", 38.0, "above"),
-                ConceptRule("LAB//223761//", 96.8, "below"),
-                ConceptRule("LAB//223762//", 36.0, "below"),
-            ]
-        ),  # criterion 1: temp > 38C/100.4F or < 36C/96.8F
-        ConceptRule("LAB//220045//", 90.0, "above"),  # criterion 2: HR > 90
-        ConceptRule("LAB//220210//", 20.0, "above"),  # criterion 3: RR > 20
-        AnyOf(
-            [
-                ConceptRule("LAB//RESULT//51301//", 12.0, "above"),
-                ConceptRule("LAB//RESULT//51301//", 4.0, "below"),
-            ]
-        ),  # criterion 4: WBC > 12k or < 4k per uL
-    ],
-    min_criteria=2,
-    description=(
-        "SIRS (Systemic Inflammatory Response Syndrome): >= 2 of "
-        "{abnormal temperature, HR > 90, RR > 20, abnormal WBC}. The "
-        "bands-percentage alternative for the WBC criterion (>10% bands, "
-        "an option even with a normal WBC count) is not included -- no "
-        "verified MIMIC-IV itemid for band percentage has been found yet."
-    ),
-)
-
-_QSOFA = CompositeConceptDefinition(
-    "qsofa",
-    components=[
-        ConceptRule("LAB//220210//", 22.0, "at_or_above"),  # RR >= 22
-        AnyOf(
-            [
-                ConceptRule("LAB//220179//", 100.0, "at_or_below"),
-                ConceptRule("LAB//220050//", 100.0, "at_or_below"),
-            ]
-        ),  # SBP <= 100
-        DerivedGcsTotalRule(
-            eye_prefix="LAB//220739//",
-            verbal_prefix="LAB//223900//",
-            motor_prefix="LAB//223901//",
-            threshold=15.0,
-            direction="below",
-        ),  # GCS < 15 (any drop from fully alert)
-    ],
-    min_criteria=2,
-    description=(
-        "qSOFA (quick Sequential Organ Failure Assessment), a bedside "
-        "sepsis-screening score: >= 2 of {RR >= 22, SBP <= 100 mmHg, "
-        "GCS < 15}."
-    ),
-)
+    def __post_init__(self) -> None:
+        """Require exactly one of ``threshold``/``unit_thresholds``."""
+        if (self.threshold is None) == (self.unit_thresholds is None):
+            raise ValueError(
+                "LoincThreshold needs exactly one of threshold or "
+                f"unit_thresholds, got threshold={self.threshold!r} "
+                f"unit_thresholds={self.unit_thresholds!r}"
+            )
 
 
-# entry 06/07 decision (f): the first occurrence-keyed concept. The drug-name
-# regex reaches both MIMIC-IV medication codes (drug name embedded in the code
-# string) and, via match_text_value, eICU infusion events (bare INFUSION_DRUG
-# code, drug name in text_value). "epinephrine" also matching "norepinephrine"
-# is deliberate; both are vasopressors and Rust regex has no lookbehind.
-# Dobutamine is excluded on purpose: an inotrope, not a vasopressor.
-_ON_VASOPRESSORS = ConceptDefinition(
-    "on_vasopressors",
-    [
-        CodeOccurrenceRule(
-            r"norepinephrine|levophed|epinephrine|vasopressin|phenylephrine"
-            r"|neo-?synephrine|dopamine|angiotensin",
-            match_text_value=True,
-        )
-    ],
-    "Received at least one vasopressor (norepinephrine, epinephrine, "
-    "vasopressin, phenylephrine, dopamine, or angiotensin II) -- the "
-    "canonical shock/deterioration marker, derived from medication and "
-    "infusion events rather than a numeric threshold. 'Observed' means "
-    "the subject has any medication/infusion data at all, so an absent "
-    "match is a genuine negative, not missingness.",
-)
+@dataclass(frozen=True)
+class LoincSustained:
+    """Canonical form of :class:`SustainedRule`."""
+
+    loincs: Tuple[str, ...]
+    threshold: float
+    direction: Direction
+    min_gap_hours: float = 1.0
 
 
-CONCEPTS: List[AnyConceptDefinition] = [
-    _TACHYCARDIA,
-    _BRADYCARDIA,
-    _HYPOTENSION,
-    _HYPERTENSION,
-    _HYPOXIA,
-    _FEVER,
-    _HYPOTHERMIA,
-    _ELEVATED_LACTATE,
-    _SUSTAINED_TACHYPNEA,
-    _ACUTE_KIDNEY_INJURY,
-    _AKI_STAGE_2,
-    _AKI_STAGE_3,
-    _SIRS,
-    _QSOFA,
-    _ON_VASOPRESSORS,
+@dataclass(frozen=True)
+class LoincBaselineRelative:
+    """Canonical form of :class:`BaselineRelativeRule`."""
+
+    loincs: Tuple[str, ...]
+    direction: TrendDirection
+    window_hours: float
+    delta: Optional[float] = None
+    ratio: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class LoincGcsTotal:
+    """Canonical form of :class:`DerivedGcsTotalRule`.
+
+    Each component LOINC must resolve to exactly one prefix in a source;
+    zero for any component makes the whole rule unresolvable there.
+    """
+
+    threshold: float
+    direction: Direction = "below"
+    max_component_gap_minutes: float = 15.0
+    eye_loinc: str = "9267-6"
+    verbal_loinc: str = "9270-0"
+    motor_loinc: str = "9268-4"
+
+
+# CodeOccurrenceRule is already source-agnostic (it matches drug names in
+# code strings / text_value, not institution item ids), so it doubles as
+# its own canonical form.
+CanonicalRule = Union[
+    LoincThreshold,
+    LoincSustained,
+    LoincBaselineRelative,
+    LoincGcsTotal,
+    CodeOccurrenceRule,
 ]
+
+
+@dataclass(frozen=True)
+class CanonicalAnyOf:
+    """Canonical form of :class:`AnyOf`."""
+
+    rules: Tuple[CanonicalRule, ...]
+
+
+CanonicalComponent = Union[CanonicalRule, CanonicalAnyOf]
+
+
+@dataclass(frozen=True)
+class CanonicalConcept:
+    """Canonical form of :class:`ConceptDefinition`."""
+
+    name: str
+    rules: Tuple[CanonicalRule, ...]
+    description: str
+
+
+@dataclass(frozen=True)
+class CanonicalComposite:
+    """Canonical form of :class:`CompositeConceptDefinition`."""
+
+    name: str
+    components: Tuple[CanonicalComponent, ...]
+    min_criteria: int
+    description: str
+
+
+AnyCanonicalConcept = Union[CanonicalConcept, CanonicalComposite]
+
+
+def _loinc_prefixes(loincs: Tuple[str, ...], source: str) -> List[str]:
+    """Every concrete prefix for ``loincs`` in ``source``, deterministic order."""
+    out: List[str] = []
+    for loinc in loincs:
+        out.extend(sorted(prefixes_for_loinc(loinc, source=source)))
+    return out
+
+
+def _prefix_threshold(rule: LoincThreshold, prefix: str, source: str) -> float:
+    """Pick the threshold that applies to one concrete prefix."""
+    if rule.unit_thresholds is None:
+        assert rule.threshold is not None  # noqa: S101 -- __post_init__ guarantees
+        return rule.threshold
+    unit = unit_for(prefix, source=source)
+    for tagged_unit, threshold in rule.unit_thresholds:
+        if tagged_unit == unit:
+            return threshold
+    raise ValueError(
+        f"prefix {prefix!r} in source {source!r} has unit tag {unit!r}, but "
+        f"the rule only defines thresholds for "
+        f"{[u for u, _ in rule.unit_thresholds]!r} -- add the unit tag to "
+        f"code_mapping._PREFIX_UNITS or a threshold for that unit."
+    )
+
+
+def _expand_rule(rule: CanonicalRule, source: str) -> List[ComponentRule]:
+    """Resolve one canonical rule to concrete rules; [] if unresolvable."""
+    if isinstance(rule, CodeOccurrenceRule):
+        return [rule]
+    if isinstance(rule, LoincGcsTotal):
+        components = [
+            _loinc_prefixes((loinc,), source)
+            for loinc in (rule.eye_loinc, rule.verbal_loinc, rule.motor_loinc)
+        ]
+        if any(len(prefixes) == 0 for prefixes in components):
+            return []
+        if any(len(prefixes) > 1 for prefixes in components):
+            raise ValueError(
+                f"a GCS component LOINC maps to multiple prefixes in "
+                f"{source!r}: {components!r} -- ambiguous, refine the mapping."
+            )
+        return [
+            DerivedGcsTotalRule(
+                eye_prefix=components[0][0],
+                verbal_prefix=components[1][0],
+                motor_prefix=components[2][0],
+                threshold=rule.threshold,
+                direction=rule.direction,
+                max_component_gap_minutes=rule.max_component_gap_minutes,
+            )
+        ]
+    prefixes = _loinc_prefixes(rule.loincs, source)
+    if isinstance(rule, LoincThreshold):
+        return [
+            ConceptRule(prefix, _prefix_threshold(rule, prefix, source), rule.direction)
+            for prefix in prefixes
+        ]
+    if isinstance(rule, LoincSustained):
+        return [
+            SustainedRule(prefix, rule.threshold, rule.direction, rule.min_gap_hours)
+            for prefix in prefixes
+        ]
+    if isinstance(rule, LoincBaselineRelative):
+        return [
+            BaselineRelativeRule(
+                prefix,
+                direction=rule.direction,
+                window_hours=rule.window_hours,
+                delta=rule.delta,
+                ratio=rule.ratio,
+            )
+            for prefix in prefixes
+        ]
+    raise TypeError(f"unknown canonical rule type: {type(rule)!r}")
+
+
+def _expand_component(
+    component: CanonicalComponent, source: str
+) -> Optional[CompositeComponent]:
+    """Resolve one composite criterion; None if nothing resolves in ``source``."""
+    if isinstance(component, CanonicalAnyOf):
+        rules = [r for rule in component.rules for r in _expand_rule(rule, source)]
+    else:
+        rules = _expand_rule(component, source)
+    if not rules:
+        return None
+    # A criterion is one criterion no matter how many prefixes implement
+    # it -- multiple concrete rules must be OR-ed inside AnyOf so they
+    # cannot each count toward min_criteria.
+    return rules[0] if len(rules) == 1 else AnyOf(rules)
+
+
+def concepts_for_source(source: str = "mimic_iv") -> List[AnyConceptDefinition]:
+    """Expand the canonical registry to one source's concrete definitions.
+
+    Criteria whose LOINCs have no mapping in ``source`` are dropped with
+    a warning; a composite that retains fewer criteria than its
+    ``min_criteria``, or a simple concept that retains no rules at all,
+    is dropped entirely. The result is therefore per-source both in its
+    prefixes and, potentially, in its length -- always take concept
+    names/count from the same expansion the model was trained with.
+    """
+    out: List[AnyConceptDefinition] = []
+    for canonical in CANONICAL_CONCEPTS:
+        if isinstance(canonical, CanonicalComposite):
+            components = []
+            for component in canonical.components:
+                expanded = _expand_component(component, source)
+                if expanded is None:
+                    logger.warning(
+                        "[concepts] source %r: dropping a criterion of %r -- "
+                        "no code mapping",
+                        source,
+                        canonical.name,
+                    )
+                    continue
+                components.append(expanded)
+            if len(components) < canonical.min_criteria:
+                logger.warning(
+                    "[concepts] source %r: dropping concept %r -- only %d of "
+                    "its criteria resolve (min_criteria=%d)",
+                    source,
+                    canonical.name,
+                    len(components),
+                    canonical.min_criteria,
+                )
+                continue
+            out.append(
+                CompositeConceptDefinition(
+                    canonical.name,
+                    components,
+                    canonical.min_criteria,
+                    canonical.description,
+                )
+            )
+        else:
+            rules = [r for rule in canonical.rules for r in _expand_rule(rule, source)]
+            if not rules:
+                logger.warning(
+                    "[concepts] source %r: dropping concept %r -- no code mapping",
+                    source,
+                    canonical.name,
+                )
+                continue
+            out.append(ConceptDefinition(canonical.name, rules, canonical.description))
+    return out
+
+
+# LOINC shorthands, named for readability of the registry below. See
+# odyssey/data/code_mapping.py for what each maps to per source.
+_HR = ("8867-4",)  # heart rate
+_RR = ("9279-1",)  # respiratory rate
+_SPO2 = ("59408-5",)  # O2 saturation, pulse oximetry
+_SBP = ("76534-7", "8480-6")  # systolic BP: non-invasive cuff OR arterial line
+_TEMP = ("8310-5",)  # body temperature (unit-split: F or C by source/itemid)
+_LACTATE = ("32693-4",)
+_CREATININE = ("2160-0",)
+_WBC = ("6690-2",)
+
+_TEMP_HIGH = (("F", 100.4), ("C", 38.0))
+_TEMP_LOW = (("F", 96.8), ("C", 36.0))
+
+
+CANONICAL_CONCEPTS: List[AnyCanonicalConcept] = [
+    # -- Simple instantaneous vital-sign/lab concepts (v1, kept): no known
+    # over-triggering problem, so an instantaneous threshold remains
+    # appropriate -- see the module docstring for which v1 concepts were
+    # upgraded instead (tachypnea, acute_kidney_injury).
+    CanonicalConcept(
+        "tachycardia",
+        (LoincThreshold(_HR, "above", 100.0),),
+        "Heart rate > 100 bpm.",
+    ),
+    CanonicalConcept(
+        "bradycardia",
+        (LoincThreshold(_HR, "below", 60.0),),
+        "Heart rate < 60 bpm.",
+    ),
+    CanonicalConcept(
+        "hypotension",
+        (LoincThreshold(_SBP, "below", 90.0),),
+        "Systolic blood pressure < 90 mmHg.",
+    ),
+    CanonicalConcept(
+        "hypertension",
+        (LoincThreshold(_SBP, "above", 140.0),),
+        "Systolic blood pressure > 140 mmHg.",
+    ),
+    CanonicalConcept(
+        "hypoxia",
+        (LoincThreshold(_SPO2, "below", 92.0),),
+        "SpO2 < 92%.",
+    ),
+    CanonicalConcept(
+        "fever",
+        (LoincThreshold(_TEMP, "above", unit_thresholds=_TEMP_HIGH),),
+        "Temperature > 100.4F / 38.0C.",
+    ),
+    CanonicalConcept(
+        "hypothermia",
+        (LoincThreshold(_TEMP, "below", unit_thresholds=_TEMP_LOW),),
+        "Temperature < 96.8F / 36.0C.",
+    ),
+    CanonicalConcept(
+        "elevated_lactate",
+        (LoincThreshold(_LACTATE, "above", 2.0),),
+        "Serum lactate > 2.0 mmol/L.",
+    ),
+    # -- v2: upgraded from v1's single-instantaneous-threshold proxies.
+    CanonicalConcept(
+        "sustained_tachypnea",
+        (LoincSustained(_RR, 20.0, "above", min_gap_hours=1.0),),
+        "Respiratory rate > 20 breaths/min, recurring at least 1 hour apart -- "
+        "replaces v1's single-instantaneous-reading 'tachypnea', which "
+        "triggered for 96.5% of subjects with respiratory-rate data in the "
+        "real MIMIC-IV extraction (too loose to be a useful signal; a single "
+        "transient spike, e.g. during one stressful procedure, was "
+        "indistinguishable from true sustained tachypnea).",
+    ),
+    CanonicalConcept(
+        "acute_kidney_injury",
+        (
+            LoincBaselineRelative(
+                _CREATININE, delta=0.3, direction="above", window_hours=48.0
+            ),
+            LoincBaselineRelative(
+                _CREATININE, ratio=1.5, direction="above", window_hours=168.0
+            ),
+        ),
+        "KDIGO AKI Stage 1 (either trigger): serum creatinine rose by >= 0.3 "
+        "mg/dL within 48 hours, OR rose to >= 1.5x an earlier reading within "
+        "7 days (168h). Replaces v1's 'creatinine > 1.5 mg/dL' single-value "
+        "proxy, which ignored a patient's own baseline. See aki_stage_2 and "
+        "aki_stage_3 for higher severity; urine-output-based staging is not "
+        "implemented -- see 'still open'.",
+    ),
+    CanonicalConcept(
+        "aki_stage_2",
+        (
+            LoincBaselineRelative(
+                _CREATININE, ratio=2.0, direction="above", window_hours=168.0
+            ),
+        ),
+        "KDIGO AKI Stage 2: serum creatinine rose to >= 2.0x an earlier "
+        "reading within 7 days. Urine-output-based staging (<0.5 mL/kg/h for "
+        ">= 12h) is not implemented -- see 'still open'.",
+    ),
+    CanonicalConcept(
+        "aki_stage_3",
+        (
+            LoincBaselineRelative(
+                _CREATININE, ratio=3.0, direction="above", window_hours=168.0
+            ),
+            # KDIGO: >= 4.0, inclusive
+            LoincThreshold(_CREATININE, "at_or_above", 4.0),
+        ),
+        "KDIGO AKI Stage 3 (either trigger): serum creatinine rose to "
+        ">= 3.0x an earlier reading within 7 days, OR any reading >= 4.0 "
+        "mg/dL. Renal-replacement-therapy initiation and urine-output-based "
+        "staging (<0.3 mL/kg/h for >= 24h, or anuria for >= 12h) are not "
+        "implemented -- see 'still open'.",
+    ),
+    CanonicalComposite(
+        "sirs",
+        components=(
+            # criterion 1: temp > 38C/100.4F or < 36C/96.8F
+            CanonicalAnyOf(
+                (
+                    LoincThreshold(_TEMP, "above", unit_thresholds=_TEMP_HIGH),
+                    LoincThreshold(_TEMP, "below", unit_thresholds=_TEMP_LOW),
+                )
+            ),
+            LoincThreshold(_HR, "above", 90.0),  # criterion 2: HR > 90
+            LoincThreshold(_RR, "above", 20.0),  # criterion 3: RR > 20
+            # criterion 4: WBC > 12k or < 4k per uL
+            CanonicalAnyOf(
+                (
+                    LoincThreshold(_WBC, "above", 12.0),
+                    LoincThreshold(_WBC, "below", 4.0),
+                )
+            ),
+        ),
+        min_criteria=2,
+        description=(
+            "SIRS (Systemic Inflammatory Response Syndrome): >= 2 of "
+            "{abnormal temperature, HR > 90, RR > 20, abnormal WBC}. The "
+            "bands-percentage alternative for the WBC criterion (>10% bands, "
+            "an option even with a normal WBC count) is not included -- no "
+            "verified MIMIC-IV itemid for band percentage has been found yet."
+        ),
+    ),
+    CanonicalComposite(
+        "qsofa",
+        components=(
+            LoincThreshold(_RR, "at_or_above", 22.0),  # RR >= 22
+            LoincThreshold(_SBP, "at_or_below", 100.0),  # SBP <= 100
+            # GCS < 15 (any drop from fully alert)
+            LoincGcsTotal(threshold=15.0, direction="below"),
+        ),
+        min_criteria=2,
+        description=(
+            "qSOFA (quick Sequential Organ Failure Assessment), a bedside "
+            "sepsis-screening score: >= 2 of {RR >= 22, SBP <= 100 mmHg, "
+            "GCS < 15}."
+        ),
+    ),
+    # entry 06/07 decision (f): the first occurrence-keyed concept. The
+    # drug-name regex reaches both MIMIC-IV medication codes (drug name
+    # embedded in the code string) and, via match_text_value, eICU infusion
+    # events (bare INFUSION_DRUG code, drug name in text_value).
+    # "epinephrine" also matching "norepinephrine" is deliberate; both are
+    # vasopressors and Rust regex has no lookbehind. Dobutamine is excluded
+    # on purpose: an inotrope, not a vasopressor.
+    CanonicalConcept(
+        "on_vasopressors",
+        (
+            CodeOccurrenceRule(
+                r"norepinephrine|levophed|epinephrine|vasopressin|phenylephrine"
+                r"|neo-?synephrine|dopamine|angiotensin",
+                match_text_value=True,
+            ),
+        ),
+        "Received at least one vasopressor (norepinephrine, epinephrine, "
+        "vasopressin, phenylephrine, dopamine, or angiotensin II) -- the "
+        "canonical shock/deterioration marker, derived from medication and "
+        "infusion events rather than a numeric threshold. 'Observed' means "
+        "the subject has any medication/infusion data at all, so an absent "
+        "match is a genuine negative, not missingness.",
+    ),
+]
+
+
+# The MIMIC-IV expansion, kept as the module-level default registry:
+# every existing entry point (training config default source, tests,
+# report tooling) reads this exactly as before the canonical layer
+# existed. Other sources call concepts_for_source(...) directly.
+CONCEPTS: List[AnyConceptDefinition] = concepts_for_source("mimic_iv")
 
 
 def _instantaneous_ids(

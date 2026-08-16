@@ -30,7 +30,7 @@ import polars as pl
 import torch
 
 from odyssey.data.code_normalization import maybe_normalize
-from odyssey.data.concepts import CONCEPTS
+from odyssey.data.concepts import concepts_for_source
 from odyssey.data.sequences import (
     PatientSequence,
     build_patient_sequence,
@@ -258,17 +258,19 @@ def build_case_studies(
         raw_events, enabled=getattr(config, "normalize_medications", False)
     )
 
-    logger.info("[case_study] labeling concepts")
-    concept_labels, concept_mask = build_concept_label_dicts(raw_events, CONCEPTS)
+    source = getattr(config, "source", "mimic_iv")
+    concepts = concepts_for_source(source)
+    logger.info("[case_study] labeling concepts (source=%s)", source)
+    concept_labels, concept_mask = build_concept_label_dicts(raw_events, concepts)
 
     logger.info("[case_study] selecting %d diverse cases", n_cases)
     subject_ids = select_diverse_cases(raw_events, concept_labels, n_cases=n_cases)
 
     logger.info("[case_study] binning values")
-    events_binned = add_value_tokens(raw_events, binner)
+    events_binned = add_value_tokens(raw_events, binner, source=source)
     del raw_events
 
-    concept_names = [c.name for c in CONCEPTS]
+    concept_names = [c.name for c in concepts]
     traces: List[PatientCaseTrace] = []
     for subject_id in subject_ids:
         logger.info("[case_study] tracing subject %d", subject_id)
