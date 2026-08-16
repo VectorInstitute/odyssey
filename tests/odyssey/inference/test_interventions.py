@@ -204,3 +204,37 @@ def test_first_time_builders_align_with_sequence_time_origin() -> None:
     first = build_visit_concept_first_times(events, concepts)
     # 7 hours after the subject's first event (the creatinine at T0).
     assert first[(1, 10)].tolist() == [7.0]
+
+
+def test_uncertain_band_limits_replacement_and_reports_displacement() -> None:
+    """A band replaces only entries near p=0.5 and reports their displacement."""
+    vocab = _vocab()
+    labels, masks = _labels_and_masks()
+    model = _model(len(vocab))
+    kwargs = {
+        "supervision": "stay",
+        "num_lanes": 2,
+        "chunk_size": 8,
+        "device": "cpu",
+        "seed": 0,
+    }
+    full = run_streaming_intervention(
+        model, _events(), vocab, labels, masks, mode="truth", **kwargs
+    )
+    banded = run_streaming_intervention(
+        model,
+        _events(),
+        vocab,
+        labels,
+        masks,
+        mode="truth",
+        uncertain_band=0.05,
+        **kwargs,
+    )
+    assert full.mean_abs_displacement is not None
+    assert 0.0 < full.mean_abs_displacement <= 1.0
+    assert banded.uncertain_band == 0.05
+    assert banded.n_intervened_positions <= full.n_intervened_positions
+    # Inside a +/-0.05 band around 0.5 no displacement can exceed 0.55.
+    if banded.mean_abs_displacement is not None:
+        assert banded.mean_abs_displacement <= 0.55
