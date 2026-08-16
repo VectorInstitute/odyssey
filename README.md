@@ -16,23 +16,22 @@
 
 ## Goal
 
-Odyssey builds clinical foundation models for electronic health records whose predictions a clinician can inspect, question, and correct.
+Odyssey builds one general forecasting model of a patient's clinical timeline, and uses it to alert clinicians and to let them ask "what if".
 
-The starting point is a sequence model that reads a patient's whole record as one timeline of events (labs, vitals, medications, diagnoses, procedures, admissions) and forecasts what happens next, the way a language model forecasts the next word. Prior work ([EHRMamba](https://arxiv.org/abs/2405.14567)) showed this learns strong representations, but its forecasts are opaque: nothing in the model says *why* a patient is predicted to deteriorate.
+Most clinical AI models are bespoke: one model for mortality, another for sepsis, another for deterioration, each trained on its own labels and useless outside its task. Odyssey instead trains a single model to forecast the patient's event sequence itself (labs, vitals, medications, diagnoses, procedures, admissions, outcomes) the way a language model forecasts the next word, over the whole record. Prior work ([EHRMamba](https://arxiv.org/abs/2405.14567)) showed this learns strong representations. Everything downstream is derived from the same model rather than trained separately:
 
-Odyssey puts a **concept bottleneck** between the sequence model and its forecasts. Everything the model predicts must pass through a small set of named clinical concepts (tachycardia, hypotension, acute kidney injury, SIRS, on vasopressors, ...) plus one unnamed residual channel. That gives three things a black box cannot:
+- **Alerts.** Roll the model forward from a patient's current state and read off the probability of events that matter (vasopressor start, ICU transfer, acute kidney injury, death) within a horizon. One model, every alert.
+- **Interaction.** Insert a hypothetical event ("we give this medication now") and roll forward again: how do the likely futures change? Or override the model's belief about the patient ("assume they are not septic") and see what the forecast does.
 
-1. **A readout a clinician can check.** At every moment in the timeline the model states, for each concept, its probability that the patient is in that state. Those probabilities are supervised against rule-derived clinical labels and scored on held-out patients, so their accuracy is measured, not assumed.
-2. **An explanation for each forecast.** Because forecasts flow through the concepts, a prediction can be traced to the concept activations that drove it.
-3. **A lever.** A clinician who disagrees with the model ("this patient is not on vasopressors") can override a concept and watch the forecast update. Whether the concepts really are the lever, rather than a decorative side channel, is itself tested with causal interventions, and the results are reported honestly either way.
+For that to be usable at the bedside the forecasts have to be inspectable, so Odyssey puts a **concept bottleneck** between the sequence model and its predictions: everything flows through a small set of named clinical concepts (tachycardia, hypotension, acute kidney injury, SIRS, on vasopressors, ...) plus one unnamed residual channel. Each concept probability is supervised against rule-derived clinical labels and scored on held-out patients, so the readout a clinician sees is measured, not assumed; each forecast can be traced to the concepts that drove it; and a clinician can override a concept and watch the forecast update. Whether the concepts really are that lever, rather than a decorative side channel, is itself tested with causal interventions, and the results are reported honestly either way.
 
-The pipeline is built to be portable across health systems. One codebase extracts, tokenizes, labels concepts, trains and evaluates on MIMIC-IV and on eICU (clinical knowledge is written once, keyed by LOINC, and expanded per source). Those two datasets prove the pipeline travels; cross-hospital generalization is assessed on [GEMINI](https://geminimedicine.ca/), a multi-hospital inpatient dataset.
+The pipeline is built to travel. One codebase extracts, tokenizes, labels concepts, trains and evaluates on MIMIC-IV and on eICU (clinical knowledge is written once, keyed by LOINC, and expanded per source). Those two prove portability; cross-hospital generalization is assessed on [GEMINI](https://geminimedicine.ca/), a multi-hospital inpatient dataset.
 
-**What success looks like.** On patients the model has never seen: forecasting quality close to an unconstrained model of the same size (the bottleneck costs little); concept probabilities that track the patient's real state; interventions that move forecasts in the clinically expected direction; and all of the above holding across hospitals, not just the one the model was trained on. The end state is an assistant a clinician can interrogate in terms of the concepts, and correct.
+**What success looks like.** On patients the model has never seen: forecasting quality close to an unconstrained model of the same size (the bottleneck costs little); alert probabilities read off the forecasts that match or beat bespoke single-task models on calibration and discrimination; concept probabilities that track the patient's real state; interventions that move forecasts in the clinically expected direction; and all of it holding across hospitals.
 
-**What this is not.** Not a diagnostic system, not trained on outcome labels, and not a claim of interpretability by construction: every interpretability property above has a test, and the research journal records where the model currently falls short.
+**What this is not, and one caveat.** Not a diagnostic system, not trained on outcome labels, and not a claim of interpretability by construction: every interpretability property above has a test, and the research journal records where the model currently falls short. And a "what if we give this drug" answer from a model trained on observational records is what the model expects to *see* next, not a causal treatment effect: drugs are given to sick patients, and the model knows it. That caveat is stated wherever what-if results are shown.
 
-**Status: active research.** Trained and evaluated on MIMIC-IV subsets; the eICU pipeline is validated end to end; full-scale MIMIC-IV training and GEMINI are next. See [Roadmap](#roadmap).
+**Status: active research.** Trained and evaluated on MIMIC-IV subsets; the eICU pipeline is validated end to end; time-to-event forecasting, rollouts for alerts, and full-scale MIMIC-IV training are next. See [Roadmap](#roadmap).
 
 ## Architecture
 
@@ -161,7 +160,10 @@ uv run mypy odyssey
 9. Extend extraction to MIMIC-IV-ED
 10. ~~Multi-dataset pipeline: the same extraction/tokenization/concept pipeline running on eICU as well as MIMIC-IV~~ — done: `specs/eICU.yaml`, validated on the full eICU-CRD 2.0 (166K stays, 856M events); concept rules and clinical value bins are canonical (LOINC-keyed) and expanded per source
 11. Cross-hospital/health-system generalization: extend the pipeline to [GEMINI](https://geminimedicine.ca/) (~30 hospitals, inpatient/general internal medicine) — the multi-hospital dataset where generalization is actually assessed; MIMIC-IV and eICU serve as pipeline-portability targets, not as a train-on-one/test-on-the-other experiment
-12. Phase 2: an LLM agent (e.g. MedGemma) that reads the concept-annotated forecast and assists a clinician
+12. Time-to-next-event forecasting alongside next-event prediction (the model conditions on time but does not yet predict it; alerts and what-ifs need "within N hours")
+13. Rollouts: sample many futures from a patient's current state, read off event probabilities and concept trajectories; evaluate alert calibration/discrimination against bespoke single-task baselines on held-out patients
+14. What-if interaction: insert hypothetical events and roll forward, with the observational-vs-causal caveat stated and sanity-checked (an antihypertensive should lower forecast BP bins)
+15. Phase 2: an LLM agent (e.g. MedGemma) that reads the concept-annotated forecast and assists a clinician
 
 ### Known concept-rule limitations
 
