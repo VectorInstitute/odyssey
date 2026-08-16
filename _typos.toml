@@ -1,4 +1,8 @@
 [default.extend-words]
+# INH (inhalation) and OINT (ointment) are pharmacy form abbreviations in
+# odyssey/data/code_normalization.py, not typos.
+INH = "INH"
+OINT = "OINT"
 # EHR = Electronic Health Records -- core domain vocabulary throughout this
 # codebase (EHR-Mamba3, CachedEHREmbeddings, ...), not a typo for "HER".
 EHR = "EHR"
