@@ -98,6 +98,16 @@ class BottleneckIntervention:
     model's own probability; elsewhere the model's own value is kept.
     None (with ``probs`` given) means replace everywhere."""
 
+    uncertain_band: Optional[float] = None
+    """When set, ``probs`` only replaces the model's own probability where
+    that probability lies within ``uncertain_band`` of 0.5. Feeding a
+    hard 0/1 value displaces the model's own ``p`` by ``1 - p`` toward
+    one pole and by ``p`` toward the other, so "truth" and "flip"
+    perturb by different amounts wherever the model is confident;
+    restricting to the uncertain band makes the two displacements equal
+    and turns the truth-vs-flip comparison into a pure test of
+    direction."""
+
     zero_known: bool = False
     """Zero every known concept's mixed embedding (completeness probe:
     how much task signal survives on the unknown channel alone)."""
@@ -105,6 +115,24 @@ class BottleneckIntervention:
     zero_unknown: bool = False
     """Zero the unknown concept's mixed embedding (how much task signal
     flows outside the supervised concepts)."""
+
+
+def intervention_apply_mask(
+    intervention: BottleneckIntervention, own_probs: torch.Tensor
+) -> Optional[torch.Tensor]:
+    """Where an intervention's ``probs`` actually replace the model's own.
+
+    Combines ``probs_mask`` with the ``uncertain_band`` restriction;
+    ``None`` means "everywhere". Exposed so an evaluation harness can
+    account for exactly the entries the model replaced.
+    """
+    apply: Optional[torch.Tensor] = None
+    if intervention.probs_mask is not None:
+        apply = intervention.probs_mask.expand_as(own_probs)
+    if intervention.uncertain_band is not None:
+        band = (own_probs - 0.5).abs() < intervention.uncertain_band
+        apply = band if apply is None else (apply & band)
+    return apply
 
 
 class ConceptBottleneck(nn.Module):
@@ -202,10 +230,9 @@ class ConceptBottleneck(nn.Module):
         if intervention is not None and intervention.probs is not None:
             own = probs[..., : self.num_concepts]
             override = intervention.probs.to(own.dtype).expand_as(own)
-            if intervention.probs_mask is not None:
-                override = torch.where(
-                    intervention.probs_mask.expand_as(own), override, own
-                )
+            apply = intervention_apply_mask(intervention, own)
+            if apply is not None:
+                override = torch.where(apply, override, own)
             mix_probs = torch.cat([override, probs[..., self.num_concepts :]], dim=-1)
 
         mixed = mix_probs.unsqueeze(-1) * w_pos + (1 - mix_probs.unsqueeze(-1)) * w_neg

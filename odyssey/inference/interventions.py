@@ -58,7 +58,10 @@ from odyssey.inference.run_inference import (
     _build_type_lookup,
     load_run,
 )
-from odyssey.models.concept_bottleneck import BottleneckIntervention
+from odyssey.models.concept_bottleneck import (
+    BottleneckIntervention,
+    intervention_apply_mask,
+)
 from odyssey.models.sequence_model import (
     ConceptBottleneckSequenceModel,
     ConceptLabelDict,
@@ -101,6 +104,17 @@ class InterventionResult:
     """Positions where at least one concept's mixing probability was
     actually replaced (0 for none/zero_* modes, which edit embeddings
     or nothing)."""
+
+    uncertain_band: Optional[float] = None
+    """If set, values were only injected where the model's own probability
+    was within this distance of 0.5 (see BottleneckIntervention)."""
+
+    mean_abs_displacement: Optional[float] = None
+    """Mean ``|injected value - model's own probability|`` over the
+    concept entries actually replaced: how far the intervention pushed
+    the bottleneck. Truth and flip displace by ``1 - p`` and ``p``
+    respectively, so comparing their accuracy deltas without this is
+    comparing perturbations of different sizes."""
 
 
 def _position_labels(
@@ -184,6 +198,7 @@ def _chunk_intervention(
     num_concepts: int,
     device: str,
     rng: torch.Generator,
+    uncertain_band: Optional[float] = None,
 ) -> Optional[BottleneckIntervention]:
     """Build the per-position intervention for one chunk, or None."""
     if mode == "none":
@@ -210,7 +225,9 @@ def _chunk_intervention(
     else:
         raise ValueError(f"unknown intervention mode: {mode!r}")
     return BottleneckIntervention(
-        probs=values.to(device), probs_mask=observed.bool().to(device)
+        probs=values.to(device),
+        probs_mask=observed.bool().to(device),
+        uncertain_band=uncertain_band,
     )
 
 
@@ -229,6 +246,7 @@ def run_streaming_intervention(
     device: str = "cuda",
     max_seq_len: Optional[int] = None,
     seed: int = 0,
+    uncertain_band: Optional[float] = None,
 ) -> InterventionResult:
     """Score next-event prediction under one intervention mode.
 
@@ -268,6 +286,8 @@ def run_streaming_intervention(
     top1_hits = 0
     loss_sum = 0.0
     n_intervened = 0
+    displacement_sum = 0.0
+    n_replaced_entries = 0
     type_n: Dict[int, int] = {}
     type_hits: Dict[int, int] = {}
 
@@ -285,18 +305,29 @@ def run_streaming_intervention(
                 num_concepts=num_concepts,
                 device=device,
                 rng=rng,
+                uncertain_band=uncertain_band,
             )
-            logits, _, state = model(
+            logits, bottleneck_out, state = model(
                 chunk.batch,
                 state=state,
                 reset_mask=chunk.reset_mask,
                 intervention=intervention,
             )
             real = chunk.real_mask
-            if intervention is not None and intervention.probs_mask is not None:
+            if intervention is not None and intervention.probs is not None:
+                own = bottleneck_out.concept_probs
+                applied = intervention_apply_mask(intervention, own)
+                if applied is None:
+                    applied = torch.ones_like(own, dtype=torch.bool)
                 input_real = chunk.subject_ids != NO_SUBJECT
-                n_intervened += int(
-                    (intervention.probs_mask.any(dim=-1) & input_real).sum().item()
+                applied = applied & input_real.unsqueeze(-1)
+                n_intervened += int(applied.any(dim=-1).sum().item())
+                n_replaced_entries += int(applied.sum().item())
+                displacement_sum += float(
+                    (intervention.probs.expand_as(own) - own)
+                    .abs()[applied]
+                    .sum()
+                    .item()
                 )
             if not real.any():
                 continue
@@ -335,6 +366,10 @@ def run_streaming_intervention(
             if tid in _CODE_TYPE_NAMES
         },
         n_intervened_positions=n_intervened,
+        uncertain_band=uncertain_band,
+        mean_abs_displacement=(
+            displacement_sum / n_replaced_entries if n_replaced_entries else None
+        ),
     )
 
 
@@ -349,6 +384,7 @@ def evaluate_interventions(
     device: Optional[str] = None,
     checkpoint_path: Optional[Union[str, Path]] = None,
     seed: int = 0,
+    uncertain_band: Optional[float] = None,
 ) -> List[InterventionResult]:
     """End-to-end: load a trained run, score every intervention mode.
 
@@ -403,6 +439,7 @@ def evaluate_interventions(
                 chunk_size=chunk_size,
                 device=device,
                 seed=seed,
+                uncertain_band=uncertain_band,
             )
         )
         baseline = results[0]
@@ -431,6 +468,16 @@ def _main() -> None:
     )
     parser.add_argument("--max-shards", type=int, default=None)
     parser.add_argument("--modes", nargs="*", default=list(INTERVENTION_MODES))
+    parser.add_argument(
+        "--uncertain-band",
+        type=float,
+        default=None,
+        help=(
+            "Only inject truth/flip/random values where the model's own concept "
+            "probability is within this distance of 0.5, so truth and flip "
+            "displace it equally (a pure direction test)."
+        ),
+    )
     parser.add_argument("--num-lanes", type=int, default=8)
     parser.add_argument("--chunk-size", type=int, default=256)
     args = parser.parse_args()
@@ -444,6 +491,7 @@ def _main() -> None:
         num_lanes=args.num_lanes,
         chunk_size=args.chunk_size,
         checkpoint_path=run_dir / (args.checkpoint or "checkpoint_best.pt"),
+        uncertain_band=args.uncertain_band,
     )
     out = Path(args.output_json)
     out.parent.mkdir(parents=True, exist_ok=True)
