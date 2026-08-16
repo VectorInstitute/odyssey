@@ -216,7 +216,11 @@ def count_subjects(events: pl.DataFrame) -> int:
 
 
 def build_vocabulary(
-    train_events: pl.DataFrame, *, min_count: int, max_size: int
+    train_events: pl.DataFrame,
+    *,
+    min_count: int,
+    max_size: int,
+    backoff: Optional[str] = None,
 ) -> Vocabulary:
     """Build a :class:`Vocabulary` from the training split's real code frequencies.
 
@@ -234,7 +238,9 @@ def build_vocabulary(
     cardinality instead.
     """
     counts = dict(train_events.group_by("code").len().iter_rows())
-    return Vocabulary.build_from_counts(counts, min_count=min_count, max_size=max_size)
+    return Vocabulary.build_from_counts(
+        counts, min_count=min_count, max_size=max_size, backoff=backoff
+    )
 
 
 __all__ = [

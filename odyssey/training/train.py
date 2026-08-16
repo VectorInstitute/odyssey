@@ -49,6 +49,7 @@ from typing import Callable, Dict, Optional, TypeVar
 
 import torch
 
+from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.concepts import CONCEPTS
 from odyssey.data.streaming import PackedLaneSampler
 from odyssey.data.value_binning import QuantileBinner, add_value_tokens
@@ -97,6 +98,18 @@ class TrainingConfig:
     # Tokenization
     vocab_min_count: int = 5
     vocab_max_size: int = 20_000
+    vocab_backoff: Optional[str] = "icd3"
+    """Named vocabulary backoff (see odyssey.data.vocabulary.BACKOFFS).
+    "icd3" rolls rare ICD diagnosis/procedure codes up to their
+    3-character category, both when building the vocabulary and when
+    encoding, so rare codes become predictable category tokens instead
+    of [UNK]. None disables."""
+
+    normalize_medications: bool = True
+    """Collapse medication codes to ingredient level (strip dose, form,
+    route, container) before tokenization -- one drug, one token, instead
+    of dozens of sparse sig-line variants. See
+    odyssey.data.code_normalization."""
     quantile_n_bins: int = 5
     quantile_min_count: int = 100
     max_seq_len: Optional[int] = None
@@ -353,6 +366,11 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
         tuning_events.height,
     )
 
+    train_events = maybe_normalize(train_events, enabled=config.normalize_medications)
+    tuning_events = maybe_normalize(tuning_events, enabled=config.normalize_medications)
+    if config.normalize_medications:
+        logger.info("[data] medication codes normalized to ingredient level")
+
     logger.info("[data] labeling concepts (%s-scoped)", config.concept_supervision)
     train_labels: ConceptLabelDict
     train_masks: ConceptLabelDict
@@ -399,6 +417,7 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
         train_events_binned,
         min_count=config.vocab_min_count,
         max_size=config.vocab_max_size,
+        backoff=config.vocab_backoff,
     )
     vocab.save(output_dir / "vocabulary.json")
     logger.info("[data] vocab size: %d", len(vocab))
