@@ -22,6 +22,7 @@ from odyssey.models.sequence_model import (
     BaselineSequenceModel,
     ConceptBottleneckSequenceModel,
 )
+from odyssey.training.running_labels import randint_intervention
 
 
 VOCAB_SIZE = 60
@@ -415,3 +416,119 @@ def test_concept_pos_weight_scales_positive_term() -> None:
         concept_loss(logits, neg, pos_weight=torch.full((NUM_CONCEPTS,), 2.0)),
         concept_loss(logits, neg),
     )
+
+
+# ---------------------------------------------------------------------------
+# Intervention-aware training (RandInt)
+# ---------------------------------------------------------------------------
+
+
+def _first_times(subject_ids: List[int]) -> Dict[int, torch.Tensor]:
+    # every concept triggers at hour 0: running label == stay label
+    return {sid: torch.zeros(NUM_CONCEPTS) for sid in subject_ids}
+
+
+def test_randint_intervention_respects_prob_and_observed_mask() -> None:
+    torch.manual_seed(0)
+    labels = _labels([1, 2])
+    masks = {1: torch.ones(NUM_CONCEPTS), 2: torch.zeros(NUM_CONCEPTS)}
+    first = _first_times([1, 2])
+
+    def _build(chunk, prob):
+        return randint_intervention(
+            chunk,
+            labels,
+            masks,
+            first,
+            supervision="stay",
+            num_concepts=NUM_CONCEPTS,
+            prob=prob,
+        )
+
+    # A mid-chunk patient boundary truncates the window, so each patient
+    # arrives in its own chunk: chunk 1 is subject 1, chunk 2 subject 2.
+    sampler = PackedLaneSampler(
+        _patients([_seq(1, 4), _seq(2, 4)]), num_lanes=1, chunk_size=8
+    )
+    chunk_1 = sampler.next_chunk()
+    chunk_2 = sampler.next_chunk()
+    assert (chunk_1.subject_ids[0] == 1).any()
+    assert (chunk_2.subject_ids[0] == 2).any()
+
+    assert _build(chunk_1, 0.0) is None
+
+    always_1 = _build(chunk_1, 1.0)
+    assert always_1 is not None and always_1.probs_mask is not None
+    is_1 = chunk_1.subject_ids[0] == 1
+    # subject 1 observed: substituted at every real position with prob 1
+    assert always_1.probs_mask[0][is_1].all()
+    assert torch.equal(always_1.probs[0][is_1][0], labels[1])
+    # padding positions (no label entry) are never substituted
+    assert not always_1.probs_mask[0][~is_1].any()
+
+    always_2 = _build(chunk_2, 1.0)
+    assert always_2 is not None and always_2.probs_mask is not None
+    # subject 2 is unobserved everywhere: never substituted
+    assert not always_2.probs_mask.any()
+
+
+def test_randint_changes_task_logits_but_not_concept_readouts() -> None:
+    model = _make_model()
+    model.eval()
+    sampler = PackedLaneSampler(_patients([_seq(1, 8)]), num_lanes=1, chunk_size=8)
+    chunk = sampler.next_chunk()
+    labels = _labels([1])
+    masks = {1: torch.ones(NUM_CONCEPTS)}
+    intervention = randint_intervention(
+        chunk,
+        labels,
+        masks,
+        _first_times([1]),
+        supervision="stay",
+        num_concepts=NUM_CONCEPTS,
+        prob=1.0,
+    )
+    plain_logits, plain_out, _ = model(chunk.batch, reset_mask=chunk.reset_mask)
+    iv_logits, iv_out, _ = model(
+        chunk.batch, reset_mask=chunk.reset_mask, intervention=intervention
+    )
+    assert not torch.allclose(plain_logits, iv_logits)
+    assert torch.equal(plain_out.concept_logits, iv_out.concept_logits)
+    assert torch.equal(plain_out.observability_logits, iv_out.observability_logits)
+
+
+def test_streaming_loss_accepts_randint_intervention_and_trains() -> None:
+    torch.manual_seed(0)
+    model = _make_model()
+    labels = _labels([1, 2, 3])
+    masks = {sid: torch.ones(NUM_CONCEPTS) for sid in labels}
+    first = _first_times([1, 2, 3])
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+    losses = []
+    for _ in range(6):
+        sampler = PackedLaneSampler(
+            _patients([_seq(1, 12), _seq(2, 12), _seq(3, 12)]),
+            num_lanes=1,
+            chunk_size=6,
+        )
+        state = None
+        for chunk in sampler:
+            intervention = randint_intervention(
+                chunk,
+                labels,
+                masks,
+                first,
+                supervision="stay",
+                num_concepts=NUM_CONCEPTS,
+                prob=0.5,
+            )
+            total, components, state = model.compute_streaming_loss(
+                chunk, labels, masks, state=state, intervention=intervention
+            )
+            optimizer.zero_grad()
+            total.backward()
+            optimizer.step()
+            state = _detach_state(state)
+            losses.append(float(components["task_loss"]))
+    assert all(torch.isfinite(torch.tensor(losses)))
+    assert sum(losses[-3:]) < sum(losses[:3])

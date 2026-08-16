@@ -11,7 +11,6 @@ from odyssey.data.streaming import PackedLaneSampler
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.interventions import (
     INTERVENTION_MODES,
-    _position_labels,
     run_streaming_intervention,
 )
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
@@ -20,6 +19,7 @@ from odyssey.training.data import (
     build_visit_concept_first_times,
     iter_patient_sequences,
 )
+from odyssey.training.running_labels import position_running_labels
 
 
 T0 = datetime(2024, 1, 1)
@@ -175,7 +175,7 @@ def test_running_labels_are_false_before_first_trigger() -> None:
     seqs = iter_patient_sequences(_events(), vocab)
     sampler = PackedLaneSampler(seqs, num_lanes=1, chunk_size=64, reset_prob=0.0)
     chunk = next(iter(sampler))
-    pos_labels, observed = _position_labels(
+    pos_labels, observed = position_running_labels(
         chunk, labels, masks, first, supervision="stay", num_concepts=NUM_CONCEPTS
     )
     sid = chunk.subject_ids[0]

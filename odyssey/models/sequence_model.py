@@ -337,6 +337,7 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         state: Optional[TimeAwareState] = None,
         loss_weights: Optional[ConceptBottleneckLossWeights] = None,
         supervision: ConceptSupervision = "stay",
+        intervention: Optional[BottleneckIntervention] = None,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], TimeAwareState]:
         """Compute next-token + concept + orthogonality + observability loss.
 
@@ -358,9 +359,22 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         If no supervision position falls within this chunk, the concept,
         orthogonality, and observability loss terms are zero and the
         total loss is the next-token loss alone.
+
+        ``intervention`` is the intervention-aware training hook (CEM's
+        RandInt, built per chunk by
+        :func:`odyssey.training.running_labels.randint_intervention`):
+        the task logits are computed from the intervened mixture, while
+        the concept and observability losses supervise the model's own
+        readouts exactly as without it. That is what teaches the task
+        head that the concept probability is a trustworthy input, so
+        that at deployment overriding a concept actually moves the
+        forecast.
         """
         logits, bottleneck_out, new_state = self(
-            chunk.batch, state=state, reset_mask=chunk.reset_mask
+            chunk.batch,
+            state=state,
+            reset_mask=chunk.reset_mask,
+            intervention=intervention,
         )
         next_token_loss = self._streaming_next_token_loss(logits, chunk.targets)
 

@@ -62,13 +62,16 @@ from odyssey.models.sequence_model import (
     ConceptSupervision,
 )
 from odyssey.training.data import (
+    build_concept_first_times,
     build_concept_label_dicts,
+    build_visit_concept_first_times,
     build_visit_concept_label_dicts,
     build_vocabulary,
     count_subjects,
     iter_patient_sequences,
     load_meds_shards,
 )
+from odyssey.training.running_labels import randint_intervention
 
 
 logger = logging.getLogger(__name__)
@@ -157,6 +160,17 @@ class TrainingConfig:
     research journal entry 07). Visit scoping exists because entry 07's
     evaluation showed whole-stay labels demand long-range single-event
     recall the compressed recurrent state cannot guarantee."""
+
+    randint_prob: float = 0.25
+    """Intervention-aware training (CEM's RandInt): at every training
+    position, each observed concept's mixing probability is replaced by
+    its running ground-truth value with this probability, so the task
+    head learns to rely on the concept values and test-time
+    interventions actually move forecasts. The concept and
+    observability losses still supervise the model's own readouts. 0
+    disables (the pre-Aug-16 behavior, under which the
+    magnitude-controlled intervention test found the concept
+    probabilities causally inert). 0.25 is the CEM default."""
 
     early_stopping_patience: Optional[int] = None
     """Stop once the combined validation loss (the same task + weighted
@@ -390,6 +404,7 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
     train_masks: ConceptLabelDict
     tuning_labels: ConceptLabelDict
     tuning_masks: ConceptLabelDict
+    train_first_times: ConceptLabelDict = {}
     if config.concept_supervision == "visit":
         train_labels, train_masks = build_visit_concept_label_dicts(
             train_events, concepts
@@ -397,9 +412,13 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
         tuning_labels, tuning_masks = build_visit_concept_label_dicts(
             tuning_events, concepts
         )
+        if config.randint_prob > 0.0:
+            train_first_times = build_visit_concept_first_times(train_events, concepts)
     elif config.concept_supervision == "stay":
         train_labels, train_masks = build_concept_label_dicts(train_events, concepts)
         tuning_labels, tuning_masks = build_concept_label_dicts(tuning_events, concepts)
+        if config.randint_prob > 0.0:
+            train_first_times = build_concept_first_times(train_events, concepts)
     else:
         raise ValueError(
             f"concept_supervision must be 'visit' or 'stay', got "
@@ -407,8 +426,17 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
         )
     train_labels = _labels_to_device(train_labels, device)
     train_masks = _labels_to_device(train_masks, device)
+    train_first_times = _labels_to_device(train_first_times, device)
     tuning_labels = _labels_to_device(tuning_labels, device)
     tuning_masks = _labels_to_device(tuning_masks, device)
+    if config.randint_prob > 0.0:
+        logger.info(
+            "[loss] intervention-aware training on: RandInt prob %.2f over %d "
+            "%s-scoped first-trigger records",
+            config.randint_prob,
+            len(train_first_times),
+            config.concept_supervision,
+        )
 
     logger.info("[data] fitting quantile binner on train split")
     binner = QuantileBinner.fit(
@@ -551,6 +579,7 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
     loss_logger = LossLogger(output_dir / "loss_log.jsonl")
     start_time = time.time()
     stop_early = False
+    randint_rng = torch.Generator(device=device).manual_seed(config.seed + 1)
 
     for epoch in range(start_epoch, config.num_epochs):
         sampler = make_train_sampler(epoch)
@@ -569,6 +598,16 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
 
         for chunk in sampler:
             chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
+            intervention = randint_intervention(
+                chunk,
+                train_labels,
+                train_masks,
+                train_first_times,
+                supervision=config.concept_supervision,  # type: ignore[arg-type]
+                num_concepts=len(concepts),
+                prob=config.randint_prob,
+                generator=randint_rng,
+            )
             total, components, state = model.compute_streaming_loss(
                 chunk,
                 train_labels,
@@ -576,6 +615,7 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
                 state=state,
                 loss_weights=loss_weights,
                 supervision=config.concept_supervision,  # type: ignore[arg-type]
+                intervention=intervention,
             )
             optimizer.zero_grad()
             total.backward()  # type: ignore[no-untyped-call]

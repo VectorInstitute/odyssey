@@ -42,7 +42,7 @@ import json
 import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Union
 
 import polars as pl
 import torch
@@ -75,6 +75,7 @@ from odyssey.training.data import (
     iter_patient_sequences,
     load_meds_shards,
 )
+from odyssey.training.running_labels import position_running_labels
 from odyssey.training.train import _move_chunk_to_device
 
 
@@ -117,76 +118,6 @@ class InterventionResult:
     comparing perturbations of different sizes."""
 
 
-def _position_labels(
-    chunk: StreamingChunk,
-    concept_labels: ConceptLabelDict,
-    concept_mask: ConceptLabelDict,
-    concept_first_times: ConceptLabelDict,
-    *,
-    supervision: ConceptSupervision,
-    num_concepts: int,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Per-position *running* ground-truth labels and observed-masks.
-
-    Returns ``(labels, observed)``, each ``(lanes, T, num_concepts)``.
-    A concept is labeled true at a position only from its first-trigger
-    time onward (``concept_first_times``, hours on the sequence's own
-    time origin) -- the value that is actually true as of that moment.
-    The whole-visit label is retrospective ("it happened at some point
-    during this visit"), and injecting it before the event occurs would
-    feed the bottleneck a fact about the future that the model's running
-    concept state has no business knowing; an earlier version of this
-    harness did exactly that, and "truth" hurt more than "flip" purely
-    because, before the event, the flipped label was the accurate one.
-    Positions with no dictionary entry (padding lanes, events outside
-    any visit under visit scoping) get ``observed = 0`` everywhere, so
-    no intervention applies there and the model's own probability is
-    kept.
-    """
-    sid = chunk.subject_ids
-    lanes, chunk_len = sid.shape
-
-    if supervision == "visit":
-        keys = torch.stack([sid, chunk.visit_ids], dim=-1).reshape(-1, 2)
-    else:
-        keys = sid.reshape(-1, 1)
-    unique_keys, inverse = torch.unique(keys, dim=0, return_inverse=True)
-
-    # unique_keys/inverse live on chunk.subject_ids's device (cuda for a
-    # real run); indexing a tensor with a device-mismatched index tensor
-    # raises, so build these on the same device from the start rather
-    # than the CPU default -- confirmed the hard way, only reachable once
-    # a chunk actually has a real intervention to apply (mode="none"
-    # never calls this, so this was silent until "truth" ran for real).
-    unique_labels = torch.zeros(unique_keys.shape[0], num_concepts, device=sid.device)
-    unique_observed = torch.zeros(unique_keys.shape[0], num_concepts, device=sid.device)
-    # -inf default: a key with no first-time entry passes its label
-    # through unchanged (the retrospective fallback documented on
-    # run_streaming_intervention).
-    unique_first = torch.full(
-        (unique_keys.shape[0], num_concepts), float("-inf"), device=sid.device
-    )
-    for i, key in enumerate(unique_keys.tolist()):
-        lookup = (key[0], key[1]) if supervision == "visit" else key[0]
-        label = concept_labels.get(lookup)  # type: ignore[arg-type]
-        if label is None:
-            continue
-        unique_labels[i] = label.float().to(sid.device)
-        mask = concept_mask.get(lookup)  # type: ignore[arg-type]
-        if mask is not None:
-            unique_observed[i] = mask.float().to(sid.device)
-        first = concept_first_times.get(lookup)  # type: ignore[arg-type]
-        if first is not None:
-            unique_first[i] = first.float().to(sid.device)
-
-    labels_visit = unique_labels[inverse].view(lanes, chunk_len, num_concepts)
-    observed_out = unique_observed[inverse].view(lanes, chunk_len, num_concepts)
-    first_times = unique_first[inverse].view(lanes, chunk_len, num_concepts)
-    now = chunk.batch.aux.time_stamps.unsqueeze(-1)  # (lanes, T, 1) hours
-    labels_out = labels_visit * (now >= first_times).float()
-    return labels_out, observed_out
-
-
 def _chunk_intervention(
     chunk: StreamingChunk,
     mode: str,
@@ -208,7 +139,7 @@ def _chunk_intervention(
     if mode == "zero_unknown":
         return BottleneckIntervention(zero_unknown=True)
 
-    labels, observed = _position_labels(
+    labels, observed = position_running_labels(
         chunk,
         concept_labels,
         concept_mask,
