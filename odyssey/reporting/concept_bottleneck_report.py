@@ -24,9 +24,10 @@ its template contain no patient data and are tracked normally.
 
 import argparse
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from odyssey.models.concept_bottleneck import ConceptBottleneckLossWeights
 from odyssey.training.train import TrainingConfig, _combined_val_loss
@@ -175,6 +176,80 @@ def pretty_code(code: str) -> str:  # noqa: PLR0911, PLR0912
     return label + (" · " + " · ".join(rest) if rest else "")
 
 
+# Display-layer mapping from value-binned event codes to the concept whose
+# strip they support, so a trace can show stimulus (an abnormal reading
+# arriving) and response (the concept probability moving) on the same line.
+# Approximate by design: only bins that coincide with the concept's own rule
+# threshold are marked (WBC quantile bins and composite criteria are not
+# representable this way), and a tick is display evidence, never a label.
+_EVIDENCE_BINS: List[Tuple[str, str, List[str]]] = [
+    ("LAB//220045//", "::HIGH", ["tachycardia"]),
+    ("LAB//220045//", "::LOW", ["bradycardia"]),
+    ("LAB//220179//", "::LOW", ["hypotension"]),
+    ("LAB//220050//", "::LOW", ["hypotension"]),
+    ("LAB//220179//", "::HIGH", ["hypertension"]),
+    ("LAB//220050//", "::HIGH", ["hypertension"]),
+    ("LAB//220277//", "::LOW", ["hypoxia"]),
+    ("LAB//223761//", "::HIGH", ["fever"]),
+    ("LAB//223762//", "::HIGH", ["fever"]),
+    ("LAB//223761//", "::LOW", ["hypothermia"]),
+    ("LAB//223762//", "::LOW", ["hypothermia"]),
+    ("LAB//220210//", "::HIGH", ["sustained_tachypnea"]),
+    ("LAB//RESULT//50813//", "::HIGH", ["elevated_lactate"]),
+    (
+        "LAB//RESULT//50912//",
+        "::HIGH",
+        ["acute_kidney_injury", "aki_stage_2", "aki_stage_3"],
+    ),
+    ("LAB//RESULT//50912//", "::CRITICAL", ["aki_stage_3", "acute_kidney_injury"]),
+]
+_VASOPRESSOR_RE = (
+    "norepinephrine|levophed|epinephrine|vasopressin|phenylephrine"
+    "|neo-?synephrine|dopamine|angiotensin"
+)
+
+_MARKER_PREFIXES = {
+    "HOSPITAL_ADMISSION": "Hospital admission",
+    "HOSPITAL_DISCHARGE": "Hospital discharge",
+    "ICU_ADMISSION": "ICU admission",
+    "ICU_DISCHARGE": "ICU discharge",
+    "TRANSFER_TO": "Transfer",
+    "MEDS_DEATH": "Death",
+}
+
+
+def _extract_evidence(
+    codes: List[str], times: List[float], concept_names: List[str]
+) -> Dict[str, List[float]]:
+    """Collect the times at which each concept's own evidence appears."""
+    known = set(concept_names)
+    out: Dict[str, List[float]] = {}
+    vaso = re.compile(f"(?i){_VASOPRESSOR_RE}")
+    for code, when in zip(codes, times):
+        hits: List[str] = []
+        for prefix, suffix, concepts in _EVIDENCE_BINS:
+            if code.startswith(prefix) and code.endswith(suffix):
+                hits.extend(concepts)
+        if code.startswith(("MEDICATION//", "INFUSION_START//")) and vaso.search(code):
+            hits.append("on_vasopressors")
+        for name in hits:
+            if name in known:
+                out.setdefault(name, []).append(round(when, 2))
+    # Cap per concept so dense monitor streams don't bloat the payload.
+    return {k: v[:: max(1, len(v) // 150)][:150] for k, v in out.items()}
+
+
+def _extract_markers(codes: List[str], times: List[float]) -> List[List[Any]]:
+    """Collect (time, label) care-transition markers for the time axis."""
+    markers = []
+    for code, when in zip(codes, times):
+        head = code.split("//", 1)[0]
+        label = _MARKER_PREFIXES.get(head)
+        if label:
+            markers.append([round(when, 2), label])
+    return markers[:30]
+
+
 def _downsample_indices(n: int, target: int) -> List[int]:
     if n <= target:
         return list(range(n))
@@ -213,6 +288,18 @@ def _summarize_case(case: Dict[str, Any]) -> Dict[str, Any]:
             }
         )
 
+    evidence = _extract_evidence(case["input_codes"], times, concept_names)
+    markers = _extract_markers(case["input_codes"], times)
+    obs_probs = case.get("observability_probs")
+    obs_mean = (
+        [
+            round(sum(row[i] for row in obs_probs) / len(obs_probs), 3)
+            for i in range(len(concept_names))
+        ]
+        if obs_probs
+        else None
+    )
+
     n_triggered = sum(1 for x in case["concept_labels"] if x > 0)
     n_scored = n - 1
     top1_hits = sum(1 for r in case["true_next_rank"][:-1] if r == 0)
@@ -229,6 +316,9 @@ def _summarize_case(case: Dict[str, Any]) -> Dict[str, Any]:
         "top1_acc": round(top1_hits / n_scored, 3) if n_scored else None,
         "top5_acc": round(top5_hits / n_scored, 3) if n_scored else None,
         "trajectory": trajectory,
+        "evidence": evidence,
+        "markers": markers,
+        "obs_mean": obs_mean,
         "detail_rows": detail_rows,
     }
 
