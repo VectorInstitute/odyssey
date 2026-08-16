@@ -18,6 +18,7 @@ from odyssey.data.concepts import (
     ConceptRule,
     DerivedGcsTotalRule,
     SustainedRule,
+    concepts_for_source,
     label_concepts,
     label_concepts_by_visit,
 )
@@ -886,3 +887,109 @@ def test_label_concepts_on_real_mimic_iv_demo_extraction(tmp_path: Path) -> None
 
     # Heart rate is charted for virtually every ICU patient in the cohort.
     assert labels["tachycardia_observed"].sum() > 0
+
+
+# ---------------------------------------------------------------------------
+# Canonical registry expansion (concepts_for_source)
+# ---------------------------------------------------------------------------
+
+
+def test_mimic_expansion_matches_the_historical_registry() -> None:
+    """CONCEPTS is the mimic_iv expansion, pinned against known structure.
+
+    A regression guard for the canonical layer: expanding the LOINC-keyed
+    registry for MIMIC-IV must reproduce exactly the prefix-keyed
+    definitions the models to date were trained and evaluated with.
+    """
+    concepts = concepts_for_source("mimic_iv")
+    assert [c.name for c in concepts] == [c.name for c in CONCEPTS]
+    assert concepts == CONCEPTS
+
+    by_name = {c.name: c for c in concepts}
+    hypotension = by_name["hypotension"]
+    assert isinstance(hypotension, ConceptDefinition)
+    assert [r.code_prefix for r in hypotension.rules] == [
+        "LAB//220179//",
+        "LAB//220050//",
+    ]
+    fever = by_name["fever"]
+    assert isinstance(fever, ConceptDefinition)
+    assert {(r.code_prefix, r.threshold) for r in fever.rules} == {
+        ("LAB//223761//", 100.4),  # Fahrenheit itemid gets the F threshold
+        ("LAB//223762//", 38.0),  # Celsius itemid gets the C threshold
+    }
+    qsofa = by_name["qsofa"]
+    assert isinstance(qsofa, CompositeConceptDefinition)
+    assert len(qsofa.components) == 3
+    assert any(isinstance(comp, DerivedGcsTotalRule) for comp in qsofa.components)
+
+
+def test_eicu_expansion_translates_every_signal_it_can() -> None:
+    concepts = concepts_for_source("eicu")
+    by_name = {c.name: c for c in concepts}
+
+    tachy = by_name["tachycardia"]
+    assert isinstance(tachy, ConceptDefinition)
+    assert [r.code_prefix for r in tachy.rules] == ["VITALS//PERIODIC//HEARTRATE"]
+
+    # eICU charts temperature in Celsius only: one rule, the C threshold.
+    fever = by_name["fever"]
+    assert isinstance(fever, ConceptDefinition)
+    assert [(r.code_prefix, r.threshold) for r in fever.rules] == [
+        ("VITALS//PERIODIC//TEMPERATURE", 38.0)
+    ]
+
+    # Both SBP measurements exist, so hypotension ORs both prefixes.
+    hypotension = by_name["hypotension"]
+    assert isinstance(hypotension, ConceptDefinition)
+    assert {r.code_prefix for r in hypotension.rules} == {
+        "VITALS//APERIODIC//BP//NONINVASIVE_SYSTOLIC",
+        "VITALS//PERIODIC//BP//SYSTEMIC_SYSTOLIC",
+    }
+
+
+def test_eicu_qsofa_drops_the_unmapped_gcs_criterion_but_survives() -> None:
+    """GCS has no eICU mapping (nurseCharting is not extracted yet).
+
+    The criterion is dropped; qSOFA keeps its other two criteria, which
+    still satisfy min_criteria=2 -- the same translation the entry-06
+    analysis performed by hand.
+    """
+    qsofa = next(c for c in concepts_for_source("eicu") if c.name == "qsofa")
+    assert isinstance(qsofa, CompositeConceptDefinition)
+    assert len(qsofa.components) == 2
+    assert qsofa.min_criteria == 2
+    assert not any(isinstance(comp, DerivedGcsTotalRule) for comp in qsofa.components)
+
+
+def test_multi_prefix_criterion_counts_once_inside_a_composite() -> None:
+    """A LOINC resolving to several prefixes must OR inside AnyOf.
+
+    If each prefix became its own criterion, a source charting SBP two
+    ways could satisfy qSOFA's min_criteria=2 from low blood pressure
+    alone -- a correctness property, not a style choice.
+    """
+    for source in ("mimic_iv", "eicu"):
+        qsofa = next(c for c in concepts_for_source(source) if c.name == "qsofa")
+        assert isinstance(qsofa, CompositeConceptDefinition)
+        sbp_components = [comp for comp in qsofa.components if isinstance(comp, AnyOf)]
+        assert len(sbp_components) == 1
+        assert len(sbp_components[0].rules) == 2
+
+
+def test_eicu_expansion_labels_real_shaped_events() -> None:
+    """End-to-end: eICU-shaped events label correctly under the expansion."""
+    concepts = [
+        c for c in concepts_for_source("eicu") if c.name in ("fever", "tachycardia")
+    ]
+    events = _events(
+        [
+            (1, "VITALS//PERIODIC//TEMPERATURE", 38.5),
+            (1, "VITALS//PERIODIC//HEARTRATE", 80.0),
+            (2, "VITALS//PERIODIC//TEMPERATURE", 37.0),
+            (2, "VITALS//PERIODIC//HEARTRATE", 120.0),
+        ]
+    )
+    labels = label_concepts(events, concepts).sort("subject_id")
+    assert labels["fever"].to_list() == [1, 0]
+    assert labels["tachycardia"].to_list() == [0, 1]

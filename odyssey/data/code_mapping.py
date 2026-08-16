@@ -113,6 +113,32 @@ _SOURCE_TABLES: Dict[str, Dict[str, str]] = {
 }
 
 
+# Unit tags for prefixes whose LOINC alone is ambiguous about units.
+# Temperature is the one signal our sources split by unit: MIMIC charts it
+# under separate Fahrenheit/Celsius itemids (same LOINC 8310-5), eICU charts
+# Celsius only. Canonical concept thresholds and clinical bin ranges use
+# these tags to pick the right per-unit numbers.
+_PREFIX_UNITS: Dict[str, Dict[str, str]] = {
+    "mimic_iv": {
+        "LAB//223761//": "F",
+        "LAB//223762//": "C",
+    },
+    "eicu": {
+        "VITALS//PERIODIC//TEMPERATURE": "C",
+    },
+    "gemini": {},
+}
+
+
+def unit_for(code_prefix: str, *, source: str = "mimic_iv") -> Optional[str]:
+    """Return the unit tag for ``code_prefix`` in ``source``, or ``None``.
+
+    ``None`` means the prefix's unit is unambiguous for its LOINC across
+    our sources (the common case); only unit-split signals carry tags.
+    """
+    return _PREFIX_UNITS[source].get(code_prefix)
+
+
 def loinc_for(code_prefix: str, *, source: str = "mimic_iv") -> Optional[str]:
     """Return the LOINC code for ``code_prefix`` in ``source``, or ``None``.
 

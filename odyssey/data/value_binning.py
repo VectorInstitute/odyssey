@@ -12,11 +12,16 @@ already the full signal for those, exactly as before.
 
 Two sources of bins, applied in priority order:
 
-1. :data:`CLINICAL_RANGES` -- hand-curated reference ranges for the same
-   handful of vitals/labs :mod:`odyssey.data.concepts` already defines
-   thresholds for (kept in sync deliberately: a lab token's bin should mean
-   the same thing as the concept label it also supervises).
+1. :data:`CANONICAL_CLINICAL_RANGES` -- hand-curated reference ranges,
+   keyed by LOINC code and expanded to one source's concrete code
+   prefixes by :func:`clinical_ranges_for_source` (the same
+   canonical-then-expand pattern as
+   :func:`odyssey.data.concepts.concepts_for_source`), for the same
+   handful of vitals/labs the concept registry defines thresholds for
+   (kept in sync deliberately: a lab token's bin should mean the same
+   thing as the concept label it also supervises).
    ``test_value_binning.py`` asserts this consistency directly.
+   :data:`CLINICAL_RANGES` is the MIMIC-IV expansion.
 2. :class:`QuantileBinner` -- per-code quantile boundaries fit from the
    training corpus, for the much larger set of numeric-valued codes with no
    curated clinical range (most distinct LAB itemids). Must be fit once on
@@ -38,39 +43,75 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import polars as pl
 
+from odyssey.data.code_mapping import prefixes_for_loinc, unit_for
 
-# Keep in sync with odyssey/data/concepts.py's CONCEPTS thresholds --
-# test_value_binning.py asserts consistency. Each entry: ascending
-# (threshold, label-for-values-below-this-threshold) cut points, plus a
-# fallback label for values at or above every threshold.
-CLINICAL_RANGES: Dict[str, List[Tuple[float, str]]] = {
-    "LAB//220045//": [(60.0, "LOW"), (100.0, "NORMAL")],  # heart rate
-    "LAB//220179//": [(90.0, "LOW"), (140.0, "NORMAL")],  # SBP, non-invasive
-    "LAB//220050//": [(90.0, "LOW"), (140.0, "NORMAL")],  # SBP, arterial
-    "LAB//220210//": [(20.0, "NORMAL")],  # respiratory rate (only an upper rule exists)
-    "LAB//220277//": [(92.0, "LOW")],  # SpO2 (only a lower rule exists)
-    "LAB//223761//": [(96.8, "LOW"), (100.4, "NORMAL")],  # temperature, F
-    "LAB//223762//": [(36.0, "LOW"), (38.0, "NORMAL")],  # temperature, C
-    "LAB//RESULT//50912//": [
-        (1.5, "NORMAL"),
-        (4.0, "HIGH"),
-    ],  # creatinine: NORMAL / HIGH (aki_stage_1) / CRITICAL (aki_stage_3)
-    "LAB//RESULT//50813//": [(2.0, "NORMAL")],  # lactate
+
+# The canonical clinical ranges, keyed by LOINC code (and, for
+# unit-split signals, by unit tag -- None means the range applies to
+# every prefix of the LOINC). Keep in sync with
+# odyssey/data/concepts.py's CANONICAL_CONCEPTS thresholds --
+# test_value_binning.py asserts consistency: a lab token's bin should
+# mean the same thing as the concept label it also supervises. Each
+# value: (ascending (threshold, label-for-values-below) cut points,
+# fallback label for values at or above every threshold).
+_RangeSpec = Tuple[List[Tuple[float, str]], str]
+CANONICAL_CLINICAL_RANGES: Dict[str, Dict[Optional[str], _RangeSpec]] = {
+    # heart rate
+    "8867-4": {None: ([(60.0, "LOW"), (100.0, "NORMAL")], "HIGH")},
+    # SBP: non-invasive cuff and arterial line, same range
+    "76534-7": {None: ([(90.0, "LOW"), (140.0, "NORMAL")], "HIGH")},
+    "8480-6": {None: ([(90.0, "LOW"), (140.0, "NORMAL")], "HIGH")},
+    # respiratory rate (only an upper rule exists)
+    "9279-1": {None: ([(20.0, "NORMAL")], "HIGH")},
+    # SpO2 (only a lower rule exists)
+    "59408-5": {None: ([(92.0, "LOW")], "NORMAL")},
+    # temperature: unit-split (see code_mapping._PREFIX_UNITS)
+    "8310-5": {
+        "F": ([(96.8, "LOW"), (100.4, "NORMAL")], "HIGH"),
+        "C": ([(36.0, "LOW"), (38.0, "NORMAL")], "HIGH"),
+    },
+    # creatinine: NORMAL / HIGH (aki_stage_1) / CRITICAL (aki_stage_3)
+    "2160-0": {None: ([(1.5, "NORMAL"), (4.0, "HIGH")], "CRITICAL")},
+    # lactate
+    "32693-4": {None: ([(2.0, "NORMAL")], "HIGH")},
 }
-_FALLBACK_LABEL: Dict[str, str] = {
-    "LAB//220045//": "HIGH",
-    "LAB//220179//": "HIGH",
-    "LAB//220050//": "HIGH",
-    "LAB//220210//": "HIGH",
-    "LAB//220277//": "NORMAL",
-    "LAB//223761//": "HIGH",
-    "LAB//223762//": "HIGH",
-    "LAB//RESULT//50912//": "CRITICAL",
-    "LAB//RESULT//50813//": "HIGH",
-}
 
 
-def _clinical_label_expr(value_col: str) -> pl.Expr:
+def clinical_ranges_for_source(
+    source: str = "mimic_iv",
+) -> Tuple[Dict[str, List[Tuple[float, str]]], Dict[str, str]]:
+    """Expand :data:`CANONICAL_CLINICAL_RANGES` to one source's prefixes.
+
+    Returns ``(ranges, fallback_labels)``, both keyed by concrete MEDS
+    code prefix. A LOINC with no prefix in ``source`` contributes
+    nothing (its codes fall back to quantile bins); a unit-tagged range
+    only reaches prefixes carrying that unit tag in
+    :mod:`odyssey.data.code_mapping`.
+    """
+    ranges: Dict[str, List[Tuple[float, str]]] = {}
+    fallbacks: Dict[str, str] = {}
+    for loinc, by_unit in CANONICAL_CLINICAL_RANGES.items():
+        for prefix in sorted(prefixes_for_loinc(loinc, source=source)):
+            spec = by_unit.get(unit_for(prefix, source=source))
+            if spec is None:
+                continue
+            cuts, fallback = spec
+            ranges[prefix] = list(cuts)
+            fallbacks[prefix] = fallback
+    return ranges, fallbacks
+
+
+# The MIMIC-IV expansion, kept as the module-level default exactly as
+# before the canonical layer existed. Other sources pass
+# ``source=`` to :func:`add_value_tokens`.
+CLINICAL_RANGES, _FALLBACK_LABEL = clinical_ranges_for_source("mimic_iv")
+
+
+def _clinical_label_expr(
+    value_col: str,
+    ranges: Dict[str, List[Tuple[float, str]]],
+    fallbacks: Dict[str, str],
+) -> pl.Expr:
     """Build one polars expression giving the clinical bin label, or null.
 
     Null wherever ``value_col`` is null, even for a matching code: a
@@ -81,8 +122,8 @@ def _clinical_label_expr(value_col: str) -> pl.Expr:
     ``::HIGH``.
     """
     label_expr = pl.lit(None, dtype=pl.Utf8)
-    for prefix, cuts in CLINICAL_RANGES.items():
-        prefix_label = pl.lit(_FALLBACK_LABEL[prefix])
+    for prefix, cuts in ranges.items():
+        prefix_label = pl.lit(fallbacks[prefix])
         for threshold, label in reversed(cuts):
             prefix_label = (
                 pl.when(pl.col(value_col) < threshold)
@@ -221,17 +262,25 @@ def add_value_tokens(
     *,
     code_col: str = "code",
     value_col: str = "numeric_value",
+    source: str = "mimic_iv",
 ) -> pl.DataFrame:
     """Rewrite ``code`` to fold in a value bin wherever a numeric value exists.
 
     A no-op for any row where ``value_col`` is null (procedures, diagnoses,
     admin events, or a numeric-valued code with a missing reading) -- the
     event's occurrence is the full signal there, unchanged from today.
+
+    ``source`` picks which institution's code prefixes the curated
+    clinical ranges apply to (see :func:`clinical_ranges_for_source`);
+    everything else is source-independent.
     """
     if value_col not in events.columns:
         return events
 
-    events = events.with_columns(_clinical_label_expr(value_col).alias("_bin_label"))
+    ranges, fallbacks = clinical_ranges_for_source(source)
+    events = events.with_columns(
+        _clinical_label_expr(value_col, ranges, fallbacks).alias("_bin_label")
+    )
 
     if quantile_binner is not None:
         qbins = quantile_binner.apply(events, code_col=code_col, value_col=value_col)

@@ -20,6 +20,7 @@ from odyssey.data.value_binning import (
     CLINICAL_RANGES,
     QuantileBinner,
     add_value_tokens,
+    clinical_ranges_for_source,
 )
 
 
@@ -293,3 +294,41 @@ def test_add_value_tokens_prefers_clinical_range_over_quantile_binner() -> None:
 @pytest.mark.parametrize("prefix", list(CLINICAL_RANGES.keys()))
 def test_every_clinical_range_prefix_has_a_fallback_label(prefix: str) -> None:
     assert prefix in _FALLBACK_LABEL
+
+
+# ---------------------------------------------------------------------------
+# clinical_ranges_for_source: per-source expansion of the canonical ranges
+# ---------------------------------------------------------------------------
+
+
+def test_mimic_ranges_are_the_module_defaults() -> None:
+    ranges, fallbacks = clinical_ranges_for_source("mimic_iv")
+    assert ranges == CLINICAL_RANGES
+    assert set(fallbacks) == set(ranges)
+
+
+def test_eicu_ranges_cover_the_mapped_signals_with_the_same_cuts() -> None:
+    """The same canonical range reaches each source through its own prefixes."""
+    ranges, fallbacks = clinical_ranges_for_source("eicu")
+    assert ranges["VITALS//PERIODIC//HEARTRATE"] == CLINICAL_RANGES["LAB//220045//"]
+    # eICU temperature is Celsius: it gets the C cuts, and no F-range
+    # prefix exists anywhere in the expansion.
+    assert ranges["VITALS//PERIODIC//TEMPERATURE"] == CLINICAL_RANGES["LAB//223762//"]
+    assert fallbacks["LAB//creatinine//"] == "CRITICAL"
+
+
+def test_eicu_events_get_clinical_bins_via_source_parameter() -> None:
+    events = pl.DataFrame(
+        {
+            "code": ["VITALS//PERIODIC//HEARTRATE", "VITALS//PERIODIC//TEMPERATURE"],
+            "numeric_value": [120.0, 38.5],
+        }
+    )
+    out = add_value_tokens(events, source="eicu")
+    assert out["code"].to_list() == [
+        "VITALS//PERIODIC//HEARTRATE::HIGH",
+        "VITALS//PERIODIC//TEMPERATURE::HIGH",
+    ]
+    # Without the source, eICU prefixes are unknown and pass through.
+    untouched = add_value_tokens(events)
+    assert untouched["code"].to_list() == events["code"].to_list()
