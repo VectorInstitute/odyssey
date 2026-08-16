@@ -220,5 +220,128 @@ def test_baseline_model_shares_objective_and_time_head() -> None:
     total, comp, _ = model.compute_streaming_loss(
         chunk, objective=ForecastObjective(bundle_invariant=True, time_weight=0.5)
     )
-    assert set(comp) == {"task_loss", "time_loss"}
+    assert set(comp) == {"task_loss", "time_loss", "event_loss"}
     total.backward()
+
+
+# ---------------------------------------------------------------------------
+# Per-event hazard heads
+# ---------------------------------------------------------------------------
+
+
+def test_censored_likelihood_is_survival_through_earlier_bins() -> None:
+    from odyssey.models.time_to_event import (  # noqa: PLC0415
+        censored_hazard_log_likelihood,
+    )
+
+    torch.manual_seed(0)
+    logits = torch.randn(3, 6)
+    target = torch.tensor([0, 2, 5])
+    observed = torch.tensor([True, False, False])
+    ll = censored_hazard_log_likelihood(logits, target, observed)
+    full = hazard_log_likelihood(logits, target)
+    log_1mh = F.logsigmoid(-logits)
+    assert torch.allclose(ll[0], full[0])
+    # censored in bin 2: survived bins 0 and 1
+    assert torch.allclose(ll[1], log_1mh[1, :2].sum())
+    assert torch.allclose(ll[2], log_1mh[2, :5].sum())
+    # a censored contribution never exceeds the observed one
+    assert (ll[1:] >= full[1:] - 1e-6).all()
+
+
+def test_event_hazard_targets_from_tables() -> None:
+    from odyssey.data.alert_events import EventTimes  # noqa: PLC0415
+    from odyssey.training.event_targets import (  # noqa: PLC0415
+        EventTimeTables,
+        event_hazard_targets,
+    )
+
+    seq = PatientSequence(
+        subject_id=1,
+        concept_ids=[2, 3, 4, 5],
+        type_ids=[1] * 4,
+        time_stamps=[0.0, 5.0, 10.0, 20.0],
+        ages=[50.0] * 4,
+        visit_orders=[0] * 4,
+        visit_segments=[0] * 4,
+        visit_ids=[7, 7, 7, 7],
+        visit_ends=[False, False, False, True],
+    )
+    chunk = _chunk([seq], chunk_size=8)
+    tables = EventTimeTables(
+        {
+            "vaso": EventTimes(
+                onset={(1, 7): 12.0}, censor={(1, 7): 20.0}, subject_scoped=False
+            ),
+            "death": EventTimes(onset={}, censor={(1, -1): 20.0}, subject_scoped=True),
+        },
+        ["vaso", "death"],
+    )
+    tg = event_hazard_targets(chunk, tables)
+    real = chunk.subject_ids[0] == 1
+    # vaso: onset 12 -> observed with gaps 12, 7, 2 at t=0,5,10; at t=20 not at risk
+    assert tg.observed[0, real, 0].tolist() == [True, True, True, False]
+    assert tg.at_risk[0, real, 0].tolist() == [True, True, True, False]
+    assert tg.gap_hours[0, real, 0].tolist()[:3] == [12.0, 7.0, 2.0]
+    # death: never; censored at 20 -> gaps 20, 15, 10; at t=20 (c == t) not at risk
+    assert tg.observed[0, real, 1].tolist() == [False] * 4
+    assert tg.at_risk[0, real, 1].tolist() == [True, True, True, False]
+    assert tg.gap_hours[0, real, 1].tolist()[:3] == [20.0, 15.0, 10.0]
+    # padding positions are never at risk
+    assert not tg.at_risk[0, ~real].any()
+
+
+def test_event_heads_train_and_survival_within_is_a_probability() -> None:
+    from odyssey.data.alert_events import EventTimes  # noqa: PLC0415
+    from odyssey.training.event_targets import (  # noqa: PLC0415
+        EventTimeTables,
+        event_hazard_targets,
+    )
+
+    torch.manual_seed(0)
+    model = ConceptBottleneckSequenceModel(
+        backbone=TinyGRUBackbone(
+            vocab_size=VOCAB, hidden_size=8, num_layers=1, padding_idx=0
+        ),
+        vocab_size=VOCAB,
+        num_concepts=2,
+        embedding_dim=4,
+        padding_idx=0,
+        time_bin_edges=DEFAULT_TIME_BIN_EDGES_HOURS,
+        event_names=["vaso", "death"],
+    )
+    seq = PatientSequence(
+        subject_id=1,
+        concept_ids=[2, 3, 4, 5, 6],
+        type_ids=[1] * 5,
+        time_stamps=[0.0, 5.0, 10.0, 20.0, 30.0],
+        ages=[50.0] * 5,
+        visit_orders=[0] * 5,
+        visit_segments=[0] * 5,
+        visit_ids=[7] * 5,
+        visit_ends=[False] * 4 + [True],
+    )
+    chunk = _chunk([seq], chunk_size=8)
+    tables = EventTimeTables(
+        {
+            "vaso": EventTimes(
+                onset={(1, 7): 12.0}, censor={(1, 7): 30.0}, subject_scoped=False
+            ),
+            "death": EventTimes(onset={}, censor={(1, -1): 30.0}, subject_scoped=True),
+        },
+        ["vaso", "death"],
+    )
+    targets = event_hazard_targets(chunk, tables)
+    labels = {1: torch.tensor([1.0, 0.0])}
+    obj = ForecastObjective(event_hazard_weight=1.0)
+    total, comp, _ = model.compute_streaming_loss(
+        chunk, labels, objective=obj, event_targets=targets
+    )
+    assert comp["event_loss"].item() > 0.0
+    total.backward()
+    assert model.event_heads is not None
+    assert model.event_heads.proj.weight.grad is not None
+    hz = model.event_heads(torch.randn(3, model.event_heads.proj.in_features))
+    assert hz.shape == (3, 2, model.event_heads.num_bins)
+    p8 = probability_within(hz[:, 0], DEFAULT_TIME_BIN_EDGES_HOURS, 8.0)
+    assert ((p8 >= 0) & (p8 <= 1)).all()

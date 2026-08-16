@@ -100,6 +100,7 @@ def test_streaming_loss_is_finite_when_a_patient_ends_in_chunk() -> None:
     assert set(components) == {
         "task_loss",
         "time_loss",
+        "event_loss",
         "concept_loss",
         "orthogonality_loss",
         "observability_loss",

@@ -27,10 +27,12 @@ Design, briefly:
 - **Model scores** at index times come from one streaming pass: for
   concept-defined events the bottleneck's concept probability (the
   model's running belief), and for every event the next-event
-  probability mass on the event's own tokens. Neither is a calibrated
-  "within h" probability, so they are scored on AUROC only; the
-  per-event hazard heads that give calibrated survival curves are the
-  modeling half of this stage and plug into the same harness.
+  probability mass on the event's own tokens -- neither a calibrated
+  "within h" probability, so scored on AUROC only -- and, for models
+  trained with per-event hazard heads
+  (:class:`~odyssey.models.time_to_event.EventHazardHeads`), the head's
+  own ``P(event within h)``, a calibrated probability scored on AUROC,
+  Brier and calibration exactly like the baseline.
 - **Baseline** (:func:`fit_baselines`): per event and horizon, a
   ``HistGradientBoostingClassifier`` on features anyone would hand-build
   for that task -- latest clinical bin of each curated vital/lab, event
@@ -53,14 +55,23 @@ import torch
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.metrics import brier_score_loss, roc_auc_score
 
+from odyssey.data.alert_events import (
+    ALERT_EVENTS,
+    AlertEvent,
+    EventTimes,
+    all_event_times,
+    hours_since_origin,
+    origin_hours,
+)
 from odyssey.data.code_normalization import maybe_normalize
-from odyssey.data.concepts import concepts_for_source, label_concepts_by_visit
+from odyssey.data.concepts import concepts_for_source
 from odyssey.data.sequences import BIRTH_CODE
 from odyssey.data.streaming import NO_SUBJECT, PackedLaneSampler
 from odyssey.data.value_binning import add_value_tokens, clinical_ranges_for_source
 from odyssey.data.vocabulary import Vocabulary, code_type
 from odyssey.inference.run_inference import load_run
 from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
+from odyssey.models.time_to_event import probability_within
 from odyssey.training.data import iter_patient_sequences, load_meds_shards
 from odyssey.training.train import _move_chunk_to_device
 
@@ -68,148 +79,6 @@ from odyssey.training.train import _move_chunk_to_device
 logger = logging.getLogger(__name__)
 
 HORIZONS_HOURS: Tuple[float, ...] = (8.0, 24.0, 72.0)
-
-
-@dataclass(frozen=True)
-class AlertEvent:
-    """One clinically meaningful event whose onset is forecast."""
-
-    name: str
-    concept: Optional[str] = None
-    """Concept whose first-trigger time defines onset (visit-scoped)."""
-
-    code_prefix: Optional[str] = None
-    """Code family whose first occurrence defines onset."""
-
-    subject_scoped: bool = False
-    """Onset and censoring are taken over the subject's whole record
-    rather than the visit (death is not tied to a hadm_id)."""
-
-    token_regex: Optional[str] = None
-    """Regex over vocabulary tokens naming this event's own next-event
-    tokens, for the next-event-mass score. Defaults to ``^code_prefix``."""
-
-
-ALERT_EVENTS: Tuple[AlertEvent, ...] = (
-    AlertEvent(
-        "vasopressor_start",
-        concept="on_vasopressors",
-        token_regex=(
-            r"norepinephrine|levophed|epinephrine|vasopressin|phenylephrine"
-            r"|neo-?synephrine|dopamine|angiotensin"
-        ),
-    ),
-    AlertEvent("icu_admission", code_prefix="ICU_ADMISSION"),
-    AlertEvent("acute_kidney_injury", concept="acute_kidney_injury"),
-    AlertEvent("death", code_prefix="MEDS_DEATH", subject_scoped=True),
-)
-
-
-# ---------------------------------------------------------------------------
-# Onset and censoring times
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class EventTimes:
-    """Onset / censoring per key, all in hours on the sequence time origin."""
-
-    onset: Dict[Tuple[int, int], float]
-    """(subject_id, visit_id) -> onset hours; missing = never observed.
-    For subject-scoped events the visit_id is ignored (all visits of the
-    subject share the subject's onset)."""
-
-    censor: Dict[Tuple[int, int], float]
-    """(subject_id, visit_id) -> last observed time (end of follow-up)."""
-
-    subject_scoped: bool
-
-
-def _origin_hours(events: pl.DataFrame) -> pl.DataFrame:
-    """subject_id -> first timed non-birth event (the sequence time origin)."""
-    return (
-        events.filter(pl.col("time").is_not_null() & (pl.col("code") != BIRTH_CODE))
-        .group_by("subject_id")
-        .agg(pl.col("time").min().alias("_origin"))
-    )
-
-
-def _hours_since_origin(
-    frame: pl.DataFrame, col: str, origins: pl.DataFrame
-) -> pl.DataFrame:
-    return frame.join(origins, on="subject_id", how="left").with_columns(
-        ((pl.col(col) - pl.col("_origin")).dt.total_seconds() / 3600.0).alias(col)
-    )
-
-
-def event_times(
-    events: pl.DataFrame,
-    alert: AlertEvent,
-    *,
-    concept_first_times: Optional[pl.DataFrame] = None,
-) -> EventTimes:
-    """Onset and censoring times for ``alert`` over ``events``.
-
-    ``concept_first_times`` is the output of
-    :func:`~odyssey.data.concepts.label_concepts_by_visit` with
-    ``include_first_time=True``, shared across concept-defined events so
-    it is computed once.
-    """
-    origins = _origin_hours(events)
-    timed = events.filter(pl.col("time").is_not_null() & (pl.col("code") != BIRTH_CODE))
-    if alert.subject_scoped:
-        last = timed.group_by("subject_id").agg(pl.col("time").max().alias("_last"))
-        last = _hours_since_origin(last, "_last", origins)
-        censor = {
-            (int(s), -1): float(t) for s, t in zip(last["subject_id"], last["_last"])
-        }
-    else:
-        visits = timed.filter(pl.col("hadm_id").is_not_null())
-        last = visits.group_by("subject_id", "hadm_id").agg(
-            pl.col("time").max().alias("_last")
-        )
-        last = _hours_since_origin(last, "_last", origins)
-        censor = {
-            (int(s), int(v)): float(t)
-            for s, v, t in zip(last["subject_id"], last["hadm_id"], last["_last"])
-        }
-
-    onset: Dict[Tuple[int, int], float] = {}
-    if alert.concept is not None:
-        if concept_first_times is None:
-            raise ValueError(f"alert {alert.name!r} needs concept_first_times")
-        col = f"{alert.concept}_first_time"
-        frame = concept_first_times.filter(pl.col(col).is_not_null()).select(
-            "subject_id", "hadm_id", col
-        )
-        frame = _hours_since_origin(frame, col, origins)
-        onset = {
-            (int(s), int(v)): float(t)
-            for s, v, t in zip(frame["subject_id"], frame["hadm_id"], frame[col])
-        }
-    elif alert.code_prefix is not None:
-        hits = timed.filter(pl.col("code").str.starts_with(alert.code_prefix))
-        if alert.subject_scoped:
-            first = hits.group_by("subject_id").agg(pl.col("time").min().alias("_t"))
-            first = _hours_since_origin(first, "_t", origins)
-            onset = {
-                (int(s), -1): float(t) for s, t in zip(first["subject_id"], first["_t"])
-            }
-        else:
-            hits = hits.filter(pl.col("hadm_id").is_not_null())
-            first = hits.group_by("subject_id", "hadm_id").agg(
-                pl.col("time").min().alias("_t")
-            )
-            first = _hours_since_origin(first, "_t", origins)
-            onset = {
-                (int(s), int(v)): float(t)
-                for s, v, t in zip(first["subject_id"], first["hadm_id"], first["_t"])
-            }
-    else:
-        raise ValueError(
-            f"alert {alert.name!r} defines neither concept nor code_prefix"
-        )
-    return EventTimes(onset=onset, censor=censor, subject_scoped=alert.subject_scoped)
 
 
 # ---------------------------------------------------------------------------
@@ -301,15 +170,25 @@ def collect_model_scores(
     num_lanes: int = 8,
     chunk_size: int = 256,
     device: str = "cuda",
+    horizons: Sequence[float] = HORIZONS_HOURS,
 ) -> Dict[str, List[IndexRow]]:
     """One streaming pass; per alert, index rows with model risk scores.
 
     Scores per row: ``concept`` (the alert's concept probability, if it
-    has one) and ``next_mass`` (softmax mass on the alert's tokens).
+    has one), ``next_mass`` (softmax mass on the alert's tokens), and,
+    when the model has per-event hazard heads covering the alert,
+    ``hazard@{h}h`` for each horizon in ``horizons``: the head's
+    ``P(event within h)``, a calibrated probability.
     """
     model.eval()
     concept_index = {name: i for i, name in enumerate(concept_names)}
     token_masks = {a.name: _event_token_mask(vocab, a, device) for a in alerts}
+    event_heads = getattr(model, "event_heads", None)
+    head_index = (
+        {name: i for i, name in enumerate(event_heads.event_names)}
+        if event_heads is not None
+        else {}
+    )
     rows: Dict[str, List[IndexRow]] = {a.name: [] for a in alerts}
     patients = iter_patient_sequences(events_binned, vocab)
     sampler = PackedLaneSampler(
@@ -343,6 +222,9 @@ def collect_model_scores(
             if not keep.any():
                 continue
             probs = torch.softmax(logits[keep], dim=-1)
+            hazards = (
+                event_heads(out.bottleneck[keep]) if event_heads is not None else None
+            )
             kept_sids = sids[keep].tolist()
             kept_vids = vids[keep].tolist()
             kept_times = times[keep].tolist()
@@ -353,10 +235,23 @@ def collect_model_scores(
                     if alert.concept in concept_index
                     else None
                 )
+                within: Dict[str, List[float]] = {}
+                if (
+                    hazards is not None
+                    and event_heads is not None
+                    and alert.name in head_index
+                ):
+                    head_logits = hazards[:, head_index[alert.name]]
+                    for h in horizons:
+                        within[f"hazard@{h:g}h"] = probability_within(
+                            head_logits, event_heads.edges, h
+                        ).tolist()
                 for k, (s, v, t) in enumerate(zip(kept_sids, kept_vids, kept_times)):
                     scores = {"next_mass": float(mass[k])}
                     if concept_p is not None:
                         scores["concept"] = float(concept_p[k])
+                    for label, values in within.items():
+                        scores[label] = float(values[k])
                     rows[alert.name].append(IndexRow(int(s), int(v), float(t), scores))
     return rows
 
@@ -446,7 +341,7 @@ def baseline_features(
     """
     ranges, _ = clinical_ranges_for_source(source)
     prefixes = sorted(ranges)
-    origins = _origin_hours(events_binned)
+    origins = origin_hours(events_binned)
     timed = events_binned.filter(pl.col("time").is_not_null()).join(
         origins, on="subject_id", how="left"
     )
@@ -653,6 +548,8 @@ def score_alerts(
                 continue
             scorer_names = sorted({k for r in event_rows for k in r.scores})
             for scorer in scorer_names:
+                if scorer.startswith("hazard@") and scorer != f"hazard@{h:g}h":
+                    continue  # a horizon-specific probability scores its own horizon
                 pred = np.array(
                     [event_rows[i].scores.get(scorer, np.nan) for i in keep],
                     dtype=float,
@@ -660,15 +557,24 @@ def score_alerts(
                 ok = ~np.isnan(pred)
                 if ok.sum() == 0 or y[ok].min() == y[ok].max():
                     continue
+                is_probability = scorer.startswith("hazard@")
                 results.append(
                     AlertMetrics(
                         event=name,
                         horizon_hours=h,
-                        scorer=scorer,
+                        scorer="hazard" if is_probability else scorer,
                         n_at_risk=int(ok.sum()),
                         n_positive=int(y[ok].sum()),
                         n_censored=n_censored,
                         auroc=float(roc_auc_score(y[ok], pred[ok])),
+                        brier=(
+                            float(brier_score_loss(y[ok], pred[ok]))
+                            if is_probability
+                            else None
+                        ),
+                        calibration=(
+                            _calibration(pred[ok], y[ok]) if is_probability else None
+                        ),
                     )
                 )
             if (
@@ -700,31 +606,16 @@ def score_alerts(
 
 
 def _visit_starts(events: pl.DataFrame) -> Dict[Tuple[int, int], float]:
-    origins = _origin_hours(events)
+    origins = origin_hours(events)
     starts = (
         events.filter(pl.col("time").is_not_null() & pl.col("hadm_id").is_not_null())
         .group_by("subject_id", "hadm_id")
         .agg(pl.col("time").min().alias("_start"))
     )
-    starts = _hours_since_origin(starts, "_start", origins)
+    starts = hours_since_origin(starts, "_start", origins)
     return {
         (int(s), int(v)): float(t)
         for s, v, t in zip(starts["subject_id"], starts["hadm_id"], starts["_start"])
-    }
-
-
-def _all_event_times(
-    raw_events: pl.DataFrame, alerts: Sequence[AlertEvent], source: str
-) -> Dict[str, EventTimes]:
-    concepts = concepts_for_source(source)
-    needed = [c for c in concepts if any(a.concept == c.name for a in alerts)]
-    first = (
-        label_concepts_by_visit(raw_events, needed, include_first_time=True)
-        if needed
-        else None
-    )
-    return {
-        a.name: event_times(raw_events, a, concept_first_times=first) for a in alerts
     }
 
 
@@ -735,7 +626,7 @@ def _index_rows_from_events(
     landmark_hours: float,
 ) -> Dict[str, List[IndexRow]]:
     """Landmark index rows straight from events (no model), for baseline fitting."""
-    origins = _origin_hours(events_binned)
+    origins = origin_hours(events_binned)
     timed = (
         events_binned.filter(
             pl.col("time").is_not_null() & pl.col("hadm_id").is_not_null()
@@ -789,7 +680,7 @@ def evaluate_alerts(
 
     raw = load_meds_shards(held_out_shard_dir, max_shards=max_shards)
     raw = maybe_normalize(raw, enabled=getattr(config, "normalize_medications", False))
-    times = _all_event_times(raw, alerts, source)
+    times = all_event_times(raw, alerts, source)
     visit_start = _visit_starts(raw)
     binned = add_value_tokens(raw, binner, source=source)
     del raw
@@ -806,6 +697,7 @@ def evaluate_alerts(
         num_lanes=num_lanes,
         chunk_size=chunk_size,
         device=device,
+        horizons=horizons,
     )
 
     baselines = None
@@ -816,7 +708,7 @@ def evaluate_alerts(
         train_raw = maybe_normalize(
             train_raw, enabled=getattr(config, "normalize_medications", False)
         )
-        train_times = _all_event_times(train_raw, alerts, source)
+        train_times = all_event_times(train_raw, alerts, source)
         train_binned = add_value_tokens(train_raw, binner, source=source)
         del train_raw
         train_rows = _index_rows_from_events(
@@ -894,7 +786,6 @@ __all__ = [
     "AlertMetrics",
     "EventTimes",
     "IndexRow",
-    "event_times",
     "outcome_at_horizon",
     "collect_model_scores",
     "baseline_features",
