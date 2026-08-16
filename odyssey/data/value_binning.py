@@ -130,7 +130,12 @@ class QuantileBinner:
         fall back to the code-identity-only token (see :func:`add_value_tokens`).
         """
         quantiles = [i / n_bins for i in range(1, n_bins)]
-        numeric = events.filter(pl.col(value_col).is_not_null())
+        # Project to the two needed columns BEFORE filtering: the filter
+        # materializes a copy, and at full-extraction scale (706M rows) a
+        # five-column copy is tens of GB where a two-column one is not.
+        numeric = events.select(code_col, value_col).filter(
+            pl.col(value_col).is_not_null()
+        )
         counts = numeric.group_by(code_col).agg(pl.len().alias("n"))
         eligible = counts.filter(pl.col("n") >= min_count)[code_col].to_list()
         if not eligible:
