@@ -376,6 +376,13 @@ td.code { font-family: var(--font-mono); font-size: 0.8rem; }
 .case-chip .row2 { font-size: 0.74rem; color: var(--ink-muted); display: flex; gap: 0.6rem; font-family: var(--font-mono); }
 
 .case-detail {
+  /* Grid items default to a content-based min-width (not 0), so a wide
+     child (the forecast table, the monitor strips) can push this whole
+     column -- and the page -- past the viewport instead of scrolling
+     inside its own .table-wrap/.monitor. This is the actual fix; those
+     already have overflow-x: auto but it only engages once their
+     ancestor stops growing to fit them. */
+  min-width: 0;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -443,7 +450,20 @@ td.code { font-family: var(--font-mono); font-size: 0.8rem; }
 }
 .monitor-row .row-label .truth-dot { width: 0.45rem; height: 0.45rem; border-radius: 99px; flex-shrink: 0; background: var(--border-strong); }
 .monitor-row .row-label.is-true .truth-dot { background: var(--critical); }
-.monitor-row canvas { display: block; height: 1.7rem; flex: 1; }
+.monitor-row canvas {
+  /* The backing-store `width`/`height` attributes (set in JS for a
+     sharp retina bitmap) are large pixel values with no CSS width to
+     override them -- a flex item's min-width defaults to its content
+     size, and for a replaced element like canvas that's the attribute
+     size, not the flex-basis. Without min-width: 0 the canvas (and
+     everything after it) pushed the whole page wider than the
+     viewport instead of actually filling flex: 1. */
+  display: block;
+  height: 1.7rem;
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+}
 
 .detail-table-title { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-faint); font-weight: 700; margin-bottom: 0.5rem; }
 .pred-list { display: flex; flex-direction: column; gap: 0.15rem; }
