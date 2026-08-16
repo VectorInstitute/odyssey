@@ -66,6 +66,47 @@ class ConceptBottleneckOutput(NamedTuple):
     """(..., num_concepts) sigmoid(observability_logits)."""
 
 
+@dataclass(frozen=True)
+class BottleneckIntervention:
+    """A do()-style edit applied inside the bottleneck's mixing step.
+
+    The CEM/CBGM intervention mechanism: replace a concept's *predicted*
+    activation probability with a chosen value before the embedding
+    mixture ``c * w+ + (1 - c) * w-`` is formed, and/or zero out whole
+    slots of the mixed-embedding concatenation. Only the mixture (and
+    therefore everything downstream of the bottleneck, i.e. the task
+    logits) is affected: ``concept_logits``/``concept_probs`` and the
+    observability head still report the model's own, un-intervened
+    predictions, so an intervention never contaminates the readouts used
+    to evaluate the concept heads themselves.
+
+    This is the machinery behind the completeness/reliance evaluation
+    (:mod:`odyssey.inference.interventions`): feeding ground-truth
+    concept values should *help* next-event prediction if the concepts
+    causally steer it, flipped values should hurt, and zeroing the known
+    vs. unknown slots apportions how much of the task signal flows
+    through each channel.
+    """
+
+    probs: Optional[torch.Tensor] = None
+    """(..., num_concepts) replacement mixing probabilities for the
+    known concepts (the unknown slot always keeps its own). Broadcasts
+    against the hidden-state batch shape."""
+
+    probs_mask: Optional[torch.Tensor] = None
+    """(..., num_concepts) bool: where True, ``probs`` replaces the
+    model's own probability; elsewhere the model's own value is kept.
+    None (with ``probs`` given) means replace everywhere."""
+
+    zero_known: bool = False
+    """Zero every known concept's mixed embedding (completeness probe:
+    how much task signal survives on the unknown channel alone)."""
+
+    zero_unknown: bool = False
+    """Zero the unknown concept's mixed embedding (how much task signal
+    flows outside the supervised concepts)."""
+
+
 class ConceptBottleneck(nn.Module):
     """Splits a hidden representation into known + unknown concept embeddings.
 
@@ -131,8 +172,18 @@ class ConceptBottleneck(nn.Module):
         # this is a separate, supervised head rather than an input feature.
         self.observability_proj = nn.Linear(hidden_size, num_concepts)
 
-    def forward(self, hidden_states: torch.Tensor) -> ConceptBottleneckOutput:
-        """Project hidden states into known + unknown concept embeddings."""
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        intervention: Optional[BottleneckIntervention] = None,
+    ) -> ConceptBottleneckOutput:
+        """Project hidden states into known + unknown concept embeddings.
+
+        ``intervention`` edits the mixing step only (see
+        :class:`BottleneckIntervention`): the returned
+        ``concept_logits``/``concept_probs``/observability outputs are
+        always the model's own predictions.
+        """
         batch_shape = hidden_states.shape[:-1]
         x = self.dropout(hidden_states)
 
@@ -147,7 +198,28 @@ class ConceptBottleneck(nn.Module):
         )
         probs = torch.sigmoid(logits)
 
-        mixed = probs.unsqueeze(-1) * w_pos + (1 - probs.unsqueeze(-1)) * w_neg
+        mix_probs = probs
+        if intervention is not None and intervention.probs is not None:
+            own = probs[..., : self.num_concepts]
+            override = intervention.probs.to(own.dtype).expand_as(own)
+            if intervention.probs_mask is not None:
+                override = torch.where(
+                    intervention.probs_mask.expand_as(own), override, own
+                )
+            mix_probs = torch.cat([override, probs[..., self.num_concepts :]], dim=-1)
+
+        mixed = mix_probs.unsqueeze(-1) * w_pos + (1 - mix_probs.unsqueeze(-1)) * w_neg
+        if intervention is not None and (
+            intervention.zero_known or intervention.zero_unknown
+        ):
+            slot_keep = torch.ones(
+                self.num_slots, dtype=mixed.dtype, device=mixed.device
+            )
+            if intervention.zero_known:
+                slot_keep[: self.num_concepts] = 0.0
+            if intervention.zero_unknown:
+                slot_keep[self.num_concepts] = 0.0
+            mixed = mixed * slot_keep.unsqueeze(-1)
 
         concept_logits = logits[..., : self.num_concepts]
         concept_probs = probs[..., : self.num_concepts]
