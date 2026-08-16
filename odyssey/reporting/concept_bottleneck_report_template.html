@@ -509,6 +509,32 @@ footer {
   border-radius: 8px; padding: 0.7rem 1rem; margin-top: 1rem;
   font-size: 0.85rem; color: var(--ink);
 }
+
+.monitor-group-head {
+  font-size: 0.66rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--ink-faint);
+  padding: 0.4rem 0.75rem 0.3rem; background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.monitor-row .row-label .nm { overflow: hidden; text-overflow: ellipsis; }
+.monitor-row .no-data {
+  font-size: 0.68rem; color: var(--ink-faint); padding-right: 0.75rem;
+  white-space: nowrap; flex-shrink: 0;
+}
+.axis-row { display: flex; align-items: center; border-bottom: 1px solid var(--border); background: var(--surface); }
+.axis-row canvas { display: block; flex: 1; height: 30px; min-width: 0; }
+.axis-row .row-label { visibility: hidden; }
+.strip-tip {
+  position: fixed; z-index: 50; pointer-events: none;
+  background: var(--surface); border: 1px solid var(--border-strong);
+  border-radius: 6px; padding: 0.25rem 0.5rem; font-size: 0.72rem;
+  color: var(--ink); box-shadow: var(--shadow); display: none;
+}
+.strip-legend {
+  display: flex; flex-wrap: wrap; gap: 1rem; margin-top: 0.45rem;
+  font-size: 0.72rem; color: var(--ink-muted);
+}
+.strip-legend .sw { display: inline-block; vertical-align: middle; margin-right: 0.35rem; }
 </style>
 
 <header class="top">
@@ -971,21 +997,105 @@ footer {
     return hexToRgb(hex);
   }
 
-  function drawConceptStrip(canvas, values) {
+  function cssRgb(name) {
+    return hexToRgb(getComputedStyle(document.documentElement).getPropertyValue(name));
+  }
+
+  // Clinical grouping: the order a clinician scans systems in, so related
+  // strips sit together and contradictions (tachycardia vs bradycardia
+  // both dark) are visible at a glance.
+  const CONCEPT_GROUPS = [
+    ["Hemodynamics", ["tachycardia", "bradycardia", "hypotension", "hypertension", "on_vasopressors"]],
+    ["Respiratory", ["hypoxia", "sustained_tachypnea"]],
+    ["Temperature", ["fever", "hypothermia"]],
+    ["Renal", ["acute_kidney_injury", "aki_stage_2", "aki_stage_3"]],
+    ["Perfusion & sepsis", ["elevated_lactate", "sirs", "qsofa"]],
+  ];
+
+  function groupedConceptIndices(names) {
+    const seen = new Set();
+    const groups = [];
+    CONCEPT_GROUPS.forEach(([label, members]) => {
+      const idx = members.map((m) => names.indexOf(m)).filter((i) => i >= 0);
+      idx.forEach((i) => seen.add(i));
+      if (idx.length) groups.push([label, idx]);
+    });
+    const rest = names.map((_, i) => i).filter((i) => !seen.has(i));
+    if (rest.length) groups.push(["Other", rest]);
+    return groups;
+  }
+
+  function setupCanvas(canvas, rectH) {
     const dpr = window.devicePixelRatio || 1;
-    const rectW = canvas.clientWidth || 400, rectH = 28;
+    const rectW = canvas.clientWidth || 400;
     canvas.width = rectW * dpr; canvas.height = rectH * dpr;
     const ctx = canvas.getContext("2d");
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, rectW, rectH);
+    return [ctx, rectW];
+  }
+
+  // Time-true strip: each sample fills the time interval it represents
+  // (midpoint to midpoint), so an hour is the same width everywhere in the
+  // stay. The previous equal-width-per-sample drawing stretched dense
+  // monitoring periods and compressed quiet ones, which misreads clinically.
+  function drawConceptStrip(canvas, ts, values, span, evidenceTimes, observed) {
+    const rectH = 28;
+    const [ctx, rectW] = setupCanvas(canvas, rectH);
+    const x = (time) => (span > 0 ? (time / span) * rectW : 0);
+    if (!observed) {
+      const [r, g, b] = cssRgb("--ink-faint");
+      ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.10)`;
+      ctx.fillRect(0, 0, rectW, rectH);
+      return;
+    }
     const [r, g, b] = accentRgb();
     const n = values.length;
-    const bw = rectW / n;
     for (let i = 0; i < n; i++) {
+      const left = i === 0 ? 0 : x((ts[i - 1] + ts[i]) / 2);
+      const right = i === n - 1 ? rectW : x((ts[i] + ts[i + 1]) / 2);
       const v = Math.max(0, Math.min(1, values[i]));
-      const alpha = 0.08 + v * 0.85;
-      ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(3)})`;
-      ctx.fillRect(i * bw, 0, bw + 0.6, rectH);
+      ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${(0.06 + v * 0.87).toFixed(3)})`;
+      ctx.fillRect(left, 0, Math.max(right - left, 0.5) + 0.4, rectH);
+    }
+    if (evidenceTimes && evidenceTimes.length) {
+      const [wr, wg, wb] = cssRgb("--warn");
+      ctx.fillStyle = `rgba(${wr}, ${wg}, ${wb}, 0.95)`;
+      evidenceTimes.forEach((et) => {
+        const ex = x(et);
+        ctx.beginPath();
+        ctx.moveTo(ex - 3.2, 0); ctx.lineTo(ex + 3.2, 0); ctx.lineTo(ex, 6.5);
+        ctx.closePath(); ctx.fill();
+      });
+    }
+  }
+
+  function drawTimeAxis(canvas, span, markers) {
+    const rectH = 30;
+    const [ctx, rectW] = setupCanvas(canvas, rectH);
+    const inkMuted = cssRgb("--ink-muted");
+    const border = cssRgb("--border-strong");
+    ctx.font = "10px " + getComputedStyle(document.body).fontFamily;
+    ctx.fillStyle = `rgb(${inkMuted.join(",")})`;
+    ctx.strokeStyle = `rgba(${border.join(",")},0.9)`;
+    const nTicks = 5;
+    for (let i = 0; i <= nTicks; i++) {
+      const frac = i / nTicks;
+      const tx = frac * (rectW - 1);
+      ctx.beginPath(); ctx.moveTo(tx + 0.5, 18); ctx.lineTo(tx + 0.5, 24); ctx.stroke();
+      const label = fmtDuration(span * frac);
+      const align = i === 0 ? "left" : i === nTicks ? "right" : "center";
+      ctx.textAlign = align;
+      ctx.fillText(label, i === 0 ? 2 : i === nTicks ? rectW - 2 : tx, 14);
+    }
+    if (markers && markers.length) {
+      const [cr, cg, cb] = cssRgb("--critical");
+      markers.forEach(([mt, label]) => {
+        const mx = span > 0 ? (mt / span) * rectW : 0;
+        ctx.strokeStyle = label === "Death"
+          ? `rgba(${cr},${cg},${cb},0.95)` : `rgba(${inkMuted.join(",")},0.8)`;
+        ctx.beginPath(); ctx.moveTo(mx + 0.5, 20); ctx.lineTo(mx + 0.5, 30); ctx.stroke();
+      });
     }
   }
 
@@ -1019,18 +1129,70 @@ footer {
     stripWrap.appendChild(el("div", { class: "strip-title" }, ["Concept-probability trace over the stay (bottleneck output, sampled)"]));
     const monitor = el("div", { class: "monitor" });
     const traj = c.trajectory;
-    c.concept_names.forEach((name, ci) => {
-      const isTrue = c.concept_labels[ci] > 0;
-      const row = el("div", { class: "monitor-row" });
-      row.appendChild(el("div", { class: "row-label" + (isTrue ? " is-true" : "") }, [
-        el("span", { class: "truth-dot" }), prettyConceptName(name),
-      ]));
-      const canvas = document.createElement("canvas");
-      row.appendChild(canvas);
-      monitor.appendChild(row);
-      requestAnimationFrame(() => drawConceptStrip(canvas, traj.concept_probs.map((row) => row[ci])));
+    const span = c.span_hrs || (traj.t.length ? traj.t[traj.t.length - 1] : 0);
+    const evidence = c.evidence || {};
+    const obsMean = c.obs_mean || null;
+    const tip = document.getElementById("strip-tip") || document.body.appendChild(el("div", { class: "strip-tip", id: "strip-tip" }));
+
+    // shared time axis with care-transition markers
+    const axisRow = el("div", { class: "axis-row" });
+    axisRow.appendChild(el("div", { class: "row-label" }, ["axis"]));
+    const axisCanvas = document.createElement("canvas");
+    axisRow.appendChild(axisCanvas);
+    monitor.appendChild(axisRow);
+    requestAnimationFrame(() => drawTimeAxis(axisCanvas, span, c.markers || []));
+
+    groupedConceptIndices(c.concept_names).forEach(([groupLabel, indices]) => {
+      monitor.appendChild(el("div", { class: "monitor-group-head" }, [groupLabel]));
+      indices.forEach((ci) => {
+        const name = c.concept_names[ci];
+        const isTrue = c.concept_labels[ci] > 0;
+        const observed = c.concept_observed[ci] > 0;
+        const row = el("div", { class: "monitor-row" });
+        row.appendChild(el("div", { class: "row-label" + (isTrue ? " is-true" : "") }, [
+          el("span", { class: "truth-dot" }),
+          el("span", { class: "nm" }, [prettyConceptName(name)]),
+        ]));
+        const canvas = document.createElement("canvas");
+        row.appendChild(canvas);
+        if (!observed) {
+          const hint = obsMean
+            ? (obsMean[ci] < 0.5
+              ? " (model also expected no measurement)"
+              : " (model expected a measurement)")
+            : "";
+          row.appendChild(el("div", { class: "no-data", title:
+            "This concept's underlying vitals/labs were never recorded in this " +
+            "stay, so its probability was never supervised here and the strip " +
+            "would be uninterpretable" + hint }, ["not measured" + hint]));
+        }
+        monitor.appendChild(row);
+        const series = traj.concept_probs.map((r) => r[ci]);
+        requestAnimationFrame(() => drawConceptStrip(
+          canvas, traj.t, series, span, observed ? (evidence[name] || []) : [], observed));
+        if (observed) {
+          canvas.addEventListener("mousemove", (ev) => {
+            const rect = canvas.getBoundingClientRect();
+            const frac = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
+            const time = frac * span;
+            let lo = 0;
+            while (lo < traj.t.length - 1 && traj.t[lo + 1] <= time) lo++;
+            tip.style.display = "block";
+            tip.style.left = (ev.clientX + 12) + "px";
+            tip.style.top = (ev.clientY + 12) + "px";
+            tip.textContent = prettyConceptName(name) + " · " + fmtDuration(time) + " · p=" + fmt(series[lo], 2);
+          });
+          canvas.addEventListener("mouseleave", () => { tip.style.display = "none"; });
+        }
+      });
     });
     stripWrap.appendChild(monitor);
+    stripWrap.appendChild(el("div", { class: "strip-legend", html:
+      '<span><span class="sw" style="width:0.9rem;height:0.6rem;background:var(--accent);opacity:0.85;"></span>darker = higher probability that the concept is active in the current admission</span>' +
+      '<span><span class="sw" style="width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;border-top:7px solid var(--warn);"></span>supporting evidence event (an abnormal reading or matching order) arrives</span>' +
+      '<span><span class="sw" style="width:0.9rem;height:0.6rem;background:var(--ink-faint);opacity:0.18;"></span>gray = never measured this stay: unsupervised output, do not read</span>' +
+      '<span><span class="sw" style="width:0.45rem;height:0.45rem;border-radius:99px;background:var(--critical);"></span>dot = rule-derived label says this concept was true for the stay</span>'
+    }));
     wrap.appendChild(stripWrap);
 
     wrap.appendChild(el("div", { class: "detail-table-title" }, ["Sampled forecast points along the stay"]));
