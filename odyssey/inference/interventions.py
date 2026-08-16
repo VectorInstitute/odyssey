@@ -325,6 +325,8 @@ def evaluate_interventions(
     events_binned = add_value_tokens(raw_events, binner, source=source)
 
     supervision: ConceptSupervision = getattr(config, "concept_supervision", "stay")
+    concept_labels: ConceptLabelDict
+    concept_mask: ConceptLabelDict
     if supervision == "visit":
         concept_labels, concept_mask = build_visit_concept_label_dicts(
             raw_events, concepts
