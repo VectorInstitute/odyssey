@@ -68,17 +68,34 @@ def _normalize_name(name: str) -> str:
     return stripped.lower()
 
 
+_ACTION_SEGMENTS = {"START", "STOP", "STARTED", "STOPPED"}
+_ID_SEGMENT_RE = re.compile(r"\d+|unk", re.IGNORECASE)
+
+
 def normalize_medication_code(code: str) -> str:
-    """Scalar form of :func:`normalize_medication_codes`, for tests/analysis."""
+    """Normalize one medication code; the single source of truth for the rule.
+
+    Real MIMIC-IV emar codes are ``MEDICATION//{drug}//{event_txt}//{ndc}``
+    (the trailing NDC packaging code splits one drug administration into
+    thousands of tokens) and pharmacy codes are
+    ``MEDICATION//START|STOP//{drug}//{gsn}``; eICU uses
+    ``MEDICATION//STARTED|STOPPED//{drug}``. Verified against the real
+    extraction's top medication codes, not assumed. The rule: drop a
+    trailing pure-ID segment (digits or ``unk``), find the drug segment
+    (first segment, or second when the first is a START/STOP action),
+    and reduce it to its lowercased ingredient. Action and event-text
+    segments survive; they carry clinical signal (given vs. not given).
+    """
     parts = code.split("//")
     if parts[0] not in MEDICATION_FAMILIES or len(parts) < 2:
         return code
-    # eICU carries an action segment (STARTED/STOPPED); MIMIC goes straight
-    # to the drug text. The last segment is the name in both.
-    head, name = parts[:-1], parts[-1]
-    if not name:
-        return code
-    return "//".join([*head, _normalize_name(name)])
+    segs = parts[1:]
+    if len(segs) >= 2 and _ID_SEGMENT_RE.fullmatch(segs[-1]):
+        segs = segs[:-1]
+    drug_idx = 1 if segs[0].upper() in _ACTION_SEGMENTS and len(segs) > 1 else 0
+    if segs[drug_idx]:
+        segs[drug_idx] = _normalize_name(segs[drug_idx])
+    return "//".join([parts[0], *segs])
 
 
 def normalize_medication_codes(
@@ -86,40 +103,22 @@ def normalize_medication_codes(
 ) -> pl.DataFrame:
     """Rewrite medication codes to ingredient level; pass everything else through.
 
-    Vectorized with polars string expressions (an event stream has hundreds
-    of millions of rows; per-row Python is not an option). Exactly mirrors
-    :func:`normalize_medication_code`.
+    Applies :func:`normalize_medication_code` over the *distinct* codes
+    (tens of thousands) and joins the mapping back onto the events
+    (hundreds of millions) -- exact same rule as the scalar function with
+    no vectorized reimplementation to drift out of sync, at hash-join
+    cost instead of per-row Python.
     """
-    is_med = pl.col(code_col).str.split("//").list.first().is_in(
-        list(MEDICATION_FAMILIES)
+    distinct = events.select(pl.col(code_col).unique().alias(code_col))
+    mapping = distinct.with_columns(
+        pl.col(code_col)
+        .map_elements(normalize_medication_code, return_dtype=pl.Utf8)
+        .alias("_normalized")
     )
-    parts = pl.col(code_col).str.split("//")
-    name = parts.list.last()
-    head = parts.list.slice(0, parts.list.len() - 1).list.join("//")
-
-    cleaned = (
-        name.str.replace(r"^.*:\s*", "")
-        .str.replace(r"\s\d.*$", "")
-    )
-    for _ in range(6):
-        cleaned = cleaned.str.replace(rf"\s+(?i:{_FORM_WORDS})\s*$", "")
-    cleaned = (
-        cleaned.str.replace_all(r"\s+", " ")
-        .str.strip_chars(" -.,")
-    )
-    cleaned = (
-        pl.when(cleaned.str.len_chars() > 0)
-        .then(cleaned)
-        .otherwise(name.str.replace_all(r"\s+", " ").str.strip_chars())
-        .str.to_lowercase()
-    )
-    normalized = head + pl.lit("//") + cleaned
-
-    return events.with_columns(
-        pl.when(is_med & (name.str.len_chars() > 0))
-        .then(normalized)
-        .otherwise(pl.col(code_col))
-        .alias(code_col)
+    return (
+        events.join(mapping, on=code_col, how="left")
+        .with_columns(pl.col("_normalized").fill_null(pl.col(code_col)).alias(code_col))
+        .drop("_normalized")
     )
 
 

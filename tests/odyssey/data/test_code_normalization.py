@@ -105,3 +105,52 @@ def test_icd_backoff_leaves_category_level_and_non_icd_alone() -> None:
     assert icd_category_code("DIAGNOSIS//ICD//10//I50") is None
     assert icd_category_code("LAB//220045//bpm") is None
     assert icd_category_code("MEDICATION//acetaminophen") is None
+
+
+# ---------------------------------------------------------------------------
+# real MIMIC-IV shapes (verified against the actual extraction)
+# ---------------------------------------------------------------------------
+
+
+def test_mimic_emar_shape_drops_ndc_and_keeps_event_text() -> None:
+    # MEDICATION//{drug}//{event_txt}//{ndc}: the trailing NDC packaging
+    # code is pure fragmentation; the event text is clinical signal.
+    assert (
+        normalize_medication_code("MEDICATION//Heparin//Administered//63323026201")
+        == "MEDICATION//heparin//Administered"
+    )
+    assert (
+        normalize_medication_code(
+            "MEDICATION//Insulin//Not Given per Sliding Scale//unk"
+        )
+        == "MEDICATION//insulin//Not Given per Sliding Scale"
+    )
+
+
+def test_mimic_emar_ndc_variants_of_one_drug_collapse() -> None:
+    variants = [
+        "MEDICATION//Heparin//Administered//63323026201",
+        "MEDICATION//Heparin//Administered//00409779362",
+        "MEDICATION//Heparin//Administered//unk",
+    ]
+    assert len({normalize_medication_code(v) for v in variants}) == 1
+
+
+def test_mimic_pharmacy_start_stop_shape() -> None:
+    assert (
+        normalize_medication_code("MEDICATION//START//Sodium Chloride 0.9%  Flush//unk")
+        == "MEDICATION//START//sodium chloride"
+    )
+    assert (
+        normalize_medication_code("MEDICATION//STOP//UNK//unk")
+        == "MEDICATION//STOP//unk"
+    )
+
+
+def test_dose_embedded_in_drug_segment_is_stripped() -> None:
+    assert (
+        normalize_medication_code(
+            "MEDICATION//Sodium Chloride 0.9%  Flush//Flushed//unk"
+        )
+        == "MEDICATION//sodium chloride//Flushed"
+    )
