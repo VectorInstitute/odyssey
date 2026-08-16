@@ -150,7 +150,8 @@ def probability_within(
     edge_tensor = torch.as_tensor(edges, dtype=hazard_logits.dtype)
     covered = int((edge_tensor <= horizon_hours).sum().item())  # bins 1..covered
     cdf = 1.0 - survival_curve(hazard_logits)
-    return cdf[..., covered]
+    within: torch.Tensor = cdf[..., covered]
+    return within
 
 
 def gap_survival_valid_mask(
