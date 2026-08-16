@@ -7,6 +7,7 @@ from typing import List, Optional, Tuple
 
 import polars as pl
 import pytest
+import torch
 
 from odyssey.data.concepts import ConceptDefinition, ConceptRule
 from odyssey.data.vocabulary import PAD_ID, UNK_ID
@@ -16,6 +17,7 @@ from odyssey.training.data import (
     build_visit_concept_label_dicts,
     build_vocabulary,
     count_subjects,
+    family_loss_weights,
     iter_patient_sequences,
     load_meds_shards,
 )
@@ -308,3 +310,28 @@ def test_build_visit_concept_label_dicts_keys_and_shapes() -> None:
     assert labels[(2, 20)].tolist() == [1.0]
     assert masks[(1, 10)].tolist() == [1.0]
     assert labels[(1, 10)].shape == (len(concepts),)
+
+
+def test_family_loss_weights_follow_family_shares() -> None:
+    events = pl.DataFrame(
+        {
+            "code": ["LAB//1//"] * 850
+            + ["MEDICATION//x"] * 120
+            + ["DIAGNOSIS//ICD//10//I50"] * 20
+            + ["PROCEDURE//ICD//10//0BH"] * 5
+            + ["DRG//1"] * 5
+        }
+    )
+    w = family_loss_weights(events, alpha=1.0, cap=100.0)
+    # families: 1 diagnosis, 2 medication, 3 procedure, 4 lab, 7 billing
+    lab, med, diag, proc, billing = w[4], w[2], w[1], w[3], w[7]
+    assert lab < med < diag < proc == billing
+    # inverse-frequency exactly, normalized so sum(share * w) == 1
+    shares = torch.tensor([0.02, 0.12, 0.005, 0.85, 0.005])
+    assert torch.allclose(
+        (shares * torch.stack([diag, med, proc, lab, billing])).sum(),
+        torch.tensor(1.0),
+        atol=1e-5,
+    )
+    uniform = family_loss_weights(events, alpha=0.0)
+    assert torch.allclose(uniform[uniform > 0], torch.ones(5))

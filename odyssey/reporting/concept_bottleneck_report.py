@@ -455,6 +455,23 @@ def build_findings(
         "concepts": concepts,
         "observability": observability,
     }
+    tm = inference.get("time_metrics")
+    if tm:
+        cal = tm["calibration"]
+        worst = max(
+            cal.items(), key=lambda kv: abs(kv[1]["predicted"] - kv[1]["observed"])
+        )
+        findings["time"] = (
+            f"<b>Does the model know when the next event comes?</b> Same-instant "
+            f"(bundle continues) accuracy {tm['same_instant_accuracy']:.1%} against a "
+            f"{tm['same_instant_rate']:.1%} base rate. Calibration: "
+            + ", ".join(
+                f"within {h}: predicted {c['predicted']:.1%} vs observed {c['observed']:.1%}"
+                for h, c in cal.items()
+            )
+            + f". Largest gap at {worst[0]} "
+            f"({abs(worst[1]['predicted'] - worst[1]['observed']):.1%} points)."
+        )
     interventions_note = build_intervention_finding(interventions)
     if interventions_note is not None:
         findings["interventions"] = interventions_note

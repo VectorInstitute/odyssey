@@ -46,6 +46,33 @@ from odyssey.models.concept_bottleneck import orthogonality_loss
 
 
 @dataclass(frozen=True)
+class TimeMetrics:
+    """How well the time-to-next-event hazard head forecasts *when*.
+
+    Scored on every held-out position with an in-chunk next event. The
+    calibration entries compare, at each horizon, the mean predicted
+    ``P(next event within h)`` against the observed rate; a well-calibrated
+    head has the two close at every horizon. ``same_instant`` is the
+    binary "the current bundle continues" question (gap of zero), the
+    piece the set-valued next-event objective relies on.
+    """
+
+    nll: float
+    """Mean negative log-likelihood of the observed gap under the hazards."""
+
+    n_positions: int
+    same_instant_accuracy: float
+    """Accuracy of ``P(gap = 0) > 0.5`` against the observed same-instant flag."""
+
+    same_instant_rate: float
+    """Observed fraction of positions whose next event is at the same instant."""
+
+    calibration: Dict[str, Dict[str, float]]
+    """Horizon label ("1h", "8h", "24h") -> {"predicted": mean P(within h),
+    "observed": fraction of gaps <= h}."""
+
+
+@dataclass(frozen=True)
 class TaskMetrics:
     """Next-token forecasting quality over a set of predictions."""
 
