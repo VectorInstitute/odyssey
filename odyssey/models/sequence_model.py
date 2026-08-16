@@ -37,6 +37,7 @@ from odyssey.data.streaming import StreamingChunk
 from odyssey.data.types import ClinicalSequenceBatch
 from odyssey.models.backbones.base import SequenceBackbone, TimeAwareState
 from odyssey.models.concept_bottleneck import (
+    BottleneckIntervention,
     ConceptBottleneck,
     ConceptBottleneckLossWeights,
     ConceptBottleneckOutput,
@@ -268,12 +269,19 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         batch: ClinicalSequenceBatch,
         state: Optional[TimeAwareState] = None,
         reset_mask: Optional[torch.Tensor] = None,
+        intervention: Optional[BottleneckIntervention] = None,
     ) -> Tuple[torch.Tensor, ConceptBottleneckOutput, TimeAwareState]:
-        """Return ``(next-token logits, bottleneck output, new backbone state)``."""
+        """Return ``(next-token logits, bottleneck output, new backbone state)``.
+
+        ``intervention`` performs a do()-style edit inside the bottleneck
+        (see :class:`~odyssey.models.concept_bottleneck.BottleneckIntervention`):
+        the task logits flow from the intervened mixture, while the
+        concept/observability readouts stay the model's own.
+        """
         hidden_states, new_state = self.backbone(
             batch, state=state, reset_mask=reset_mask
         )
-        bottleneck_out = self.bottleneck(hidden_states)
+        bottleneck_out = self.bottleneck(hidden_states, intervention=intervention)
         logits = self.lm_head(bottleneck_out.bottleneck)
         return logits, bottleneck_out, new_state
 

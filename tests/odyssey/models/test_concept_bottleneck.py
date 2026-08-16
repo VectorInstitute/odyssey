@@ -5,6 +5,7 @@ import torch
 from torch import nn
 
 from odyssey.models.concept_bottleneck import (
+    BottleneckIntervention,
     ConceptBottleneck,
     ConceptBottleneckLossWeights,
     combined_loss,
@@ -461,3 +462,87 @@ def test_orthogonality_penalty_reduces_concept_unknown_entanglement() -> None:
     entanglement_without_penalty = train(orthogonality_weight=0.0)
 
     assert entanglement_with_penalty < entanglement_without_penalty
+
+
+# ---------------------------------------------------------------------------
+# BottleneckIntervention: do()-style edits on the mixing step
+# ---------------------------------------------------------------------------
+
+
+def _layer_and_hidden() -> tuple:
+    torch.manual_seed(1)
+    layer = ConceptBottleneck(16, 3, 4)
+    layer.eval()
+    return layer, torch.randn(2, 5, 16)
+
+
+def test_intervention_probs_change_the_bottleneck_not_the_readouts() -> None:
+    layer, hidden = _layer_and_hidden()
+    plain = layer(hidden)
+    intervened = layer(
+        hidden,
+        intervention=BottleneckIntervention(probs=torch.ones(2, 5, 3)),
+    )
+    assert not torch.allclose(plain.bottleneck, intervened.bottleneck)
+    # Concept and observability readouts stay the model's own predictions.
+    assert torch.equal(plain.concept_logits, intervened.concept_logits)
+    assert torch.equal(plain.concept_probs, intervened.concept_probs)
+    assert torch.equal(plain.observability_probs, intervened.observability_probs)
+
+
+def test_intervention_mask_gates_which_concepts_are_replaced() -> None:
+    layer, hidden = _layer_and_hidden()
+    plain = layer(hidden)
+    all_masked_out = layer(
+        hidden,
+        intervention=BottleneckIntervention(
+            probs=torch.ones(2, 5, 3),
+            probs_mask=torch.zeros(2, 5, 3, dtype=torch.bool),
+        ),
+    )
+    # A fully-masked-out intervention is a no-op.
+    assert torch.allclose(plain.bottleneck, all_masked_out.bottleneck)
+
+    only_first = torch.zeros(2, 5, 3, dtype=torch.bool)
+    only_first[..., 0] = True
+    partial = layer(
+        hidden,
+        intervention=BottleneckIntervention(
+            probs=torch.ones(2, 5, 3), probs_mask=only_first
+        ),
+    )
+    # Concepts 1..2 and the unknown slot keep their own mixtures.
+    assert torch.allclose(
+        plain.concept_embeddings[..., 1:, :], partial.concept_embeddings[..., 1:, :]
+    )
+    assert torch.allclose(plain.unknown_embedding, partial.unknown_embedding)
+    assert not torch.allclose(
+        plain.concept_embeddings[..., 0, :], partial.concept_embeddings[..., 0, :]
+    )
+
+
+def test_zero_known_and_zero_unknown_zero_the_right_slots() -> None:
+    layer, hidden = _layer_and_hidden()
+    plain = layer(hidden)
+
+    no_known = layer(hidden, intervention=BottleneckIntervention(zero_known=True))
+    assert torch.equal(
+        no_known.concept_embeddings, torch.zeros_like(no_known.concept_embeddings)
+    )
+    assert torch.allclose(no_known.unknown_embedding, plain.unknown_embedding)
+
+    no_unknown = layer(hidden, intervention=BottleneckIntervention(zero_unknown=True))
+    assert torch.equal(
+        no_unknown.unknown_embedding, torch.zeros_like(no_unknown.unknown_embedding)
+    )
+    assert torch.allclose(no_unknown.concept_embeddings, plain.concept_embeddings)
+
+
+def test_truth_intervention_equals_own_probs_when_they_agree() -> None:
+    """Feeding the model's own probabilities back is exactly a no-op."""
+    layer, hidden = _layer_and_hidden()
+    plain = layer(hidden)
+    echoed = layer(
+        hidden, intervention=BottleneckIntervention(probs=plain.concept_probs)
+    )
+    assert torch.allclose(plain.bottleneck, echoed.bottleneck)

@@ -9,14 +9,20 @@ together:
   triggered) -- no model forward pass needed, so this runs over every
   held-out subject.
 - :func:`extract_patient_case` runs the model over *one* selected
-  patient's full sequence (a single whole-sequence forward pass, not
-  streaming: a single patient's stay is short enough to not need
-  chunking, and a clean, uninterrupted trace is what a qualitative case
-  study visualization wants -- streaming's synthetic resets and
-  chunk-boundary state carrying are training-time concerns, not
-  relevant here) and returns a rich, per-timestep trace: predicted
-  next-token distribution, concept/observability probabilities, and
-  where the true next token ranked in the model's own prediction.
+  patient's sequence through the exact chunked, state-carrying
+  streaming path training and quantitative evaluation use (a single
+  lane, no synthetic resets), and returns a rich, per-timestep trace:
+  predicted next-token distribution, concept/observability
+  probabilities, and where the true next token ranked in the model's
+  own prediction. An earlier version ran one whole-sequence
+  full-attention forward pass instead, on the theory that chunking is
+  a training-time concern; that was backwards -- the model was only
+  ever trained on ``chunk_size``-token windows with carried recurrent
+  state, so an un-chunked pass over a long stay is a regime it never
+  saw, and the traces it produced were not evidence about deployed
+  behavior. Chunk boundaries are seamless by construction (consecutive
+  windows overlap by exactly one token), so the stitched trace still
+  covers every position exactly once.
 """
 
 import json
@@ -31,13 +37,10 @@ import torch
 
 from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.concepts import concepts_for_source
-from odyssey.data.sequences import (
-    PatientSequence,
-    build_patient_sequence,
-    collate_patient_sequences,
-)
+from odyssey.data.sequences import PatientSequence, build_patient_sequence
+from odyssey.data.streaming import NO_SUBJECT, PackedLaneSampler
 from odyssey.data.value_binning import add_value_tokens
-from odyssey.data.vocabulary import PAD_ID, Vocabulary
+from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.run_inference import load_run
 from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
 from odyssey.training.data import build_concept_label_dicts, load_meds_shards
@@ -91,42 +94,71 @@ def extract_patient_case(
     concept_mask: Optional[torch.Tensor] = None,
     device: str = "cuda",
     top_k: int = 5,
+    chunk_size: int = 256,
 ) -> PatientCaseTrace:
-    """Run ``model`` over one patient's full sequence and trace every position."""
+    """Trace one patient position-by-position under the streaming regime.
+
+    Streams the sequence through the model exactly the way training and
+    :func:`~odyssey.inference.run_inference.run_streaming_inference`
+    do -- ``chunk_size``-token windows with carried recurrent state, one
+    lane, no synthetic resets -- so every per-position probability in
+    the trace comes from the operating regime the model was actually
+    trained in. Pass the training run's own ``chunk_size``.
+    """
     model.eval()
-    batch = collate_patient_sequences([seq], padding_idx=PAD_ID)
-    batch = _move_chunk_to_device(batch, device)
-
-    with torch.no_grad():
-        logits, bottleneck_out, _ = model(batch)
-
-    n = len(seq)
-    probs = torch.softmax(logits[0, :n], dim=-1)  # (n, vocab_size)
-    top_k_probs, top_k_ids = probs.topk(top_k, dim=-1)  # (n, top_k) each
+    sampler = PackedLaneSampler(
+        iter([seq]), num_lanes=1, chunk_size=chunk_size, reset_prob=0.0
+    )
 
     predicted_top_k: List[List[Tuple[str, float]]] = []
     true_next_code: List[Optional[str]] = []
     true_next_rank: List[Optional[int]] = []
-    for i in range(n):
-        if i == n - 1:
-            predicted_top_k.append([])
-            true_next_code.append(None)
-            true_next_rank.append(None)
-            continue
-        predicted_top_k.append(
-            [
-                (vocab.decode(int(tok_id)), float(prob))
-                for tok_id, prob in zip(top_k_ids[i].tolist(), top_k_probs[i].tolist())
-            ]
-        )
-        true_id = seq.concept_ids[i + 1]
-        true_next_code.append(vocab.decode(true_id))
-        # argsort descending -> position of true_id is its rank.
-        rank = int((probs[i] > probs[i, true_id]).sum().item())
-        true_next_rank.append(rank)
+    concept_probs: List[List[float]] = []
+    observability_probs: List[List[float]] = []
 
-    concept_probs = bottleneck_out.concept_probs[0, :n].tolist()
-    observability_probs = bottleneck_out.observability_probs[0, :n].tolist()
+    state = None
+    with torch.no_grad():
+        for chunk in sampler:
+            chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
+            logits, bottleneck_out, state = model(
+                chunk.batch, state=state, reset_mask=chunk.reset_mask
+            )
+            # One lane, one patient, no resets: real input positions are a
+            # contiguous prefix (padding only where the lane runs out).
+            input_real = chunk.subject_ids[0] != NO_SUBJECT
+            n_real = int(input_real.sum().item())
+            assert bool(input_real[:n_real].all())  # noqa: S101
+            probs = torch.softmax(logits[0, :n_real], dim=-1)  # (n_real, vocab)
+            top_k_probs, top_k_ids = probs.topk(top_k, dim=-1)
+            # real_mask means "has a valid next-token target": false only
+            # at the final position of the whole sequence.
+            has_target = chunk.real_mask[0, :n_real]
+            targets = chunk.targets[0, :n_real]
+            for i in range(n_real):
+                if not bool(has_target[i]):
+                    predicted_top_k.append([])
+                    true_next_code.append(None)
+                    true_next_rank.append(None)
+                    continue
+                predicted_top_k.append(
+                    [
+                        (vocab.decode(int(tok_id)), float(prob))
+                        for tok_id, prob in zip(
+                            top_k_ids[i].tolist(), top_k_probs[i].tolist()
+                        )
+                    ]
+                )
+                true_id = int(targets[i].item())
+                true_next_code.append(vocab.decode(true_id))
+                # argsort descending -> position of true_id is its rank.
+                rank = int((probs[i] > probs[i, true_id]).sum().item())
+                true_next_rank.append(rank)
+            concept_probs.extend(bottleneck_out.concept_probs[0, :n_real].tolist())
+            observability_probs.extend(
+                bottleneck_out.observability_probs[0, :n_real].tolist()
+            )
+
+    assert len(concept_probs) == len(seq)  # noqa: S101 -- every position, once
 
     zeros = [0.0] * len(concept_names)
     return PatientCaseTrace(
@@ -244,8 +276,8 @@ def build_case_studies(
     Mirrors :func:`~odyssey.inference.run_inference.evaluate_run`'s
     load-a-run pattern, but for the qualitative path: selects
     ``n_cases`` diverse subjects (see :func:`select_diverse_cases`) and
-    runs a full, un-chunked forward pass over each (see
-    :func:`extract_patient_case`).
+    streams each through the model with the run's own trained
+    ``chunk_size`` (see :func:`extract_patient_case`).
     """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     model, vocab, binner, config = load_run(
@@ -285,6 +317,7 @@ def build_case_studies(
                 concept_labels=concept_labels.get(subject_id),
                 concept_mask=concept_mask.get(subject_id),
                 device=device,
+                chunk_size=getattr(config, "chunk_size", 256),
             )
         )
     return traces
