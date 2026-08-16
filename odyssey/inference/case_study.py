@@ -29,6 +29,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 import polars as pl
 import torch
 
+from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.concepts import CONCEPTS
 from odyssey.data.sequences import (
     PatientSequence,
@@ -247,12 +248,15 @@ def build_case_studies(
     :func:`extract_patient_case`).
     """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    model, vocab, binner, _ = load_run(
+    model, vocab, binner, config = load_run(
         run_dir, device=device, checkpoint_path=checkpoint_path
     )
 
     logger.info("[case_study] loading held-out shards from %s", held_out_shard_dir)
     raw_events = load_meds_shards(held_out_shard_dir, max_shards=max_shards)
+    raw_events = maybe_normalize(
+        raw_events, enabled=getattr(config, "normalize_medications", False)
+    )
 
     logger.info("[case_study] labeling concepts")
     concept_labels, concept_mask = build_concept_label_dicts(raw_events, CONCEPTS)

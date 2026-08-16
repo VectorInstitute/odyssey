@@ -28,6 +28,7 @@ import polars as pl
 import torch
 import torch.nn.functional as F  # noqa: N812
 
+from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.concepts import CONCEPTS
 from odyssey.data.streaming import PackedLaneSampler
 from odyssey.data.value_binning import QuantileBinner, add_value_tokens
@@ -395,6 +396,9 @@ def evaluate_run(
 
     logger.info("[inference] loading held-out shards from %s", held_out_shard_dir)
     raw_events = load_meds_shards(held_out_shard_dir, max_shards=max_shards)
+    raw_events = maybe_normalize(
+        raw_events, enabled=getattr(config, "normalize_medications", False)
+    )
     events_binned = add_value_tokens(raw_events, binner)
 
     supervision = getattr(config, "concept_supervision", "stay")

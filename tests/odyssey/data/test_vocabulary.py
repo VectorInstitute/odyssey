@@ -1,5 +1,6 @@
 """Tests for the code and type vocabularies."""
 
+import json
 from pathlib import Path
 
 import polars as pl
@@ -122,3 +123,68 @@ def test_from_meds_codes_metadata_respects_max_size(tmp_path: Path) -> None:
 
     vocab = Vocabulary.from_meds_codes_metadata(path, max_size=3)
     assert len(vocab) == 3 + 2  # 3 codes + PAD/UNK
+
+
+# ---------------------------------------------------------------------------
+# ICD hierarchical backoff
+# ---------------------------------------------------------------------------
+
+
+def test_backoff_rolls_rare_codes_into_their_category() -> None:
+    # Three rare fifth-character variants (2 each, below min_count=5)
+    # roll into the I50 category, which then earns a real slot.
+    counts = {
+        "DIAGNOSIS//ICD//10//I5021": 2,
+        "DIAGNOSIS//ICD//10//I5022": 2,
+        "DIAGNOSIS//ICD//10//I5023": 2,
+        "LAB//220045//bpm::HIGH": 50,
+    }
+    vocab = Vocabulary.build_from_counts(counts, min_count=5, backoff="icd3")
+    cat = vocab.encode("DIAGNOSIS//ICD//10//I50")
+    assert cat != UNK_ID
+    # every rare variant encodes to the category token, not [UNK]
+    assert vocab.encode("DIAGNOSIS//ICD//10//I5021") == cat
+    assert vocab.encode("DIAGNOSIS//ICD//10//I5099") == cat  # unseen variant too
+
+
+def test_backoff_keeps_frequent_full_codes_as_their_own_tokens() -> None:
+    counts = {
+        "DIAGNOSIS//ICD//10//I5023": 20,  # frequent: keeps its own slot
+        "DIAGNOSIS//ICD//10//I5021": 2,  # rare: rolls to category
+        "LAB//220045//bpm::HIGH": 50,
+    }
+    vocab = Vocabulary.build_from_counts(counts, min_count=5, backoff="icd3")
+    full = vocab.encode("DIAGNOSIS//ICD//10//I5023")
+    assert full != UNK_ID
+    assert vocab.decode(full) == "DIAGNOSIS//ICD//10//I5023"
+    # the rare sibling lands on the category, distinct from the full code
+    assert vocab.encode("DIAGNOSIS//ICD//10//I5021") != full
+
+
+def test_backoff_survives_save_load_roundtrip(tmp_path: Path) -> None:
+    counts = {"DIAGNOSIS//ICD//10//I5021": 2, "DIAGNOSIS//ICD//10//I5022": 4}
+    vocab = Vocabulary.build_from_counts(counts, min_count=5, backoff="icd3")
+    path = tmp_path / "vocab.json"
+    vocab.save(path)
+    loaded = Vocabulary.load(path)
+    assert loaded.backoff == "icd3"
+    assert loaded.encode("DIAGNOSIS//ICD//10//I5021") == vocab.encode(
+        "DIAGNOSIS//ICD//10//I5021"
+    )
+
+
+def test_old_bare_dict_vocab_files_still_load(tmp_path: Path) -> None:
+    # pre-backoff format: a plain token_to_id dict
+    path = tmp_path / "old.json"
+    path.write_text(json.dumps({"[PAD]": 0, "[UNK]": 1, "A": 2}))
+    loaded = Vocabulary.load(path)
+    assert loaded.encode("A") == 2
+    assert loaded.backoff is None
+
+
+def test_unknown_backoff_name_raises() -> None:
+    try:
+        Vocabulary({"[PAD]": 0, "[UNK]": 1}, backoff="nope")
+        raise AssertionError("expected ValueError")
+    except ValueError:
+        pass

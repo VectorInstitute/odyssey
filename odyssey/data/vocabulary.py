@@ -15,9 +15,11 @@ Two separate, small vocabularies a patient sequence is built from:
 import json
 from collections import Counter
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Union
+from typing import Callable, Dict, Iterable, List, Mapping, Optional, Union
 
 import polars as pl
+
+from odyssey.data.code_normalization import icd_category_code
 
 
 PAD_TOKEN = "[PAD]"
@@ -27,13 +29,37 @@ UNK_ID = 1
 _SPECIAL_TOKENS = [PAD_TOKEN, UNK_TOKEN]
 
 
-class Vocabulary:
-    """A frequency-filtered mapping from MEDS event codes to token ids."""
+# Named backoff functions a Vocabulary can carry. Referenced by name (not by
+# function object) so the choice survives save()/load() round trips.
+BACKOFFS: Dict[str, Callable[[str], Optional[str]]] = {
+    "icd3": icd_category_code,
+}
 
-    def __init__(self, token_to_id: Dict[str, int]) -> None:
+
+class Vocabulary:
+    """A frequency-filtered mapping from MEDS event codes to token ids.
+
+    With a ``backoff`` set (see :data:`BACKOFFS`), a code missing from the
+    vocabulary falls back to its backoff code before giving up to
+    ``[UNK]``: a rare ``DIAGNOSIS//ICD//10//I5023`` encodes as the
+    ``DIAGNOSIS//ICD//10//I50`` category token instead of dissolving into
+    an unpredictable catch-all. :meth:`build_from_counts` applies the same
+    rule when building: sub-``min_count`` codes roll their counts up into
+    their backoff code, so common categories earn real vocabulary slots
+    from the mass of their rare children.
+    """
+
+    def __init__(
+        self, token_to_id: Dict[str, int], *, backoff: Optional[str] = None
+    ) -> None:
         """Initialize from an already-built token -> id mapping."""
+        if backoff is not None and backoff not in BACKOFFS:
+            raise ValueError(
+                f"unknown backoff {backoff!r}; registered: {sorted(BACKOFFS)}"
+            )
         self.token_to_id = token_to_id
         self.id_to_token = {i: t for t, i in token_to_id.items()}
+        self.backoff = backoff
 
     @classmethod
     def build(
@@ -59,23 +85,37 @@ class Vocabulary:
 
     @classmethod
     def build_from_counts(
-        cls, counts: Mapping[str, int], *, min_count: int = 5, max_size: int = 50_000
+        cls,
+        counts: Mapping[str, int],
+        *,
+        min_count: int = 5,
+        max_size: int = 50_000,
+        backoff: Optional[str] = None,
     ) -> "Vocabulary":
         """Build a vocabulary from already-aggregated ``code -> count`` pairs.
 
         Bounded by vocabulary cardinality, not by the number of raw
         events -- the entry point for real, large event streams (see
-        :meth:`build`'s docstring on why this matters).
+        :meth:`build`'s docstring on why this matters). With ``backoff``,
+        sub-``min_count`` codes roll their counts into their backoff code
+        first (see the class docstring).
         """
+        rolled = Counter(counts)
+        if backoff is not None:
+            backoff_fn = BACKOFFS[backoff]
+            rolled = Counter()
+            for code, count in counts.items():
+                if count >= min_count:
+                    rolled[code] += count
+                else:
+                    rolled[backoff_fn(code) or code] += count
         kept = [
-            code
-            for code, count in Counter(counts).most_common(max_size)
-            if count >= min_count
+            code for code, count in rolled.most_common(max_size) if count >= min_count
         ]
         token_to_id = {tok: i for i, tok in enumerate(_SPECIAL_TOKENS)}
         for code in kept:
             token_to_id[code] = len(token_to_id)
-        return cls(token_to_id)
+        return cls(token_to_id, backoff=backoff)
 
     @classmethod
     def from_meds_codes_metadata(
@@ -99,8 +139,15 @@ class Vocabulary:
         return cls.build(codes, min_count=min(min_count, 1), max_size=max_size)
 
     def encode(self, code: str) -> int:
-        """Map a code to its token id, or ``[UNK]`` if not in the vocabulary."""
-        return self.token_to_id.get(code, UNK_ID)
+        """Map a code to its id, trying its backoff code before ``[UNK]``."""
+        direct = self.token_to_id.get(code)
+        if direct is not None:
+            return direct
+        if self.backoff is not None:
+            fallback = BACKOFFS[self.backoff](code)
+            if fallback is not None:
+                return self.token_to_id.get(fallback, UNK_ID)
+        return UNK_ID
 
     def decode(self, token_id: int) -> str:
         """Map a token id back to its code, or ``[UNK]`` if out of range."""
@@ -111,13 +158,18 @@ class Vocabulary:
         return len(self.token_to_id)
 
     def save(self, path: Union[str, Path]) -> None:
-        """Save as JSON."""
-        Path(path).write_text(json.dumps(self.token_to_id))
+        """Save as JSON: the token map plus the backoff name."""
+        Path(path).write_text(
+            json.dumps({"token_to_id": self.token_to_id, "backoff": self.backoff})
+        )
 
     @classmethod
     def load(cls, path: Union[str, Path]) -> "Vocabulary":
-        """Load from JSON written by :meth:`save`."""
-        return cls(json.loads(Path(path).read_text()))
+        """Load from JSON written by :meth:`save` (or the older bare-dict format)."""
+        data = json.loads(Path(path).read_text())
+        if "token_to_id" in data:
+            return cls(data["token_to_id"], backoff=data.get("backoff"))
+        return cls(data)
 
 
 # Fixed event-type taxonomy. 0 is reserved for padding (matching
