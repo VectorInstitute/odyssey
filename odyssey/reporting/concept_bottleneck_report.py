@@ -816,8 +816,20 @@ def build_payload(inputs: ReportInputs) -> Dict[str, Any]:
         orthogonality=config.orthogonality_weight,
         observability=config.observability_weight,
     )
+    # Same combination the training loop selects checkpoints on (task +
+    # weighted concept terms + time head + hazard heads when present).
+    time_w = (
+        float(getattr(config, "time_weight", 0.0))
+        if getattr(config, "time_to_event", False)
+        else 0.0
+    )
+    hazard_w = (
+        float(getattr(config, "event_hazard_weight", 0.0))
+        if getattr(config, "event_hazards", False)
+        else 0.0
+    )
     best_val_loss = (
-        min(_combined_val_loss(r, weights) for r in val_records)
+        min(_combined_val_loss(r, weights, time_w, hazard_w) for r in val_records)
         if val_records
         else None
     )
@@ -860,7 +872,7 @@ def build_payload(inputs: ReportInputs) -> Dict[str, Any]:
         ["Steps", f"{last_step:,} · {epochs_run} of {config.num_epochs} epochs"],
         ["Wall-clock", _fmt_duration(total_elapsed_s)],
         [
-            "Best val loss",
+            "Best val loss (combined, as selected)",
             f"{best_val_loss:.3f}" if best_val_loss is not None else "n/a",
         ],
         [
