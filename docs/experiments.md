@@ -13,7 +13,7 @@ normalization, time-to-next-event head, per-event hazard heads, randint 0,
 Data versions: **MIMIC** = `mimiciv_3.1_v1` (292/?/37 shards). **eICU v1** =
 `eicu_2.0_v1` (spec v1: 36% of medication rows `UNK`, infusions a bare
 `INFUSION_DRUG` token; 134/17/17 shards). **eICU v2** = `eicu_2.0_v2` (spec
-v2 from bc7ac4c + 2a389b6: HICL segment, named infusions, nurseCharting GCS,
+v2 from bc7ac4c + 60310b0: HICL segment, named infusions, nurseCharting GCS,
 intakeOutput urine output; extraction pending the raw tables).
 
 | Run | VM | Data | Commit | Purpose | Status | Key results |
