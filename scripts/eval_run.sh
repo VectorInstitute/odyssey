@@ -21,7 +21,8 @@
 #   eval          full held-out standard evaluation -> inference_results.json
 #   interventions banded (equal-displacement) lever test on ALERT_SHARDS -> interventions_band15.json
 #                 (skipped for model_kind=baseline: no bottleneck)
-#   alerts        hazard heads vs per-event GBM on ALERT_SHARDS -> alerts.json
+#   alerts        hazard heads vs the strong tuned per-event GBM on ALERT_SHARDS -> alerts.json,
+#                 plus the per-index-row table alerts_rows.parquet (patient-level: stays in RUN_DIR)
 #   cases         case traces -> case_studies.json (skipped for baseline; an empty list is written)
 #   report        the HTML report -> OUT_HTML
 # A failed stage does not stop the later ones; read the EXIT codes.
@@ -56,7 +57,7 @@ else
   echo "=== STAGE interventions SKIPPED (baseline model) ==="
 fi
 
-stage alerts "$PYTHON" -m odyssey.inference.alerts --run-dir "$RUN_DIR" --held-out-shard-dir "$DATA_ROOT/held_out" --baseline-shard-dir "$DATA_ROOT/train" --max-shards "$ALERT_SHARDS" --max-baseline-shards "$BASELINE_SHARDS" --num-lanes "$LANES" --chunk-size "$CHUNK" --output-json "$RUN_DIR/alerts.json" --checkpoint "$CHECKPOINT"
+stage alerts "$PYTHON" -m odyssey.inference.alerts --run-dir "$RUN_DIR" --held-out-shard-dir "$DATA_ROOT/held_out" --baseline-shard-dir "$DATA_ROOT/train" --max-shards "$ALERT_SHARDS" --max-baseline-shards "$BASELINE_SHARDS" --num-lanes "$LANES" --chunk-size "$CHUNK" --output-json "$RUN_DIR/alerts.json" --dump-rows "$RUN_DIR/alerts_rows.parquet" --checkpoint "$CHECKPOINT"
 
 if [ "$MODEL_KIND" = "bottleneck" ]; then
   stage cases "$PYTHON" -m odyssey.inference.case_study --run-dir "$RUN_DIR" --held-out-shard-dir "$DATA_ROOT/held_out" --output-json "$RUN_DIR/case_studies.json" --n-cases 15 --max-shards 2 --checkpoint "$CHECKPOINT"

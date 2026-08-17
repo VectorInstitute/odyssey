@@ -40,6 +40,7 @@ def test_bottleneck_plan_runs_every_stage(tmp_path: Path) -> None:
     assert "--max-baseline-shards" in tokens and "30" in tokens
     assert "--num-lanes" in tokens and "16" in tokens
     assert "--interventions" in tokens  # report gets the banded file
+    assert "--dump-rows" in tokens  # per-index-row table for error analysis
 
 
 def test_baseline_plan_skips_bottleneck_only_stages(tmp_path: Path) -> None:
