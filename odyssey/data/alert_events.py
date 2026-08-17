@@ -51,7 +51,13 @@ ALERT_EVENTS: Tuple[AlertEvent, ...] = (
             r"|neo-?synephrine|dopamine|angiotensin"
         ),
     ),
-    AlertEvent("icu_admission", code_prefix="ICU_ADMISSION"),
+    # "ICU_ADMISSION//" with the separator: eICU also emits
+    # ICU_ADMISSION_WEIGHT / ICU_ADMISSION_HEIGHT measurement codes at
+    # unit admission, which are not admission events. Note that on eICU
+    # the unit stay IS the visit, so a visit-scoped "first ICU admission"
+    # is degenerate there (few at-risk index times); it is a MIMIC-IV
+    # alert first and foremost.
+    AlertEvent("icu_admission", code_prefix="ICU_ADMISSION//"),
     AlertEvent("acute_kidney_injury", concept="acute_kidney_injury"),
     AlertEvent("death", code_prefix="MEDS_DEATH", subject_scoped=True),
 )
