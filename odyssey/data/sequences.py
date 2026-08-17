@@ -59,6 +59,13 @@ class PatientSequence:
     last occurrence across the whole sequence, not per contiguous run,
     since a visit's events can be interleaved with solo events."""
 
+    static_mask: List[bool] = field(default_factory=list)
+    """True for the timeless facts placed at the sequence start (GENDER,
+    RACE, ...). They are inputs only: the streaming sampler never makes
+    them prediction targets (predicting race from sex is not forecasting).
+    Empty on sequences built before this field existed (treated as all
+    False)."""
+
     values: List[float] = field(default_factory=list)
     """Standardized numeric value per token (the ``numeric_z`` column of
     :func:`~odyssey.data.value_binning.add_value_tokens`), ``nan`` where
@@ -162,6 +169,7 @@ def build_patient_sequence(
     events = events.filter(pl.col("code") != BIRTH_CODE).sort(
         "time", maintain_order=True
     )
+    n_static = 0
     if static.height > 0 and events.height > 0:
         # Static facts lead the sequence at the first timed event's instant
         # and visit; a static-only subject has no timeline and yields nothing.
@@ -175,6 +183,7 @@ def build_patient_sequence(
             ),
         ).select(events.columns)
         events = pl.concat([static, events], how="vertical_relaxed")
+        n_static = static.height
 
     subject_id = int(events["subject_id"][0]) if events.height > 0 else -1
     codes = events["code"].to_list()
@@ -215,7 +224,10 @@ def build_patient_sequence(
         vid != NO_VISIT and last_pos[vid] == i for i, vid in enumerate(visit_ids)
     ]
 
+    static_mask = [i < n_static for i in range(len(concept_ids))]
+
     if max_seq_len is not None and len(concept_ids) > max_seq_len:
+        static_mask = static_mask[-max_seq_len:]
         concept_ids = concept_ids[-max_seq_len:]
         type_ids = type_ids[-max_seq_len:]
         time_stamps = time_stamps[-max_seq_len:]
@@ -236,6 +248,7 @@ def build_patient_sequence(
         visit_segments=visit_segments,
         visit_ids=visit_ids,
         visit_ends=visit_ends,
+        static_mask=static_mask,
         values=values,
     )
 

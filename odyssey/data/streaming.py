@@ -105,6 +105,7 @@ class _LaneBuffer:
     visit_ids: List[int] = field(default_factory=list)
     visit_end: List[bool] = field(default_factory=list)
     values: List[float] = field(default_factory=list)
+    static: List[bool] = field(default_factory=list)
 
     def __len__(self) -> int:
         """Return the number of unconsumed tokens in this lane."""
@@ -140,6 +141,9 @@ class _LaneBuffer:
             seq.visit_ends if len(seq.visit_ends) == n else [False] * n
         )
         self.values.extend(seq.values if len(seq.values) == n else [_NAN] * n)
+        self.static.extend(
+            seq.static_mask if len(seq.static_mask) == n else [False] * n
+        )
 
         resets = [False] * n
         resets[0] = True
@@ -171,6 +175,7 @@ class _LaneBuffer:
         del self.visit_ids[:n]
         del self.visit_end[:n]
         del self.values[:n]
+        del self.static[:n]
 
     def peek_padded(self, k: int) -> "_Window":
         """Return the first ``k`` tokens, padded if fewer than ``k`` remain."""
@@ -190,6 +195,7 @@ class _LaneBuffer:
             visit_ids=self.visit_ids[:n_real] + [NO_VISIT] * pad,
             visit_end=self.visit_end[:n_real] + [False] * pad,
             values=self.values[:n_real] + [_NAN] * pad,
+            static=self.static[:n_real] + [False] * pad,
             n_real=n_real,
         )
 
@@ -216,6 +222,7 @@ def _repad(window: "_Window", real_len: int) -> "_Window":
         visit_ids=window.visit_ids[:real_len] + [NO_VISIT] * pad,
         visit_end=window.visit_end[:real_len] + [False] * pad,
         values=window.values[:real_len] + [_NAN] * pad,
+        static=window.static[:real_len] + [False] * pad,
         n_real=real_len,
     )
 
@@ -236,6 +243,7 @@ class _Window:
     visit_ids: List[int]
     visit_end: List[bool]
     values: List[float]
+    static: List[bool]
     n_real: int
 
 
@@ -329,6 +337,7 @@ class PackedLaneSampler:
         visit_ids_full = _stack("visit_ids", torch.long)
         visit_end_full = _stack("visit_end", torch.bool)
         values_full = _stack("values", torch.float)
+        static_full = _stack("static", torch.bool)
 
         input_ids = concept_ids_full[:, :-1]
         # A target position that is itself a reset is the first token of a
@@ -342,12 +351,17 @@ class PackedLaneSampler:
         # the loss's ignore_index skip it; real_mask must agree for
         # consumers (e.g. inference metrics) that filter on it instead.
         cross_reset = reset_full[:, 1:]
-        targets = concept_ids_full[:, 1:].masked_fill(cross_reset, PAD_ID)
+        # Static facts (sex, race, ...) lead a sequence as inputs only:
+        # predicting one from another is not forecasting, so a static
+        # target is masked exactly like a cross-reset one.
+        not_target = cross_reset | static_full[:, 1:]
+        targets = concept_ids_full[:, 1:].masked_fill(not_target, PAD_ID)
         # Real means "this position has a valid next-token target", not
         # merely "the input token itself is real" -- the last genuine token
         # in an exhausted lane is real input but has no real target, and
-        # neither does an input whose next token sits across a reset.
-        real_mask = (subject_ids_full[:, 1:] != NO_SUBJECT) & ~cross_reset
+        # neither does an input whose next token sits across a reset or is
+        # a static fact.
+        real_mask = (subject_ids_full[:, 1:] != NO_SUBJECT) & ~not_target
 
         batch = ClinicalSequenceBatch(
             concept_ids=input_ids,
