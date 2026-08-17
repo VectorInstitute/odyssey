@@ -73,6 +73,7 @@ from odyssey.data.vocabulary import PAD_ID
 
 # Sentinel `subject_ids` value at padding positions.
 NO_SUBJECT = -1
+_NAN = float("nan")
 
 
 class StreamingChunk(NamedTuple):
@@ -103,6 +104,7 @@ class _LaneBuffer:
     patient_end: List[bool] = field(default_factory=list)
     visit_ids: List[int] = field(default_factory=list)
     visit_end: List[bool] = field(default_factory=list)
+    values: List[float] = field(default_factory=list)
 
     def __len__(self) -> int:
         """Return the number of unconsumed tokens in this lane."""
@@ -137,6 +139,7 @@ class _LaneBuffer:
         self.visit_end.extend(
             seq.visit_ends if len(seq.visit_ends) == n else [False] * n
         )
+        self.values.extend(seq.values if len(seq.values) == n else [_NAN] * n)
 
         resets = [False] * n
         resets[0] = True
@@ -167,6 +170,7 @@ class _LaneBuffer:
         del self.patient_end[:n]
         del self.visit_ids[:n]
         del self.visit_end[:n]
+        del self.values[:n]
 
     def peek_padded(self, k: int) -> "_Window":
         """Return the first ``k`` tokens, padded if fewer than ``k`` remain."""
@@ -185,6 +189,7 @@ class _LaneBuffer:
             patient_end=self.patient_end[:n_real] + [False] * pad,
             visit_ids=self.visit_ids[:n_real] + [NO_VISIT] * pad,
             visit_end=self.visit_end[:n_real] + [False] * pad,
+            values=self.values[:n_real] + [_NAN] * pad,
             n_real=n_real,
         )
 
@@ -210,6 +215,7 @@ def _repad(window: "_Window", real_len: int) -> "_Window":
         patient_end=window.patient_end[:real_len] + [False] * pad,
         visit_ids=window.visit_ids[:real_len] + [NO_VISIT] * pad,
         visit_end=window.visit_end[:real_len] + [False] * pad,
+        values=window.values[:real_len] + [_NAN] * pad,
         n_real=real_len,
     )
 
@@ -229,6 +235,7 @@ class _Window:
     patient_end: List[bool]
     visit_ids: List[int]
     visit_end: List[bool]
+    values: List[float]
     n_real: int
 
 
@@ -321,6 +328,7 @@ class PackedLaneSampler:
         patient_end_full = _stack("patient_end", torch.bool)
         visit_ids_full = _stack("visit_ids", torch.long)
         visit_end_full = _stack("visit_end", torch.bool)
+        values_full = _stack("values", torch.float)
 
         input_ids = concept_ids_full[:, :-1]
         # A target position that is itself a reset is the first token of a
@@ -349,6 +357,7 @@ class PackedLaneSampler:
                 ages=ages_full[:, :-1],
                 visit_orders=visit_orders_full[:, :-1],
                 visit_segments=visit_segments_full[:, :-1],
+                values=values_full[:, :-1],
             ),
         )
         return StreamingChunk(

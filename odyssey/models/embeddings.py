@@ -73,6 +73,13 @@ class VisitEmbedding(nn.Module):
         return self.embedding(visit_segments)  # type: ignore[no-any-return]
 
 
+def value_features(values: torch.Tensor) -> torch.Tensor:
+    """``(..., 3)`` features ``[z, z^2, has]`` from NaN-masked standardized values."""
+    has = ~torch.isnan(values)
+    z = torch.nan_to_num(values, nan=0.0).float()
+    return torch.stack([z, z * z, has.float()], dim=-1)
+
+
 class ClinicalEventEmbeddings(nn.Module):
     """Fuses token identity with clinical sequence structure.
 
@@ -94,6 +101,12 @@ class ClinicalEventEmbeddings(nn.Module):
         projection back to ``hidden_size``.
     visit_order_size : int
         Number of distinct visit segment values (e.g. first/middle/last).
+    use_values : bool
+        Add a numeric-value channel: the standardized value carried in
+        ``aux.values`` (NaN where the event has none) is projected and
+        added to the token embedding, so the model sees *how far* into a
+        bin a reading is (a creatinine of 0.8 vs 1.4 are both ``NORMAL``
+        tokens). Off by default; targets are unaffected either way.
     """
 
     def __init__(
@@ -108,9 +121,15 @@ class ClinicalEventEmbeddings(nn.Module):
         visit_order_size: int = 3,
         layer_norm_eps: float = 1e-12,
         hidden_dropout_prob: float = 0.1,
+        use_values: bool = False,
     ) -> None:
         """Initialize the clinical event embeddings."""
         super().__init__()
+        self.use_values = use_values
+        # features: [z, z^2, has_value]; z is already clipped by the binner
+        self.value_proj: Optional[nn.Linear] = (
+            nn.Linear(3, hidden_size) if use_values else None
+        )
 
         self.word_embeddings = nn.Embedding(
             vocab_size, hidden_size, padding_idx=padding_idx
@@ -155,6 +174,13 @@ class ClinicalEventEmbeddings(nn.Module):
         fused = torch.cat([word_embeds, time_embeds, age_embeds], dim=-1)
         fused = self.tanh(self.scale_back_concat_layer(fused))
         embeddings = fused + token_type_embeds + visit_order_embeds + visit_seg_embeds
+        if self.value_proj is not None:
+            values = aux.values
+            if values is None:  # no channel on this batch == no value anywhere
+                values = torch.full(
+                    input_ids.shape, float("nan"), device=input_ids.device
+                )
+            embeddings = embeddings + self.value_proj(value_features(values))
 
         result: torch.Tensor = self.layer_norm(self.dropout(embeddings))
         return result

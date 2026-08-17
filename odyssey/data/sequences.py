@@ -14,6 +14,7 @@ import polars as pl
 import torch
 
 from odyssey.data.types import AuxiliaryInputs, ClinicalSequenceBatch
+from odyssey.data.value_binning import VALUE_Z_COL
 from odyssey.data.vocabulary import PAD_ID, Vocabulary, code_type
 
 
@@ -57,6 +58,12 @@ class PatientSequence:
     -- the position where visit-scoped concept supervision applies. The
     last occurrence across the whole sequence, not per contiguous run,
     since a visit's events can be interleaved with solo events."""
+
+    values: List[float] = field(default_factory=list)
+    """Standardized numeric value per token (the ``numeric_z`` column of
+    :func:`~odyssey.data.value_binning.add_value_tokens`), ``nan`` where
+    the event carries none; empty on sequences built without that column
+    (treated as all-``nan``). Input-side only: targets stay bin tokens."""
 
     def __len__(self) -> int:
         """Return the number of events in this sequence."""
@@ -161,6 +168,11 @@ def build_patient_sequence(
         if "hadm_id" in events.columns
         else [None] * len(codes)
     )
+    values = (
+        [float("nan") if v is None else float(v) for v in events[VALUE_Z_COL].to_list()]
+        if VALUE_Z_COL in events.columns
+        else []
+    )
 
     if not times:
         return PatientSequence(subject_id, [], [], [], [], [], [])
@@ -196,6 +208,7 @@ def build_patient_sequence(
         visit_segments = visit_segments[-max_seq_len:]
         visit_ids = visit_ids[-max_seq_len:]
         visit_ends = visit_ends[-max_seq_len:]
+        values = values[-max_seq_len:]
 
     return PatientSequence(
         subject_id=subject_id,
@@ -207,6 +220,7 @@ def build_patient_sequence(
         visit_segments=visit_segments,
         visit_ids=visit_ids,
         visit_ends=visit_ends,
+        values=values,
     )
 
 
@@ -223,6 +237,7 @@ def collate_patient_sequences(
     ages = torch.zeros((batch, max_len), dtype=torch.float)
     visit_orders = torch.zeros((batch, max_len), dtype=torch.long)
     visit_segments = torch.zeros((batch, max_len), dtype=torch.long)
+    values = torch.full((batch, max_len), float("nan"), dtype=torch.float)
 
     for i, seq in enumerate(sequences):
         n = len(seq)
@@ -234,6 +249,8 @@ def collate_patient_sequences(
         ages[i, :n] = torch.tensor(seq.ages, dtype=torch.float)
         visit_orders[i, :n] = torch.tensor(seq.visit_orders, dtype=torch.long)
         visit_segments[i, :n] = torch.tensor(seq.visit_segments, dtype=torch.long)
+        if len(seq.values) == n:
+            values[i, :n] = torch.tensor(seq.values, dtype=torch.float)
 
     return ClinicalSequenceBatch(
         concept_ids=concept_ids,
@@ -243,5 +260,6 @@ def collate_patient_sequences(
             ages=ages,
             visit_orders=visit_orders,
             visit_segments=visit_segments,
+            values=values,
         ),
     )

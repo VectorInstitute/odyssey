@@ -110,6 +110,11 @@ class TrainingConfig:
     # numbers -- see the training run's own README note on why.
     hidden_size: int = 256
     num_hidden_layers: int = 8
+    value_embeddings: bool = False
+    """Feed standardized numeric values (``aux.values``) into the token
+    embeddings alongside the bin tokens (see
+    :class:`~odyssey.models.embeddings.ClinicalEventEmbeddings`). Opt-in;
+    an A/B against the bin-only input."""
     mamba_state_size: int = 128
     mamba_headdim: int = 64
     mamba_chunk_size: int = 256
@@ -357,6 +362,7 @@ def build_model(
         mamba_headdim=config.mamba_headdim,
         mamba_chunk_size=config.mamba_chunk_size,
         attn_num_heads=config.attn_num_heads,
+        use_values=bool(getattr(config, "value_embeddings", False)),
     )
     time_bin_edges = (
         DEFAULT_TIME_BIN_EDGES_HOURS

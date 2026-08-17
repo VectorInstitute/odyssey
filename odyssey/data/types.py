@@ -6,7 +6,7 @@ auxiliary input is a one-line change here instead of a signature change
 across embeddings, every backbone, and the sequence model.
 """
 
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 
 import torch
 
@@ -19,6 +19,12 @@ class AuxiliaryInputs(NamedTuple):
     ages: torch.Tensor
     visit_orders: torch.Tensor
     visit_segments: torch.Tensor
+    values: Optional[torch.Tensor] = None
+    """Standardized numeric value per token (see
+    :meth:`~odyssey.data.value_binning.QuantileBinner.standardize`), NaN
+    where the event carries no value; ``None`` on batches built without a
+    value channel. Read only by embeddings configured with
+    ``use_values=True``."""
 
 
 class ClinicalSequenceBatch(NamedTuple):
