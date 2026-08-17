@@ -135,10 +135,10 @@ MIMIC_IV_TO_LOINC: Dict[str, str] = {
 # BP is cuff -- mirroring the MIMIC 220050/220179 split above); lab
 # prefixes are `LAB//{labname}//`, where each labname was verified
 # against the actual `lab.csv.gz` of the public eICU demo (2.0.1), not
-# guessed from documentation. GCS is charted in eICU's nurseCharting
-# table, which the spec does not extract yet -- no GCS mapping until it
-# does. eICU temperature is Celsius (same LOINC as MIMIC's two
-# temperature itemids, unit-differentiated there).
+# guessed from documentation. GCS comes from eICU's nurseCharting table
+# and urine output from intakeOutput, both extracted since spec v2 (v1
+# extractions simply lack those codes). eICU temperature is Celsius (same
+# LOINC as MIMIC's two temperature itemids, unit-differentiated there).
 EICU_TO_LOINC: Dict[str, str] = {
     # vitalPeriodic
     "VITALS//PERIODIC//HEARTRATE": "8867-4",  # Heart Rate
@@ -148,6 +148,14 @@ EICU_TO_LOINC: Dict[str, str] = {
     "VITALS//PERIODIC//BP//SYSTEMIC_SYSTOLIC": "8480-6",  # Arterial BP systolic
     "VITALS//PERIODIC//BP//SYSTEMIC_DIASTOLIC": "8462-4",  # Arterial BP diastolic (specs/eICU.yaml L514)
     "VITALS//PERIODIC//BP//SYSTEMIC_MEAN": "8478-0",  # Arterial BP mean
+    # nurseCharting GCS and intakeOutput urine output (spec v2): the code
+    # strings are fixed by specs/eICU.yaml (gcs_* / urine_output events), so
+    # they are verified against the spec rather than a code list.
+    "GCS//EYES": "9267-6",  # GCS - Eye Opening
+    "GCS//VERBAL": "9270-0",  # GCS - Verbal Response
+    "GCS//MOTOR": "9268-4",  # GCS - Motor Response
+    "GCS//TOTAL": "9269-2",  # GCS total (charted directly in eICU)
+    "URINE_OUTPUT": "9187-6",  # Urine output (ml), any route
     # vitalAperiodic
     "VITALS//APERIODIC//BP//NONINVASIVE_SYSTOLIC": "76534-7",
     "VITALS//APERIODIC//BP//NONINVASIVE_DIASTOLIC": "76535-4",  # specs/eICU.yaml L418
