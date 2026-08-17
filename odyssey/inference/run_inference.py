@@ -111,6 +111,9 @@ class _RunningTimeMetrics:
         self.same_observed = 0
         self.pred_within = dict.fromkeys(_TIME_HORIZONS_HOURS, 0.0)
         self.obs_within = dict.fromkeys(_TIME_HORIZONS_HOURS, 0)
+        self.n_positive = 0
+        self.pred_within_pos = dict.fromkeys(_TIME_HORIZONS_HOURS, 0.0)
+        self.obs_within_pos = dict.fromkeys(_TIME_HORIZONS_HOURS, 0)
 
     def update(
         self, hazard_logits: torch.Tensor, gap_hours: torch.Tensor, valid: torch.Tensor
@@ -127,11 +130,24 @@ class _RunningTimeMetrics:
         same = gaps <= 0
         self.same_correct += int(((p_same > 0.5) == same).sum().item())
         self.same_observed += int(same.sum().item())
+        positive = ~same
+        self.n_positive += int(positive.sum().item())
+        p_same_pos = p_same[positive]
         for label, horizon in _TIME_HORIZONS_HOURS.items():
-            self.pred_within[label] += float(
-                probability_within(logits, self.edges, horizon).sum().item()
-            )
+            within = probability_within(logits, self.edges, horizon)
+            self.pred_within[label] += float(within.sum().item())
             self.obs_within[label] += int((gaps <= horizon).sum().item())
+            if positive.any():
+                # P(within h | the bundle ends here)
+                conditional = (within[positive] - p_same_pos) / (
+                    1.0 - p_same_pos
+                ).clamp_min(1e-6)
+                self.pred_within_pos[label] += float(
+                    conditional.clamp(0.0, 1.0).sum().item()
+                )
+                self.obs_within_pos[label] += int(
+                    (gaps[positive] <= horizon).sum().item()
+                )
 
     def finalize(self) -> Optional[TimeMetrics]:
         if self.n == 0:
@@ -148,6 +164,18 @@ class _RunningTimeMetrics:
                 }
                 for label in _TIME_HORIZONS_HOURS
             },
+            calibration_after_bundle=(
+                {
+                    label: {
+                        "predicted": self.pred_within_pos[label] / self.n_positive,
+                        "observed": self.obs_within_pos[label] / self.n_positive,
+                    }
+                    for label in _TIME_HORIZONS_HOURS
+                }
+                if self.n_positive
+                else {}
+            ),
+            n_positive_gaps=self.n_positive,
         )
 
 

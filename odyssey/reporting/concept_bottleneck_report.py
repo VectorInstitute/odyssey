@@ -501,6 +501,17 @@ def _finish_findings(
             )
             + f". Largest gap at {worst[0]} "
             f"({abs(worst[1]['predicted'] - worst[1]['observed']):.1%} points)."
+            + (
+                " Given the bundle ends: "
+                + ", ".join(
+                    f"within {h}: predicted {c['predicted']:.1%} vs observed "
+                    f"{c['observed']:.1%}"
+                    for h, c in tm["calibration_after_bundle"].items()
+                )
+                + "."
+                if tm.get("calibration_after_bundle")
+                else ""
+            )
         )
     interventions_note = build_intervention_finding(interventions)
     if interventions_note is not None:
