@@ -10,6 +10,11 @@ family balancing alpha 0.5, visit-scoped concepts, icd3 backoff, medication
 normalization, time-to-next-event head, per-event hazard heads, randint 0,
 64 lanes x 512, 2 epochs, checkpoint_every 2000.
 
+Data versions: **MIMIC** = `mimiciv_3.1_v1` (292/?/37 shards). **eICU v1** =
+`eicu_2.0_v1` (spec v1: 36% of medication rows `UNK`, infusions a bare
+`INFUSION_DRUG` token; 134/17/17 shards). **eICU v2** = `eicu_2.0_v2` (spec
+v2 from bc7ac4c: HICL segment + named infusions; extracted Aug 17).
+
 | Run | VM | Data | Commit | Purpose | Status | Key results |
 |---|---|---|---|---|---|---|
 | subset_run_v3 | cbm | MIMIC 30 shards | 4a1c0a8 | visit-scoped concepts, pos_weight, on_vasopressors | done | exact top-1 60.7; same-family set 69.9 (med 35.9, diag 31.0, lab 75.2); concepts 0.62-0.99; lever inert |
