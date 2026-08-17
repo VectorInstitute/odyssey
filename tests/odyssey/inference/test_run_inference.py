@@ -12,6 +12,7 @@ import polars as pl
 import pytest
 import torch
 
+import odyssey.inference.run_inference as ri
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.run_inference import (
     InferenceResults,
@@ -405,3 +406,47 @@ def test_results_to_dict_renders_nan_as_null() -> None:
     d = results_to_dict(results)
     assert d["orthogonality"] is None
     json.loads(json.dumps(d, allow_nan=False))  # strict JSON round-trips
+
+
+def test_value_embeddings_flag_ignores_the_backbone_merge_attention(
+    tmp_path: Path,
+) -> None:
+    """MergeAttention has its own value_proj; only the embeddings' one counts."""
+    run_dir = tmp_path
+    config = TrainingConfig(train_shard_dir="a", tuning_shard_dir="b", output_dir="c")
+    (run_dir / "config.json").write_text(json.dumps(config.__dict__))
+    Vocabulary({"[PAD]": 0, "[UNK]": 1, "LAB//220045//bpm": 2}).save(
+        run_dir / "vocabulary.json"
+    )
+    (run_dir / "quantile_binner.json").write_text(
+        json.dumps({"n_bins": 5, "boundaries": {}})
+    )
+    keys = {
+        "backbone.layers.0.merge.value_proj.weight": torch.zeros(1),
+        "backbone.layers.0.merge.value_proj.bias": torch.zeros(1),
+    }
+    torch.save({"model": keys}, run_dir / "checkpoint_final.pt")
+    seen = {}
+
+    def fake_build_model(cfg, *, vocab_size, num_concepts):  # noqa: ARG001
+        seen["value_embeddings"] = cfg.value_embeddings
+        raise RuntimeError("stop here")
+
+    original = ri.build_model
+    ri.build_model = fake_build_model
+    try:
+        with pytest.raises(RuntimeError, match="stop here"):
+            load_run(run_dir, device="cpu")
+    finally:
+        ri.build_model = original
+    assert seen["value_embeddings"] is False
+
+    keys["backbone.embeddings.embeddings.value_proj.weight"] = torch.zeros(1)
+    torch.save({"model": keys}, run_dir / "checkpoint_final.pt")
+    ri.build_model = fake_build_model
+    try:
+        with pytest.raises(RuntimeError, match="stop here"):
+            load_run(run_dir, device="cpu")
+    finally:
+        ri.build_model = original
+    assert seen["value_embeddings"] is True
