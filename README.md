@@ -115,7 +115,9 @@ uv run meds-extract-run spec=./specs/eICU.yaml output_dir=<output_dir> \
     do_download=false input_dir=<path_to_eicu_2.0>
 ```
 
-`odyssey/data/code_mapping.py`'s eICU table translates the extraction's code prefixes (`VITALS//PERIODIC//...`, `LAB//{labname}//...`) to the same LOINC codes the MIMIC-IV concept rules are grounded in. The concept *rules* themselves (`odyssey/data/concepts.py`) are still keyed on MIMIC-IV prefixes — parameterizing them per-source via the LOINC layer is the next step so one canonical rule set supervises every dataset.
+`odyssey/data/code_mapping.py`'s eICU table translates the extraction's code prefixes (`VITALS//PERIODIC//...`, `LAB//{labname}//...`) to the same LOINC codes the canonical concept rules are grounded in, and `concepts_for_source("eicu")` expands one canonical rule set per source.
+
+Spec v2 (the current file) also fixes two medication-identity gaps in the reference ETL's code shapes: eICU leaves `drugname` empty on 36% of medication rows, but 94% of those carry a HICL code, so medication codes are `MEDICATION//STARTED|STOPPED//{drugname}//{hicl}` and the normalizer resolves the HICL first through a shipped empirical dictionary (`odyssey/data/resources/eicu_hicl_ingredients.csv`, rebuilt from the raw tables by `scripts/build_eicu_hicl_lookup.py`); and infusions are `INFUSION_DRUG//{drugname}` instead of a bare token with the name only in `text_value`. Extractions made with spec v1 still load, they just keep the unnamed rows as `unk`. Set `TrainingConfig.source = "eicu"` so normalization, concept expansion and clinical value ranges all pick the eICU tables.
 
 ### Tokenization
 
