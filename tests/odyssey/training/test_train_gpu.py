@@ -29,6 +29,7 @@ cuda_required = pytest.mark.skipif(
 import polars as pl  # noqa: E402
 
 import odyssey.training.train as train_module  # noqa: E402
+from odyssey.inference.run_inference import evaluate_run  # noqa: E402
 from odyssey.training.train import TrainingConfig, train  # noqa: E402
 
 
@@ -395,3 +396,30 @@ def test_train_resume_preserves_best_val_loss_across_a_restart(
         "best_val_loss"
     ]
     assert final_best <= saved_best
+
+
+@cuda_required
+def test_baseline_model_kind_trains_and_evaluates(tmp_path: Path) -> None:
+    """Train a baseline model_kind and evaluate it without concept metrics."""
+    train_dir = tmp_path / "data" / "train"
+    tuning_dir = tmp_path / "data" / "tuning"
+    held_out_dir = tmp_path / "data" / "held_out"
+    _write_shards(train_dir, n_subjects=12, n_events_per_subject=30)
+    _write_shards(tuning_dir, n_subjects=4, n_events_per_subject=30)
+    _write_shards(held_out_dir, n_subjects=6, n_events_per_subject=30)
+
+    output_dir = tmp_path / "run_baseline"
+    config = _tiny_config(train_dir, tuning_dir, output_dir, model_kind="baseline")
+    train(config)
+    assert (output_dir / "checkpoint_final.pt").exists()
+
+    results = evaluate_run(
+        output_dir,
+        held_out_dir,
+        num_lanes=2,
+        chunk_size=8,
+        checkpoint_path=output_dir / "checkpoint_final.pt",
+    )
+    assert results.task_metrics.n_predictions > 0
+    assert results.concept_metrics == []
+    assert results.time_metrics is not None
