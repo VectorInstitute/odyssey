@@ -121,11 +121,13 @@ def build_patient_sequence(
     """Build one subject's tokenized sequence from their raw MEDS events.
 
     ``events`` must contain a single ``subject_id``. Static, timeless facts
-    (``time`` is null, e.g. ``GENDER//...``) are dropped, since every event
-    needs a real timestamp; ``MEDS_BIRTH`` is consumed to compute ages, not
-    included as a sequence token. If ``max_seq_len`` truncates, the most
-    recent events are kept (older history is less relevant to near-term
-    forecasting).
+    (``time`` is null, e.g. ``GENDER//...``) are placed as the first tokens
+    of the sequence, stamped with the first timed event's time and visit,
+    so the model sees them before anything else (before this change they
+    were dropped, and MIMIC-IV's sex never reached the model);
+    ``MEDS_BIRTH`` is consumed to compute ages, not included as a sequence
+    token. If ``max_seq_len`` truncates, the most recent events are kept
+    (older history is less relevant to near-term forecasting).
 
     Several events commonly share the exact same timestamp (e.g. a panel
     of labs drawn together) -- there's no true order between them, but
@@ -153,12 +155,26 @@ def build_patient_sequence(
             f"{n_subjects} distinct subject_ids"
         )
 
+    static = events.filter(pl.col("time").is_null() & (pl.col("code") != BIRTH_CODE))
     events = events.filter(pl.col("time").is_not_null())
     birth_rows = events.filter(pl.col("code") == BIRTH_CODE)
     birth_time = birth_rows["time"][0] if birth_rows.height > 0 else None
     events = events.filter(pl.col("code") != BIRTH_CODE).sort(
         "time", maintain_order=True
     )
+    if static.height > 0 and events.height > 0:
+        # Static facts lead the sequence at the first timed event's instant
+        # and visit; a static-only subject has no timeline and yields nothing.
+        first = events.head(1)
+        static = static.with_columns(
+            pl.lit(first["time"][0]).alias("time"),
+            *(
+                [pl.lit(first["hadm_id"][0]).alias("hadm_id")]
+                if "hadm_id" in events.columns
+                else []
+            ),
+        ).select(events.columns)
+        events = pl.concat([static, events], how="vertical_relaxed")
 
     subject_id = int(events["subject_id"][0]) if events.height > 0 else -1
     codes = events["code"].to_list()
