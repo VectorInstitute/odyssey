@@ -677,6 +677,9 @@ footer {
   const fmt = (x, d) => (x === null || x === undefined ? "\u2013" : Number(x).toFixed(d === undefined ? 3 : d));
   const fmtInt = (x) => (x === null || x === undefined ? "\u2013" : Number(x).toLocaleString("en-US"));
   const fmtPct = (x, d) => (x === null || x === undefined ? "\u2013" : (Number(x) * 100).toFixed(d === undefined ? 1 : d) + "%");
+  // Each section renders independently: a failure in one must not hide the
+  // sections after it (a blank alerts table is worse than a console error).
+  const guarded = (name, fn) => { try { fn(); } catch (err) { console.error("report section failed: " + name, err); } };
 
   function el(tag, attrs, children) {
     const e = document.createElement(tag);
@@ -691,7 +694,7 @@ footer {
 
   /* ---------------------------------------------------------- run meta */
 
-  (function renderRunMeta() {
+  guarded("renderRunMeta", function renderRunMeta() {
     const ul = document.getElementById("run-meta");
     DATA.run_meta.forEach(([k, v]) => {
       ul.appendChild(el("li", {}, [el("strong", {}, [v]), " " + k]));
@@ -711,7 +714,7 @@ footer {
     });
     document.getElementById("quant-desc").textContent = DATA.quant_desc;
     document.getElementById("qualitative-desc").textContent = DATA.qualitative_desc;
-  })();
+  });
 
   /* ---------------------------------------------------------- nav highlight */
 
@@ -849,7 +852,7 @@ footer {
     });
   }
 
-  (function renderLossCharts() {
+  guarded("renderLossCharts", function renderLossCharts() {
     const grid = document.getElementById("loss-charts");
     const tc = DATA.loss_curves.train, vc = DATA.loss_curves.val;
     LOSS_TERMS.forEach((term) => {
@@ -873,11 +876,11 @@ footer {
       grid.appendChild(card);
       drawLossChart(svg, tc.step, tc[term.key], vc.step, vc[term.key], term.color);
     });
-  })();
+  });
 
   /* ---------------------------------------------------------- headline stats */
 
-  (function renderHeadlineStats() {
+  guarded("renderHeadlineStats", function renderHeadlineStats() {
     const g = document.getElementById("headline-stats");
     const tm = DATA.inference_results.task_metrics;
     const stats = [
@@ -895,11 +898,11 @@ footer {
         sub ? el("div", { class: "sub" }, [sub]) : null,
       ]));
     });
-  })();
+  });
 
   /* ---------------------------------------------------------- code-type table */
 
-  (function renderTimeTable() {
+  guarded("renderTimeTable", function renderTimeTable() {
     const tm = DATA.inference_results.time_metrics;
     if (!tm) return;
     document.getElementById("time-section").style.display = "";
@@ -936,9 +939,9 @@ footer {
     ]));
     table.appendChild(thead);
     table.appendChild(tbody);
-  })();
+  });
 
-  (function renderCodeTypeTable() {
+  guarded("renderCodeTypeTable", function renderCodeTypeTable() {
     const table = document.getElementById("code-type-table");
     const rows = Object.entries(DATA.inference_results.task_metrics_by_code_type)
       .sort((a, b) => b[1].n_predictions - a[1].n_predictions);
@@ -986,7 +989,7 @@ footer {
     });
     table.appendChild(thead);
     table.appendChild(tbody);
-  })();
+  });
 
   /* ---------------------------------------------------------- concept table */
 
@@ -1001,7 +1004,7 @@ footer {
       .replace(/Aki/g, "AKI").replace(/Sirs/g, "SIRS").replace(/Qsofa/g, "qSOFA");
   }
 
-  (function renderConceptTable() {
+  guarded("renderConceptTable", function renderConceptTable() {
     const table = document.getElementById("concept-table");
     const rows = DATA.inference_results.concept_metrics.slice().sort((a, b) => (b.auroc || 0) - (a.auroc || 0));
     const thead = el("thead", {}, [el("tr", {}, [
@@ -1027,11 +1030,11 @@ footer {
     });
     table.appendChild(thead);
     table.appendChild(tbody);
-  })();
+  });
 
   /* ---------------------------------------------------------- observability table */
 
-  (function renderObservabilityTable() {
+  guarded("renderObservabilityTable", function renderObservabilityTable() {
     const table = document.getElementById("observability-table");
     const rows = DATA.inference_results.observability_metrics.slice().sort((a, b) => (b.auroc || 0) - (a.auroc || 0));
     const thead = el("thead", {}, [el("tr", {}, [
@@ -1051,7 +1054,7 @@ footer {
     });
     table.appendChild(thead);
     table.appendChild(tbody);
-  })();
+  });
 
   /* ---------------------------------------------------------- case browser */
 
@@ -1205,9 +1208,18 @@ footer {
   }
 
   function renderCaseDetail() {
-    const c = DATA.cases[selectedCaseIdx];
     const wrap = document.getElementById("case-detail");
     wrap.innerHTML = "";
+    if (!DATA.cases.length) {
+      // A baseline (no-bottleneck) run has no concept traces to show; say
+      // so instead of throwing and taking every later section down with it.
+      wrap.appendChild(el("div", { class: "finding" }, [
+        el("span", { class: "tag" }, ["Not applicable"]),
+        "No patient case traces for this run: case traces are concept-probability traces, and this model has no concept bottleneck.",
+      ]));
+      return;
+    }
+    const c = DATA.cases[selectedCaseIdx];
 
     wrap.appendChild(el("div", { class: "case-detail-head" }, [
       el("div", {}, [
@@ -1367,9 +1379,11 @@ footer {
     wrap.appendChild(tableWrap);
   }
 
-  renderCaseRail();
-  renderCaseDetail();
-  window.addEventListener("resize", () => { renderCaseDetail(); });
+  // Each section renders independently: a failure in one must not hide
+  // the sections after it (a blank alerts table is worse than a console error).
+  guarded("case rail", renderCaseRail);
+  guarded("case detail", renderCaseDetail);
+  window.addEventListener("resize", () => { guarded("case detail", renderCaseDetail); });
 
   /* ---------------------------------------------------------- interventions */
 
@@ -1382,7 +1396,7 @@ footer {
     zero_unknown: ["Unknown channel zeroed", "The residual unknown-concept embedding zeroed out -- the mirror completeness probe."],
   };
 
-  (function renderAlerts() {
+  guarded("renderAlerts", function renderAlerts() {
     if (!DATA.alerts || !DATA.alerts.length) return;
     document.getElementById("nav-alerts").style.display = "";
     document.getElementById("alerts").style.display = "";
@@ -1424,9 +1438,9 @@ footer {
     const target = document.getElementById("finding-alerts");
     const text = DATA.findings && DATA.findings.alerts;
     if (target && text) target.innerHTML = '<span class="tag">Reading</span>' + text;
-  })();
+  });
 
-  (function renderInterventions() {
+  guarded("renderInterventions", function renderInterventions() {
     if (!DATA.interventions || !DATA.interventions.length) return;
     document.getElementById("nav-interventions").style.display = "";
     document.getElementById("interventions").style.display = "";
@@ -1467,6 +1481,6 @@ footer {
     if (target && text) {
       target.innerHTML = '<span class="tag">Reading</span>' + text;
     }
-  })();
+  });
 })();
 </script>
