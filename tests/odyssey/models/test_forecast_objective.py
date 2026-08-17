@@ -345,3 +345,43 @@ def test_event_heads_train_and_survival_within_is_a_probability() -> None:
     assert hz.shape == (3, 2, model.event_heads.num_bins)
     p8 = probability_within(hz[:, 0], DEFAULT_TIME_BIN_EDGES_HOURS, 8.0)
     assert ((p8 >= 0) & (p8 <= 1)).all()
+
+
+def test_bundle_loss_credits_only_the_targets_own_family() -> None:
+    """A discharge bundle mixes diagnoses with the discharge/DRG tokens.
+
+    At a diagnosis position the credited mass must be the remaining
+    diagnoses only, never the co-timed discharge or billing tokens --
+    otherwise the model learns to predict the always-present discharge
+    token instead of the diagnoses (the v5 subset run did exactly this).
+    """
+    torch.manual_seed(0)
+    # codes 2,3 = diagnoses; 8 = discharge (visit); 9 = DRG (billing), all at t=1
+    s = _seq(1, [5, 2, 3, 8, 9], [0.0, 1.0, 1.0, 1.0, 1.0])
+    chunk = _chunk([s], chunk_size=8)
+    logits = torch.zeros(*chunk.targets.shape, VOCAB)
+    # put all mass on the discharge token at every position
+    logits[..., 8] = 20.0
+    logp = F.log_softmax(logits, -1)
+    real = chunk.real_mask & (chunk.targets != 0)
+    types = torch.zeros(VOCAB, dtype=torch.long)
+    types[[2, 3]] = 1  # diagnosis
+    types[8] = 5  # visit
+    types[9] = 7  # billing
+    unrestricted = _bundle_log_likelihood(
+        logp, chunk.targets, chunk.batch.aux.time_stamps, chunk.subject_ids, real
+    )
+    restricted = _bundle_log_likelihood(
+        logp,
+        chunk.targets,
+        chunk.batch.aux.time_stamps,
+        chunk.subject_ids,
+        real,
+        token_types=types,
+    )
+    # position 0 targets diagnosis 2 (bundle at t=1): unrestricted credits the
+    # discharge token (near log 1); restricted credits diagnoses only (~-20)
+    assert unrestricted[0, 0].item() > -0.01
+    assert restricted[0, 0].item() < -15.0
+    # position 2 targets the discharge token itself: fully credited either way
+    assert restricted[0, 2].item() > -0.01
