@@ -83,7 +83,9 @@ class ForecastObjective:
       is asked "which events are coming at this instant", not "which one
       did the ETL happen to write first". Reduces exactly to cross-entropy
       for singleton bundles and lower-bounds it otherwise. Matches the
-      set-based evaluation in :mod:`odyssey.inference.run_inference`.
+      set-based evaluation in :mod:`odyssey.inference.run_inference`,
+      including its same-family restriction whenever ``token_types`` is
+      set (always, from :func:`odyssey.training.train.build_objective`).
     - ``family_weights`` / ``token_types``: per-position weights by the
       target's code family (``token_types`` maps token id -> family id,
       ``family_weights`` maps family id -> weight), normalized inside the
@@ -127,6 +129,8 @@ def _bundle_log_likelihood(
     times: torch.Tensor,
     subject_ids: torch.Tensor,
     real: torch.Tensor,
+    *,
+    token_types: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """``log sum_{v in remaining bundle members} p_i(v)`` per position, ``(L, T)``.
 
@@ -140,6 +144,16 @@ def _bundle_log_likelihood(
     remaining occurrence), so the credited mass never exceeds one. The
     final lane position has no in-chunk target time and is scored as a
     singleton (plain cross-entropy). Positions that are not ``real`` get 0.
+
+    With ``token_types`` (token id -> code family), membership is further
+    restricted to the *target's own family*, exactly like the set-based
+    metric. Without it, a discharge bundle (diagnoses + the discharge
+    event + DRG codes + procedures at one instant) would let the model
+    earn full credit at a diagnosis position by predicting the
+    always-present discharge or DRG token, and the subset run that
+    trained that way learned to do exactly that deep inside diagnosis
+    bundles (diagnosis set top-1 fell 31% -> 23% while every family-pure
+    bundle improved). Callers with a family lookup should pass it.
     """
     lanes, chunk = targets.shape
     device = targets.device
@@ -161,6 +175,11 @@ def _bundle_log_likelihood(
     pos = torch.arange(chunk, device=device)
     j_ge_i = pos.unsqueeze(0) >= pos.unsqueeze(1)  # (i, j)
     member = same_block & j_ge_i.unsqueeze(0) & real.unsqueeze(1)
+    if token_types is not None:
+        families = token_types[safe_targets]  # (L, T)
+        same_family = families.unsqueeze(2) == families.unsqueeze(1)  # (L, i, j)
+        same_block = same_block & same_family
+        member = member & same_family
     # Duplicate suppression: drop j if some j' in [i, j) of the same bundle
     # carries the same token. E[l, j', j] flags j' < j with equal tokens;
     # a reverse cumsum over j' answers "any j' >= i" for every i.
@@ -352,6 +371,7 @@ class _SequenceModelBase(nn.Module):
                 chunk.batch.aux.time_stamps,
                 chunk.subject_ids,
                 real,
+                token_types=objective.token_types,
             )
         else:
             per_position = -logp.gather(-1, targets.clamp_min(0).unsqueeze(-1)).squeeze(

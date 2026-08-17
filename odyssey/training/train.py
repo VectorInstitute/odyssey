@@ -395,9 +395,10 @@ def build_objective(
 ) -> ForecastObjective:
     """Construct the :class:`ForecastObjective` a run trains and validates with."""
     family_weights = None
-    token_types = None
+    # token -> family is always needed: the bundle-invariant loss restricts
+    # membership to the target's own family (see _bundle_log_likelihood).
+    token_types = token_type_lookup(vocab).to(device)
     if config.family_balance_alpha > 0.0:
-        token_types = token_type_lookup(vocab).to(device)
         family_weights = family_loss_weights(
             train_events_binned,
             alpha=config.family_balance_alpha,
