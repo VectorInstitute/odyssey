@@ -65,6 +65,7 @@ from odyssey.data.alert_events import (
 )
 from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.concepts import concepts_for_source
+from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.sequences import BIRTH_CODE
 from odyssey.data.streaming import NO_SUBJECT, PackedLaneSampler
 from odyssey.data.value_binning import add_value_tokens, clinical_ranges_for_source
@@ -683,6 +684,7 @@ def evaluate_alerts(
 
     raw = load_meds_shards(held_out_shard_dir, max_shards=max_shards)
     raw = maybe_normalize(raw, enabled=getattr(config, "normalize_medications", False))
+    raw = maybe_history_recap(raw, enabled=getattr(config, "history_recap", False))
     times = all_event_times(raw, alerts, source)
     visit_start = _visit_starts(raw)
     binned = add_value_tokens(raw, binner, source=source)
@@ -710,6 +712,9 @@ def evaluate_alerts(
         train_raw = load_meds_shards(baseline_shard_dir, max_shards=max_baseline_shards)
         train_raw = maybe_normalize(
             train_raw, enabled=getattr(config, "normalize_medications", False)
+        )
+        train_raw = maybe_history_recap(
+            train_raw, enabled=getattr(config, "history_recap", False)
         )
         train_times = all_event_times(train_raw, alerts, source)
         train_binned = add_value_tokens(train_raw, binner, source=source)

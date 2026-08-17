@@ -30,6 +30,7 @@ import torch.nn.functional as F  # noqa: N812
 
 from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.concepts import AnyConceptDefinition, concepts_for_source
+from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.streaming import PackedLaneSampler, StreamingChunk
 from odyssey.data.value_binning import QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import Vocabulary, code_type
@@ -704,6 +705,9 @@ def evaluate_run(
     raw_events = load_meds_shards(held_out_shard_dir, max_shards=max_shards)
     raw_events = maybe_normalize(
         raw_events, enabled=getattr(config, "normalize_medications", False)
+    )
+    raw_events = maybe_history_recap(
+        raw_events, enabled=getattr(config, "history_recap", False)
     )
     source = getattr(config, "source", "mimic_iv")
     concepts = concepts_for_source(source)
