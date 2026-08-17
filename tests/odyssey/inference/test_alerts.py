@@ -18,6 +18,7 @@ from odyssey.data.concepts import concepts_for_source
 from odyssey.data.value_binning import add_value_tokens
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.alerts import (
+    GBM_MIN_OBSERVED,
     IndexRow,
     _index_rows_from_events,
     _tune_gbm,
@@ -29,6 +30,7 @@ from odyssey.inference.alerts import (
     index_row_table,
     outcome_at_horizon,
     score_alerts,
+    sparse_columns,
 )
 from odyssey.inference.baseline_features import feature_names
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
@@ -343,3 +345,24 @@ def test_tuning_survives_a_column_missing_only_inside_the_training_fold() -> Non
     x[np.isin(groups, val_groups), 3] = 1.0
     params, n_rounds = _tune_gbm(x, y, groups, seed=0)
     assert n_rounds >= 1 and "learning_rate" in params
+
+
+def test_sparse_columns_are_filled_at_fit_and_predict() -> None:
+    x = np.full((1000, 3), np.nan, dtype=np.float32)
+    x[:, 0] = 1.0
+    x[:GBM_MIN_OBSERVED, 1] = 2.0  # exactly the minimum: kept
+    x[: GBM_MIN_OBSERVED - 1, 2] = 3.0  # one short: filled
+    assert sparse_columns(x).tolist() == [False, False, True]
+    events = _events(n_subjects=40)
+    binned = add_value_tokens(events, None, source="mimic_iv")
+    times = all_event_times(binned, ALERT_EVENTS, "mimic_iv")
+    rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+    baselines = fit_baselines(
+        binned, rows, times, horizons=(8.0,), feature_set="strong", tune=False
+    )
+    model = baselines[("vasopressor_start", 8.0)]
+    # the synthetic record never has most of the panel: those columns are filled
+    assert model.fill_columns.sum() > 0
+    feats = features_for_events(binned, rows, feature_set="strong")
+    p = model.predict_proba(feats["vasopressor_start"])
+    assert np.isfinite(p).all()

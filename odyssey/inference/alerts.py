@@ -470,10 +470,11 @@ class BaselineModel:
 
     ``HistGradientBoostingClassifier`` handles missing values natively,
     which is what we want (missingness is informative), but its binner
-    cannot fit a column that is missing everywhere (a curated lab that
-    never appears in the fitting shards). Such a column carries no
-    information, so it is filled with 0 at fit and, for consistency, at
-    prediction.
+    cannot fit a column that is missing everywhere in the rows it bins
+    (it bins on a 200,000-row subsample, so a column with only a handful
+    of observations can vanish from it). Columns with fewer than
+    :data:`GBM_MIN_OBSERVED` observed values carry no learnable signal, so
+    they are filled with 0 at fit and, for consistency, at prediction.
     """
 
     def __init__(
@@ -514,6 +515,20 @@ GBM_MAX_ITER = 400
 GBM_TUNE_MAX_ROWS = 200_000
 
 
+# HistGradientBoosting bins features on a random subsample of 200,000 rows;
+# a column observed in fewer rows than this can be entirely missing inside
+# that subsample (or inside a tuning fold), and the binner cannot fit an
+# empty column. Such columns carry no learnable signal at this scale, so
+# they are filled with 0 wherever they occur.
+GBM_MIN_OBSERVED = 200
+
+
+def sparse_columns(x: np.ndarray) -> np.ndarray:
+    """Boolean mask of columns with fewer than :data:`GBM_MIN_OBSERVED` values."""
+    observed = (~np.isnan(x)).sum(axis=0)
+    return np.asarray(observed < GBM_MIN_OBSERVED)
+
+
 def _log_loss(y: np.ndarray, p: np.ndarray) -> float:
     p = np.clip(p, 1e-6, 1 - 1e-6)
     return float(-np.mean(y * np.log(p) + (1 - y) * np.log(1 - p)))
@@ -536,12 +551,11 @@ def _tune_gbm(
         return dict(GBM_GRID[0]), 200
     x_tr, y_tr = x[~is_val], y[~is_val]
     x_val, y_val = x[is_val], y[is_val]
-    # A column can be all-missing inside the training fold even when it is
-    # not over the full fit set (a rare exposure seen only in the held-out
-    # subjects, or dropped by the row subsample); the HGB binner cannot fit
-    # an empty column, so fill those with 0 in both folds, exactly as
-    # BaselineModel does for the full fit.
-    fold_fill = np.isnan(x_tr).all(axis=0)
+    # A column can be (nearly) all-missing inside the training fold even
+    # when it is not over the full fit set (a rare exposure seen only in the
+    # held-out subjects, or dropped by the row subsample); fill those with 0
+    # in both folds, exactly as BaselineModel does for the full fit.
+    fold_fill = sparse_columns(x_tr)
     if fold_fill.any():
         x_tr = np.array(x_tr, copy=True)
         x_val = np.array(x_val, copy=True)
@@ -598,7 +612,7 @@ def fit_baselines(
                 continue
             x_fit = x_all[keep]
             y_fit = y[keep].astype(int)
-            fill_columns = np.isnan(x_fit).all(axis=0)
+            fill_columns = sparse_columns(x_fit)
             x_prep = np.array(x_fit, dtype=np.float32, copy=True)
             x_prep[:, fill_columns] = np.nan_to_num(x_prep[:, fill_columns], nan=0.0)
             if tune:
