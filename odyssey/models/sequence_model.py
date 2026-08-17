@@ -432,6 +432,7 @@ class BaselineSequenceModel(_SequenceModelBase):
         padding_idx: int = 0,
         time_bin_edges: Optional[Sequence[float]] = None,
         event_names: Optional[Sequence[str]] = None,
+        event_head_hidden: int = 0,
     ) -> None:
         """Initialize the baseline sequence model.
 
@@ -451,6 +452,7 @@ class BaselineSequenceModel(_SequenceModelBase):
                 backbone.hidden_size,
                 event_names,
                 time_bin_edges if time_bin_edges is not None else (),
+                hidden_size=event_head_hidden,
             )
             if event_names
             else None
@@ -547,6 +549,7 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         concept_dropout: float = 0.1,
         time_bin_edges: Optional[Sequence[float]] = None,
         event_names: Optional[Sequence[str]] = None,
+        event_head_hidden: int = 0,
     ) -> None:
         """Initialize the concept-bottleneck sequence model.
 
@@ -574,6 +577,7 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
                 bottleneck_dim,
                 event_names,
                 time_bin_edges if time_bin_edges is not None else (),
+                hidden_size=event_head_hidden,
             )
             if event_names
             else None

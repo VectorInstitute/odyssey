@@ -144,13 +144,30 @@ class EventHazardHeads(nn.Module):
         in_features: int,
         event_names: Sequence[str],
         edges: Sequence[float] = DEFAULT_TIME_BIN_EDGES_HOURS,
+        hidden_size: int = 0,
     ) -> None:
-        """Initialize one hazard vector per event over ``len(edges) + 2`` bins."""
+        """Initialize one hazard vector per event over ``len(edges) + 2`` bins.
+
+        ``hidden_size`` > 0 makes the readout a two-layer MLP (GELU) instead
+        of a single linear layer: same inputs, more capacity to extract
+        event-specific risk from the shared representation. The linear
+        readout is the default and what every run before v8 used.
+        """
         super().__init__()
         self.event_names: List[str] = list(event_names)
         self.edges: List[float] = list(edges)
         self.num_bins = len(self.edges) + 2
-        self.proj = nn.Linear(in_features, len(self.event_names) * self.num_bins)
+        self.hidden_size = int(hidden_size)
+        out_features = len(self.event_names) * self.num_bins
+        self.proj: nn.Module = (
+            nn.Sequential(
+                nn.Linear(in_features, self.hidden_size),
+                nn.GELU(),
+                nn.Linear(self.hidden_size, out_features),
+            )
+            if self.hidden_size > 0
+            else nn.Linear(in_features, out_features)
+        )
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         """Return ``(..., num_events, num_bins)`` hazard logits."""

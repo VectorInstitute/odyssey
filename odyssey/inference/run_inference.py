@@ -236,6 +236,11 @@ def load_run(
     config.event_hazards = any(
         k.startswith("event_heads.") for k in checkpoint["model"]
     )
+    # MLP readout (event_heads.proj.0/2.*) vs the linear one (event_heads.proj.*)
+    first_layer = checkpoint["model"].get("event_heads.proj.0.weight")
+    config.event_head_hidden = (
+        int(first_layer.shape[0]) if first_layer is not None else 0
+    )
 
     concepts = concepts_for_source(getattr(config, "source", "mimic_iv"))
     model = build_model(config, vocab_size=len(vocab), num_concepts=len(concepts))
