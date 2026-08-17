@@ -273,6 +273,12 @@ def _summarize_case(case: Dict[str, Any]) -> Dict[str, Any]:
             [round(p, 4) for p in case["concept_probs"][i]] for i in traj_idx
         ],
     }
+    event_risk = case.get("event_risk_24h") or []
+    if event_risk:
+        trajectory["event_risk_names"] = case.get("event_risk_names", [])
+        trajectory["event_risk_24h"] = [
+            [round(p, 4) for p in event_risk[i]] for i in traj_idx
+        ]
 
     detail_idx = [i for i in _downsample_indices(n - 1, 40) if i < n - 1]
     detail_rows = []

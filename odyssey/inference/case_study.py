@@ -28,7 +28,7 @@ together:
 import json
 import logging
 import random
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
@@ -43,6 +43,7 @@ from odyssey.data.value_binning import add_value_tokens
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.run_inference import load_run
 from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
+from odyssey.models.time_to_event import probability_within
 from odyssey.training.data import build_concept_label_dicts, load_meds_shards
 from odyssey.training.train import _move_chunk_to_device
 
@@ -83,6 +84,13 @@ class PatientCaseTrace:
     concept_observed: List[float]
     """Whether each concept label is real (1.0) or never-observed (0.0)."""
 
+    event_risk_names: List[str] = field(default_factory=list)
+    """Alert events with a hazard head in this model (empty otherwise)."""
+
+    event_risk_24h: List[List[float]] = field(default_factory=list)
+    """Per position, per alert event: the head's P(event within 24h) --
+    the alert curve a clinician would watch over the stay."""
+
 
 def extract_patient_case(
     model: ConceptBottleneckSequenceModel,
@@ -115,6 +123,8 @@ def extract_patient_case(
     true_next_rank: List[Optional[int]] = []
     concept_probs: List[List[float]] = []
     observability_probs: List[List[float]] = []
+    event_heads = getattr(model, "event_heads", None)
+    event_risk: List[List[float]] = []
 
     state = None
     with torch.no_grad():
@@ -157,6 +167,11 @@ def extract_patient_case(
             observability_probs.extend(
                 bottleneck_out.observability_probs[0, :n_real].tolist()
             )
+            if event_heads is not None:
+                hazards = event_heads(bottleneck_out.bottleneck[0, :n_real])
+                event_risk.extend(
+                    probability_within(hazards, event_heads.edges, 24.0).tolist()
+                )
 
     assert len(concept_probs) == len(seq)  # noqa: S101 -- every position, once
 
@@ -175,6 +190,10 @@ def extract_patient_case(
             concept_labels.tolist() if concept_labels is not None else zeros
         ),
         concept_observed=(concept_mask.tolist() if concept_mask is not None else zeros),
+        event_risk_names=(
+            list(event_heads.event_names) if event_heads is not None else []
+        ),
+        event_risk_24h=event_risk,
     )
 
 

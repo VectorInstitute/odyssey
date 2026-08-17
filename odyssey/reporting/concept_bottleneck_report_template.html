@@ -1265,6 +1265,37 @@ footer {
         }
       });
     });
+    // Alert risk: the per-event hazard heads' P(event within 24h) over the
+    // stay -- the curves a clinician would watch. Present only for models
+    // trained with event hazard heads.
+    if (traj.event_risk_24h && traj.event_risk_24h.length) {
+      monitor.appendChild(el("div", { class: "monitor-group-head" }, ["Alert risk: probability of the event within the next 24 hours"]));
+      const riskNames = traj.event_risk_names || [];
+      riskNames.forEach((name, ei) => {
+        const row = el("div", { class: "monitor-row" });
+        row.appendChild(el("div", { class: "row-label" }, [
+          el("span", { class: "truth-dot", style: "visibility:hidden;" }),
+          el("span", { class: "nm" }, [name.replace(/_/g, " ")]),
+        ]));
+        const canvas = document.createElement("canvas");
+        row.appendChild(canvas);
+        monitor.appendChild(row);
+        const series = traj.event_risk_24h.map((r) => r[ei]);
+        requestAnimationFrame(() => drawConceptStrip(canvas, traj.t, series, span, [], true));
+        canvas.addEventListener("mousemove", (ev) => {
+          const rect = canvas.getBoundingClientRect();
+          const frac = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
+          const time = frac * span;
+          let lo = 0;
+          while (lo < traj.t.length - 1 && traj.t[lo + 1] <= time) lo++;
+          tip.style.display = "block";
+          tip.style.left = (ev.clientX + 12) + "px";
+          tip.style.top = (ev.clientY + 12) + "px";
+          tip.textContent = name.replace(/_/g, " ") + " · " + fmtDuration(time) + " · P(within 24h)=" + fmt(series[lo], 2);
+        });
+        canvas.addEventListener("mouseleave", () => { tip.style.display = "none"; });
+      });
+    }
     stripWrap.appendChild(monitor);
     stripWrap.appendChild(el("div", { class: "strip-legend", html:
       '<span><span class="sw" style="width:0.9rem;height:0.6rem;background:var(--accent);opacity:0.85;"></span>darker = higher probability that the concept is active in the current admission</span>' +
