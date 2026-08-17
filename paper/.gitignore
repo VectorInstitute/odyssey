@@ -1,0 +1,12 @@
+# LaTeX build artifacts (main.pdf is committed on purpose so reviewers can read it)
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.toc
+*.spl
+*.run.xml

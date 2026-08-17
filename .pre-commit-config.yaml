@@ -1,3 +1,5 @@
+# Third-party LaTeX template files under paper/ are kept verbatim.
+exclude: ^paper/(sn-jnl\.cls|sn-nature\.bst|template-.*|main\.pdf)$
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0  # Use the ref you want to point at

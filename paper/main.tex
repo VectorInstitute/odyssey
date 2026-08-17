@@ -1,0 +1,283 @@
+%% npj Digital Medicine manuscript: outline draft.
+%%
+%% Built on the Springer Nature LaTeX template (sn-jnl.cls, v3.1 Dec 2024,
+%% https://www.springernature.com/gp/authors/campaigns/latex-author-support)
+%% with the sn-nature reference style, the option the template names for
+%% Nature Portfolio journals. Journal rules baked into this outline (from
+%% https://www.nature.com/npjdigitalmed/about/content-types and
+%% .../for-authors-and-referees/submission-guidelines, read 2026-08-17):
+%%   - Article: title <= 15 words, no punctuation, idioms or puns
+%%   - Abstract <= 150 words, no subheadings, unstructured
+%%   - Introduction: no subheadings
+%%   - Results: subheadings required
+%%   - Discussion: no subheadings, no "Limitations" or "Conclusions" sections
+%%   - Methods: subheadings required; ethics statement for human data
+%%   - Then: Data availability (mandatory), Code availability, Acknowledgements
+%%     (funding declared here, no separate Funding section), Author
+%%     contributions (initials, every author), Competing interests, References
+%%     (<= 60, Nature style, numbered in order of appearance), Figure legends
+%%     (<= 350 words each; multi-panel figures on one page, panels a), b), ...)
+%%   - Initial submission: a single PDF (LaTeX source only at acceptance).
+%%     Supplementary Information: one separate PDF.
+%%
+%% Compile: latexmk -pdf main.tex   (see paper/Makefile)
+%%
+%% Conventions for this file: [TBD] marks a number, name or decision that is
+%% not final; %% comment blocks under each heading say what the section must
+%% establish. Keep prose free of em dashes (project style).
+
+\documentclass[pdflatex,sn-nature]{sn-jnl}
+
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage[title]{appendix}
+\usepackage{lineno}
+
+\graphicspath{{figures/}}
+
+\raggedbottom
+
+\begin{document}
+
+\title[A general forecaster of patient timelines]{A general forecasting model of patient timelines for clinical alerting and interaction}
+
+\author*[1,2]{\fnm{Amrit} \sur{Krishnan}}\email{amrit110@gmail.com}
+\author[1]{\fnm{[TBD]} \sur{[TBD]}}
+%% Author list, order and affiliations to be settled with the group.
+
+\affil*[1]{\orgname{Vector Institute}, \orgaddress{\city{Toronto}, \state{Ontario}, \country{Canada}}}
+\affil[2]{\orgdiv{[TBD department]}, \orgname{[TBD institution]}, \orgaddress{\city{[TBD]}, \country{[TBD]}}}
+
+%% Abstract: <= 150 words, unstructured. Draft targets: (1) the problem
+%% (bespoke single-task models), (2) the model (one forecaster of the whole
+%% event stream, time-to-event heads, concept bottleneck), (3) the evidence
+%% (two datasets, alert AUROC vs strong bespoke GBMs, calibration,
+%% forecasting metrics), (4) the interface / interpretability claim,
+%% (5) one sentence of implication. Every number is [TBD] until the
+%% full-scale runs land.
+\abstract{Most clinical machine-learning models are built for one task at a time, such as mortality or sepsis, and each new alert requires a new model. We describe a single sequence model that forecasts a patient's whole electronic health record timeline: which events come next, when, and the risk of clinically important events over time. Trained on [TBD] admissions from MIMIC-IV and [TBD] intensive-care stays from eICU-CRD, the model produces calibrated time-to-event risk for vasopressor initiation, acute kidney injury and death from a single pass over the record, matching or exceeding task-specific gradient-boosted models on [TBD] of [TBD] event-horizon comparisons while also forecasting the next laboratory, medication and diagnosis events. A concept bottleneck exposes named physiological states that clinicians can inspect. [TBD one sentence on the clinician interface and retrospective validation.] One general forecaster can replace a portfolio of bespoke alert models.}
+
+\keywords{electronic health records, foundation models, time-to-event forecasting, clinical decision support, interpretability, concept bottleneck models}
+
+\maketitle
+
+\section{Introduction}\label{sec:intro}
+%% No subheadings. Roughly 4 to 6 paragraphs:
+%% 1. Bespoke single-task clinical models: mortality, sepsis, deterioration
+%%    (cite representative work; each needs its own labels, features,
+%%    validation and monitoring; alert portfolios do not compose).
+%% 2. Sequence models over EHR event streams (MEDS-style tokenized
+%%    timelines; recent EHR foundation models) forecast the next event but
+%%    have mostly been judged on next-token accuracy or fine-tuned per task,
+%%    not used directly as alerting systems with calibrated timing.
+%% 3. What clinicians need from an alert: risk of a specific event over a
+%%    horizon, calibrated, updated as the record evolves; and something to
+%%    inspect (why now).
+%% 4. This work: one model of the whole timeline (marked temporal point
+%%    process over same-timestamp bundles) with per-event hazard heads
+%%    yielding survival curves, and a concept bottleneck of named
+%%    physiological states; evaluated as forecaster and as alert system on
+%%    two datasets against strong bespoke baselines; interface for
+%%    clinicians validated retrospectively [TBD scope].
+%% 5. Contributions in one paragraph (numbered in prose, not a list).
+
+[TBD]
+
+\section{Results}\label{sec:results}
+%% Subheadings required. Each subsection: one claim, one figure or table,
+%% numbers from docs/experiments.md and the research journal. Order tells
+%% the story: data and model, forecasting quality, alerts vs bespoke,
+%% calibration and timing, cross-dataset replication, interpretability
+%% (concept readout, honest about the override lever), interface.
+
+\subsection{Cohorts and the forecasting task}\label{sec:res-data}
+%% Fig. 1: overview (timeline -> tokens with value bins -> model -> next
+%% events, time-to-next-event, event hazards, concepts). Table 1: cohort
+%% summary for MIMIC-IV and eICU-CRD (subjects, admissions/stays, events,
+%% vocabulary size, split sizes). State the evaluation unit: same-family set
+%% top-1 over same-timestamp bundles; why exact next-token order is not the
+%% right metric (bundles are unordered).
+[TBD]
+
+\subsection{One model forecasts the next events across families}\label{sec:res-forecast}
+%% Table 2 / Fig. 2: same-family set top-1 by family (lab, medication,
+%% diagnosis, procedure, billing, visit) on held-out patients, both
+%% datasets; time-to-next-event calibration given bundle end (1h/8h/24h);
+%% bundle-start recall. Ablations: bundle-invariant objective vs standard
+%% next-token; family balancing; concept bottleneck vs no bottleneck (the
+%% measured cost of interpretability). Numbers: [TBD full-scale].
+[TBD]
+
+\subsection{Per-event hazard heads match or beat bespoke models}\label{sec:res-alerts}
+%% Fig. 3: AUROC and Brier by event x horizon (8/24/72h): hazard head vs
+%% tuned GBM on the strong feature panel (609 features), fitted on the same
+%% training patients; landmark index times, administrative censoring
+%% reported. Both datasets. State honestly where the GBM stays ahead (AKI)
+%% and the mechanism (creatinine value resolution) and how the value channel
+%% changes it [TBD v7]. Calibration curves in Fig. 3 or Extended Data.
+[TBD]
+
+\subsection{Risk evolves in time: survival curves at the bedside}\label{sec:res-time}
+%% Fig. 4: example patient traces (event-risk strips over the stay,
+%% survival curves at selected times, concept probabilities), de-identified,
+%% aggregate-safe. Time-to-next-event calibration table.
+[TBD]
+
+\subsection{Cross-dataset replication on eICU-CRD}\label{sec:res-eicu}
+%% What transferred unchanged (canonical LOINC-keyed concepts, value ranges,
+%% training recipe, evaluation), what needed source-specific handling
+%% (medication identity via HICL, infusion names, GCS and urine output from
+%% flowsheets), and where numbers differ and why (pseudotimes, unit stays as
+%% visits, 5-minute vitals). Table: MIMIC vs eICU side by side.
+[TBD]
+
+\subsection{Interpretable states: what the bottleneck shows and does not}\label{sec:res-concepts}
+%% Concept AUROCs on both datasets; concept observability; the intervention
+%% test (truth vs flipped vs random at matched displacement) reported as it
+%% is: the readout is faithful, the override lever is inert without
+%% intervention-aware training and RandInt costs forecasting accuracy.
+%% Fig. 5 or Extended Data.
+[TBD]
+
+\subsection{An agentic interface for clinicians}\label{sec:res-interface}
+%% Phase 2 [TBD]: what the interface exposes (alerts as curves, concept
+%% states, next-event forecasts, provenance), retrospective validation with
+%% clinicians on GEMINI [TBD design: cases, raters, questions, metrics].
+[TBD]
+
+\section{Discussion}\label{sec:discussion}
+%% No subheadings; no "Limitations" or "Conclusions" headings (limitations
+%% are discussed in prose). Points: one general forecaster vs a portfolio of
+%% bespoke models (what was gained, what it cost); why calibrated
+%% time-to-event framing matters for alerts; where the model still loses and
+%% the input-access explanation vs data scale (learning-curve evidence);
+%% interpretability claims kept to what the interventions support;
+%% generalization caveats (two US datasets, retrospective, pseudotimes in
+%% eICU, no prospective deployment); what a prospective study would need.
+[TBD]
+
+\section{Methods}\label{sec:methods}
+%% Subheadings required. Enough detail to reproduce; point to code.
+
+\subsection{Data sources and ethics}\label{sec:m-data}
+%% MIMIC-IV v3.1 and eICU-CRD v2.0 via PhysioNet credentialed access
+%% (cite both); de-identified, ethics waiver terms as required by the DUA;
+%% MEDS extraction (meds-extract, MESSY specs; the eICU spec is ours);
+%% subject definitions (patient vs health-system stay), splits by subject.
+[TBD]
+
+\subsection{Tokenization of patient timelines}\label{sec:m-tokens}
+%% Event codes, medication normalization to ingredient (HICL dictionary for
+%% eICU), ICD 3-character backoff, numeric value bins (curated clinical
+%% ranges keyed by LOINC, quantile bins otherwise), optional standardized
+%% value channel, time stamps and ages, visits, packed streaming over
+%% patients with truncated back-propagation.
+[TBD]
+
+\subsection{Model}\label{sec:m-model}
+%% Hybrid Mamba-2 and attention backbone (sizes), concept bottleneck (named
+%% concepts, supervision from rule-based labels, observability), heads:
+%% next-event distribution, time-to-next-event over log-spaced bins,
+%% per-event discrete-time hazard heads with right censoring; the baseline
+%% (no bottleneck) variant.
+[TBD]
+
+\subsection{Training objective}\label{sec:m-objective}
+%% Bundle-invariant, family-restricted likelihood over same-timestamp
+%% bundles; family-balanced weights; concept, orthogonality and
+%% observability terms; time and hazard terms; optimizer, schedule, hardware,
+%% wall-clock.
+[TBD]
+
+\subsection{Clinical concepts}\label{sec:m-concepts}
+%% Canonical LOINC-keyed rule registry (list of concepts, thresholds,
+%% sustained and baseline-relative rules, composites such as qSOFA and
+%% KDIGO stages), per-source expansion, first-trigger times.
+[TBD]
+
+\subsection{Evaluation of forecasting}\label{sec:m-eval-forecast}
+%% Same-family set top-1 over bundles; ICD-category scoring; time-to-next-
+%% event calibration conditional on bundle end; held-out patients.
+[TBD]
+
+\subsection{Alert evaluation and bespoke baselines}\label{sec:m-eval-alerts}
+%% Events (vasopressor start, ICU admission, AKI, death), landmark index
+%% times, horizons, administrative censoring; hazard head probability within
+%% horizon; GBM baselines: strong feature panel (list by group), tuning
+%% protocol (grid, subject-grouped validation, refit), fitted on the same
+%% training patients; metrics (AUROC, Brier, calibration deciles).
+[TBD]
+
+\subsection{Interpretability tests}\label{sec:m-interp}
+%% Concept AUROC/observability; intervention sweep at matched displacement
+%% (truth, flip, random, zero-known, zero-unknown); RandInt ablation.
+[TBD]
+
+\subsection{Clinician interface and retrospective validation}\label{sec:m-interface}
+%% [TBD Phase 2 protocol.]
+[TBD]
+
+\subsection{Statistical analysis}\label{sec:m-stats}
+%% Confidence intervals by patient-level bootstrap [TBD], paired
+%% comparisons hazard vs GBM per event-horizon, multiple-comparison note,
+%% software versions.
+[TBD]
+
+\backmatter
+
+\bmhead{Data availability}
+MIMIC-IV and eICU-CRD are available to credentialed researchers through PhysioNet under their data use agreements. [TBD: GEMINI availability statement.] No patient-level data are distributed with this work; the derived aggregate results are in the code repository.
+
+\bmhead{Code availability}
+All code (extraction specifications, tokenization, model, training, evaluation and the report generator) is available at [TBD repository URL] under [TBD license], at commit [TBD].
+
+\bmhead{Acknowledgements}
+[TBD funding statement in the journal's form: "This study was funded by ... The funder played no role in study design, data collection, analysis and interpretation of data, or the writing of this manuscript." or "This study received no funding."]
+
+\bmhead{Author contributions}
+[TBD, by initials, every author: conception, data extraction, model, experiments, interface, clinical validation, writing.] All authors read and approved the final manuscript.
+
+\bmhead{Competing interests}
+The authors declare no financial or non-financial competing interests. [TBD confirm for every author.]
+
+%% Figure legends (<= 350 words each). Placeholders reference figures that
+%% will live in paper/figures/ as PDF/EPS.
+\begin{figure}[h]
+\centering
+%\includegraphics[width=\textwidth]{fig1_overview}
+\caption{\textbf{Overview.} a) A patient timeline as an event stream with same-timestamp bundles. b) Tokenization: codes, value bins, time and visit structure. c) The model: backbone, concept bottleneck, next-event, time-to-next-event and per-event hazard heads. d) Outputs at the bedside: forecasts, survival curves, concept states. [TBD]}\label{fig:overview}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+%\includegraphics[width=\textwidth]{fig2_forecasting}
+\caption{\textbf{Forecasting quality by event family on held-out patients.} [TBD]}\label{fig:forecast}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+%\includegraphics[width=\textwidth]{fig3_alerts}
+\caption{\textbf{Alerts: hazard heads against tuned bespoke gradient-boosted models.} AUROC and Brier score by event and horizon on MIMIC-IV and eICU-CRD; calibration. [TBD]}\label{fig:alerts}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+%\includegraphics[width=\textwidth]{fig4_traces}
+\caption{\textbf{Risk over time for example stays.} [TBD]}\label{fig:traces}
+\end{figure}
+
+\begin{appendices}
+%% For Nature Portfolio journals the template asks for the heading
+%% "Extended Data" for appendix material; supplementary tables and figures
+%% go to a separate Supplementary Information PDF at submission.
+\section{Extended Data}\label{sec:extended}
+[TBD: extended tables (per-family metrics, per-concept AUROC, GBM feature list and chosen hyper-parameters, intervention sweep).]
+\end{appendices}
+
+%% References: <= 60, Nature style, numbered by first appearance. For the
+%% eJP submission the .bbl is pasted here; until then BibTeX.
+\bibliography{references}
+
+\end{document}
