@@ -48,7 +48,8 @@ repos:
       - id: typos
         args: []
         # the experiment registry is full of short git hashes that read as words
-        exclude: ^docs/experiments\.md$
+        # drug dictionaries are brand names, not prose
+        exclude: ^(docs/experiments\.md|odyssey/data/resources/.*\.csv)$
 
   - repo: https://github.com/nbQA-dev/nbQA
     rev: 1.9.1

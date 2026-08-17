@@ -81,6 +81,7 @@ def build_lookup(eicu_dir: Path) -> pl.DataFrame:
 
 
 def main() -> None:
+    """Build the dictionary from ``--eicu-dir`` and write it to ``--out``."""
     parser = argparse.ArgumentParser(
         description="Build the eICU HICL -> ingredient dictionary resource."
     )
@@ -94,9 +95,9 @@ def main() -> None:
     lookup = build_lookup(args.eicu_dir)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     lookup.write_csv(args.out)
-    purity = (lookup["support"] / lookup["total"]).median()
+    purity = lookup.select((pl.col("support") / pl.col("total")).median()).item()
     print(
-        f"wrote {lookup.height} HICL codes to {args.out} (median purity {purity:.2f})"
+        f"wrote {lookup.height} HICL codes to {args.out} (median purity {float(purity):.2f})"
     )
 
 
