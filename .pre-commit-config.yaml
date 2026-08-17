@@ -22,12 +22,12 @@ repos:
     - id: check-toml
 
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.11.6
+    rev: 0.12.5
     hooks:
       - id: uv-lock
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: 'v0.16.2'
+    rev: 'v0.16.3'
     hooks:
     - id: ruff-check
       args: [--fix, --exit-non-zero-on-fix]
@@ -36,7 +36,7 @@ repos:
       types_or: [python, jupyter]
 
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v2.3.0
+    rev: v2.3.1
     hooks:
     - id: mypy
       entry: python3 -m mypy --config-file pyproject.toml
@@ -45,7 +45,7 @@ repos:
       exclude: "tests"
 
   - repo: https://github.com/crate-ci/typos
-    rev: v1.49.0
+    rev: v1
     hooks:
       - id: typos
         args: []
