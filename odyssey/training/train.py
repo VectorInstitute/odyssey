@@ -59,10 +59,12 @@ from odyssey.data.vocabulary import PAD_ID, Vocabulary
 from odyssey.models.backbones.base import TimeAwareState
 from odyssey.models.concept_bottleneck import ConceptBottleneckLossWeights
 from odyssey.models.sequence_model import (
+    BaselineSequenceModel,
     ConceptBottleneckSequenceModel,
     ConceptLabelDict,
     ConceptSupervision,
     ForecastObjective,
+    SequenceModel,
 )
 from odyssey.models.time_to_event import DEFAULT_TIME_BIN_EDGES_HOURS
 from odyssey.training.data import (
@@ -94,6 +96,14 @@ class TrainingConfig:
     max_train_shards: Optional[int] = None
     max_tuning_shards: Optional[int] = None
     resume_from: Optional[str] = None
+
+    model_kind: str = "bottleneck"
+    """``"bottleneck"`` (ConceptBottleneckSequenceModel, the interpretable
+    model this project is about) or ``"baseline"`` (BaselineSequenceModel:
+    the same backbone and forecasting/time/event heads with no concept
+    bottleneck and no concept supervision). Train both with identical
+    settings to price the bottleneck: the README's "costs little" claim
+    is measured, not assumed."""
 
     # Backbone (EHRHybridBackbone). Defaults are modest, not the paper-scale
     # numbers -- see the training run's own README note on why.
@@ -321,10 +331,13 @@ def _detach_state(state: TimeAwareState) -> TimeAwareState:
 
 def build_model(
     config: TrainingConfig, *, vocab_size: int, num_concepts: int
-) -> ConceptBottleneckSequenceModel:
-    """Construct the real backbone + concept bottleneck model from ``config``."""
+) -> SequenceModel:
+    """Construct the real backbone + heads from ``config`` (see ``model_kind``)."""
     from odyssey.models.backbones.hybrid import EHRHybridBackbone  # noqa: PLC0415
 
+    kind = getattr(config, "model_kind", "bottleneck")
+    if kind not in ("bottleneck", "baseline"):
+        raise ValueError(f"model_kind must be 'bottleneck' or 'baseline', got {kind!r}")
     backbone = EHRHybridBackbone(
         vocab_size=vocab_size,
         hidden_size=config.hidden_size,
@@ -335,22 +348,32 @@ def build_model(
         mamba_chunk_size=config.mamba_chunk_size,
         attn_num_heads=config.attn_num_heads,
     )
+    time_bin_edges = (
+        DEFAULT_TIME_BIN_EDGES_HOURS
+        if getattr(config, "time_to_event", False)
+        else None
+    )
+    event_names = (
+        [a.name for a in ALERT_EVENTS]
+        if getattr(config, "event_hazards", False)
+        else None
+    )
+    if kind == "baseline":
+        return BaselineSequenceModel(
+            backbone=backbone,
+            vocab_size=vocab_size,
+            padding_idx=PAD_ID,
+            time_bin_edges=time_bin_edges,
+            event_names=event_names,
+        )
     return ConceptBottleneckSequenceModel(
         backbone=backbone,
         vocab_size=vocab_size,
         num_concepts=num_concepts,
         embedding_dim=config.embedding_dim,
         padding_idx=PAD_ID,
-        time_bin_edges=(
-            DEFAULT_TIME_BIN_EDGES_HOURS
-            if getattr(config, "time_to_event", False)
-            else None
-        ),
-        event_names=(
-            [a.name for a in ALERT_EVENTS]
-            if getattr(config, "event_hazards", False)
-            else None
-        ),
+        time_bin_edges=time_bin_edges,
+        event_names=event_names,
     )
 
 
@@ -386,7 +409,7 @@ def build_objective(
 
 
 def evaluate_streaming(
-    model: ConceptBottleneckSequenceModel,
+    model: SequenceModel,
     make_sampler: Callable[[], PackedLaneSampler],
     labels: ConceptLabelDict,
     masks: ConceptLabelDict,
@@ -408,19 +431,25 @@ def evaluate_streaming(
             if max_chunks is not None and i >= max_chunks:
                 break
             chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
-            _, components, state = model.compute_streaming_loss(
-                chunk,
-                labels,
-                masks,
-                state=state,
-                supervision=supervision,
-                objective=objective,
-                event_targets=(
-                    event_hazard_targets(chunk, event_tables)
-                    if event_tables is not None
-                    else None
-                ),
+            event_targets = (
+                event_hazard_targets(chunk, event_tables)
+                if event_tables is not None
+                else None
             )
+            if isinstance(model, BaselineSequenceModel):
+                _, components, state = model.compute_streaming_loss(
+                    chunk, state=state, objective=objective, event_targets=event_targets
+                )
+            else:
+                _, components, state = model.compute_streaming_loss(
+                    chunk,
+                    labels,
+                    masks,
+                    state=state,
+                    supervision=supervision,
+                    objective=objective,
+                    event_targets=event_targets,
+                )
             state = _detach_state(state)
             for key, value in components.items():
                 totals[key] = totals.get(key, 0.0) + value.item()
@@ -717,31 +746,37 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
 
         for chunk in sampler:
             chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
-            intervention = randint_intervention(
-                chunk,
-                train_labels,
-                train_masks,
-                train_first_times,
-                supervision=config.concept_supervision,  # type: ignore[arg-type]
-                num_concepts=len(concepts),
-                prob=config.randint_prob,
-                generator=randint_rng,
+            event_targets = (
+                event_hazard_targets(chunk, train_event_tables)
+                if train_event_tables is not None
+                else None
             )
-            total, components, state = model.compute_streaming_loss(
-                chunk,
-                train_labels,
-                train_masks,
-                state=state,
-                loss_weights=loss_weights,
-                supervision=config.concept_supervision,  # type: ignore[arg-type]
-                intervention=intervention,
-                objective=objective,
-                event_targets=(
-                    event_hazard_targets(chunk, train_event_tables)
-                    if train_event_tables is not None
-                    else None
-                ),
-            )
+            if isinstance(model, BaselineSequenceModel):
+                total, components, state = model.compute_streaming_loss(
+                    chunk, state=state, objective=objective, event_targets=event_targets
+                )
+            else:
+                intervention = randint_intervention(
+                    chunk,
+                    train_labels,
+                    train_masks,
+                    train_first_times,
+                    supervision=config.concept_supervision,  # type: ignore[arg-type]
+                    num_concepts=len(concepts),
+                    prob=config.randint_prob,
+                    generator=randint_rng,
+                )
+                total, components, state = model.compute_streaming_loss(
+                    chunk,
+                    train_labels,
+                    train_masks,
+                    state=state,
+                    loss_weights=loss_weights,
+                    supervision=config.concept_supervision,  # type: ignore[arg-type]
+                    intervention=intervention,
+                    objective=objective,
+                    event_targets=event_targets,
+                )
             optimizer.zero_grad()
             total.backward()  # type: ignore[no-untyped-call]
             torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip_norm)

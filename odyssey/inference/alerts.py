@@ -70,7 +70,7 @@ from odyssey.data.streaming import NO_SUBJECT, PackedLaneSampler
 from odyssey.data.value_binning import add_value_tokens, clinical_ranges_for_source
 from odyssey.data.vocabulary import Vocabulary, code_type
 from odyssey.inference.run_inference import load_run
-from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
+from odyssey.models.sequence_model import SequenceModel
 from odyssey.models.time_to_event import probability_within
 from odyssey.training.data import iter_patient_sequences, load_meds_shards
 from odyssey.training.train import _move_chunk_to_device
@@ -159,7 +159,7 @@ def _event_token_mask(
 
 
 def collect_model_scores(
-    model: ConceptBottleneckSequenceModel,
+    model: SequenceModel,
     events_binned: pl.DataFrame,
     vocab: Vocabulary,
     concept_names: Sequence[str],
@@ -199,9 +199,10 @@ def collect_model_scores(
     with torch.no_grad():
         for chunk in sampler:
             chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
-            logits, out, state = model(
+            fwd = model.forward_with_features(
                 chunk.batch, state=state, reset_mask=chunk.reset_mask
             )
+            logits, state = fwd.logits, fwd.state
             sids = chunk.subject_ids
             vids = chunk.visit_ids
             times = chunk.batch.aux.time_stamps
@@ -223,7 +224,7 @@ def collect_model_scores(
                 continue
             probs = torch.softmax(logits[keep], dim=-1)
             hazards = (
-                event_heads(out.bottleneck[keep]) if event_heads is not None else None
+                event_heads(fwd.features[keep]) if event_heads is not None else None
             )
             kept_sids = sids[keep].tolist()
             kept_vids = vids[keep].tolist()
@@ -231,8 +232,10 @@ def collect_model_scores(
             for alert in alerts:
                 mass = probs[:, token_masks[alert.name]].sum(dim=-1).tolist()
                 concept_p = (
-                    out.concept_probs[keep][:, concept_index[alert.concept]].tolist()
-                    if alert.concept in concept_index
+                    fwd.bottleneck.concept_probs[keep][
+                        :, concept_index[alert.concept]
+                    ].tolist()
+                    if fwd.bottleneck is not None and alert.concept in concept_index
                     else None
                 )
                 within: Dict[str, List[float]] = {}

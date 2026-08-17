@@ -1,4 +1,4 @@
-"""Run a trained :class:`ConceptBottleneckSequenceModel` over held-out data.
+"""Run a trained sequence model (bottleneck or baseline) over held-out data.
 
 Streams held-out patients through the model exactly the way training did
 (:class:`~odyssey.data.streaming.PackedLaneSampler`, carried recurrent
@@ -35,9 +35,10 @@ from odyssey.data.value_binning import QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import Vocabulary, code_type
 from odyssey.models.concept_bottleneck import ConceptBottleneckOutput
 from odyssey.models.sequence_model import (
-    ConceptBottleneckSequenceModel,
+    BaselineSequenceModel,
     ConceptLabelDict,
     ConceptSupervision,
+    SequenceModel,
     _gather_by_subject,
     _gather_by_visit,
     _pool_patient_ends,
@@ -170,7 +171,7 @@ def load_run(
     *,
     device: str = "cuda",
     checkpoint_path: Optional[Union[str, Path]] = None,
-) -> Tuple[ConceptBottleneckSequenceModel, Vocabulary, QuantileBinner, TrainingConfig]:
+) -> Tuple[SequenceModel, Vocabulary, QuantileBinner, TrainingConfig]:
     """Reconstruct a trained model and its tokenization artifacts from a run dir.
 
     ``run_dir`` is a :func:`~odyssey.training.train.train` output
@@ -550,7 +551,7 @@ class _PooledEnds:
 
 
 def run_streaming_inference(
-    model: ConceptBottleneckSequenceModel,
+    model: SequenceModel,
     events_binned: pl.DataFrame,
     vocab: Vocabulary,
     concept_labels: ConceptLabelDict,
@@ -590,13 +591,14 @@ def run_streaming_inference(
     with torch.no_grad():
         for chunk in sampler:
             chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
-            logits, bottleneck_out, state = model(
+            fwd = model.forward_with_features(
                 chunk.batch, state=state, reset_mask=chunk.reset_mask
             )
+            logits, state = fwd.logits, fwd.state
 
             real = chunk.real_mask
             if time_stats is not None and time_head is not None:
-                hazard_logits = time_head(bottleneck_out.bottleneck)
+                hazard_logits = time_head(fwd.features)
                 gap, gap_valid = gap_survival_valid_mask(
                     chunk.batch.aux.time_stamps, real
                 )
@@ -616,23 +618,27 @@ def run_streaming_inference(
                 )
 
             pool_mask = chunk.patient_end if supervision == "stay" else chunk.visit_end
-            if pool_mask.any():
-                pooled.append(chunk, bottleneck_out, pool_mask)
+            if fwd.bottleneck is not None and pool_mask.any():
+                pooled.append(chunk, fwd.bottleneck, pool_mask)
 
     task_metrics, task_metrics_by_code_type = task_stats.finalize()
 
     if not pooled.subject_ids:
-        # No chunk ever had a real pool_mask position -- e.g. supervision
+        # A baseline model has no bottleneck to pool, or no chunk ever had
+        # a real pool_mask position -- e.g. supervision
         # is "visit" but nothing in this split has a real hadm_id, so
         # chunk.visit_end never fires. Forecasting quality (task_metrics
         # above) is still valid, since it never depends on pooling; only
         # the pooled concept/observability/orthogonality questions have
         # nothing to score.
-        logger.warning(
-            "[inference] no %s-scoped pool positions were ever produced -- "
-            "skipping concept/observability/orthogonality metrics",
-            supervision,
-        )
+        if isinstance(model, BaselineSequenceModel):
+            logger.info("[inference] baseline model: no concept metrics to score")
+        else:
+            logger.warning(
+                "[inference] no %s-scoped pool positions were ever produced -- "
+                "skipping concept/observability/orthogonality metrics",
+                supervision,
+            )
         return InferenceResults(
             task_metrics=task_metrics,
             task_metrics_by_code_type=task_metrics_by_code_type,

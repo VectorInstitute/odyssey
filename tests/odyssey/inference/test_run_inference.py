@@ -5,8 +5,10 @@ test_run_inference_gpu.py.
 """
 
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 
+import polars as pl
 import pytest
 import torch
 
@@ -19,7 +21,11 @@ from odyssey.inference.run_inference import (
     _RunningTaskMetrics,
     load_run,
     results_to_dict,
+    run_streaming_inference,
 )
+from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
+from odyssey.models.sequence_model import BaselineSequenceModel
+from odyssey.models.time_to_event import DEFAULT_TIME_BIN_EDGES_HOURS
 from odyssey.training.metrics import (
     TaskMetrics,
     compute_task_metrics,
@@ -333,3 +339,47 @@ def test_time_to_event_config_follows_the_checkpoint(tmp_path: Path) -> None:
         assert "time_head" not in str(exc)
     except ImportError:
         pass  # mamba-ssm not installed: construction itself is CUDA-only
+
+
+def test_streaming_inference_scores_a_baseline_model() -> None:
+    """A no-bottleneck model gets task/set/time metrics and no concept metrics."""
+    vocab = _vocab()
+    torch.manual_seed(0)
+    model = BaselineSequenceModel(
+        backbone=TinyGRUBackbone(
+            vocab_size=len(vocab), hidden_size=8, num_layers=1, padding_idx=0
+        ),
+        vocab_size=len(vocab),
+        padding_idx=0,
+        time_bin_edges=DEFAULT_TIME_BIN_EDGES_HOURS,
+    )
+    codes = ["DIAGNOSIS//A", "MEDICATION//B", "LAB//220045//bpm", "PROCEDURE//C"]
+    rows = []
+    for sid in (1, 2):
+        for i in range(12):
+            rows.append(
+                (
+                    sid,
+                    codes[i % 4],
+                    datetime(2024, 1, 1) + timedelta(hours=i),
+                    None,
+                    100 + sid,
+                )
+            )
+    events = pl.DataFrame(
+        rows,
+        schema={
+            "subject_id": pl.Int64,
+            "code": pl.Utf8,
+            "time": pl.Datetime,
+            "numeric_value": pl.Float32,
+            "hadm_id": pl.Int64,
+        },
+        orient="row",
+    )
+    results = run_streaming_inference(
+        model, events, vocab, {}, {}, num_lanes=1, chunk_size=8, device="cpu"
+    )
+    assert results.task_metrics.n_predictions == 2 * 11
+    assert results.concept_metrics == []
+    assert results.time_metrics is not None and results.time_metrics.n_positions > 0

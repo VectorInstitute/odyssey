@@ -28,7 +28,16 @@ Both models support two training regimes:
 """
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, Literal, Optional, Sequence, Tuple, Union
+from typing import (
+    TYPE_CHECKING,
+    Dict,
+    Literal,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
 
 import torch
 import torch.nn.functional as F  # noqa: N812
@@ -95,6 +104,21 @@ class ForecastObjective:
     token_types: Optional[torch.Tensor] = None
     time_weight: float = 0.0
     event_hazard_weight: float = 0.0
+
+
+class ForwardWithFeatures(NamedTuple):
+    """Uniform forward result for both sequence model variants.
+
+    ``features`` is what the time-to-event and per-event hazard heads
+    read: the bottleneck output for the concept-bottleneck model, the
+    backbone hidden state for the baseline. ``bottleneck`` is None for
+    the baseline.
+    """
+
+    logits: torch.Tensor
+    features: torch.Tensor
+    bottleneck: Optional[ConceptBottleneckOutput]
+    state: TimeAwareState
 
 
 def _bundle_log_likelihood(
@@ -223,6 +247,7 @@ def _gather_by_visit(
 
 
 ConceptSupervision = Literal["stay", "visit"]
+SequenceModel = Union["BaselineSequenceModel", "ConceptBottleneckSequenceModel"]
 ConceptLabelDict = Union[Dict[int, torch.Tensor], Dict[Tuple[int, int], torch.Tensor]]
 
 
@@ -436,6 +461,18 @@ class BaselineSequenceModel(_SequenceModelBase):
         )
         return logits, new_state
 
+    def forward_with_features(
+        self,
+        batch: ClinicalSequenceBatch,
+        state: Optional[TimeAwareState] = None,
+        reset_mask: Optional[torch.Tensor] = None,
+    ) -> ForwardWithFeatures:
+        """Uniform forward (see :class:`ForwardWithFeatures`)."""
+        logits, hidden, new_state = self.forward_features(
+            batch, state=state, reset_mask=reset_mask
+        )
+        return ForwardWithFeatures(logits, hidden, None, new_state)
+
     def compute_loss(
         self, batch: ClinicalSequenceBatch, labels: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
@@ -542,6 +579,16 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         bottleneck_out = self.bottleneck(hidden_states, intervention=intervention)
         logits = self.lm_head(bottleneck_out.bottleneck)
         return logits, bottleneck_out, new_state
+
+    def forward_with_features(
+        self,
+        batch: ClinicalSequenceBatch,
+        state: Optional[TimeAwareState] = None,
+        reset_mask: Optional[torch.Tensor] = None,
+    ) -> ForwardWithFeatures:
+        """Uniform forward (see :class:`ForwardWithFeatures`)."""
+        logits, out, new_state = self(batch, state=state, reset_mask=reset_mask)
+        return ForwardWithFeatures(logits, out.bottleneck, out, new_state)
 
     def compute_loss(
         self,
