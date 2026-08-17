@@ -149,8 +149,9 @@ class CodeOccurrenceRule:
 
     match_text_value: bool = False
     """Also match ``code_pattern`` against the ``text_value`` column
-    when present (eICU charts infusion drug names there, under a bare
-    ``INFUSION_DRUG`` code)."""
+    when present (eICU charts infusion drug names there; the v1
+    extraction emitted a bare ``INFUSION_DRUG`` code and only v2 puts
+    the name in the code as well)."""
 
 
 @dataclass(frozen=True)
@@ -711,8 +712,9 @@ CANONICAL_CONCEPTS: List[AnyCanonicalConcept] = [
     ),
     # entry 06/07 decision (f): the first occurrence-keyed concept. The
     # drug-name regex reaches both MIMIC-IV medication codes (drug name
-    # embedded in the code string) and, via match_text_value, eICU infusion
-    # events (bare INFUSION_DRUG code, drug name in text_value).
+    # embedded in the code string) and eICU infusion events (drug name in
+    # the code since spec v2, and in text_value via match_text_value for
+    # v1 extractions with a bare INFUSION_DRUG code).
     # "epinephrine" also matching "norepinephrine" is deliberate; both are
     # vasopressors and Rust regex has no lookbehind. Dobutamine is excluded
     # on purpose: an inotrope, not a vasopressor.

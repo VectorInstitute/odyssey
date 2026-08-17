@@ -302,8 +302,12 @@ infusionDrug:
         f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
       unitadmittimestamp: ($hospitaldischargetimestamp - $hospitaldischargeoffset::minutes) if not ($hospitaldischargeoffset >= 525600 or $hospitaldischargeoffset <= -525600)
       eventtime: ($unitadmittimestamp + $infusionoffset::minutes) if not ($infusionoffset >= 525600 or $infusionoffset <= -525600)
+  # v2: the drug name is part of the code (v1 emitted a bare INFUSION_DRUG
+  # token with the name only in text_value, so the model never saw which
+  # drug was infusing). The rate unit in the name ("Norepinephrine (mcg/min)")
+  # is stripped by the normalizer. text_value keeps the raw name.
   infusion:
-    code: INFUSION_DRUG
+    code: f"INFUSION_DRUG//{$drugname ?? 'UNK'}"
     time: $eventtime
     hadm_id: $patientunitstayid
     text_value: $drugname
@@ -353,14 +357,20 @@ medication:
       unitadmittimestamp: ($hospitaldischargetimestamp - $hospitaldischargeoffset::minutes) if not ($hospitaldischargeoffset >= 525600 or $hospitaldischargeoffset <= -525600)
       drugstarttimestamp: ($unitadmittimestamp + $drugstartoffset::minutes) if not ($drugstartoffset >= 525600 or $drugstartoffset <= -525600)
       drugstoptimestamp: ($unitadmittimestamp + $drugstopoffset::minutes) if not ($drugstopoffset >= 525600 or $drugstopoffset <= -525600)
+  # v2 code shape: the trailing HICL segment mirrors MIMIC-IV's pharmacy shape
+  # (MEDICATION//START//{drug}//{gsn}). 36% of eICU medication rows have no
+  # drugname but 94% of those carry a drughiclseqno; the normalizer
+  # (odyssey/data/code_normalization.py) resolves the HICL through the shipped
+  # dictionary before falling back to the name. Both components coalesce to
+  # 'UNK' so a row is never dropped for a missing identifier.
   drug_started:
-    code: f"MEDICATION//STARTED//{$drugname ?? 'UNK'}"
+    code: f"MEDICATION//STARTED//{$drugname ?? 'UNK'}//{$drughiclseqno ?? 'UNK'}"
     time: $drugstarttimestamp
     hadm_id: $patientunitstayid
     # Dosages are free text ("5 mg"); the lenient cast keeps pure numbers only.
     numeric_value: $dosage::?float
   drug_stopped:
-    code: f"MEDICATION//STOPPED//{$drugname ?? 'UNK'}"
+    code: f"MEDICATION//STOPPED//{$drugname ?? 'UNK'}//{$drughiclseqno ?? 'UNK'}"
     time: $drugstoptimestamp
     hadm_id: $patientunitstayid
 

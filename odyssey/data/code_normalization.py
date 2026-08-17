@@ -28,15 +28,39 @@ Heuristics, deliberately conservative:
 
 Concept rules that match drug names (``on_vasopressors``) are unaffected:
 the ingredient substring they search for survives normalization.
+
+Two eICU-specific rules ride along, both keyed on ``source="eicu"``:
+
+- eICU medication codes carry a trailing HICL segment
+  (``MEDICATION//STARTED//{drugname}//{hicl}``, spec v2). 36% of eICU
+  medication rows have no drug name at all but 94% of those carry a HICL,
+  so the HICL is resolved FIRST through the empirical dictionary shipped
+  as ``odyssey/data/resources/eicu_hicl_ingredients.csv`` (built by
+  ``scripts/build_eicu_hicl_lookup.py``: majority ingredient per HICL over
+  the rows that carry both). Resolving HICL-first also merges brand/salt
+  spellings of one ingredient that the name heuristic would keep apart.
+- eICU infusions are ``INFUSION_DRUG//{drugname}`` with the rate unit in
+  parentheses (``Norepinephrine (mcg/min)``); the unit suffix is dropped
+  and the remainder normalized like a medication name.
 """
 
+import csv
+import io
 import re
-from typing import Optional
+from functools import lru_cache
+from importlib import resources
+from typing import Dict, List, Mapping, Optional
 
 import polars as pl
 
 
 MEDICATION_FAMILIES = ("MEDICATION",)
+INFUSION_FAMILIES = ("INFUSION_DRUG",)
+
+# HICL sequence number (as the string it appears as in a code) -> ingredient.
+HiclIngredients = Mapping[str, str]
+
+_HICL_RESOURCE = "eicu_hicl_ingredients.csv"
 
 # One trailing route/form/schedule token. Applied repeatedly, so
 # "PO TABS" strips in two passes. Word-bounded to avoid eating name parts.
@@ -70,36 +94,86 @@ def _normalize_name(name: str) -> str:
 
 _ACTION_SEGMENTS = {"START", "STOP", "STARTED", "STOPPED"}
 _ID_SEGMENT_RE = re.compile(r"\d+|unk", re.IGNORECASE)
+_INFUSION_UNIT_RE = re.compile(r"\s*\([^()]*\)\s*$")
 
 
-def normalize_medication_code(code: str) -> str:
+@lru_cache(maxsize=1)
+def load_eicu_hicl_ingredients() -> Dict[str, str]:
+    """Load the shipped eICU HICL -> ingredient dictionary (see module docstring)."""
+    text = (
+        resources.files("odyssey.data.resources")
+        .joinpath(_HICL_RESOURCE)
+        .read_text(encoding="utf-8")
+    )
+    return {row["hicl"]: row["ingredient"] for row in csv.DictReader(io.StringIO(text))}
+
+
+def hicl_ingredients_for_source(source: Optional[str]) -> Optional[HiclIngredients]:
+    """Return the HICL dictionary for a data source: eICU has one, nothing else does."""
+    return load_eicu_hicl_ingredients() if source == "eicu" else None
+
+
+def _normalize_infusion_code(parts: List[str]) -> str:
+    """Strip the rate unit and normalize the infusion drug name.
+
+    ``INFUSION_DRUG//Norepinephrine (mcg/min)`` becomes
+    ``INFUSION_DRUG//norepinephrine``.
+    """
+    if len(parts) < 2 or not parts[1]:
+        return "//".join(parts)
+    name = _INFUSION_UNIT_RE.sub("", parts[1]) or parts[1]
+    return "//".join([parts[0], _normalize_name(name), *parts[2:]])
+
+
+def normalize_medication_code(
+    code: str, hicl_ingredients: Optional[HiclIngredients] = None
+) -> str:
     """Normalize one medication code; the single source of truth for the rule.
 
     Real MIMIC-IV emar codes are ``MEDICATION//{drug}//{event_txt}//{ndc}``
     (the trailing NDC packaging code splits one drug administration into
     thousands of tokens) and pharmacy codes are
     ``MEDICATION//START|STOP//{drug}//{gsn}``; eICU uses
-    ``MEDICATION//STARTED|STOPPED//{drug}``. Verified against the real
-    extraction's top medication codes, not assumed. The rule: drop a
-    trailing pure-ID segment (digits or ``unk``), find the drug segment
-    (first segment, or second when the first is a START/STOP action),
-    and reduce it to its lowercased ingredient. Action and event-text
-    segments survive; they carry clinical signal (given vs. not given).
+    ``MEDICATION//STARTED|STOPPED//{drug}//{hicl}`` (spec v2; v1 had no
+    HICL segment) and ``INFUSION_DRUG//{drug (unit)}``. Verified against
+    the real extractions' top medication codes, not assumed. The rule:
+    drop a trailing pure-ID segment (digits or ``unk``), find the drug
+    segment (first segment, or second when the first is a START/STOP
+    action), and reduce it to its lowercased ingredient. When
+    ``hicl_ingredients`` is given (eICU only; MIMIC's trailing IDs are
+    NDC/GSN numbers, not HICLs) and the trailing ID resolves, the
+    dictionary ingredient replaces the name-derived one. Action and
+    event-text segments survive; they carry clinical signal (given vs.
+    not given).
     """
     parts = code.split("//")
+    if parts[0] in INFUSION_FAMILIES:
+        return _normalize_infusion_code(parts)
     if parts[0] not in MEDICATION_FAMILIES or len(parts) < 2:
         return code
     segs = parts[1:]
+    trailing_id: Optional[str] = None
     if len(segs) >= 2 and _ID_SEGMENT_RE.fullmatch(segs[-1]):
+        trailing_id = segs[-1]
         segs = segs[:-1]
     drug_idx = 1 if segs[0].upper() in _ACTION_SEGMENTS and len(segs) > 1 else 0
-    if segs[drug_idx]:
+    resolved = (
+        hicl_ingredients.get(trailing_id)
+        if hicl_ingredients is not None and trailing_id is not None
+        else None
+    )
+    if resolved:
+        segs[drug_idx] = resolved
+    elif segs[drug_idx]:
         segs[drug_idx] = _normalize_name(segs[drug_idx])
     return "//".join([parts[0], *segs])
 
 
 def normalize_medication_codes(
-    events: pl.DataFrame, *, code_col: str = "code"
+    events: pl.DataFrame,
+    *,
+    code_col: str = "code",
+    hicl_ingredients: Optional[HiclIngredients] = None,
 ) -> pl.DataFrame:
     """Rewrite medication codes to ingredient level; pass everything else through.
 
@@ -107,12 +181,16 @@ def normalize_medication_codes(
     (tens of thousands) and joins the mapping back onto the events
     (hundreds of millions) -- exact same rule as the scalar function with
     no vectorized reimplementation to drift out of sync, at hash-join
-    cost instead of per-row Python.
+    cost instead of per-row Python. ``hicl_ingredients`` is threaded
+    through unchanged (see :func:`hicl_ingredients_for_source`).
     """
     distinct = events.select(pl.col(code_col).unique().alias(code_col))
     mapping = distinct.with_columns(
         pl.col(code_col)
-        .map_elements(normalize_medication_code, return_dtype=pl.Utf8)
+        .map_elements(
+            lambda code: normalize_medication_code(code, hicl_ingredients),
+            return_dtype=pl.Utf8,
+        )
         .alias("_normalized")
     )
     return (
@@ -123,12 +201,23 @@ def normalize_medication_codes(
 
 
 def maybe_normalize(
-    events: pl.DataFrame, *, enabled: bool, code_col: str = "code"
+    events: pl.DataFrame,
+    *,
+    enabled: bool,
+    code_col: str = "code",
+    source: Optional[str] = None,
 ) -> pl.DataFrame:
-    """Apply :func:`normalize_medication_codes` when ``enabled``, else pass through."""
+    """Apply :func:`normalize_medication_codes` when ``enabled``, else pass through.
+
+    ``source`` selects the source-specific dictionary (eICU's HICL table);
+    pass the run's ``TrainingConfig.source`` so training and every
+    inference path normalize identically.
+    """
     if not enabled:
         return events
-    return normalize_medication_codes(events, code_col=code_col)
+    return normalize_medication_codes(
+        events, code_col=code_col, hicl_ingredients=hicl_ingredients_for_source(source)
+    )
 
 
 def icd_category_code(code: str) -> Optional[str]:

@@ -339,7 +339,9 @@ def evaluate_interventions(
     logger.info("[interventions] loading held-out shards from %s", held_out_shard_dir)
     raw_events = load_meds_shards(held_out_shard_dir, max_shards=max_shards)
     raw_events = maybe_normalize(
-        raw_events, enabled=getattr(config, "normalize_medications", False)
+        raw_events,
+        enabled=getattr(config, "normalize_medications", False),
+        source=getattr(config, "source", "mimic_iv"),
     )
     raw_events = maybe_history_recap(
         raw_events, enabled=getattr(config, "history_recap", False)

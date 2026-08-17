@@ -154,3 +154,109 @@ def test_dose_embedded_in_drug_segment_is_stripped() -> None:
         )
         == "MEDICATION//sodium chloride//Flushed"
     )
+
+
+# ---------------------------------------------------------------------------
+# eICU spec v2: HICL dictionary and INFUSION_DRUG names
+# ---------------------------------------------------------------------------
+
+from odyssey.data.code_normalization import (  # noqa: E402
+    hicl_ingredients_for_source,
+    load_eicu_hicl_ingredients,
+    maybe_normalize,
+)
+
+
+def test_eicu_hicl_resolves_unnamed_medication_rows() -> None:
+    lookup = {"8255": "sodium chloride"}
+    assert (
+        normalize_medication_code("MEDICATION//STARTED//UNK//8255", lookup)
+        == "MEDICATION//STARTED//sodium chloride"
+    )
+    assert (
+        normalize_medication_code("MEDICATION//STOPPED//UNK//8255", lookup)
+        == "MEDICATION//STOPPED//sodium chloride"
+    )
+
+
+def test_eicu_hicl_wins_over_the_name_when_both_present() -> None:
+    # HICL-first merges brand/salt spellings the name heuristic keeps apart.
+    lookup = {"33598": "ondansetron"}
+    assert (
+        normalize_medication_code(
+            "MEDICATION//STARTED//ZOFRAN 4 MG IV SOLN//33598", lookup
+        )
+        == "MEDICATION//STARTED//ondansetron"
+    )
+
+
+def test_eicu_unresolved_hicl_falls_back_to_the_name_then_unk() -> None:
+    lookup = {"1": "x"}
+    assert (
+        normalize_medication_code(
+            "MEDICATION//STARTED//1000 ML FLEX CONT : SODIUM CHLORIDE 0.9 % IV SOLN//999999",
+            lookup,
+        )
+        == "MEDICATION//STARTED//sodium chloride"
+    )
+    assert (
+        normalize_medication_code("MEDICATION//STARTED//UNK//UNK", lookup)
+        == "MEDICATION//STARTED//unk"
+    )
+
+
+def test_mimic_trailing_ids_are_never_looked_up_without_a_dictionary() -> None:
+    # MIMIC pharmacy GSN / emar NDC numbers are not HICLs: no dictionary, no lookup.
+    assert (
+        normalize_medication_code("MEDICATION//START//Furosemide 40 mg//8255")
+        == "MEDICATION//START//furosemide"
+    )
+
+
+def test_infusion_drug_name_unit_suffix_is_stripped() -> None:
+    assert (
+        normalize_medication_code("INFUSION_DRUG//Norepinephrine (mcg/min)")
+        == "INFUSION_DRUG//norepinephrine"
+    )
+    assert (
+        normalize_medication_code("INFUSION_DRUG//Propofol ()")
+        == "INFUSION_DRUG//propofol"
+    )
+    assert normalize_medication_code("INFUSION_DRUG//UNK") == "INFUSION_DRUG//unk"
+    # v1 bare token passes through unchanged.
+    assert normalize_medication_code("INFUSION_DRUG") == "INFUSION_DRUG"
+
+
+def test_shipped_hicl_dictionary_loads_and_covers_the_vasopressors() -> None:
+    lookup = load_eicu_hicl_ingredients()
+    assert len(lookup) > 2000
+    assert lookup["2839"] == "vasopressin"
+    assert lookup["2059"] == "dopamine"
+    assert "norepinephrine" in lookup["36346"]
+    assert hicl_ingredients_for_source("eicu") is lookup
+    assert hicl_ingredients_for_source("mimic_iv") is None
+    assert hicl_ingredients_for_source(None) is None
+
+
+def test_maybe_normalize_uses_the_source_dictionary() -> None:
+    events = pl.DataFrame(
+        {
+            "code": [
+                "MEDICATION//STARTED//UNK//2839",
+                "INFUSION_DRUG//Norepinephrine (mcg/min)",
+                "LAB//x",
+            ]
+        }
+    )
+    eicu = maybe_normalize(events, enabled=True, source="eicu")["code"].to_list()
+    assert eicu == [
+        "MEDICATION//STARTED//vasopressin",
+        "INFUSION_DRUG//norepinephrine",
+        "LAB//x",
+    ]
+    mimic = maybe_normalize(events, enabled=True, source="mimic_iv")["code"].to_list()
+    assert mimic[0] == "MEDICATION//STARTED//unk"
+    assert (
+        maybe_normalize(events, enabled=False, source="eicu")["code"].to_list()
+        == events["code"].to_list()
+    )
