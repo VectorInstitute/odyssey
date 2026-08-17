@@ -394,6 +394,81 @@ treatment:
     time: $eventtime
     hadm_id: $patientunitstayid
 
+# nurseCharting is the nursing flowsheet (1.6 GB gz): mostly hourly vitals that
+# duplicate vitalPeriodic/vitalAperiodic, plus the ONLY place eICU charts the
+# Glasgow Coma Scale. Spec v2 extracts the GCS rows only (label/valname
+# strings verified against nurseCharting.csv.gz: category "Scores" +
+# "Glasgow coma score" x {GCS Total, Eyes, Verbal, Motor}, and the sparser
+# "Score (Glasgow Coma Scale)" / "Value" total). Non-numeric values such as
+# "Unable to score due to medication" keep the row with a null numeric value
+# and the text in text_value.
+nurseCharting:
+  _table:
+    join:
+      patient:
+        key: patientunitstayid
+        cols:
+          - patienthealthsystemstayid
+          - hospitaldischargeyear
+          - hospitaldischargetime24
+          - hospitaldischargeoffset
+    cols:
+      hospitaldischargetimestamp: >-
+        f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
+      unitadmittimestamp: ($hospitaldischargetimestamp - $hospitaldischargeoffset::minutes) if not ($hospitaldischargeoffset >= 525600 or $hospitaldischargeoffset <= -525600)
+      eventtime: ($unitadmittimestamp + $nursingchartoffset::minutes) if not ($nursingchartoffset >= 525600 or $nursingchartoffset <= -525600)
+  gcs_total:
+    code: >-
+      "GCS//TOTAL" if ($nursingchartcelltypevallabel == "Glasgow coma score" and $nursingchartcelltypevalname == "GCS Total") or ($nursingchartcelltypevallabel == "Score (Glasgow Coma Scale)" and $nursingchartcelltypevalname == "Value")
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $nursingchartvalue::?float
+    text_value: $nursingchartvalue
+  gcs_eyes:
+    code: '"GCS//EYES" if $nursingchartcelltypevallabel == "Glasgow coma score" and $nursingchartcelltypevalname == "Eyes"'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $nursingchartvalue::?float
+    text_value: $nursingchartvalue
+  gcs_verbal:
+    code: '"GCS//VERBAL" if $nursingchartcelltypevallabel == "Glasgow coma score" and $nursingchartcelltypevalname == "Verbal"'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $nursingchartvalue::?float
+    text_value: $nursingchartvalue
+  gcs_motor:
+    code: '"GCS//MOTOR" if $nursingchartcelltypevallabel == "Glasgow coma score" and $nursingchartcelltypevalname == "Motor"'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $nursingchartvalue::?float
+    text_value: $nursingchartvalue
+
+# intakeOutput: urine output rows only (cellpath under "I&O|Output (ml)|" with
+# "urine" in the label, excluding mixed urine/stool and count/occurrence
+# rows that are not volumes), as one code with the volume in ml. This is what KDIGO's urine-output criterion and the alert
+# baseline's urine-output signal need; MIMIC's equivalent is
+# SUBJECT_FLUID_OUTPUT (LOINC 9187-6 in odyssey/data/code_mapping.py).
+intakeOutput:
+  _table:
+    join:
+      patient:
+        key: patientunitstayid
+        cols:
+          - patienthealthsystemstayid
+          - hospitaldischargeyear
+          - hospitaldischargetime24
+          - hospitaldischargeoffset
+    cols:
+      hospitaldischargetimestamp: >-
+        f"{$hospitaldischargeyear}-12-31 {$hospitaldischargetime24}"::"%Y-%m-%d %H:%M:%S"
+      unitadmittimestamp: ($hospitaldischargetimestamp - $hospitaldischargeoffset::minutes) if not ($hospitaldischargeoffset >= 525600 or $hospitaldischargeoffset <= -525600)
+      eventtime: ($unitadmittimestamp + $intakeoutputoffset::minutes) if not ($intakeoutputoffset >= 525600 or $intakeoutputoffset <= -525600)
+  urine_output:
+    code: '"URINE_OUTPUT" if /I&O\|Output \(ml\)\|/ in $cellpath and /(?i)urine/ in $cellpath and not /(?i)stool|count|occurrence/ in $cellpath'
+    time: $eventtime
+    hadm_id: $patientunitstayid
+    numeric_value: $cellvaluenumeric::?float
+
 vitalAperiodic:
   _table:
     join:

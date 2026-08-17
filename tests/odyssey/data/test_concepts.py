@@ -8,6 +8,7 @@ from typing import List, Tuple, Union
 import polars as pl
 import pytest
 
+from odyssey.data import code_mapping
 from odyssey.data.concepts import (
     CONCEPTS,
     AnyOf,
@@ -948,13 +949,30 @@ def test_eicu_expansion_translates_every_signal_it_can() -> None:
     }
 
 
-def test_eicu_qsofa_drops_the_unmapped_gcs_criterion_but_survives() -> None:
-    """GCS has no eICU mapping (nurseCharting is not extracted yet).
+def test_eicu_qsofa_has_all_three_criteria_since_spec_v2() -> None:
+    """EICU qSOFA has RR, SBP and the derived GCS total since spec v2.
 
-    The criterion is dropped; qSOFA keeps its other two criteria, which
-    still satisfy min_criteria=2 -- the same translation the entry-06
-    analysis performed by hand.
+    Spec v2 extracts nurseCharting GCS as GCS//EYES|VERBAL|MOTOR.
     """
+    qsofa = next(c for c in concepts_for_source("eicu") if c.name == "qsofa")
+    assert isinstance(qsofa, CompositeConceptDefinition)
+    assert len(qsofa.components) == 3
+    assert qsofa.min_criteria == 2
+    gcs = [comp for comp in qsofa.components if isinstance(comp, DerivedGcsTotalRule)]
+    assert len(gcs) == 1
+    assert gcs[0].eye_prefix == "GCS//EYES"
+
+
+def test_unmapped_criterion_is_dropped_but_the_composite_survives(monkeypatch) -> None:
+    """A source without a GCS mapping drops that criterion, composite survives.
+
+    (eICU spec v1 had no GCS.) qSOFA keeps its other two criteria, which
+    still satisfy min_criteria=2 -- the translation entry 06 did by hand.
+    """
+    without_gcs = {
+        k: v for k, v in code_mapping.EICU_TO_LOINC.items() if not k.startswith("GCS//")
+    }
+    monkeypatch.setitem(code_mapping._SOURCE_TABLES, "eicu", without_gcs)
     qsofa = next(c for c in concepts_for_source("eicu") if c.name == "qsofa")
     assert isinstance(qsofa, CompositeConceptDefinition)
     assert len(qsofa.components) == 2
