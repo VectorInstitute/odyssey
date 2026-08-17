@@ -1,0 +1,26 @@
+# To get started with Dependabot version updates, you'll need to specify which
+# package ecosystems to update and where the package manifests are located.
+# Please see the documentation for all configuration options:
+# https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+version: 2
+updates:
+  - package-ecosystem: "github-actions" # See documentation for possible values
+    directory: "/" # Location of package manifests
+    schedule:
+      interval: "daily"
+
+  # Keep uv dependencies (uv.lock) up to date
+  - package-ecosystem: "uv"
+    directory: "/"          # where pyproject.toml and uv.lock live
+    schedule:
+      interval: "daily"
+    ignore:
+      # torch is pinned exact on Linux (==2.6.0) for documented hardware
+      # reasons (see pyproject.toml): it must match the GCP host's CUDA
+      # 12.9 toolkit and the exact mamba-ssm build it's paired with, not
+      # whatever the newest release is. The grouped update Dependabot
+      # tries across torch's platform-specific lock entries also crashes
+      # its updater outright (job failures, "unknown_error"), independent
+      # of the pin -- ignore it here rather than let it keep failing.
+      - dependency-name: "torch"
