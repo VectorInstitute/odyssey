@@ -28,6 +28,7 @@ its template contain no patient data and are tracked normally.
 
 import argparse
 import json
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -936,10 +937,27 @@ def build_payload(inputs: ReportInputs) -> Dict[str, Any]:
     }
 
 
+def _strict_json(value: Any) -> Any:
+    """Replace NaN/inf floats with None: browsers' JSON.parse rejects them."""
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        return None
+    if isinstance(value, dict):
+        return {k: _strict_json(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_strict_json(v) for v in value]
+    return value
+
+
 def render_html(payload: Dict[str, Any]) -> str:
-    """Splice ``payload`` into the report template as its embedded JSON data."""
+    """Splice ``payload`` into the report template as its embedded JSON data.
+
+    Serialized with ``allow_nan=False`` after sanitizing, so a non-finite
+    number can never ship as a literal ``NaN`` token that blanks the page.
+    """
     template = _TEMPLATE_PATH.read_text()
-    data_json = json.dumps(payload).replace("</script", "<\\/script")
+    data_json = json.dumps(_strict_json(payload), allow_nan=False).replace(
+        "</script", "<\\/script"
+    )
     return template.replace("__DASHBOARD_DATA__", data_json)
 
 

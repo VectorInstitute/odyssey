@@ -20,6 +20,7 @@ probe still needs a real design decision, not implemented yet.
 
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
@@ -770,11 +771,30 @@ def evaluate_run(
     )
 
 
+def _nan_to_none(value: object) -> object:
+    """Recursively replace float NaN with None so the result is strict JSON.
+
+    Python's json.dumps emits the literal token ``NaN``, which browsers'
+    JSON.parse rejects; a baseline run legitimately has no orthogonality
+    (there is no bottleneck to measure), and that one NaN blanked an
+    entire report page once.
+    """
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    if isinstance(value, dict):
+        return {k: _nan_to_none(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_nan_to_none(v) for v in value]
+    return value
+
+
 def results_to_dict(results: InferenceResults) -> Dict[str, object]:
-    """Plain-JSON-able view of :class:`InferenceResults` (already all plain types)."""
+    """Strict-JSON view of :class:`InferenceResults` (NaN rendered as null)."""
     from dataclasses import asdict  # noqa: PLC0415
 
-    return asdict(results)
+    out = _nan_to_none(asdict(results))
+    assert isinstance(out, dict)  # noqa: S101
+    return out
 
 
 @dataclass(frozen=True)

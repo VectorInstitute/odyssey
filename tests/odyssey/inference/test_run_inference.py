@@ -383,3 +383,25 @@ def test_streaming_inference_scores_a_baseline_model() -> None:
     assert results.task_metrics.n_predictions == 2 * 11
     assert results.concept_metrics == []
     assert results.time_metrics is not None and results.time_metrics.n_positions > 0
+
+
+def test_results_to_dict_renders_nan_as_null() -> None:
+    """A baseline run has no orthogonality; NaN must not reach JSON output."""
+    tm = TaskMetrics(
+        cross_entropy=1.0,
+        perplexity=2.7,
+        top1_accuracy=0.5,
+        top5_accuracy=0.8,
+        n_predictions=3,
+    )
+    results = InferenceResults(
+        task_metrics=tm,
+        task_metrics_by_code_type={},
+        concept_metrics=[],
+        observability_metrics=[],
+        orthogonality=float("nan"),
+        n_patient_ends_scored=0,
+    )
+    d = results_to_dict(results)
+    assert d["orthogonality"] is None
+    json.loads(json.dumps(d, allow_nan=False))  # strict JSON round-trips
