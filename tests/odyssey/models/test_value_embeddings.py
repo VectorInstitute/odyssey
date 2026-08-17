@@ -38,7 +38,7 @@ def test_values_change_embeddings_only_when_enabled() -> None:
     assert torch.allclose(off(ids, _aux(v1)), off(ids, _aux(v2)))
     assert torch.allclose(off(ids, _aux(None)), off(ids, _aux(v1)))
     assert not torch.allclose(on(ids, _aux(v1)), on(ids, _aux(v2)))
-    # NaN (no value) is a distinct, well-defined input: finite output, differs from a value
+    # NaN (no value) is a distinct, well-defined input: finite, differs from a value
     nan = torch.full((2, 5), float("nan"))
     out_nan = on(ids, _aux(nan))
     assert torch.isfinite(out_nan).all()
