@@ -34,10 +34,14 @@ Design, briefly:
   own ``P(event within h)``, a calibrated probability scored on AUROC,
   Brier and calibration exactly like the baseline.
 - **Baseline** (:func:`fit_baselines`): per event and horizon, a
-  ``HistGradientBoostingClassifier`` on features anyone would hand-build
-  for that task -- latest clinical bin of each curated vital/lab, event
-  counts by family over the trailing 24h, hours into the visit, age --
-  fitted on training shards, scored on the same held-out index times.
+  ``HistGradientBoostingClassifier`` fitted on training shards and scored
+  on the same held-out index times. Two feature sets: ``basic`` (latest
+  clinical bin of each curated vital/lab, 24h family counts, hours into
+  the visit, age; the original) and ``strong`` (default; the best-effort
+  panel of :mod:`odyssey.inference.baseline_features`: raw values with
+  window statistics and trends for ~50 vitals/labs, drug-class exposure,
+  ICU/visit context), with a small hyper-parameter search on a
+  subject-grouped validation split. The paper comparison uses ``strong``.
 
 Everything patient-level stays in memory or under gitignored paths.
 """
@@ -70,6 +74,7 @@ from odyssey.data.sequences import BIRTH_CODE
 from odyssey.data.streaming import NO_SUBJECT, PackedLaneSampler
 from odyssey.data.value_binning import add_value_tokens, clinical_ranges_for_source
 from odyssey.data.vocabulary import Vocabulary, code_type
+from odyssey.inference.baseline_features import StrongFeatureBuilder
 from odyssey.inference.run_inference import load_run
 from odyssey.models.sequence_model import SequenceModel
 from odyssey.models.time_to_event import probability_within
@@ -400,17 +405,42 @@ def baseline_features(
     return out
 
 
+# ``basic`` = the original hand features (latest clinical bin per curated
+# signal, 24h family counts, hours into visit, age); ``strong`` = the
+# best-effort panel of :mod:`odyssey.inference.baseline_features`.
+BASELINE_FEATURE_SETS: Tuple[str, ...] = ("basic", "strong")
+
+
+def strong_baseline_features(
+    events_binned: pl.DataFrame,
+    index_rows: Sequence[IndexRow],
+    *,
+    source: str = "mimic_iv",
+) -> np.ndarray:
+    """Build the best-effort feature matrix (see ``baseline_features``)."""
+    builder = StrongFeatureBuilder(events_binned, source=source)
+    return builder.features(
+        [r.subject_id for r in index_rows],
+        [r.visit_id for r in index_rows],
+        [r.time_hours for r in index_rows],
+    )
+
+
 def features_for_events(
     events_binned: pl.DataFrame,
     rows: Dict[str, List[IndexRow]],
     *,
     source: str = "mimic_iv",
+    feature_set: str = "strong",
 ) -> Dict[str, np.ndarray]:
     """Baseline features per event, computed once over the union of index rows.
 
     Index rows are the same landmarks for every event (only the outcome
     differs), so features are computed once and re-indexed per event.
+    ``feature_set`` is one of :data:`BASELINE_FEATURE_SETS`.
     """
+    if feature_set not in BASELINE_FEATURE_SETS:
+        raise ValueError(f"unknown baseline feature set {feature_set!r}")
     unique: Dict[Tuple[int, int, float], int] = {}
     union: List[IndexRow] = []
     for event_rows in rows.values():
@@ -421,7 +451,10 @@ def features_for_events(
                 union.append(r)
     if not union:
         return {}
-    feats = baseline_features(events_binned, union, source=source)
+    if feature_set == "strong":
+        feats = strong_baseline_features(events_binned, union, source=source)
+    else:
+        feats = baseline_features(events_binned, union, source=source)
     return {
         name: feats[
             [unique[(r.subject_id, r.visit_id, r.time_hours)] for r in event_rows]
@@ -443,10 +476,18 @@ class BaselineModel:
     """
 
     def __init__(
-        self, clf: HistGradientBoostingClassifier, fill_columns: np.ndarray
+        self,
+        clf: HistGradientBoostingClassifier,
+        fill_columns: np.ndarray,
+        *,
+        feature_set: str = "basic",
+        params: Optional[Dict[str, float]] = None,
     ) -> None:
         self.clf = clf
         self.fill_columns = fill_columns
+        self.feature_set = feature_set
+        self.n_features = int(len(fill_columns))
+        self.params = dict(params or {})
 
     def _prepare(self, x: np.ndarray) -> np.ndarray:
         x = np.array(x, dtype=np.float32, copy=True)
@@ -459,6 +500,55 @@ class BaselineModel:
         return proba
 
 
+# Small, honest search for the bespoke GBM: learning rate x tree size x leaf
+# size, each run to 400 rounds with the best round picked on a subject-grouped
+# validation split, then refit on everything at that round count.
+GBM_GRID: Tuple[Dict[str, float], ...] = (
+    {"learning_rate": 0.05, "max_leaf_nodes": 31, "min_samples_leaf": 20},
+    {"learning_rate": 0.05, "max_leaf_nodes": 63, "min_samples_leaf": 100},
+    {"learning_rate": 0.1, "max_leaf_nodes": 15, "min_samples_leaf": 20},
+    {"learning_rate": 0.1, "max_leaf_nodes": 63, "min_samples_leaf": 100},
+)
+GBM_MAX_ITER = 400
+GBM_TUNE_MAX_ROWS = 200_000
+
+
+def _log_loss(y: np.ndarray, p: np.ndarray) -> float:
+    p = np.clip(p, 1e-6, 1 - 1e-6)
+    return float(-np.mean(y * np.log(p) + (1 - y) * np.log(1 - p)))
+
+
+def _tune_gbm(
+    x: np.ndarray, y: np.ndarray, groups: np.ndarray, *, seed: int
+) -> Tuple[Dict[str, float], int]:
+    """Best (params, n_rounds) on a subject-grouped 10% validation split."""
+    rng = np.random.default_rng(seed)
+    if len(y) > GBM_TUNE_MAX_ROWS:
+        pick = rng.choice(len(y), GBM_TUNE_MAX_ROWS, replace=False)
+        x, y, groups = x[pick], y[pick], groups[pick]
+    unique_groups = np.unique(groups)
+    rng.shuffle(unique_groups)
+    n_val = max(1, int(round(0.1 * len(unique_groups))))
+    val_groups = set(unique_groups[:n_val].tolist())
+    is_val = np.array([g in val_groups for g in groups])
+    if is_val.all() or (~is_val).all() or len(np.unique(y[is_val])) < 2:
+        return dict(GBM_GRID[0]), 200
+    best: Tuple[float, Dict[str, float], int] = (np.inf, dict(GBM_GRID[0]), 200)
+    for params in GBM_GRID:
+        clf = HistGradientBoostingClassifier(
+            random_state=seed, max_iter=GBM_MAX_ITER, early_stopping=False, **params
+        )
+        clf.fit(x[~is_val], y[~is_val])
+        losses = [
+            _log_loss(y[is_val], proba[:, 1])
+            for proba in clf.staged_predict_proba(x[is_val])
+        ]
+        k = int(np.argmin(losses))
+        if losses[k] < best[0]:
+            best = (losses[k], dict(params), k + 1)
+    return best[1], best[2]
+
+
 def fit_baselines(
     train_events_binned: pl.DataFrame,
     train_rows: Dict[str, List[IndexRow]],
@@ -467,14 +557,24 @@ def fit_baselines(
     horizons: Sequence[float] = HORIZONS_HOURS,
     source: str = "mimic_iv",
     seed: int = 0,
+    feature_set: str = "strong",
+    tune: bool = True,
 ) -> Dict[Tuple[str, float], BaselineModel]:
-    """One gradient-boosted classifier per (event, horizon) on baseline features."""
+    """One gradient-boosted classifier per (event, horizon) on baseline features.
+
+    With ``tune`` the hyper-parameters and round count come from
+    :func:`_tune_gbm` per (event, horizon); otherwise a fixed 200-round
+    default is fitted (fast path for tests and smoke runs).
+    """
     models: Dict[Tuple[str, float], BaselineModel] = {}
-    features = features_for_events(train_events_binned, train_rows, source=source)
+    features = features_for_events(
+        train_events_binned, train_rows, source=source, feature_set=feature_set
+    )
     for name, rows in train_rows.items():
         if not rows:
             continue
         x_all = features[name]
+        groups_all = np.array([r.subject_id for r in rows])
         for h in horizons:
             y = np.array(
                 [outcome_at_horizon(r, train_times[name], h) for r in rows],
@@ -484,11 +584,32 @@ def fit_baselines(
             if keep.sum() < 50 or len({int(v) for v in y[keep]}) < 2:
                 continue
             x_fit = x_all[keep]
+            y_fit = y[keep].astype(int)
             fill_columns = np.isnan(x_fit).all(axis=0)
-            clf = HistGradientBoostingClassifier(random_state=seed, max_iter=200)
-            baseline = BaselineModel(clf, fill_columns)
-            clf.fit(baseline._prepare(x_fit), y[keep].astype(int))
-            models[(name, h)] = baseline
+            x_prep = np.array(x_fit, dtype=np.float32, copy=True)
+            x_prep[:, fill_columns] = np.nan_to_num(x_prep[:, fill_columns], nan=0.0)
+            if tune:
+                params, n_rounds = _tune_gbm(x_prep, y_fit, groups_all[keep], seed=seed)
+            else:
+                params, n_rounds = {}, 200
+            clf = HistGradientBoostingClassifier(
+                random_state=seed, max_iter=n_rounds, early_stopping=False, **params
+            )
+            clf.fit(x_prep, y_fit)
+            models[(name, h)] = BaselineModel(
+                clf,
+                fill_columns,
+                feature_set=feature_set,
+                params={**params, "n_rounds": float(n_rounds)},
+            )
+            logger.info(
+                "[alerts] GBM %s@%gh: %s features, rounds=%d, params=%s",
+                name,
+                h,
+                feature_set,
+                n_rounds,
+                params,
+            )
     return models
 
 
@@ -512,6 +633,10 @@ class AlertMetrics:
     """Only for scorers that output horizon probabilities (the baseline)."""
     calibration: Optional[List[Dict[str, float]]] = None
     """Decile bins of predicted probability: mean predicted vs observed."""
+    baseline_feature_set: Optional[str] = None
+    """For ``baseline_gbm`` rows: which feature set the GBM was given."""
+    baseline_n_features: Optional[int] = None
+    baseline_params: Optional[Dict[str, float]] = None
 
 
 def _calibration(
@@ -587,7 +712,8 @@ def score_alerts(
                 and baseline_features_by_event
             ):
                 x = baseline_features_by_event[name][keep]
-                p = baselines[(name, h)].predict_proba(x)
+                model = baselines[(name, h)]
+                p = model.predict_proba(x)
                 results.append(
                     AlertMetrics(
                         event=name,
@@ -599,6 +725,9 @@ def score_alerts(
                         auroc=float(roc_auc_score(y, p)),
                         brier=float(brier_score_loss(y, p)),
                         calibration=_calibration(p, y),
+                        baseline_feature_set=model.feature_set,
+                        baseline_n_features=model.n_features,
+                        baseline_params=model.params or None,
                     )
                 )
     return results
@@ -673,6 +802,8 @@ def evaluate_alerts(
     chunk_size: int = 256,
     device: Optional[str] = None,
     checkpoint_path: Optional[Union[str, Path]] = None,
+    baseline_feature_set: str = "strong",
+    tune_baselines: bool = True,
 ) -> List[AlertMetrics]:
     """End to end: model scores + optional GBM baselines, scored on held-out."""
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -727,9 +858,17 @@ def evaluate_alerts(
             train_binned, alerts, landmark_hours=landmark_hours
         )
         baselines = fit_baselines(
-            train_binned, train_rows, train_times, horizons=horizons, source=source
+            train_binned,
+            train_rows,
+            train_times,
+            horizons=horizons,
+            source=source,
+            feature_set=baseline_feature_set,
+            tune=tune_baselines,
         )
-        features_by_event = features_for_events(binned, rows, source=source)
+        features_by_event = features_for_events(
+            binned, rows, source=source, feature_set=baseline_feature_set
+        )
 
     return score_alerts(
         rows,
@@ -754,6 +893,17 @@ def _main() -> None:
     parser.add_argument("--num-lanes", type=int, default=8)
     parser.add_argument("--chunk-size", type=int, default=256)
     parser.add_argument("--checkpoint", default=None)
+    parser.add_argument(
+        "--baseline-features",
+        choices=BASELINE_FEATURE_SETS,
+        default="strong",
+        help="feature set for the bespoke GBM (default: strong, best effort)",
+    )
+    parser.add_argument(
+        "--no-tune-baselines",
+        action="store_true",
+        help="skip the GBM hyper-parameter search (fixed 200 rounds)",
+    )
     args = parser.parse_args()
     run_dir = Path(args.run_dir)
     results = evaluate_alerts(
@@ -766,6 +916,8 @@ def _main() -> None:
         num_lanes=args.num_lanes,
         chunk_size=args.chunk_size,
         checkpoint_path=run_dir / (args.checkpoint or "checkpoint_best.pt"),
+        baseline_feature_set=args.baseline_features,
+        tune_baselines=not args.no_tune_baselines,
     )
     out = Path(args.output_json)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -801,6 +953,8 @@ __all__ = [
     "outcome_at_horizon",
     "collect_model_scores",
     "baseline_features",
+    "strong_baseline_features",
+    "BASELINE_FEATURE_SETS",
     "fit_baselines",
     "score_alerts",
     "evaluate_alerts",

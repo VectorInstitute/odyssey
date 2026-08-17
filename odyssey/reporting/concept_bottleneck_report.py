@@ -542,6 +542,23 @@ def build_alert_finding(alerts: List[Dict[str, Any]]) -> Optional[str]:
     if not events:
         return None
     parts = ["<b>Alerting against a bespoke baseline.</b>"]
+    gbm_rows = [r for r in alerts if r["scorer"] == "baseline_gbm"]
+    if gbm_rows and gbm_rows[0].get("baseline_feature_set"):
+        fs = gbm_rows[0]["baseline_feature_set"]
+        n_feat = gbm_rows[0].get("baseline_n_features")
+        tuned = any(
+            (r.get("baseline_params") or {}).get("learning_rate") is not None
+            for r in gbm_rows
+        )
+        parts.append(
+            f" The GBM was given the <i>{fs}</i> feature set"
+            + (f" ({n_feat} features)" if n_feat else "")
+            + (
+                ", tuned per event and horizon on a subject-grouped validation split."
+                if tuned
+                else ", untuned (fixed 200 rounds)."
+            )
+        )
     if not has_hazard:
         parts.append(
             " This run has no per-event hazard heads, so only ranking proxies "

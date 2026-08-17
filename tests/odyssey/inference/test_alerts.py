@@ -5,6 +5,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 import polars as pl
+import pytest
 import torch
 
 from odyssey.data.alert_events import (
@@ -22,10 +23,12 @@ from odyssey.inference.alerts import (
     _visit_starts,
     baseline_features,
     collect_model_scores,
+    features_for_events,
     fit_baselines,
     outcome_at_horizon,
     score_alerts,
 )
+from odyssey.inference.baseline_features import feature_names
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
 from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
 from odyssey.models.time_to_event import DEFAULT_TIME_BIN_EDGES_HOURS
@@ -141,7 +144,9 @@ def test_harness_end_to_end_with_planted_signal() -> None:
 
     # baseline: fit on the same synthetic data (a separate split in real use)
     train_rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
-    baselines = fit_baselines(binned, train_rows, times, horizons=(8.0,))
+    baselines = fit_baselines(
+        binned, train_rows, times, horizons=(8.0,), feature_set="basic", tune=False
+    )
     feats = {name: baseline_features(binned, rs) for name, rs in rows.items() if rs}
     results = score_alerts(
         rows,
@@ -242,3 +247,43 @@ def test_icu_admission_prefix_excludes_admission_measurements() -> None:
     assert "ICU_ADMISSION////admit".startswith(icu.code_prefix)
     assert not "ICU_ADMISSION_WEIGHT".startswith(icu.code_prefix)
     assert not "ICU_ADMISSION_HEIGHT".startswith(icu.code_prefix)
+
+
+def test_strong_baseline_fits_tunes_and_records_metadata() -> None:
+    events = _events(n_subjects=40)
+    binned = add_value_tokens(events, None, source="mimic_iv")
+    times = all_event_times(binned, ALERT_EVENTS, "mimic_iv")
+    rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+    baselines = fit_baselines(
+        binned, rows, times, horizons=(8.0,), feature_set="strong", tune=True
+    )
+    model = baselines[("vasopressor_start", 8.0)]
+    assert model.feature_set == "strong"
+    assert model.n_features == len(feature_names())
+    assert model.params["n_rounds"] >= 1
+    feats = features_for_events(binned, rows, feature_set="strong")
+    assert feats["vasopressor_start"].shape[1] == len(feature_names())
+    results = score_alerts(
+        rows,
+        times,
+        horizons=(8.0,),
+        baselines=baselines,
+        baseline_features_by_event=feats,
+    )
+    gbm = next(
+        r
+        for r in results
+        if r.scorer == "baseline_gbm" and r.event == "vasopressor_start"
+    )
+    assert gbm.auroc is not None and gbm.auroc > 0.75
+    assert gbm.baseline_feature_set == "strong"
+    assert gbm.baseline_n_features == len(feature_names())
+    assert gbm.baseline_params and "learning_rate" in gbm.baseline_params
+
+
+def test_unknown_feature_set_is_rejected() -> None:
+    events = _events(n_subjects=4)
+    binned = add_value_tokens(events, None, source="mimic_iv")
+    rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+    with pytest.raises(ValueError):
+        features_for_events(binned, rows, feature_set="bogus")
