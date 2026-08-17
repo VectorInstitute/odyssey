@@ -283,6 +283,11 @@ def build_case_studies(
     model, vocab, binner, config = load_run(
         run_dir, device=device, checkpoint_path=checkpoint_path
     )
+    if not isinstance(model, ConceptBottleneckSequenceModel):
+        raise ValueError(
+            "this evaluation needs a concept bottleneck; the run's model_kind is "
+            f"{getattr(config, 'model_kind', 'bottleneck')!r}"
+        )
 
     logger.info("[case_study] loading held-out shards from %s", held_out_shard_dir)
     raw_events = load_meds_shards(held_out_shard_dir, max_shards=max_shards)

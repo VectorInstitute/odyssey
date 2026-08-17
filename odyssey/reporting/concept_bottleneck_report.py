@@ -404,6 +404,21 @@ def build_findings(
     )
 
     cm = [c for c in inference["concept_metrics"] if c.get("auroc") is not None]
+    if not cm:
+        # A baseline (no-bottleneck) run has no concept or observability heads.
+        concepts = (
+            "<b>No concept bottleneck in this run.</b> This is a baseline model: "
+            "the same backbone and forecasting/time-to-event heads with no "
+            "concept supervision, trained to price the bottleneck against."
+        )
+        observability = concepts
+        findings = {
+            "training": training,
+            "task": task,
+            "concepts": concepts,
+            "observability": observability,
+        }
+        return _finish_findings(findings, inference, interventions)
     ranked = sorted(cm, key=lambda c: c["auroc"], reverse=True)
     top3 = ", ".join(f"{c['name']} ({c['auroc']:.2f})" for c in ranked[:3])
     bot3 = ", ".join(f"{c['name']} ({c['auroc']:.2f})" for c in ranked[-3:])
@@ -455,6 +470,15 @@ def build_findings(
         "concepts": concepts,
         "observability": observability,
     }
+    return _finish_findings(findings, inference, interventions)
+
+
+def _finish_findings(
+    findings: Dict[str, str],
+    inference: Dict[str, Any],
+    interventions: Optional[List[Dict[str, Any]]],
+) -> Dict[str, str]:
+    """Add the time-to-event and intervention readings, when the run has them."""
     tm = inference.get("time_metrics")
     if tm:
         cal = tm["calibration"]
