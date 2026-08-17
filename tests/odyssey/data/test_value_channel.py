@@ -135,3 +135,40 @@ def test_sequences_without_numeric_z_have_no_values() -> None:
         PackedLaneSampler(iter([seq]), num_lanes=1, chunk_size=64, reset_prob=0.0)
     )
     assert torch.isnan(chunks[0].batch.aux.values).all()
+
+
+def test_static_tokens_are_inputs_but_never_targets() -> None:
+    events = pl.DataFrame(
+        {
+            "subject_id": [1, 1, 1, 1],
+            "code": ["GENDER//F", "RACE//X", "LAB//A", "LAB//B"],
+            "time": [None, None, T0, T0 + timedelta(hours=1)],
+            "numeric_value": [None, None, 1.0, 2.0],
+            "hadm_id": [None, None, 10, 10],
+        },
+        schema={
+            "subject_id": pl.Int64,
+            "code": pl.Utf8,
+            "time": pl.Datetime,
+            "numeric_value": pl.Float32,
+            "hadm_id": pl.Int64,
+        },
+    )
+    vocab = Vocabulary.build(events["code"].to_list(), min_count=1)
+    seq = build_patient_sequence(events, vocab)
+    assert seq.static_mask == [True, True, False, False]
+    chunk = next(
+        iter(PackedLaneSampler(iter([seq]), num_lanes=1, chunk_size=8, reset_prob=0.0))
+    )
+    inputs = [vocab.decode(i) for i in chunk.batch.concept_ids[0].tolist()[:3]]
+    assert inputs == ["GENDER//F", "RACE//X", "LAB//A"]
+    # position 0 (input GENDER) would target RACE: masked; position 1 targets LAB//A
+    assert chunk.targets[0, 0].item() == 0 and not chunk.real_mask[0, 0].item()
+    assert (
+        vocab.decode(chunk.targets[0, 1].item()) == "LAB//A"
+        and chunk.real_mask[0, 1].item()
+    )
+    assert (
+        vocab.decode(chunk.targets[0, 2].item()) == "LAB//B"
+        and chunk.real_mask[0, 2].item()
+    )
