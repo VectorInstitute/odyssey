@@ -730,12 +730,19 @@ footer {
 
   /* ---------------------------------------------------------- loss charts */
 
-  const LOSS_TERMS = [
-    { key: "task_loss", label: "Task loss (next-event forecasting)", color: "var(--accent)" },
-    { key: "concept_loss", label: "Concept-supervision loss", color: "#7A5FC4" },
-    { key: "orthogonality_loss", label: "Orthogonality loss", color: "#C4785F" },
-    { key: "observability_loss", label: "Observability loss", color: "#0D9488" },
-  ];
+  const LOSS_TERM_INFO = {
+    task_loss: { label: "Task loss (next-event forecasting)", color: "var(--accent)" },
+    time_loss: { label: "Time-to-next-event hazard loss", color: "#B45309" },
+    event_loss: { label: "Per-event hazard loss (alerts)", color: "#9F1239" },
+    concept_loss: { label: "Concept-supervision loss", color: "#7A5FC4" },
+    orthogonality_loss: { label: "Orthogonality loss", color: "#C4785F" },
+    observability_loss: { label: "Observability loss", color: "#0D9488" },
+  };
+  // Panels follow whatever terms the run logged (payload "terms"); older
+  // payloads without it fall back to the bottleneck's four terms.
+  const LOSS_TERMS = (DATA.loss_curves.terms || ["task_loss", "concept_loss", "orthogonality_loss", "observability_loss"])
+    .filter((k) => DATA.loss_curves.train[k])
+    .map((k) => ({ key: k, ...(LOSS_TERM_INFO[k] || { label: k.replace(/_/g, " "), color: "var(--ink-muted)" }) }));
 
   function movingAverage(arr, window) {
     const out = new Array(arr.length);

@@ -372,19 +372,27 @@ def build_findings(
     task_first = _smoothed_last(list(reversed(tr["task_loss"])), 5)
     task_last = _smoothed_last(tr["task_loss"])
     val_last = _smoothed_last(va["task_loss"], 3)
-    orth_last = _smoothed_last(tr["orthogonality_loss"])
     test_ce = inference["task_metrics"]["cross_entropy"]
     training = (
         f"<b>Convergence at a glance.</b> Smoothed train task loss went from "
         f"{task_first:.2f} to {task_last:.2f} over {tr['step'][-1]:,} steps; the "
         f"tuning split ended near {val_last:.2f} and the untouched test split "
-        f"scored {test_ce:.2f}, so the train/held-out gap is small. The "
-        f"concept, orthogonality, and observability panels are spiky by "
-        f"construction: those terms only apply at supervision positions, so "
-        f"most steps log zero. The orthogonality penalty ended near "
-        f"{orth_last:.3f}, holding the unknown channel apart from the known "
-        f"concepts."
+        f"scored {test_ce:.2f}, so the train/held-out gap is small."
     )
+    if "orthogonality_loss" in tr:
+        orth_last = _smoothed_last(tr["orthogonality_loss"])
+        training += (
+            f" The concept, orthogonality, and observability panels are spiky by "
+            f"construction: those terms only apply at supervision positions, so "
+            f"most steps log zero. The orthogonality penalty ended near "
+            f"{orth_last:.3f}, holding the unknown channel apart from the known "
+            f"concepts."
+        )
+    else:
+        training += (
+            " This is a baseline run without a concept bottleneck, so only the "
+            "forecasting terms (task, time-to-event, event hazards) are logged."
+        )
 
     tm = inference["task_metrics"]
     by_type = inference["task_metrics_by_code_type"]
@@ -756,23 +764,33 @@ def build_payload(inputs: ReportInputs) -> Dict[str, Any]:
     if not train_records:
         raise ValueError("loss_log.jsonl has no 'train' split records")
 
-    loss_terms = [
+    # Whichever loss terms this run logged, in a stable display order: a
+    # bottleneck run has task/concept/orthogonality/observability (+ time,
+    # event on newer runs); a baseline run has task (+ time, event) only.
+    known_order = [
         "task_loss",
+        "time_loss",
+        "event_loss",
         "concept_loss",
         "orthogonality_loss",
         "observability_loss",
     ]
+    logged = {k for r in train_records for k in r if k.endswith("_loss")}
+    loss_terms = [k for k in known_order if k in logged] + sorted(
+        k for k in logged if k not in known_order
+    )
     loss_curves = {
         "train": {
             "step": [r["step"] for r in train_records],
             "epoch": [r["epoch"] for r in train_records],
-            **{term: [r[term] for r in train_records] for term in loss_terms},
+            **{term: [r.get(term, 0.0) for r in train_records] for term in loss_terms},
         },
         "val": {
             "step": [r["step"] for r in val_records],
             "epoch": [r["epoch"] for r in val_records],
-            **{term: [r[term] for r in val_records] for term in loss_terms},
+            **{term: [r.get(term, 0.0) for r in val_records] for term in loss_terms},
         },
+        "terms": loss_terms,
     }
 
     weights = ConceptBottleneckLossWeights(
