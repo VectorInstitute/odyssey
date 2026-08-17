@@ -45,7 +45,10 @@ def _slice(batch: ClinicalSequenceBatch, start: int, end: int) -> ClinicalSequen
     return ClinicalSequenceBatch(
         concept_ids=batch.concept_ids[:, start:end],
         aux=AuxiliaryInputs(
-            *(getattr(batch.aux, field)[:, start:end] for field in batch.aux._fields)
+            *(
+                None if v is None else v[:, start:end]
+                for v in (getattr(batch.aux, f) for f in batch.aux._fields)
+            )
         ),
     )
 

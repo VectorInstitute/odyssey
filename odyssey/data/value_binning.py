@@ -37,7 +37,7 @@ only appends a suffix and ``code_prefix`` matching is a ``starts_with``).
 """
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -52,6 +52,12 @@ from odyssey.data.code_mapping import prefixes_for_loinc, unit_for
 # odyssey/data/concepts.py's CANONICAL_CONCEPTS thresholds --
 # test_value_binning.py asserts consistency: a lab token's bin should
 # mean the same thing as the concept label it also supervises. Each
+# Column add_value_tokens adds when the binner carries value statistics:
+# the standardized numeric value (QuantileBinner.standardize), null where
+# there is none. Values are clipped to +-VALUE_Z_CLIP.
+VALUE_Z_COL = "numeric_z"
+VALUE_Z_CLIP = 5.0
+
 # value: (ascending (threshold, label-for-values-below) cut points,
 # fallback label for values at or above every threshold).
 _RangeSpec = Tuple[List[Tuple[float, str]], str]
@@ -153,6 +159,11 @@ class QuantileBinner:
     boundaries: Dict[str, List[float]]
     """code -> ascending list of ``n_bins - 1`` quantile cut points."""
     n_bins: int
+    value_stats: Dict[str, Tuple[float, float]] = field(default_factory=dict)
+    """code -> (center, scale) for :meth:`standardize`: the training-split
+    median and a robust scale (IQR / 1.349, falling back to the standard
+    deviation, then 1.0), for the same eligible codes as ``boundaries``.
+    Empty on binners saved before this field existed."""
 
     @classmethod
     def fit(
@@ -191,13 +202,25 @@ class QuantileBinner:
                     pl.col(value_col).quantile(q).alias(qcol)
                     for qcol, q in zip(qcols, quantiles)
                 ]
+                + [
+                    pl.col(value_col).median().alias("_median"),
+                    pl.col(value_col).quantile(0.25).alias("_q25"),
+                    pl.col(value_col).quantile(0.75).alias("_q75"),
+                    pl.col(value_col).std().alias("_std"),
+                ]
             )
         )
-        boundaries = {
-            row[code_col]: sorted({row[c] for c in qcols})
-            for row in stats.iter_rows(named=True)
-        }
-        return cls(boundaries=boundaries, n_bins=n_bins)
+        boundaries = {}
+        value_stats: Dict[str, Tuple[float, float]] = {}
+        for row in stats.iter_rows(named=True):
+            boundaries[row[code_col]] = sorted({row[c] for c in qcols})
+            center = float(row["_median"]) if row["_median"] is not None else 0.0
+            iqr = (row["_q75"] or 0.0) - (row["_q25"] or 0.0)
+            scale = iqr / 1.349 if iqr > 0 else float(row["_std"] or 0.0)
+            if not scale > 0:
+                scale = 1.0
+            value_stats[row[code_col]] = (center, float(scale))
+        return cls(boundaries=boundaries, n_bins=n_bins, value_stats=value_stats)
 
     def apply(
         self,
@@ -243,17 +266,68 @@ class QuantileBinner:
         )
         return joined.sort("_row")["_bin"]
 
+    def standardize(
+        self,
+        events: pl.DataFrame,
+        *,
+        code_col: str = "code",
+        value_col: str = "numeric_value",
+        clip: float = VALUE_Z_CLIP,
+    ) -> pl.Series:
+        """Return a ``Float32`` Series of standardized values, clipped to ``+-clip``.
+
+        ``(value - center) / scale`` per code from :attr:`value_stats`;
+        null where the code has no stats or the value is null. This is the
+        continuous companion of the bin token: the token says "creatinine,
+        NORMAL", the standardized value says how far into NORMAL, so a
+        model reading both can see a 0.8 -> 1.2 rise the bins hide.
+        """
+        if not self.value_stats or value_col not in events.columns:
+            return pl.Series([None] * events.height, dtype=pl.Float32)
+        sframe = pl.DataFrame(
+            {
+                "_code": list(self.value_stats),
+                "_center": [c for c, _ in self.value_stats.values()],
+                "_scale": [s for _, s in self.value_stats.values()],
+            }
+        )
+        joined = (
+            events.select([code_col, value_col])
+            .with_row_index("_row")
+            .join(sframe, left_on=code_col, right_on="_code", how="left")
+            .with_columns(
+                ((pl.col(value_col) - pl.col("_center")) / pl.col("_scale"))
+                .clip(-clip, clip)
+                .cast(pl.Float32)
+                .alias("_z")
+            )
+        )
+        return joined.sort("_row")["_z"]
+
     def save(self, path: Union[str, Path]) -> None:
         """Save as JSON."""
         Path(path).write_text(
-            json.dumps({"n_bins": self.n_bins, "boundaries": self.boundaries})
+            json.dumps(
+                {
+                    "n_bins": self.n_bins,
+                    "boundaries": self.boundaries,
+                    "value_stats": {k: list(v) for k, v in self.value_stats.items()},
+                }
+            )
         )
 
     @classmethod
     def load(cls, path: Union[str, Path]) -> "QuantileBinner":
-        """Load from JSON written by :meth:`save`."""
+        """Load from JSON written by :meth:`save` (older files lack value_stats)."""
         data = json.loads(Path(path).read_text())
-        return cls(boundaries=data["boundaries"], n_bins=data["n_bins"])
+        return cls(
+            boundaries=data["boundaries"],
+            n_bins=data["n_bins"],
+            value_stats={
+                k: (float(v[0]), float(v[1]))
+                for k, v in data.get("value_stats", {}).items()
+            },
+        )
 
 
 def add_value_tokens(
@@ -278,6 +352,14 @@ def add_value_tokens(
         return events
 
     ranges, fallbacks = clinical_ranges_for_source(source)
+    if quantile_binner is not None and quantile_binner.value_stats:
+        # standardized values are keyed by the raw code, so compute them
+        # before the bin suffix is folded into the code
+        events = events.with_columns(
+            quantile_binner.standardize(
+                events, code_col=code_col, value_col=value_col
+            ).alias(VALUE_Z_COL)
+        )
     events = events.with_columns(
         _clinical_label_expr(value_col, ranges, fallbacks).alias("_bin_label")
     )

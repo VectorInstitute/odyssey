@@ -227,6 +227,7 @@ def load_run(
     # from the dataclass, which can disagree with the checkpoint's actual
     # architecture; the checkpoint is the authority on what heads exist.
     config.time_to_event = any(k.startswith("time_head.") for k in checkpoint["model"])
+    config.value_embeddings = any(".value_proj." in k for k in checkpoint["model"])
     config.event_hazards = any(
         k.startswith("event_heads.") for k in checkpoint["model"]
     )

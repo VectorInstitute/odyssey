@@ -534,3 +534,80 @@ def test_streaming_loss_accepts_randint_intervention_and_trains() -> None:
             losses.append(float(components["task_loss"]))
     assert all(torch.isfinite(torch.tensor(losses)))
     assert sum(losses[-3:]) < sum(losses[:3])
+
+
+def _seq_with_values(subject_id: int, n: int, informative: bool) -> PatientSequence:
+    """Random tokens 1/2 whose VALUE announces the next token (or is noise).
+
+    ``informative`` values equal +1/-1 for next token 2/1; otherwise
+    uniform noise in [-2, 2].
+    """
+    g = torch.Generator().manual_seed(subject_id)
+    ids = (torch.randint(0, 2, (n,), generator=g) + 1).tolist()  # tokens 1 or 2
+    if informative:
+        values = [float(ids[i + 1]) * 2.0 - 3.0 for i in range(n - 1)] + [0.0]
+    else:
+        values = (torch.rand(n, generator=g) * 4 - 2).tolist()
+    return PatientSequence(
+        subject_id=subject_id,
+        concept_ids=ids,
+        type_ids=[1] * n,
+        time_stamps=[float(i) for i in range(n)],
+        ages=[40.0] * n,
+        visit_orders=[0] * n,
+        visit_segments=[0] * n,
+        values=values,
+    )
+
+
+def _train_task_loss(use_values: bool, informative: bool) -> float:
+    torch.manual_seed(0)
+    backbone = TinyGRUBackbone(
+        vocab_size=VOCAB_SIZE,
+        hidden_size=HIDDEN_SIZE,
+        num_layers=1,
+        padding_idx=PADDING_IDX,
+        use_values=use_values,
+    )
+    model = ConceptBottleneckSequenceModel(
+        backbone=backbone,
+        vocab_size=VOCAB_SIZE,
+        num_concepts=NUM_CONCEPTS,
+        embedding_dim=EMBEDDING_DIM,
+        padding_idx=PADDING_IDX,
+    )
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.02)
+    patients = [_seq_with_values(sid, 24, informative) for sid in range(1, 9)]
+    labels = _labels([p.subject_id for p in patients])
+    last = 0.0
+    for _ in range(25):
+        sampler = PackedLaneSampler(
+            _patients(list(patients)), num_lanes=2, chunk_size=8, seed=0
+        )
+        state = None
+        epoch = []
+        for chunk in sampler:
+            total, components, state = model.compute_streaming_loss(
+                chunk, labels, state=state
+            )
+            optimizer.zero_grad()
+            total.backward()
+            optimizer.step()
+            state = _detach_state(state)
+            epoch.append(components["task_loss"].item())
+        last = sum(epoch) / len(epoch)
+    return last
+
+
+def test_value_channel_is_used_when_values_carry_the_signal() -> None:
+    """A value-aware model exploits informative values; noise values do not help.
+
+    Compares the trained task loss of value-aware vs bin-only models on
+    sequences whose values announce the next token, and of the value-aware
+    model on noise values.
+    """
+    with_values = _train_task_loss(use_values=True, informative=True)
+    without = _train_task_loss(use_values=False, informative=True)
+    assert with_values < without * 0.6, (with_values, without)
+    noise = _train_task_loss(use_values=True, informative=False)
+    assert noise > with_values * 1.5, (noise, with_values)
