@@ -233,3 +233,12 @@ def test_hazard_scorer_reports_probability_metrics() -> None:
     assert {(r.event, r.horizon_hours) for r in hazard} <= {
         (e, h) for e in rows for h in (8.0, 24.0)
     }
+
+
+def test_icu_admission_prefix_excludes_admission_measurements() -> None:
+    icu = next(a for a in ALERT_EVENTS if a.name == "icu_admission")
+    assert icu.code_prefix is not None
+    assert "ICU_ADMISSION//MICU".startswith(icu.code_prefix)
+    assert "ICU_ADMISSION////admit".startswith(icu.code_prefix)
+    assert not "ICU_ADMISSION_WEIGHT".startswith(icu.code_prefix)
+    assert not "ICU_ADMISSION_HEIGHT".startswith(icu.code_prefix)
