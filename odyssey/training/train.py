@@ -53,6 +53,7 @@ import torch
 from odyssey.data.alert_events import ALERT_EVENTS, all_event_times
 from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.concepts import concepts_for_source
+from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.streaming import PackedLaneSampler
 from odyssey.data.value_binning import QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import PAD_ID, Vocabulary
@@ -132,6 +133,15 @@ class TrainingConfig:
     3-character category, both when building the vocabulary and when
     encoding, so rare codes become predictable category tokens instead
     of [UNK]. None disables."""
+
+    history_recap: bool = False
+    """At each hospital admission, inject HISTORY//DIAGNOSIS//... tokens
+    for the patient's prior diagnosis categories (odyssey.data.history_recap)
+    so chronic conditions are in the local context when discharge coding
+    and in-visit forecasts are made. Off by default; a data-level
+    experiment motivated by the bundle analysis (discharge diagnosis
+    recall at bundle start ~11% vs ~35% by copying the previous
+    admission's codes)."""
 
     normalize_medications: bool = True
     """Collapse medication codes to ingredient level (strip dose, form,
@@ -518,6 +528,10 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
 
     train_events = maybe_normalize(train_events, enabled=config.normalize_medications)
     tuning_events = maybe_normalize(tuning_events, enabled=config.normalize_medications)
+    train_events = maybe_history_recap(train_events, enabled=config.history_recap)
+    tuning_events = maybe_history_recap(tuning_events, enabled=config.history_recap)
+    if config.history_recap:
+        logger.info("[data] prior-diagnosis history recap injected at admissions")
     if config.normalize_medications:
         logger.info("[data] medication codes normalized to ingredient level")
 
