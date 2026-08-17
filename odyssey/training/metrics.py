@@ -28,7 +28,7 @@ well (1) while the concepts are decorative (3) -- neither failure mode
 is visible from the other two metric families alone.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import torch
@@ -70,6 +70,15 @@ class TimeMetrics:
     calibration: Dict[str, Dict[str, float]]
     """Horizon label ("1h", "8h", "24h") -> {"predicted": mean P(within h),
     "observed": fraction of gaps <= h}."""
+
+    calibration_after_bundle: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    """Same horizons, restricted to positions whose bundle ends here (a
+    positive gap): predicted P(within h | gap > 0) = (P(within h) -
+    P(same instant)) / (1 - P(same instant)) vs the observed fraction.
+    With ~90% of gaps being zero the unconditional numbers saturate near
+    1; this is the informative "when does the next thing happen" view."""
+
+    n_positive_gaps: int = 0
 
 
 @dataclass(frozen=True)

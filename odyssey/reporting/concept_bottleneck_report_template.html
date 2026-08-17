@@ -915,6 +915,13 @@ footer {
         el("td", { class: "num" }, [fmtPct(c.observed)]),
       ]));
     });
+    Object.entries(tm.calibration_after_bundle || {}).forEach(([h, c]) => {
+      tbody.appendChild(el("tr", {}, [
+        el("td", {}, ["Within " + h + ", given the bundle ends here (" + fmtInt(tm.n_positive_gaps) + " positions)"]),
+        el("td", { class: "num" }, [fmtPct(c.predicted)]),
+        el("td", { class: "num" }, [fmtPct(c.observed)]),
+      ]));
+    });
     tbody.appendChild(el("tr", {}, [
       el("td", {}, ["Gap NLL (nats, " + fmtInt(tm.n_positions) + " positions)"]),
       el("td", { class: "num" }, [fmt(tm.nll, 3)]),
