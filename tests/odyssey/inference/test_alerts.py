@@ -20,6 +20,7 @@ from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.alerts import (
     IndexRow,
     _index_rows_from_events,
+    _tune_gbm,
     _visit_starts,
     baseline_features,
     collect_model_scores,
@@ -324,3 +325,21 @@ def test_index_row_table_has_scores_outcomes_and_gbm_columns() -> None:
     assert "ctx.hours_into_visit" in table.columns
     assert set(vaso["y@8h"].drop_nulls().unique().to_list()) <= {0.0, 1.0}
     assert vaso["y@8h"].null_count() > 0  # censored / not-at-risk rows are null
+
+
+def test_tuning_survives_a_column_missing_only_inside_the_training_fold() -> None:
+    rng = np.random.default_rng(0)
+    n = 400
+    groups = np.repeat(np.arange(40), 10)
+    x = rng.standard_normal((n, 4)).astype(np.float32)
+    y = (x[:, 0] > 0).astype(int)
+    # column 3 is observed only for subjects that land in the validation fold
+    # (replicating _tune_gbm's seeded group shuffle), so the training fold
+    # sees an all-NaN column that the full fit set does not
+    shuffled = np.unique(groups)
+    np.random.default_rng(0).shuffle(shuffled)
+    val_groups = shuffled[: max(1, int(round(0.1 * len(shuffled))))]
+    x[:, 3] = np.nan
+    x[np.isin(groups, val_groups), 3] = 1.0
+    params, n_rounds = _tune_gbm(x, y, groups, seed=0)
+    assert n_rounds >= 1 and "learning_rate" in params

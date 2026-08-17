@@ -534,15 +534,27 @@ def _tune_gbm(
     is_val = np.array([g in val_groups for g in groups])
     if is_val.all() or (~is_val).all() or len(np.unique(y[is_val])) < 2:
         return dict(GBM_GRID[0]), 200
+    x_tr, y_tr = x[~is_val], y[~is_val]
+    x_val, y_val = x[is_val], y[is_val]
+    # A column can be all-missing inside the training fold even when it is
+    # not over the full fit set (a rare exposure seen only in the held-out
+    # subjects, or dropped by the row subsample); the HGB binner cannot fit
+    # an empty column, so fill those with 0 in both folds, exactly as
+    # BaselineModel does for the full fit.
+    fold_fill = np.isnan(x_tr).all(axis=0)
+    if fold_fill.any():
+        x_tr = np.array(x_tr, copy=True)
+        x_val = np.array(x_val, copy=True)
+        x_tr[:, fold_fill] = 0.0
+        x_val[:, fold_fill] = np.nan_to_num(x_val[:, fold_fill], nan=0.0)
     best: Tuple[float, Dict[str, float], int] = (np.inf, dict(GBM_GRID[0]), 200)
     for params in GBM_GRID:
         clf = HistGradientBoostingClassifier(
             random_state=seed, max_iter=GBM_MAX_ITER, early_stopping=False, **params
         )
-        clf.fit(x[~is_val], y[~is_val])
+        clf.fit(x_tr, y_tr)
         losses = [
-            _log_loss(y[is_val], proba[:, 1])
-            for proba in clf.staged_predict_proba(x[is_val])
+            _log_loss(y_val, proba[:, 1]) for proba in clf.staged_predict_proba(x_val)
         ]
         k = int(np.argmin(losses))
         if losses[k] < best[0]:
