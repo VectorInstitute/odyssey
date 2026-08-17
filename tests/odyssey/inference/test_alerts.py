@@ -25,6 +25,7 @@ from odyssey.inference.alerts import (
     collect_model_scores,
     features_for_events,
     fit_baselines,
+    index_row_table,
     outcome_at_horizon,
     score_alerts,
 )
@@ -287,3 +288,39 @@ def test_unknown_feature_set_is_rejected() -> None:
     rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
     with pytest.raises(ValueError):
         features_for_events(binned, rows, feature_set="bogus")
+
+
+def test_index_row_table_has_scores_outcomes_and_gbm_columns() -> None:
+    events = _events(n_subjects=40)
+    binned = add_value_tokens(events, None, source="mimic_iv")
+    times = all_event_times(binned, ALERT_EVENTS, "mimic_iv")
+    rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+    for r in rows["vasopressor_start"]:
+        r.scores["next_mass"] = 0.5
+    baselines = fit_baselines(
+        binned, rows, times, horizons=(8.0,), feature_set="strong", tune=False
+    )
+    feats = features_for_events(binned, rows, feature_set="strong")
+    names = feature_names()
+    table = index_row_table(
+        rows,
+        times,
+        horizons=(8.0,),
+        baselines=baselines,
+        baseline_features_by_event=feats,
+        context_columns={
+            k: v[:, [names.index("hours_into_visit")]] for k, v in feats.items()
+        },
+        context_names=["hours_into_visit"],
+    )
+    assert {"event", "subject_id", "visit_id", "time_hours", "y@8h"} <= set(
+        table.columns
+    )
+    vaso = table.filter(pl.col("event") == "vasopressor_start")
+    assert vaso["next_mass"].drop_nulls().len() == vaso.height
+    assert (
+        "gbm@8h" in table.columns and vaso["gbm@8h"].drop_nulls().len() == vaso.height
+    )
+    assert "ctx.hours_into_visit" in table.columns
+    assert set(vaso["y@8h"].drop_nulls().unique().to_list()) <= {0.0, 1.0}
+    assert vaso["y@8h"].null_count() > 0  # censored / not-at-risk rows are null

@@ -110,9 +110,11 @@ SIGNAL_PANEL: Tuple[Tuple[str, str], ...] = (
     ("crp", "1988-5"),
 )
 
+Converter = Callable[[np.ndarray], np.ndarray]
+
 # (LOINC, unit tag from code_mapping.unit_for) -> conversion to the panel's
 # canonical unit. Only signals a source splits by unit need an entry.
-_UNIT_CONVERSIONS: Dict[Tuple[str, str], Callable[[np.ndarray], np.ndarray]] = {
+_UNIT_CONVERSIONS: Dict[Tuple[str, str], Converter] = {
     ("8310-5", "F"): lambda v: (v - 32.0) * 5.0 / 9.0,  # temperature -> Celsius
     ("1988-5", "mg/dL"): lambda v: v * 10.0,  # CRP -> mg/L
 }
@@ -371,7 +373,7 @@ def _build_subject(
     hadm_list: List[int],
     values: np.ndarray,
     *,
-    signal_of: Dict[str, Tuple[int, Optional[Callable]]],
+    signal_of: Dict[str, Tuple[int, Optional[Converter]]],
     drugs_of: Dict[str, List[int]],
     birth_hours: Optional[float],
     female: Optional[bool],
@@ -440,9 +442,9 @@ class StrongFeatureBuilder:
     ) -> None:
         self.source = source
         self.names = feature_names()
-        self._signal_prefixes: List[List[Tuple[str, Optional[Callable]]]] = []
+        self._signal_prefixes: List[List[Tuple[str, Optional[Converter]]]] = []
         for _, loinc in SIGNAL_PANEL:
-            entries: List[Tuple[str, Optional[Callable]]] = []
+            entries: List[Tuple[str, Optional[Converter]]] = []
             for prefix in sorted(prefixes_for_loinc(loinc, source=source)):
                 unit = unit_for(prefix, source=source)
                 conv = _UNIT_CONVERSIONS.get((loinc, unit)) if unit else None
@@ -455,9 +457,9 @@ class StrongFeatureBuilder:
 
     def _classify_codes(
         self, codes: Sequence[str]
-    ) -> Tuple[Dict[str, Tuple[int, Optional[Callable]]], Dict[str, List[int]]]:
+    ) -> Tuple[Dict[str, Tuple[int, Optional[Converter]]], Dict[str, List[int]]]:
         """Distinct code -> (signal index, converter) and code -> drug classes."""
-        signal_of: Dict[str, Tuple[int, Optional[Callable]]] = {}
+        signal_of: Dict[str, Tuple[int, Optional[Converter]]] = {}
         drugs_of: Dict[str, List[int]] = {}
         for code in set(codes):
             base = code.rsplit("::", 1)[0] if "::" in code else code
