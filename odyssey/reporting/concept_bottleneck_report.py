@@ -359,6 +359,7 @@ def build_findings(
     inference: Dict[str, Any],
     supervision: str,
     interventions: Optional[List[Dict[str, Any]]] = None,
+    randint_prob: Optional[float] = None,
 ) -> Dict[str, str]:
     """Compute the per-section "Reading" notes from the run's own numbers.
 
@@ -424,7 +425,7 @@ def build_findings(
             "concepts": concepts,
             "observability": observability,
         }
-        return _finish_findings(findings, inference, interventions)
+        return _finish_findings(findings, inference, interventions, randint_prob)
     ranked = sorted(cm, key=lambda c: c["auroc"], reverse=True)
     top3 = ", ".join(f"{c['name']} ({c['auroc']:.2f})" for c in ranked[:3])
     bot3 = ", ".join(f"{c['name']} ({c['auroc']:.2f})" for c in ranked[-3:])
@@ -476,13 +477,14 @@ def build_findings(
         "concepts": concepts,
         "observability": observability,
     }
-    return _finish_findings(findings, inference, interventions)
+    return _finish_findings(findings, inference, interventions, randint_prob)
 
 
 def _finish_findings(
     findings: Dict[str, str],
     inference: Dict[str, Any],
     interventions: Optional[List[Dict[str, Any]]],
+    randint_prob: Optional[float] = None,
 ) -> Dict[str, str]:
     """Add the time-to-event and intervention readings, when the run has them."""
     tm = inference.get("time_metrics")
@@ -513,7 +515,7 @@ def _finish_findings(
                 else ""
             )
         )
-    interventions_note = build_intervention_finding(interventions)
+    interventions_note = build_intervention_finding(interventions, randint_prob)
     if interventions_note is not None:
         findings["interventions"] = interventions_note
     return findings
@@ -577,6 +579,7 @@ def build_alert_finding(alerts: List[Dict[str, Any]]) -> Optional[str]:
 
 def build_intervention_finding(
     interventions: Optional[List[Dict[str, Any]]],
+    randint_prob: Optional[float] = None,
 ) -> Optional[str]:
     """Auto-interpret the causal-intervention sweep, if this run has one.
 
@@ -606,7 +609,14 @@ def build_intervention_finding(
     band = truth_row.get("uncertain_band")
     disp = {m: (by_mode.get(m) or {}).get("mean_abs_displacement") for m in by_mode}
 
-    mediates = d_truth is not None and d_flip is not None and d_truth > d_flip + 1e-3
+    # Separation between correct and inverted concept values, in top-1
+    # points. Reported as a magnitude, not a verdict: 0.5 points is the
+    # bar for calling the lever usable; anything positive but smaller is
+    # "correctly signed, too small to matter"; non-positive is no lever.
+    gap = (d_truth - d_flip) if (d_truth is not None and d_flip is not None) else None
+    mediates = gap is not None and gap >= 0.005
+    signed_only = gap is not None and 0 < gap < 0.005
+    randint_on = randint_prob is not None and randint_prob > 0
     decorative = (
         d_zero_known is not None
         and abs(d_zero_known) < 0.005
@@ -630,19 +640,37 @@ def build_intervention_finding(
                 f"is a pure test of direction: truth moves top-1 "
                 f"{d_truth:+.1%}, flip {d_flip:+.1%}"
                 + (f", random {d_random:+.1%}" if d_random is not None else "")
-                + " -- "
+                + f" -- a truth-minus-flip separation of {gap:+.2%} points. "
                 + (
-                    "the task head reads the concept values in the intended direction."
+                    "The task head reads the concept values in the intended "
+                    "direction, at a magnitude large enough to use."
                     if mediates
-                    else "no separation: at equal perturbation size the task "
-                    "head does not distinguish correct from inverted concept "
-                    "values, so the concept probabilities are not the causal "
-                    "lever the CEM design intends (task signal reaches the "
-                    "head through the concept embeddings, not through the "
-                    "calibrated probability). Intervention-aware training "
-                    "(CEM's RandInt: randomly substitute running labels for "
-                    "the mixing probability during training) is the standard "
-                    "remedy."
+                    else (
+                        "Correctly signed, but too small to call a working "
+                        "lever: overriding a concept where the model is "
+                        "uncertain barely moves the forecast."
+                        if signed_only
+                        else "No separation: at equal perturbation size the "
+                        "task head does not distinguish correct from inverted "
+                        "concept values, so the concept probabilities are not "
+                        "the causal lever the CEM design intends (task signal "
+                        "reaches the head through the concept embeddings, not "
+                        "through the calibrated probability)."
+                    )
+                )
+                + (
+                    f" This run already trained with intervention-aware "
+                    f"training (RandInt p={randint_prob:.2f}), so the standard "
+                    f"remedy has been applied; what remains is what it buys."
+                    if randint_on
+                    else (
+                        " Intervention-aware training (CEM's RandInt: randomly "
+                        "substitute running labels for the mixing probability "
+                        "during training) is the standard remedy, at a "
+                        "forecasting cost that must be measured."
+                        if not mediates
+                        else ""
+                    )
                 )
             )
         else:
@@ -863,7 +891,11 @@ def build_payload(inputs: ReportInputs) -> Dict[str, Any]:
             "scores only."
         )
     findings = build_findings(
-        loss_curves, inference, config.concept_supervision, inputs.interventions
+        loss_curves,
+        inference,
+        config.concept_supervision,
+        inputs.interventions,
+        randint_prob=getattr(config, "randint_prob", None),
     )
     if inputs.alerts:
         alert_note = build_alert_finding(inputs.alerts)
