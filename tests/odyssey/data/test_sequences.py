@@ -77,15 +77,18 @@ def test_same_timestamp_events_keep_a_deterministic_relative_order() -> None:
     assert seq.time_stamps == [0.0, 0.0, 0.0, 0.0, 0.0]
 
 
-def test_static_timeless_facts_are_dropped() -> None:
+def test_static_timeless_facts_lead_the_sequence() -> None:
     events = _events(
         [
-            (1, None, "GENDER//F", None),
             (1, T0, "DIAGNOSIS//A", None),
+            (1, None, "GENDER//F", None),
         ]
     )
-    seq = build_patient_sequence(events, VOCAB)
-    assert len(seq) == 1
+    vocab = Vocabulary.build(["DIAGNOSIS//A", "GENDER//F"], min_count=1)
+    seq = build_patient_sequence(events, vocab)
+    assert len(seq) == 2
+    assert vocab.decode(seq.concept_ids[0]) == "GENDER//F"
+    assert seq.time_stamps == [0.0, 0.0]
 
 
 def test_meds_birth_computes_ages_and_is_excluded_from_tokens() -> None:
@@ -387,3 +390,32 @@ def test_truncation_slices_visit_fields_consistently() -> None:
     assert len(seq.visit_ids) == 2
     assert seq.visit_ids == [11, 11]
     assert seq.visit_ends == [False, True]
+
+
+def test_static_events_lead_the_sequence_at_the_first_timestamp() -> None:
+    t0 = datetime(2024, 1, 1)
+    events = pl.DataFrame(
+        {
+            "subject_id": [1, 1, 1, 1],
+            "code": ["GENDER//F", "LAB//A", "RACE//X", "LAB//B"],
+            "time": [None, t0, None, t0 + timedelta(hours=2)],
+            "numeric_value": [None, 1.0, None, 2.0],
+            "hadm_id": [None, 10, None, 10],
+        },
+        schema={
+            "subject_id": pl.Int64,
+            "code": pl.Utf8,
+            "time": pl.Datetime,
+            "numeric_value": pl.Float32,
+            "hadm_id": pl.Int64,
+        },
+    )
+    vocab = Vocabulary.build(events["code"].to_list(), min_count=1)
+    seq = build_patient_sequence(events, vocab)
+    codes = [vocab.decode(i) for i in seq.concept_ids]
+    assert codes == ["GENDER//F", "RACE//X", "LAB//A", "LAB//B"]
+    assert seq.time_stamps[:3] == [0.0, 0.0, 0.0] and seq.time_stamps[3] == 2.0
+    assert seq.visit_ids[:3] == [10, 10, 10]  # same visit as the first timed event
+    # a static-only subject still yields an empty sequence
+    only_static = events.filter(pl.col("time").is_null())
+    assert len(build_patient_sequence(only_static, vocab)) == 0
