@@ -430,6 +430,7 @@ def test_value_embeddings_flag_ignores_the_backbone_merge_attention(
 
     def fake_build_model(cfg, *, vocab_size, num_concepts):  # noqa: ARG001
         seen["value_embeddings"] = cfg.value_embeddings
+        seen["event_head_hidden"] = cfg.event_head_hidden
         raise RuntimeError("stop here")
 
     original = ri.build_model
@@ -440,8 +441,10 @@ def test_value_embeddings_flag_ignores_the_backbone_merge_attention(
     finally:
         ri.build_model = original
     assert seen["value_embeddings"] is False
+    assert seen["event_head_hidden"] == 0
 
     keys["backbone.embeddings.embeddings.value_proj.weight"] = torch.zeros(1)
+    keys["event_heads.proj.0.weight"] = torch.zeros(32, 8)  # MLP readout, hidden 32
     torch.save({"model": keys}, run_dir / "checkpoint_final.pt")
     ri.build_model = fake_build_model
     try:
@@ -450,3 +453,4 @@ def test_value_embeddings_flag_ignores_the_backbone_merge_attention(
     finally:
         ri.build_model = original
     assert seen["value_embeddings"] is True
+    assert seen["event_head_hidden"] == 32

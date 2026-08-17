@@ -111,6 +111,9 @@ class TrainingConfig:
     hidden_size: int = 256
     num_hidden_layers: int = 8
     value_embeddings: bool = False
+    event_head_hidden: int = 0
+    """Hidden width of the per-event hazard heads' MLP readout; 0 = the
+    single linear layer every run before v8 used."""
     """Feed standardized numeric values (``aux.values``) into the token
     embeddings alongside the bin tokens (see
     :class:`~odyssey.models.embeddings.ClinicalEventEmbeddings`). Opt-in;
@@ -374,6 +377,7 @@ def build_model(
         if getattr(config, "event_hazards", False)
         else None
     )
+    event_head_hidden = int(getattr(config, "event_head_hidden", 0) or 0)
     if kind == "baseline":
         return BaselineSequenceModel(
             backbone=backbone,
@@ -381,6 +385,7 @@ def build_model(
             padding_idx=PAD_ID,
             time_bin_edges=time_bin_edges,
             event_names=event_names,
+            event_head_hidden=event_head_hidden,
         )
     return ConceptBottleneckSequenceModel(
         backbone=backbone,
@@ -390,6 +395,7 @@ def build_model(
         padding_idx=PAD_ID,
         time_bin_edges=time_bin_edges,
         event_names=event_names,
+        event_head_hidden=event_head_hidden,
     )
 
 
