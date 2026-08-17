@@ -574,6 +574,14 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
     vocab.save(output_dir / "vocabulary.json")
     logger.info("[data] vocab size: %d", len(vocab))
 
+    if config.resume_from is not None:
+        # The checkpoint is the authority on which heads exist: a run
+        # started before time_to_event / event_hazards existed must not be
+        # rebuilt with heads its weights do not have (mirrors load_run).
+        resume_keys = torch.load(config.resume_from, map_location="cpu")["model"].keys()
+        config.time_to_event = any(k.startswith("time_head.") for k in resume_keys)
+        config.event_hazards = any(k.startswith("event_heads.") for k in resume_keys)
+        del resume_keys
     objective = build_objective(config, vocab, train_events_binned, device)
     model = build_model(config, vocab_size=len(vocab), num_concepts=len(concepts)).to(
         device
