@@ -24,3 +24,7 @@ updates:
       # its updater outright (job failures, "unknown_error"), independent
       # of the pin -- ignore it here rather than let it keep failing.
       - dependency-name: "torch"
+      # mamba-ssm==2.3.0 is pinned exact for the same reason (its CUDA/ABI
+      # build is paired with the torch pin; newer releases require a triton
+      # that torch 2.6.0+cu124 cannot satisfy).
+      - dependency-name: "mamba-ssm"
