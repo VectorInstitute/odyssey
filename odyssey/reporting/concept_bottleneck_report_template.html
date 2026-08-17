@@ -562,6 +562,7 @@ footer {
     <a href="#quantitative">02 · Quantitative Eval</a>
     <a href="#qualitative">03 · Case Traces</a>
     <a href="#interventions" id="nav-interventions" style="display:none;">04 · Interventions</a>
+    <a href="#alerts" id="nav-alerts" style="display:none;">05 · Alerts</a>
   </div>
 </nav>
 
@@ -644,6 +645,17 @@ footer {
       <table id="interventions-table"></table>
     </div>
     <div class="finding" id="finding-interventions"></div>
+  </section>
+
+  <section class="report" id="alerts" style="display:none;">
+    <div class="section-head">
+      <h2 class="section-title"><span class="num">05</span> Alerts: Time-to-Event Forecasts vs. Bespoke Baselines</h2>
+    </div>
+    <p class="section-desc" id="alerts-desc"></p>
+    <div class="table-wrap" style="margin-bottom:0.5rem;">
+      <table id="alerts-table"></table>
+    </div>
+    <div class="finding" id="finding-alerts"></div>
   </section>
 
 </main>
@@ -1355,6 +1367,50 @@ footer {
     zero_known: ["Known channel zeroed", "The known-concept mixed embedding zeroed out -- the completeness probe."],
     zero_unknown: ["Unknown channel zeroed", "The residual unknown-concept embedding zeroed out -- the mirror completeness probe."],
   };
+
+  (function renderAlerts() {
+    if (!DATA.alerts || !DATA.alerts.length) return;
+    document.getElementById("nav-alerts").style.display = "";
+    document.getElementById("alerts").style.display = "";
+    document.getElementById("alerts-desc").textContent = DATA.alerts_desc || "";
+    const rows = DATA.alerts;
+    const scorers = ["hazard", "baseline_gbm", "concept", "next_mass"].filter((s) => rows.some((r) => r.scorer === s));
+    const SCORER_LABEL = { hazard: "Model hazard head", baseline_gbm: "Bespoke GBM", concept: "Concept prob. (rank only)", next_mass: "Next-event mass (rank only)" };
+    const byKey = {};
+    rows.forEach((r) => { byKey[r.event + "|" + r.horizon_hours + "|" + r.scorer] = r; });
+    const events = [...new Set(rows.map((r) => r.event))];
+    const horizons = [...new Set(rows.map((r) => r.horizon_hours))].sort((a, b) => a - b);
+    const table = document.getElementById("alerts-table");
+    const head = [el("th", {}, ["Event"]), el("th", { class: "num" }, ["Horizon"])];
+    scorers.forEach((s) => {
+      head.push(el("th", { class: "num" }, [SCORER_LABEL[s] + " AUROC"]));
+      if (s === "hazard" || s === "baseline_gbm") head.push(el("th", { class: "num" }, [SCORER_LABEL[s] + " Brier"]));
+    });
+    head.push(el("th", { class: "num" }, ["At risk / positive / censored"]));
+    table.appendChild(el("thead", {}, [el("tr", {}, head)]));
+    const tbody = el("tbody");
+    events.forEach((e) => {
+      horizons.forEach((h) => {
+        const any = scorers.map((s) => byKey[e + "|" + h + "|" + s]).find((r) => r);
+        if (!any) return;
+        const cells = [el("td", {}, [e.replace(/_/g, " ")]), el("td", { class: "num" }, [h + "h"])];
+        const hz = byKey[e + "|" + h + "|hazard"], gb = byKey[e + "|" + h + "|baseline_gbm"];
+        scorers.forEach((s) => {
+          const r = byKey[e + "|" + h + "|" + s];
+          let style = "";
+          if (s === "hazard" && hz && gb) style = hz.auroc >= gb.auroc - 0.01 ? "color:var(--good);font-weight:700;" : "color:var(--critical);font-weight:700;";
+          cells.push(el("td", { class: "num", style }, [r && r.auroc != null ? fmt(r.auroc, 3) : "\u2013"]));
+          if (s === "hazard" || s === "baseline_gbm") cells.push(el("td", { class: "num" }, [r && r.brier != null ? fmt(r.brier, 4) : "\u2013"]));
+        });
+        cells.push(el("td", { class: "num" }, [fmtInt(any.n_at_risk) + " / " + fmtInt(any.n_positive) + " / " + fmtInt(any.n_censored)]));
+        tbody.appendChild(el("tr", {}, cells));
+      });
+    });
+    table.appendChild(tbody);
+    const target = document.getElementById("finding-alerts");
+    const text = DATA.findings && DATA.findings.alerts;
+    if (target && text) target.innerHTML = '<span class="tag">Reading</span>' + text;
+  })();
 
   (function renderInterventions() {
     if (!DATA.interventions || !DATA.interventions.length) return;

@@ -508,6 +508,62 @@ def _finish_findings(
     return findings
 
 
+def build_alert_finding(alerts: List[Dict[str, Any]]) -> Optional[str]:
+    """Auto-interpret the alert harness: hazard heads vs. the bespoke GBM."""
+    by_key: Dict[Tuple[str, float, str], Dict[str, Any]] = {
+        (r["event"], r["horizon_hours"], r["scorer"]): r for r in alerts
+    }
+    events = sorted({r["event"] for r in alerts})
+    horizons = sorted({r["horizon_hours"] for r in alerts})
+    has_hazard = any(r["scorer"] == "hazard" for r in alerts)
+    has_gbm = any(r["scorer"] == "baseline_gbm" for r in alerts)
+    if not events:
+        return None
+    parts = ["<b>Alerting against a bespoke baseline.</b>"]
+    if not has_hazard:
+        parts.append(
+            " This run has no per-event hazard heads, so only ranking proxies "
+            "(concept probability, next-event mass) are scored; those are not "
+            "horizon forecasts and were never expected to compete."
+        )
+    wins: List[str] = []
+    losses: List[str] = []
+    for e in events:
+        for h in horizons:
+            hz = by_key.get((e, h, "hazard"))
+            gb = by_key.get((e, h, "baseline_gbm"))
+            if hz is None or gb is None or hz.get("auroc") is None:
+                continue
+            gap = hz["auroc"] - gb["auroc"]
+            label = f"{e.replace('_', ' ')} at {h:g}h ({hz['auroc']:.2f} vs {gb['auroc']:.2f})"
+            (wins if gap >= -0.01 else losses).append(label)
+    if has_hazard and has_gbm:
+        if wins:
+            parts.append(
+                " Hazard heads match or beat the GBM (within 0.01 AUROC) on: "
+                + "; ".join(wins)
+                + "."
+            )
+        if losses:
+            parts.append(" GBM ahead on: " + "; ".join(losses) + ".")
+        briers = [
+            (e, h)
+            for e in events
+            for h in horizons
+            if (e, h, "hazard") in by_key
+            and (e, h, "baseline_gbm") in by_key
+            and by_key[(e, h, "hazard")].get("brier") is not None
+            and by_key[(e, h, "hazard")]["brier"]
+            <= by_key[(e, h, "baseline_gbm")]["brier"]
+        ]
+        if briers:
+            parts.append(
+                f" Calibration (Brier) is at least as good as the GBM's on "
+                f"{len(briers)} of the event-horizon pairs."
+            )
+    return "".join(parts)
+
+
 def build_intervention_finding(
     interventions: Optional[List[Dict[str, Any]]],
 ) -> Optional[str]:
@@ -623,6 +679,7 @@ class ReportInputs:
     inference_results: Dict[str, Any]
     cases: List[Dict[str, Any]]
     interventions: Optional[List[Dict[str, Any]]] = None
+    alerts: Optional[List[Dict[str, Any]]] = None
 
 
 def load_inputs(
@@ -630,6 +687,7 @@ def load_inputs(
     inference_results_path: Path,
     case_studies_path: Path,
     interventions_path: Optional[Path] = None,
+    alerts_path: Optional[Path] = None,
 ) -> ReportInputs:
     """Read a run's config/loss log plus its inference/case-study output files."""
     config = TrainingConfig(**json.loads((run_dir / "config.json").read_text()))
@@ -640,12 +698,14 @@ def load_inputs(
     interventions = (
         json.loads(interventions_path.read_text()) if interventions_path else None
     )
+    alerts = json.loads(alerts_path.read_text()) if alerts_path else None
     return ReportInputs(
         config=config,
         loss_records=loss_records,
         inference_results=inference_results,
         cases=cases,
         interventions=interventions,
+        alerts=alerts,
     )
 
 
@@ -777,19 +837,41 @@ def build_payload(inputs: ReportInputs) -> Dict[str, Any]:
             "retrospective fact about the whole visit."
         )
 
+    alerts_desc = None
+    if inputs.alerts:
+        alerts_desc = (
+            "Does the general forecaster alert as well as a model built for the "
+            "job? For each event and horizon, risk is assessed at landmark times "
+            "inside every held-out visit while the patient is still at risk, and "
+            "scored on whether the event happened within the horizon (positions "
+            "whose follow-up ends first are censored and excluded; the count is "
+            "shown). The comparator is a gradient-boosted classifier fitted per "
+            "event and horizon on hand-built features from the model's own "
+            "training shards. Hazard is the model's per-event hazard head, a "
+            "calibrated probability; concept and next-event-mass are ranking "
+            "scores only."
+        )
+    findings = build_findings(
+        loss_curves, inference, config.concept_supervision, inputs.interventions
+    )
+    if inputs.alerts:
+        alert_note = build_alert_finding(inputs.alerts)
+        if alert_note:
+            findings["alerts"] = alert_note
+
     return {
         "run_meta": run_meta,
         "training_desc": training_desc,
         "quant_desc": quant_desc,
         "qualitative_desc": qualitative_desc,
         "interventions_desc": interventions_desc,
-        "findings": build_findings(
-            loss_curves, inference, config.concept_supervision, inputs.interventions
-        ),
+        "alerts_desc": alerts_desc,
+        "findings": findings,
         "loss_curves": loss_curves,
         "inference_results": inference,
         "cases": cases,
         "interventions": inputs.interventions,
+        "alerts": inputs.alerts,
     }
 
 
@@ -811,6 +893,12 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="odyssey.inference.interventions's output JSON (optional).",
     )
+    parser.add_argument(
+        "--alerts",
+        type=Path,
+        default=None,
+        help="odyssey.inference.alerts's output JSON (optional).",
+    )
     parser.add_argument("--output-html", required=True, type=Path)
     return parser.parse_args()
 
@@ -819,7 +907,11 @@ def main() -> None:
     """CLI entry point: build and write the report from --run-dir + its eval outputs."""
     args = _parse_args()
     inputs = load_inputs(
-        args.run_dir, args.inference_results, args.case_studies, args.interventions
+        args.run_dir,
+        args.inference_results,
+        args.case_studies,
+        args.interventions,
+        args.alerts,
     )
     payload = build_payload(inputs)
     html = render_html(payload)
