@@ -1,0 +1,2509 @@
+hicl,ingredient,support,total
+4,digoxin,10925,15291
+12,caffeine,20,20
+25,theophylline,453,500
+40,dobutamine hcl,19,19
+57,atrovent,4777,11416
+70,qvar,430,577
+72,flunisolide,143,143
+73,quinidine gluconate,9,9
+75,quinidine sulfate,6,6
+76,procainamide hcl,1,1
+77,norpace,8,9
+82,flecainide acetate,176,246
+83,amiodarone,14758,31343
+84,mexiletine hcl,164,164
+89,hydralazine,19558,48514
+91,prazosin hcl,175,201
+92,diazoxide,56,65
+93,minoxidil,389,390
+94,terazosin hcl,1270,1284
+99,reserpine/hydroflumethiazide,1,1
+106,reserpine,1,1
+113,clonidine hcl,4658,9323
+118,methyldopa,44,45
+120,intuniv,15,38
+128,captopril,159,159
+129,vaseretic,13,22
+130,enalapril maleate,1006,1717
+131,lisinopril-hydrochlorothiazide,496,882
+132,lisinopril,43117,49751
+136,2 ml - nitroprusside sodium,1542,1542
+142,propranolol hcl/hydrochlorothiazide,1,1
+143,lopressor hct,15,19
+147,atenolol/chlorthalidone,18,39
+150,iopamidol,3429,4519
+151,iohexol,1167,1173
+155,dihydroergotamine mesylate,12,14
+159,nitroglycerin,14943,27176
+166,isordil,268,510
+168,dipyridamole,40,68
+177,alprostadil,1,1
+180,verapamil,619,874
+181,nifedipine,1169,1935
+182,diltiazem,8172,19145
+183,10 ml - nicardipine hcl,865,887
+184,nimodipine,63,63
+187,sodium chloride,385,397
+189,acetylcysteine,111,118
+206,cheratussin ac,107,174
+209,hydrocodone bit-guaifenesin,1,1
+216,robitussin cough & cold cf,20,20
+222,entex pac,7,8
+223,mucinex dm,23,103
+238,primatene asthma,3,3
+250,guaifenesin-phenylephrine,2,6
+270,mucinex d,6,6
+271,guaifenesin,2043,3100
+345,promethazine hcl/codeine,31,35
+347,cotab a,2,2
+352,tussionex,35,44
+365,coricidin,7,7
+366,promethazine dm,7,13
+385,nyquil d,8,8
+389,bromfed dm,2,2
+392,robitussin nighttime cough dm,15,16
+418,promethazine-phenylephrine,6,7
+420,promethazine vc-codeine,1,1
+425,well-tuss hd,2,2
+435,allergy multi-symptom,1,3
+436,excedrin sinus headache,2,3
+443,dimetapp,1,2
+487,hydrocod-cpm-pseudoephedrine,4,4
+505,aprodine,7,9
+516,water,72,72
+517,albuterol inh soln (variable dose),1589,1591
+523,sodium bicarbonate,17536,18815
+525,lactated ringers,12305,39867
+529,disulfiram,11,20
+532,potassium sodium phosphate pwdpkt,2728,5242
+537,anticoagulant sodium citrate,485,485
+538,sodium chloride,1857,2016
+540,sodium phosphate,13800,16195
+545,potassium,23,41
+546,potassium acetate,13,13
+547,potassium bicarbonate,5,5
+548,potassium citrate,49,74
+549,potassium chloride,178484,270021
+550,potassium,2217,2263
+551,potassium phosphate,5332,7273
+553,potassium,1654,1654
+562,calcium carbonate w/vitamin d,18,46
+565,cal-citrate,44,44
+575,calcium-magnesium-zinc,1,1
+580,calcium-magnesium,3,3
+581,calcium carbonate,1942,2935
+582,calcium chloride,5206,5206
+585,calcium gluconate,23160,27450
+586,calcium lactate,2,2
+588,calcium phosphate,1,1
+589,calcium,21,21
+606,magnesium carbonate,2,2
+607,magnesium chloride,1254,1302
+608,magnesium gluconate,59,65
+609,magnesium oxide,16563,19253
+610,magnesium sulfate,53540,75126
+611,magnesium,29,29
+616,pedialyte,14,14
+624,tpn electrolytes,3,3
+629,plasma-lyte,1808,1808
+667,ferocon,2,3
+669,fetrin,1,1
+673,folitab,11,12
+689,poly-iron,16,16
+708,ferrous fumarate/folic acid,1,1
+727,iron,281,281
+733,iron dextran complex,7,8
+734,iron,187,342
+735,iron,841,1427
+737,ferrex,96,163
+739,ferrous sulfate,5506,5754
+743,zinc gluconate,22,33
+744,zinc sulfate,86,86
+745,zinc,142,142
+748,potassium iodide,10,10
+752,iodine,6,6
+755,copper,17,17
+760,chromium,22,22
+763,selenium,140,140
+768,insulin regular human,20002,48424
+780,humulin n,360,1014
+787,humulin l,1,1
+802,glyburide,1216,1349
+803,glipizide,3422,4052
+807,glucose,37875,46053
+851,protein,7,8
+852,amino acid,28,28
+854,arginine,18,18
+856,l-glutamine,5,7
+858,lysine,16,16
+859,levocarnitine,24,30
+866,protein,1,1
+873,ensure,147,356
+880,spirulina,5,5
+881,dietary supplement,1,1
+882,duocal,49,54
+885,osmolite,49,130
+888,promod,58,112
+915,1000 ml - dextrose,7157,16933
+918,dextrose,56,56
+920,levemir,1,2
+926,dextrose,106319,116135
+928,dextrose,1,1
+929,dextrose,1026,1026
+934,dextrose,3755,9840
+936,dextrose-nacl,4477,9987
+940,1000 ml - dextrose-nacl,2427,2427
+958,vitamin a,143,143
+960,beta carotene,17,26
+962,stress formula,1,1
+964,vitamin b complex/vit b12,1,1
+967,b complex,102,208
+972,yeast,4,5
+973,potaba,7,7
+978,cod liver oil,75,75
+980,ascorbic acid/vitamin e,1,2
+987,ester-c,1,1
+992,vitamin c,1651,1667
+994,ascorbic acid,2387,3402
+995,vitamin d,1366,3049
+996,vitamin d,6103,9522
+999,calcitriol,716,886
+1000,cod liver oil,9,9
+1004,vitamin e,4,4
+1005,vitamin e,5,5
+1006,wheat germ oil,4,4
+1007,vitamin e,3,3
+1011,prenatal vitamins,54,74
+1023,multi-vitamin,44,48
+1037,biotin,20,20
+1040,phytonadione,1871,1950
+1049,vitamin b12-folic acid,480,501
+1053,vitamin b-12,1302,2572
+1055,vitamin b12-intrinsic factor,13,13
+1061,nephrocaps,538,1256
+1062,folic acid,17984,17993
+1063,leucovorin calcium,62,62
+1064,niaspan,292,348
+1066,nicotinamide,6,7
+1067,calcium pantothenate,1,1
+1068,pantothenic acid,1,1
+1071,vitamin b-6,158,341
+1073,vitamin b-2,12,17
+1075,thiamine hcl,5352,9690
+1077,vitamin a & d,21,23
+1080,total b with c,13,29
+1082,multivitamin,1,3
+1084,stress formula,2,3
+1085,thera-m,16,21
+1086,multivitamins with iron,5,12
+1088,therapeutic m,7,8
+1089,multivitamins w-calcium-iron,23,45
+1092,vitamin b complex,52,52
+1095,multivitamins,92,94
+1096,vitamins/minerals,796,804
+1097,vitamins/minerals,1939,2323
+1098,multivitamin,820,839
+1099,multivitamin,2097,4220
+1100,allopurinol,7072,7558
+1104,desferal,3,3
+1105,calcium disodium versenate,3,3
+1107,cyanide antidote package,2,2
+1108,sodium thiosulfate,4,4
+1117,charcoal,5,5
+1119,polibar acb,2,2
+1126,florical,8,8
+1127,sf,18,34
+1136,hydrochloric acid,25,25
+1137,l-glutamic acid,6,6
+1142,gaviscon,2,2
+1144,sodium bicarbonate/sodium citrate,1,1
+1145,nasa mist,9,11
+1146,alka-seltzer,16,16
+1153,rolaids,6,6
+1157,calcium carbonate/magnesium carbonate,3,3
+1162,maalox advanced,68,69
+1163,calcium carbonate,3537,5383
+1168,alum & mag hydroxide-simeth,3992,7036
+1169,mag-al,10,10
+1170,magnesium hydroxide,46,46
+1173,gaviscon,16,16
+1179,aluminum hydroxide,10,10
+1183,magaldrate/simethicone,1,1
+1186,carafate,629,1182
+1187,misoprostol,17,33
+1212,lactaid,17,41
+1221,digestive enzyme,2,2
+1224,simethicone,1679,1832
+1232,pectin,4,4
+1234,kaopectate,29,31
+1235,lomotil,357,545
+1236,loperamide,535,1026
+1239,lactinex,282,531
+1240,acidophilus-pectin,2,3
+1241,lactobacillus acidophilus,404,784
+1246,pepto-bismol,34,56
+1252,align,45,47
+1255,paregoric,11,11
+1289,sennosides,6381,14296
+1301,bisacodyl,34865,46613
+1312,colace,36,38
+1319,mineral oil rect enem,1088,1567
+1324,docusate calcium,801,819
+1326,docusate sodium,33591,59475
+1327,magnesium sulfate,1,1
+1328,magnesium citrate,53,71
+1329,magnesium hydroxide,10797,20545
+1330,enema,339,409
+1331,sodium phosphate,2,2
+1335,metamucil,2,4
+1339,konsyl,4,4
+1340,metamucil,6,15
+1341,citrucel,48,55
+1346,fibercon,56,91
+1370,ursodiol,761,866
+1373,prevalite,51,62
+1374,colestid,26,50
+1388,pancreatin,37,37
+1396,lactulose,11795,14667
+1397,acetohydroxamic acid,3,3
+1400,testosterone cypionate,38,69
+1401,delatestryl,3,4
+1403,testosterone,283,484
+1404,android,1,1
+1412,oxandrin,3,3
+1416,lipiodol,1,1
+1418,depo-estradiol,1,1
+1421,estradiol,234,429
+1424,premarin,252,287
+1429,menest,25,26
+1430,ethinyl estradiol,2,2
+1431,ogen,5,7
+1438,estrogen & methyltestosterone,11,12
+1440,progesterone,3,5
+1441,hydroxyprogesterone caproate,2,2
+1442,provera,56,132
+1443,aygestin,7,7
+1452,necon,9,9
+1453,nortrel,4,10
+1454,lo loestrin fe,13,15
+1455,junel,11,25
+1456,kelnor,3,3
+1457,ogestrel,2,2
+1459,norethindrone,65,78
+1460,altavera,13,38
+1478,lidocaine hcl,5888,10228
+1516,benzocaine,14,16
+1518,prilocaine hcl,2,2
+1519,cocaine hcl,1,1
+1534,cepacol,2,2
+1543,doxapram hcl,1,1
+1545,ammonia,1,1
+1554,etomidate,1129,1131
+1555,ketamine hcl,7,12
+1560,luminal sodium,22,22
+1561,phenobarbital,359,359
+1564,amytal sodium,2,2
+1566,butabarbital sodium,9,9
+1574,butalbital,15,15
+1586,tryptophan,1,1
+1588,valerian,9,9
+1592,restoril,2682,3495
+1593,flurazepam hcl,9,9
+1594,halcion,32,61
+1608,hydroxyzine hcl,1312,1318
+1609,vistaril,172,185
+1610,chlordiazepoxide hcl,150,150
+1612,clorazepate dipotassium,110,154
+1615,diazepam,9303,13920
+1616,oxazepam,16,16
+1617,alprazolam,9850,17967
+1619,midazolam,23104,50918
+1620,buspirone hcl,1114,1162
+1621,chlorpromazine hcl,208,208
+1624,fluphenazine decanoate,31,31
+1626,fluphenazine hcl,27,44
+1627,perphenazine,144,144
+1628,2 ml - prochlorperazine edisylate,2404,4917
+1629,prochlorperazine maleate,2190,3906
+1630,trifluoperazine hcl,109,109
+1631,thioridazine hcl,82,82
+1640,parnate,4,4
+1641,imipramine hcl,112,130
+1643,amitriptyline hcl,1803,1812
+1644,nortriptyline hcl,404,519
+1645,desipramine hcl,10,16
+1646,vivactil,5,6
+1648,amoxapine,2,2
+1650,doxepin hcl,442,444
+1651,maprotiline hcl,1,1
+1652,trazodone hcl,7159,14323
+1653,wellbutrin,1090,1551
+1655,prozac,1277,1312
+1656,amitriptyline hcl/chlordiazepoxide,3,4
+1660,haldol decanoate,1,2
+1661,haloperidol lactate,4821,14961
+1662,haloperidol,1007,1642
+1664,loxitane,5,9
+1668,thiothixene,22,22
+1669,lithium carbonate,57,61
+1670,lithium,444,445
+1671,trimeprazine tartrate,2,2
+1672,cyproheptadine hcl,55,55
+1675,cepacol sore throat,93,108
+1681,ethanol,2,3
+1682,ritalin,230,271
+1687,meperidine range,1545,2646
+1694,morphine,60227,97857
+1695,hydromorphone,13613,41135
+1696,opana,58,85
+1699,asa-butalb-caffeine-codeine,17,19
+1713,butalb-acetaminoph-caff-codein,46,56
+1717,tylenol-codeine no.3,199,344
+1721,codeine phosphate,32,32
+1722,codeine sulfate,21,22
+1730,norco,18088,43439
+1731,hydrocodone bitartrate,93,95
+1739,acetaminoph-caff-dihydrocodein,32,32
+1741,percocet,19184,31082
+1742,oxycodone,12503,38955
+1745,methadone hcl,1460,1679
+1747,fentanyl,1436,1503
+1758,opium/belladonna alkaloids,13,19
+1762,buprenorphine hcl,2,2
+1776,ponstel,2,2
+1777,butorphanol tartrate,1,1
+1782,talwin,4,4
+1790,fiorinal,39,46
+1791,orphenadrine compound,1,1
+1794,aspirin,9106,9117
+1796,aspirin/salicylamide/acetaminophen/caffeine,1,1
+1801,aspirin/sodium bicarbonate/citric acid,1,2
+1807,excedrin migraine,34,67
+1811,aspirin/acetaminophen,1,1
+1817,equagesic,18,18
+1820,aspirin,64414,98617
+1832,anabar,4,5
+1845,salsalate,41,41
+1847,diflunisal,2,2
+1848,apriso,202,536
+1854,fioricet,473,501
+1855,acetaminophen/caffeine,23,43
+1858,butalbital/acetaminophen,3,8
+1861,tylenol pm extra strength,70,86
+1866,acetaminophen,122848,168312
+1868,ergotamine-caffeine,1,1
+1869,ergotamine tartrate,1,1
+1871,isomethept-dichloralp-acetamin,1,1
+1874,naloxone,12803,31175
+1875,naltrexone hcl,137,146
+1877,dilantin,496,510
+1878,phenytoin sodium,4,4
+1879,dilantin,376,740
+1882,valproic acid,267,507
+1883,valproic acid,16,17
+1884,depakote,1280,1913
+1886,primidone,328,391
+1891,zarontin,2,3
+1893,carbamazepine,349,639
+1894,clonazepam,5879,8503
+1897,levodopa,39,39
+1898,amantadine,467,468
+1900,trihexyphenidyl hcl,40,40
+1905,cogentin,322,638
+1906,orphenadrine citrate,31,32
+1924,robitussin long-acting,19,19
+1925,dextromethorphan hbr,7,7
+1929,tessalon perle,237,546
+1938,robaxin,258,479
+1941,parafon forte dsc,9,16
+1944,soma,351,602
+1945,skelaxin,44,67
+1947,dantrolene sodium,132,135
+1948,succinylcholine,1366,1368
+1949,baclofen,1701,1760
+1950,cyclobenzaprine hcl,1314,2588
+1952,tigan,17,31
+1955,marinol,98,160
+1970,diclegis,2,2
+1975,meclizine hcl,940,1209
+1978,bethanechol chloride,116,158
+1988,neostigmine,1072,2103
+1990,mestinon,105,186
+1994,donnatal,1,1
+1997,belladonna,4,4
+2004,atropine,5214,9537
+2005,transderm-scop,1,1
+2017,hyoscyamine sulfate,146,225
+2018,hyoscyamine,17,17
+2023,propantheline bromide,20,20
+2028,glycopyrrolate,5511,5680
+2037,librax,100,100
+2038,clidinium bromide,1,1
+2045,dicyclomine hcl,335,626
+2047,flavoxate hcl,5,5
+2048,ditropan,428,597
+2049,nicotine gum,39,83
+2050,epinephrine,2232,2459
+2051,norepinephrine bitartrate,5307,12944
+2058,metaproterenol sulfate,4,4
+2059,dopamine,1523,1523
+2060,dopamine,30,35
+2065,dextroamphetamine sulfate,13,17
+2071,terbutaline sulfate,9,9
+2073,albuterol,17073,53624
+2074,albuterol,10525,11317
+2076,pirbuterol acetate,5,8
+2083,ephedrine hcl,2,2
+2084,ephedrine sulfate,1873,3222
+2087,phenylephrine,5288,9310
+2091,pseudoephedrine,38,85
+2095,labetalol,14223,30748
+2098,phenoxybenzamine hcl,7,8
+2101,propranolol hcl,1030,1418
+2102,metoprolol tartrate,61819,107327
+2103,nadolol,902,977
+2104,atenolol,6049,6502
+2105,timoptic,115,161
+2106,pindolol,13,13
+2107,sectral,7,9
+2111,phentermine hcl,29,40
+2115,bontril pdm,1,1
+2148,metoclopramide hcl,10586,25707
+2150,xenaderm,37,82
+2152,bromelain,1,1
+2154,papaya,3,3
+2159,santyl,270,321
+2172,tucks,1,1
+2180,moisture eyes,1,1
+2184,glycerin,13,16
+2195,eucerin,44,46
+2208,lanolin,2,3
+2215,altalube,32,77
+2216,petrolatum,3,4
+2220,mineral oil,29,29
+2227,aloe vesta,9,9
+2229,aloe vera,12,12
+2285,emollient base,7,8
+2287,beta care,1,1
+2304,calamine,2,3
+2306,calamine phenolated,1,1
+2321,sclerosol,4,4
+2324,desitin,2,2
+2333,methylbenzethonium chloride,1,1
+2343,peterson's ointment,1,1
+2350,calmoseptine,94,106
+2361,desitin,22,46
+2394,aluminum acetate,1,1
+2395,hypercare,1,2
+2417,alum powder,4,5
+2461,ala seb,2,2
+2465,salicylic acid,4,6
+2468,retin-a,9,17
+2470,benzoyl peroxide,6,11
+2476,isotretinoin,2,3
+2557,scytera,4,11
+2563,vicks vaporub,3,3
+2564,eucalyptus/menthol,1,1
+2565,ponaris nasal emollient,1,1
+2577,theragen,77,177
+2581,muscle rub,4,6
+2583,muscle rub,8,25
+2595,methyl salicylate,7,7
+2600,sarna,33,42
+2608,menthol,28,68
+2615,campho-phenique,1,2
+2619,venelex,5,7
+2637,aspercreme,8,16
+2687,phenol ez,1,1
+2696,cetaphil,2,3
+2703,betadine,3,3
+2708,conti,5,7
+2716,hydro,14,29
+2721,hydroquinone,12,12
+2724,chromelin complexion blender,1,1
+2728,albumin human,12546,36287
+2730,dextran,8,8
+2748,glucose test strip,4,15
+2749,fat emulsion,2525,3287
+2765,lecithin,25,25
+2766,gemfibrozil,474,753
+2769,fish oil,1362,1408
+2771,fish oil,81,107
+2786,inositol,1,1
+2793,lovastatin,1871,2218
+2801,aminocaproic acid,1111,1111
+2803,alteplase,4484,5843
+2807,heparin flush,96,97
+2808,heparin,3204,6551
+2810,heparin,21376,62060
+2812,warfarin sodium,20447,50486
+2816,protamine sulfate,17,17
+2819,pentoxifylline,136,223
+2821,clomid,2,2
+2824,somatropin,3,3
+2826,octreotide acetate,273,300
+2833,danazol,9,9
+2834,bromocriptine mesylate,27,38
+2836,metopirone,2,2
+2839,vasopressin,1256,1256
+2841,ddavp,10,11
+2846,armour thyroid,59,76
+2848,thyroid,32,32
+2849,levothyroxine sodium,16370,28487
+2850,liothyronine sodium,68,88
+2854,propylthiouracil,13,80
+2855,methimazole,139,210
+2857,etidronate disodium,68,68
+2859,"calcitonin,salmon,synthetic",43,97
+2863,anusol-hc,120,253
+2866,hydrocortisone sod succinate,1991,4171
+2867,hydrocortisone,659,907
+2870,prednisolone acetate,75,138
+2871,orapred,5,7
+2874,prednisolone,387,388
+2875,methylprednisolone,18,37
+2876,methylprednisolone,6645,20111
+2877,medrol,1642,2423
+2879,prednisone,30400,32625
+2883,betamethasone valerate,3,3
+2884,betamethasone,45,45
+2888,dexamethasone,5325,10423
+2889,dexamethasone,3551,4290
+2891,kenalog,204,345
+2892,triamcinolone diacetate,6,6
+2893,aristospan,1,1
+2894,triamcinolone,451,451
+2896,fluocinolone acetonide,57,63
+2899,fludrocortisone acetate,395,430
+2900,aldactazide,41,83
+2901,spironolactone,4944,6673
+2906,benoxinate hcl/fluorescein sodium,3,3
+2907,flucaine,8,8
+2977,proctofoam,9,14
+2979,nupercainal,1,1
+3008,acetic acid,28,31
+3022,gentian violet,1,1
+3031,miconazole nitrate,80,178
+3033,terazol,5,6
+3055,domeboro,1,1
+3093,chlorhexidine gluconate/glycerin/hydroxyethylcellulose,2,2
+3144,phisohex,1,1
+3161,nystatin-triamcinolone,74,77
+3186,tolnaftate,5,8
+3197,lotrisone,149,203
+3203,ciclopirox,63,63
+3204,naftin,2,2
+3205,oxistat,6,6
+3223,lidocaine hcl/benzalkonium chloride/alcohol,1,1
+3233,tetracaine,1,1
+3287,hydrocortisone,52,53
+3288,hydrocortisone acetate,16,18
+3289,hydrocortisone,20,22
+3298,westcort,3,3
+3302,betamethasone dipropionate,43,79
+3304,betamethasone dipropionate,4,4
+3309,desoximetasone,35,57
+3316,fluorometholone,11,14
+3317,fluocinonide emollient,4,5
+3318,fluocinonide,225,238
+3322,desonide,90,100
+3324,halog,1,1
+3327,temovate,75,121
+3328,alclometasone dipropionate,1,1
+3329,nasonex,423,728
+3331,ta-poff,1,1
+3336,crotamiton,1,1
+3338,malathion,2,2
+3344,avar-e,7,22
+3345,sulfacetamide sodium,6,9
+3346,sulfamylon,6,6
+3347,silver sulfadiazine,123,228
+3361,cortisporin,10,10
+3363,neo-polycin,4,10
+3368,cortisporin,7,10
+3369,neomycin sulfate/polymyxin b sulfate,1,1
+3383,bacitracin-polymyxin,20,28
+3385,mupirocin,1870,2123
+3389,muro-128,6,6
+3407,opcon-a,514,521
+3408,naphazoline hcl,2,2
+3409,phenylephrine hcl/pyrilamine maleate,2,3
+3413,visine allergy relief,1,1
+3417,mucinex,112,165
+3441,apraclonidine hcl,4,4
+3449,acetylcholine chloride,2,2
+3459,levobunolol hcl,4,5
+3460,alcaine,6,6
+3465,homatropine hbr,5,5
+3467,diphenhydramine,311,317
+3471,hydroxyamphetamine hbr,1,1
+3473,cyclomydril,1,1
+3490,blephamide,11,11
+3495,dextran,3,6
+3515,neomycin-bacitracin-poly-hc,1,1
+3523,maxitrol,20,21
+3530,pred-g,24,24
+3565,mucinex,1,1
+3586,trolamine,2,2
+3594,acetic acid/hydrocortisone,2,3
+3597,acetic acid,3,3
+3607,antipyrine-benzocaine,2,2
+3641,acetazolamide,164,214
+3643,methazolamide,16,16
+3646,diuril,19,23
+3647,triamterene-hctz,269,722
+3648,amiloride hcl/hydrochlorothiazide,19,31
+3649,hydrochlorothiazide,8812,8966
+3655,methyclothiazide,1,1
+3659,ethacrynic acid,3,5
+3660,furosemide,104652,168101
+3662,chlorthalidone,541,541
+3663,metolazone,767,1155
+3664,bumetanide,5029,9181
+3665,indapamide,62,64
+3666,triamterene,145,151
+3667,amiloride hcl,79,79
+3672,isosorbide,1047,1047
+3675,probenecid,72,72
+3681,potass cit-sod cit-citric acid,1,2
+3682,cytra-2,16,18
+3687,k phos mono-sod phos di & mono,2113,2114
+3692,fiber choice,3,7
+3693,gastrografin,1,1
+3710,ketostix reagent,1,1
+3714,tiopronin,1,1
+3715,colchicine/probenecid,5,6
+3717,colchicine,637,824
+3718,indomethacin,156,156
+3719,indocin,100,190
+3723,ibuprofen,4640,7112
+3724,nalfon,1,1
+3725,tolmetin sodium,3,3
+3726,aleve,430,474
+3727,naproxen,825,1231
+3728,flurbiprofen,4,4
+3729,sulindac,41,58
+3730,meclofenamate sodium,1,1
+3732,piroxicam,22,32
+3733,voltaren,486,620
+3736,ketoprofen,11,11
+3746,alfalfa,2,2
+3747,arnica,3,3
+3754,flaxseed,49,61
+3767,colon herbal cleanser,9,11
+3770,lactose,5,5
+3771,anusol,9,14
+3774,hydrophor,22,35
+3779,aloe vesta,12,12
+3789,royal jelly,5,5
+3792,polyethylene glycol,242,242
+3794,sodium chloride bacteriostatic,2869,2892
+3803,dy-o-derm,1,1
+3808,propylene glycol,10,11
+3810,glycerin,1,1
+3811,hygiene,1,1
+3815,flaxseed,48,117
+3816,mineral oil,2,2
+3817,castor oil,3,3
+3824,citric acid,5,5
+3836,sorbitol,13,14
+3842,methylcellulose,3,3
+3843,refresh tears,54,78
+3848,gelatin,5,5
+3856,cinnamon,25,33
+3864,coconut oil,5,5
+3871,ginger,8,8
+3872,garlic,117,128
+3882,aspartame,4,4
+3893,cyclophosphamide,48,49
+3894,leukeran,4,5
+3897,hydroxyurea,150,184
+3902,cisplatin,1,1
+3904,carboplatin,17,17
+3905,rheumatrex,29,33
+3906,methotrexate,273,273
+3907,fluorouracil,102,116
+3908,mercaptopurine,173,187
+3912,vinblastine sulfate,13,13
+3916,adriamycin,13,14
+3918,bleomycin sulfate,13,13
+3923,megace,604,665
+3926,tamoxifen citrate,170,170
+3927,dacarbazine,13,13
+3929,asparaginase,23,23
+3930,etoposide,4,4
+3936,penicillin g sodium,1,1
+3937,penicillin g potassium,11,11
+3941,penicillin g benzathine,3,3
+3942,penicillin v potassium,64,64
+3948,unasyn,13,13
+3952,ampicillin sodium,43,43
+3953,fentanyl,20,20
+3957,nafcillin,1283,1283
+3960,enoxaparin,28,33
+3962,augmentin,488,549
+3963,amoxicillin,350,350
+3976,cefazolin,7559,11838
+3978,mefoxin,1,1
+3983,cefaclor,3,3
+3991,ceftin,86,147
+3996,ceftriaxone,7245,13077
+3999,suprax,1,1
+4003,tetracycline hcl,2,2
+4010,demeclocycline hcl,21,21
+4012,doxycycline calcium,373,440
+4013,doxycycline hyclate,231,232
+4014,doxycycline monohydrate,77,144
+4015,minocycline hcl,167,197
+4018,erythromycin ethylsuccinate,1,1
+4020,erythrocin lactobionate,6,6
+4022,erythromycin,105,134
+4026,chloramphenicol,3,3
+4029,neomycin sulfate,15,15
+4032,gentamicin sulfate,147,163
+4034,tobramycin sulfate,1,1
+4035,amikacin sulfate,4,4
+4038,cycloserine,4,4
+4040,rifampin,200,212
+4042,vancomycin hcl,21760,46420
+4044,clindamycin hcl,220,276
+4045,clindamycin,830,929
+4047,bacitracin,937,937
+4051,coly-mycin m parenteral,3,5
+4053,aztreonam,38,59
+4054,imipenem-cilastatin sodium,366,400
+4061,sulfadiazine,21,21
+4071,bactrim,1149,1803
+4072,sulfamethoxazole,33,33
+4074,sulfasalazine,130,162
+4080,isoniazid,46,47
+4084,pyrazinamide,1,1
+4085,ethambutol hcl,36,42
+4087,nitrofurantoin,102,182
+4089,nitrofurantoin,62,65
+4090,furazolidone,1,1
+4101,hiprex,52,58
+4104,methenamine,55,55
+4108,phenazopyridine hcl,123,182
+4117,trimethoprim,69,70
+4123,norfloxacin,4,4
+4124,cipro,175,192
+4127,gris-peg,1,1
+4128,amphotericin b,3,3
+4129,nystatin,2917,3046
+4131,ancobon,1,1
+4132,ketoconazole,466,541
+4137,clotrimazole,198,425
+4139,miconazole,610,610
+4142,quinine sulfate,8,15
+4144,quinacrine hcl,2,2
+4147,chloroquine phosphate,2,2
+4150,pyrimethamine,16,22
+4151,plaquenil,276,512
+4155,paromomycin sulfate,1,1
+4157,metronidazole,2032,3497
+4162,pentamidine isethionate,5,8
+4171,benzyl benzoate,3,3
+4177,dapsone,140,144
+4182,acyclovir sodium,9,10
+4183,acyclovir,1062,1158
+4184,ribavirin,99,100
+4185,retrovir,15,30
+4202,"immune globulin,gamma(igg)",25,48
+4212,pneumococcal vac polyvalent,2793,8951
+4227,tubersol,7,12
+4254,silver nitrate,1,1
+4256,periclean,2,2
+4258,neosporin,2,2
+4266,webcol,3,3
+4267,hydrogen peroxide,1,1
+4270,dakin's,18,22
+4272,debrox,71,130
+4285,sodium chloride,463,464
+4292,sore throat,1,1
+4295,chloraseptic,8,14
+4297,chlorhexidine (periogard),5521,14714
+4301,boric acid,1,1
+4304,mouthwash,41,41
+4308,sodium benzoate,6,6
+4319,regular bevel needles,1,1
+4327,insulin syringe,1,1
+4329,nutrimix,16,16
+4330,easiclose wide outlet,1,2
+4338,fecal collector,1,1
+4341,prevail panty liner,1,1
+4347,detachol adhesive remover,3,3
+4348,lisco,12,12
+4350,solosite,2,2
+4353,duoderm,7,13
+4360,allevyn,1,2
+4364,primapore,6,6
+4371,digitex gold,5,5
+4377,nitroglycerin,7,10
+4383,ls plum primary set-ol,2,2
+4391,nitroglycerin patient line,1,1
+4394,thoracentesis set,9,9
+4406,walker,47,55
+4409,enema bottle,18,18
+4410,glove box,3,10
+4422,lancets,7,12
+4435,catheter,1,2
+4436,mono-flo,2,2
+4440,arm brace,2,2
+4460,saline sensitive eyes,13,14
+4469,nebulizer,61,77
+4476,insul-cap,37,40
+4480,diphenhydramine hcl,15923,34466
+4482,doxylamine succinate,9,9
+4483,arbinoxa,1,2
+4505,chlorpheniramine maleate,29,52
+4508,triprolidine hcl,2,2
+4518,cimetidine,74,107
+4519,zantac,1039,1039
+4520,ranitidine hcl,1733,2344
+4521,famotidine,23276,44063
+4522,axid,4,7
+4523,azathioprine,138,207
+4524,restasis,188,336
+4526,cromolyn sodium,14,19
+4528,"interferon alfa-2b,recomb",13,13
+4529,prolastin c,11,16
+4538,methacholine chloride,1,1
+4542,calcium carbonate/multivitamin,6,6
+4553,epogen,639,1473
+4558,cytovene,1,1
+4576,percodan,1,1
+4588,compazine,2,2
+4603,dramamine,13,23
+4655,tyrosine,1,1
+4665,cinnamon,10,16
+4673,omeprazole,16150,22531
+4676,camphor/eucalyptus/menthol,1,1
+4703,optiray,2748,2748
+4704,clindamycin,255,255
+4710,polymyxin b sul-trimethoprim,12,22
+4719,betahistine,1,1
+4727,calcium sulfate,1,1
+4741,dichloralphenazone,2,2
+4744,clomipramine hcl,38,44
+4763,metformin hcl,10116,11548
+4766,aquasol a,1,3
+4791,sotalol,786,946
+4794,boudreauxs,11,25
+4833,propafenone hcl,66,102
+4834,clozapine,229,275
+4841,polycarbophil,5,5
+4842,propofol,30981,41833
+4845,sprintec,84,113
+4846,lorazepam,71104,96552
+4851,cholestyramine,178,443
+4855,atropine,91,91
+4860,propionic acid,2,2
+4867,botox,9,12
+4868,fluconazole,529,905
+4879,advil cold & sinus,1,3
+4882,mefloquine hcl,1,1
+4883,phenol saline,1,1
+4884,phoslo,635,1170
+4887,fibersource,25,26
+4917,calcium carbonate/magnesium oxide,2,2
+4947,ascorbic acid/ascorbate calcium,2,2
+4948,vitamin c,46,46
+5168,betoptic s,6,8
+5173,prodrin,1,1
+5175,ketorolac,4156,7725
+5186,safflower oil,2,2
+5198,pilocarpine hcl,50,61
+5207,trypsin,12,12
+5223,benefiber,35,40
+5225,artificial tears,184,317
+5236,tetracycline,17,17
+5237,sulfamerazine,3,3
+5243,myco nail,4,4
+5251,arsenic,1,1
+5267,omnicap,8,19
+5411,vitamin a/ascorbic acid/vitamin e/selenium,7,7
+5651,metipranolol,2,2
+5754,vitamin b comp and c/folic acid/zinc,2,3
+5859,calcium + d,563,1576
+5867,gold bond,1,1
+5888,nitroglycerin,3267,4778
+5889,olsalazine sodium,1,1
+5900,vitamin b complex,357,378
+5959,centrum,357,358
+6025,interferon alfa-n3,1,1
+6031,doxazosin mesylate,988,1311
+6035,ofloxacin,38,51
+6036,estazolam,37,37
+6037,ultravate,7,12
+6055,ondansetron hcl,10483,28064
+6063,isradipine,2,2
+6070,neupogen,73,81
+6071,ciprofloxacin in d5w,1045,1045
+6072,ciprofloxacin,316,316
+6080,ramipril,478,724
+6081,podofilox,1,1
+6089,etodolac,127,127
+6091,bacitracin,18,19
+6096,placebo #00,7,9
+6106,fosinopril sodium,121,122
+6110,lidocaine/aloe vera,1,1
+6113,benazepril hcl,609,868
+6205,felodipine,132,132
+6215,humulin,384,762
+6227,pravastatin sodium,4385,5575
+6228,biaxin,78,107
+6232,ticlopidine hcl,4,4
+6243,vitamin a & d,1,1
+6249,nicoderm cq,1639,3173
+6250,pamidronate disodium,2,2
+6270,artificial tears,2,5
+6301,nipent,1,1
+6306,magnesium sulfate,8126,24311
+6311,nabumetone,161,164
+6312,simvastatin,13787,19158
+6316,cefprozil,12,12
+6319,flumazenil,1294,1295
+6322,macrobid,524,526
+6323,metoprolol succinate,12972,18430
+6324,sertraline hcl,4017,6050
+6328,hydrocodone bitartrate/chlorpheniramine maleate,4,4
+6330,cytomegalovirus immune globuln,1,1
+6334,azithromycin,6234,6708
+6338,fluvoxamine maleate,56,69
+6341,imdur,2871,4948
+6342,morphine sulf-d5w,1,1
+6421,finasteride,1734,2443
+6428,calcitrate,88,168
+6430,iron,8,8
+6437,cholestyramine,3,3
+6438,fentanyl,2438,6611
+6446,carboxymethylcellulose,36,36
+6447,azactam-iso-osmotic dextrose,4,4
+6494,amlodipine besylate,9979,34826
+6495,cefpodoxime proxetil,274,277
+6503,sporanox,9,10
+6519,vitamin b-1,119,121
+6520,coq-10,281,434
+6536,clobazam,18,26
+6538,alocril,2,2
+6544,cetirizine,1303,2632
+6545,pulmicort respule,1269,2431
+6549,milrinone lactate,25,25
+6552,fenofibrate,778,924
+6554,zaditor,30,51
+6587,imitrex,40,45
+6605,lorata-d,67,83
+6619,mepron,154,258
+6620,daypro,8,11
+7310,estradiol/norethindrone acetate,5,10
+7315,estriol,2,2
+7318,mirena,26,31
+7325,korlym,4,4
+7327,desogestrel-ethinyl estradiol,6,14
+7344,paroxetine hcl,1195,2356
+7350,tetrabenazine,6,7
+7377,vigabatrin,1,1
+7378,lamictal,677,1349
+7393,salmeterol xinafoate,83,137
+7396,bisoprolol fumarate,181,257
+7429,fragmin,7,9
+7471,finacea,24,31
+7527,mupirocin,104,116
+7576,sulfamethazine,5,5
+7590,lamisil,36,71
+7605,loratadine,2370,3581
+7607,azelastine hcl,172,366
+7619,reese pinworm,1,1
+7625,paclitaxel,1,1
+7631,quinapril hcl,298,447
+7674,orabase plain,2,2
+7708,cadexomer iodine,4,6
+7825,azathioprine sodium,11,11
+7826,accuretic,17,21
+7827,soriatane,27,35
+7837,lidopatch,115,115
+7842,zolpidem tartrate,7532,17643
+7844,potassium chloride,255,255
+7846,jevity,127,131
+7864,albendazole,1,1
+7873,flonase,2113,3617
+7878,enoxaparin,22971,45515
+7892,je-vax,1,1
+7894,freestyle lite meter,2,7
+7904,vitamins a & d,2,2
+7933,lever lock cannula,2,2
+8006,parenteral nutrition,15,15
+8009,parenteral nutrition,3,3
+8060,creon,277,449
+8186,felbatol,1,1
+8254,sodium chloride,4615,4615
+8255,sodium chloride,272685,426168
+8256,sodium chloride,64,64
+8257,sodium chloride,80,80
+8259,metronidazole,3628,6364
+8260,midol,2,2
+8268,sular,8,13
+8283,precose,45,78
+8302,arthrotec,8,10
+8317,tramadol hcl,8965,14632
+8431,sensi-care,2,2
+8466,vancomycin,4480,9523
+8537,betaseron,11,12
+8643,heparin (porcine) in nacl,1976,2828
+8712,erythromycin,8,8
+8715,ziac,39,82
+8721,risperdal,1269,2006
+8734,elmiron,6,6
+8738,piperacillin-tazobactam,6574,21251
+8739,prednicarbate,4,4
+8788,aluminum monostearate,2,2
+8798,evening primrose,1,1
+8824,diclofenac potassium,12,23
+8829,torsemide,975,1170
+8831,gabapentin,20461,26557
+8832,pulmozyme,4,5
+8840,artificial tears,162,197
+8845,lacrisert,1,1
+8847,venlafaxine hcl,1309,2268
+8885,robitussin cold-flu day,224,233
+8946,fluvastatin sodium,18,27
+8962,benazepril hcl/hydrochlorothiazide,17,21
+8963,rocuronium,3285,5041
+8966,novofine,12,29
+8974,tacrolimus,825,825
+8991,mavik,21,42
+8993,prevacid,1401,1682
+8998,skin protectant,53,53
+9005,fosfomycin tromethamine,3,4
+9007,famciclovir,16,32
+9021,aerochamber,6,11
+9040,duoneb,20896,66482
+9061,clobetasol emollient,142,143
+9109,glucosamine,27,29
+9118,acapella,1,2
+9125,l-alanine,4,4
+9129,aimsco,1,1
+9148,vitamin e,21,21
+9274,cystagon,1,2
+9533,diaper,2,2
+9540,leg bag holder,1,1
+9545,heparin sodium,4,4
+9594,proline,1,1
+9612,nefazodone hcl,20,20
+9614,navelbine,1,1
+9644,ganciclovir,2,4
+9649,prempro,32,48
+9672,thalaset,1,1
+9690,glucovance,51,92
+9724,copa hydrophilic foam,1,2
+9736,"bismuth tribromophenate/petrolatum,white",1,1
+9744,milrinone in,67,68
+9759,benadryl,1231,1232
+9793,cimetidine,1,1
+9804,ultravist,1,1
+9829,losartan potassium,5535,8741
+9830,pregnenolone,1,1
+9849,galzin,3,6
+9863,hyzaar,300,597
+9896,dorzolamide hcl,258,331
+9934,moexipril hcl,10,10
+9993,hemorrhoid ointment,1,1
+10009,timolol,390,404
+10012,mycophenolate mofetil,575,919
+10037,parenteral nutrition,62,62
+10041,lotrel,166,254
+10066,nebulizer accessories,2,3
+10079,caladryl,1,1
+10081,"nebulizer/compressor, for nebulizer",2,3
+10082,ayr saline,1,1
+10083,hematinic plus,1,1
+10086,gengraf,58,111
+10093,vancomycin,11403,11412
+10117,valtrex,171,315
+10124,alendronate sodium,792,1554
+10132,cefepime,7619,11271
+10134,sulfacetamide,11,11
+10143,bicalutamide,103,198
+10194,soothe hydration,2,2
+10215,lamivudine,65,106
+10222,doxil,2,2
+10232,invirase,2,2
+10245,tretinoin,1,1
+10247,riluzole,196,210
+10249,anastrozole,248,376
+10278,cisatracurium,1794,1794
+10280,taxotere,7,11
+10294,melatonin,6,11
+10295,delsym,19,21
+10305,r-gene,1,1
+10321,citalopram hbr,2186,5479
+10329,versed,1362,2408
+10408,copper,2,2
+10412,norvir,225,273
+10485,glimepiride,974,1495
+10705,lidocaine,2816,4068
+10731,campral,49,65
+10747,perforomist,151,294
+10778,irinotecan hcl,1,1
+10781,somatuline depot,2,2
+10798,gemzar,12,12
+10802,alfuzosin hcl,102,141
+10803,cabergoline,17,17
+10804,daunorubicin citrate liposomal,1,1
+10858,nelfinavir mesylate,5,5
+10865,provigil,39,63
+11060,topamax,570,993
+11107,zostrix,7,11
+11115,prilosec,388,398
+11205,metoprolol succinate/hydrochlorothiazide,16,19
+11233,adapalene,1,2
+11249,magnesium sulfate,6409,6409
+11253,avonex,8,11
+11254,meropenem,5511,6573
+11257,dura-g,2,2
+11265,morphine,76,76
+11358,aleve sinus & headache,2,3
+11372,ginkgo,13,26
+11417,koate-dvi,12,12
+11481,hawthorn,4,4
+11505,mirtazapine,1677,3113
+11507,antipyrine,1,1
+11528,insulin lispro,16681,50073
+11560,latanoprost,722,1271
+11582,zanaflex,590,955
+11592,nevirapine,9,15
+11595,allegra,566,783
+11632,toremifene citrate,10,10
+11636,denavir,6,9
+11679,fosphenytoin sodium,2,3
+11735,oxcarbazepine,404,617
+11740,vinpocetine,1,1
+11782,durezol,31,37
+11786,brimonidine tartrate,286,564
+11792,aspirin,2155,2212
+11813,poractant alfa,4,4
+11814,zyprexa,639,1162
+11815,zafirlukast,48,76
+11914,metronidazole benzoate,3,3
+11930,ropivacaine hcl,1,1
+11964,cepacol sore throat,7,7
+12014,promethazine,3415,8603
+12090,amikacin,41,41
+12181,meloxicam,608,1081
+12182,ropinirole hcl,734,1326
+12203,prasterone (dhea),6,6
+12204,diovan,1395,2448
+12233,betaine,2,2
+12257,glynase,10,10
+12258,mentax,4,4
+12259,aricept,1554,2385
+12263,epinephrine hcl,1,1
+12306,transderm-scop,1012,1272
+12319,chlorhexidine,291,291
+12321,zileuton,1,2
+12346,sodium oxybate,2,2
+12351,letrozole,102,139
+12383,levofloxacin in d5w,7101,18812
+12384,levofloxacin,4297,6238
+12404,atorvastatin calcium,18333,46028
+12474,aggrenox,310,323
+12779,sumatriptan,406,606
+12810,copaxone,17,28
+12815,pataday,105,178
+12828,chromium picolinate,17,17
+12834,calcium/vitamin e/folic acid/pyridoxine/herbal drugs,1,1
+12848,follistim aq,2,2
+12849,sertaconazole nitrate,40,55
+12902,agrylin,8,13
+12950,chondroitin sulfate,27,28
+12958,zomig,24,31
+12998,aldara,3,3
+13111,cetaphil,9,9
+13187,gadopentetate dimeglumine,1,1
+13206,hyalgan,19,20
+13209,sodium polystyrene sulfonate,1660,3136
+13221,foscarnet sodium,1,1
+13225,diphenhydramine citrate,24,24
+13237,enalaprilat,4,4
+13266,naratriptan,10,14
+13315,tazarotene,1,1
+13319,desmopressin acetate,307,396
+13331,dovonex,21,33
+13405,selsun blue,11,11
+13429,fortaz,9,9
+13446,cipro,658,893
+13449,adderall,359,448
+13455,mirapex,307,584
+13464,alpha lipoic acid,54,55
+13573,calcium,192,195
+13633,bromday,53,81
+13748,lidocaine hcl,465,465
+13778,namenda,1356,1516
+13795,carvedilol,19890,32297
+13819,perphenazine/amitriptyline hcl,11,17
+13845,nitazoxanide,6,6
+13864,tamsulosin hcl,5520,12365
+13894,sinemet,590,1011
+13897,vision formula,7,14
+13907,4-aminopyridine,7,16
+13908,keflex,410,636
+13911,aceon,8,13
+13956,chondroitin sulfate,6,6
+13966,megared plant-omega-3,1,1
+13997,melatonin,23,25
+14014,combivir,8,8
+14015,seroquel,3949,8355
+14173,st. john's wort,28,28
+14230,turmeric,16,17
+14267,accu-chek,5,5
+14293,moexipril-hydrochlorothiazide,2,2
+14296,hydrocodone bit-ibuprofen,197,226
+14297,glucosamine hcl/chondroitin sulfate a,1,1
+14298,cavilon,7,7
+14299,cavilon,7,7
+14306,calcitrate + vit d,57,129
+14319,mineral oil/dimethicone/coconut oil/water,1,1
+14324,aspirin/acetaminophen/magnesium/aluminum hydroxide/caffeine,1,1
+14772,potassium chloride in nacl,2706,2721
+14778,1000 ml - kcl in dextrose-nacl,1456,4171
+14779,kcl in dextrose and nacl,1,1
+14861,normosol-m and dextrose,3,3
+14894,cu-plus-protein,2,2
+14944,parenteral nutrition,65,65
+15060,emetrol,3,3
+15084,hydrocerin,4,4
+15163,proctofoam-hc,11,11
+15271,aero otic hc,1,1
+15488,lollipop base,1,1
+15560,ammonium lactate,140,186
+15576,avapro,181,361
+15632,acetyl l-carnitine,4,4
+15726,folic acid-vit b-6-vit b-12,4,4
+15743,sodium chloride/potassium chloride,1,2
+15773,tiagabine hcl,14,18
+15777,imodium multi-symptom relief,1,2
+15908,midodrine hcl,3010,3012
+15909,tetrahydrozoline hcl,21,22
+16196,emla,94,122
+16472,siberian ginseng,1,1
+16483,eldepryl,1,1
+16487,malarone,1,1
+16520,galantamine hbr,108,127
+16617,omega-3 fatty acids/vitamin e,6,7
+16675,sam-e,3,3
+16687,oxaliplatin,12,12
+16695,sodium glycerophosphate,4,4
+16740,bystolic,488,580
+16785,treanda,4,7
+16846,allegra-d,12,13
+16848,rituxan,30,33
+16859,iron succinyl-protein complex,7,7
+16904,econazole nitrate,67,67
+16911,singulair,2075,2807
+16913,candesartan cilexetil,61,116
+16915,penlac,5,9
+16917,evista,154,190
+16926,tobi,1,1
+17021,elestat,2,2
+17022,cosamin ds,3,5
+17026,lansoprazol-amoxicil-clarithro,25,27
+17029,chlorophyll,4,4
+17067,shark cartilage,2,2
+17073,silvasorb,12,12
+17084,diovan hct,71,130
+17103,potassium sulfate,1,1
+17165,folbee,22,99
+17263,benzaclin,3,8
+17291,boniva,119,146
+17389,vivotif berna,1,1
+17404,honey,2,2
+17426,oxybenzone,3,3
+17433,cilostazol,300,532
+17498,trospium chloride,66,85
+17539,plavix,11395,28014
+17674,pro-stat,191,205
+17727,vitamin e succinate,3,5
+17729,multivitamin with folic acid,1,1
+17765,tobramycin,40,54
+17791,potassium phosphate,1702,1709
+17793,amiodarone,1187,1187
+17799,"na phosphate,dibasic dihydrate",4,4
+17876,florastor,551,597
+17915,prandin,101,144
+17996,cranberry extract,256,261
+18023,feosol,8,12
+18026,lotemax,85,90
+18047,detrol,207,424
+18084,humalog,837,3995
+18166,bilberry,5,5
+18202,parenteral nutrition,40,40
+18205,parenteral nutrition,38,38
+18207,norethindrone acetate/ethinyl estradiol,1,1
+18237,trace elements,2,2
+18250,zemplar,176,275
+18254,azopt,72,95
+18269,cosopt,143,253
+18277,"lepirudin,recombinant",2,2
+18280,parenteral nutrition,29,29
+18377,prenatal,55,93
+18381,coly-mycin s,1,1
+18385,xeloda,52,65
+18392,cipro hc,1,1
+18396,egg-pro,1,1
+18520,viorele,4,5
+18527,exelon,151,162
+18535,rizatriptan,75,113
+18548,cefdinir,71,71
+18555,potassium citrate,1,1
+18559,sodium citrate,2,2
+18561,potassium phosphate,30,37
+18564,synagis,1,1
+18565,actonel,117,139
+18568,c1 esterase inhibitor,1,1
+18569,colazal,32,53
+18599,zinc gluconate/pumpkin seed oil/saw palmetto,1,1
+18603,cellcept,67,67
+18678,zinc,262,262
+18694,arava,60,113
+18747,remicade,47,50
+18748,sustiva,65,71
+18750,grape seed extract,4,4
+18751,xenical,5,5
+18801,herceptin,12,12
+18807,vitron-c,71,77
+18809,iron,6,6
+18829,prenatal,1,1
+18830,enbrel,68,74
+18831,priftin,1,1
+18832,renagel,224,252
+18839,micardis,134,171
+18847,aciphex,94,122
+18857,abacavir,32,53
+18950,entacapone,21,32
+18963,avalide,22,31
+18979,celebrex,596,735
+19000,sandostatin lar,1,1
+19017,omeclamox-pak,3,3
+19036,dextromethorphan,76,76
+19058,ondansetron,7872,10741
+19063,b-12,45,64
+19076,diphencyprone,1,1
+19078,glucagon,21160,49390
+19818,clindamycin palmitate hcl,8,12
+19849,parenteral nutrition,109,109
+19850,parenteral nutrition,28,28
+19858,xopenex,576,726
+19948,ferrlecit,15,17
+19949,humalog mix,64,111
+19963,advair diskus,6938,7546
+20030,refresh,49,49
+20214,avandia,3,4
+20274,allopurinol sodium,9,10
+20292,ferrous sulfate,4164,4177
+20302,magnebind,1,1
+20324,actos,470,723
+20334,insulin admin. supplies,190,190
+20347,zaleplon,40,64
+20355,temozolomide,49,76
+20361,eye drop tears,1,1
+20364,glucosamine chondroitin,54,55
+20370,cat's claw,1,1
+20371,gotu kola,1,1
+20375,cayenne,4,4
+20377,lofibra,16,36
+20384,milk thistle,21,21
+20397,relagard,3,3
+20398,relenza,1,1
+20401,rifaximin,823,1155
+20420,diclofenac epolamine,245,289
+20487,nepro,131,132
+20492,glucerna,129,129
+20493,pulmocare,19,19
+20495,glucerna,12,12
+20519,sirolimus,103,126
+20533,hectorol,154,180
+20534,soy protein,4,4
+20543,vitamin e,23,23
+20546,antioxidant,1,1
+20558,green tea leaf extract,2,3
+20574,vitamin a & d,19,20
+20581,beano,4,4
+20584,bee pollen,1,1
+20607,tamiflu,149,205
+20613,carbidopa,56,56
+20622,ginkgo biloba,6,6
+20623,horse chestnut,7,7
+20625,cranberry,101,101
+20627,ester-c,10,10
+20635,hypotears,1,1
+20653,progesterone,28,34
+20690,moxifloxacin hcl,27,64
+20695,docosahexanoic acid,14,18
+20727,isometheptene mucate,1,1
+20728,ginger root,1,1
+20735,implanon,35,36
+20746,valerian root,11,11
+20760,soy isoflavone,1,1
+20769,novolog,29982,70747
+20775,co q-10,43,43
+20776,coenzyme q-10,241,241
+20788,zymaxid,3,5
+20803,exemestane,37,64
+20821,glucosamine sulfate/chondroitin sul a na/sodium,1,1
+20830,tea tree,1,1
+20864,tikosyn,89,106
+20882,lipoflavovit,12,13
+20911,cholest off,3,5
+20922,calcium carbonate/ergocalciferol (vit d2)/soybean,1,1
+20952,levetiracetam,10901,16912
+20953,lotronex,1,1
+20968,melatonin,1333,1347
+20971,dexmedetomidine,3234,6295
+20974,tacrolimus,3170,3498
+21058,garcinia cambogia,5,5
+21080,evoxac,21,29
+21088,calcium citrate + d,17,25
+21102,lupron depot,94,117
+21110,culturelle,60,72
+21114,zoladex,2,2
+21122,pretz,1,1
+21140,zonisamide,78,133
+21157,linezolid,58,103
+21170,ginseng,8,8
+21217,saw palmetto,57,58
+21229,savella,33,38
+21234,ferric subsulfate,2,2
+21273,excedrin pm,3,3
+21276,dhea,45,45
+21280,atacand hct,4,5
+21313,factor ix,7,9
+21315,aveeno,1,1
+21332,famotidine/calcium carbonate/magnesium hydroxide,1,1
+21353,water,15,15
+21364,calcium magnesium + d,4,7
+21367,pegintron,1,1
+21369,proferrin,5,5
+21411,lutein,22,22
+21417,vaniqa,2,2
+21452,welchol,97,111
+21516,quinine hcl,48,48
+21544,multihance,1,1
+21560,black cohosh root extract,1,1
+21561,black cohosh,9,9
+21565,centrum silver,106,108
+21582,kaletra,20,25
+21590,milk thistle,50,50
+21607,nexium,2144,2535
+21735,metamucil,142,144
+21772,sennosides-docusate sodium,11645,23086
+21773,venofer,43,52
+21792,lactobacillus reuteri,1,1
+21800,trizivir,3,4
+21814,permethrin,3,5
+21815,chloroxylenol/pramoxine hcl,1,1
+21836,preparation h,3,6
+21845,zoledronic acid,26,39
+21859,starlix,43,67
+21872,bivalirudin,1,1
+21873,telmisartan/hydrochlorothiazide,4,7
+21876,f-a-a,5,5
+21894,axert,3,3
+21909,caspofungin acetate,5,5
+21916,selenium,48,48
+21934,clarinex,55,58
+21956,docosanol,5,7
+21974,ziprasidone hcl,180,309
+21993,symbicort,3129,3239
+21996,travatan z,247,362
+22000,lumigan,390,415
+22008,pantoprazole,41558,114278
+22025,lantus,14823,37198
+22026,ocella,21,34
+22033,valcyte,219,247
+22038,lidocaine-transparent dressing,2859,2952
+22057,plegisol,6,6
+22096,gleevec,101,105
+22142,lidocaine-hydrocortisone,3,3
+22673,renacidin,4,4
+22707,estradiol,3,3
+22708,dilaudid,225,427
+22716,multivital platinum,7,23
+22724,fentanyl,2962,2983
+22733,central vite,1,1
+22755,elecare,6,6
+22759,lycopene,3,3
+22766,lutein,17,18
+22770,polyethylene glycol,42,42
+22778,polyethylene glycol,110,110
+22780,polyethylene glycol,44,44
+22796,cefadroxil,22,22
+22819,polyethylene glycol,24538,31311
+22820,polyethylene glycol,161,161
+22848,neurotips,2,2
+22851,taclonex,16,16
+22864,zyrtec-d,16,18
+22867,emu oil,1,1
+22868,definity,1180,1180
+22880,ultracet,58,68
+22881,l-lysine,8,8
+22883,glucosamine hcl,3,3
+22889,darbepoetin alfa in albumn,28,33
+22890,aranesp,262,313
+22912,cod liver oil,1,1
+22921,vitamin e,20,25
+22937,viread,56,106
+22946,hemax,36,41
+22959,levocetirizine dihydrochloride,74,115
+22961,calcium,874,907
+22970,cholecalciferol (vit d3)/vitamin e acetate/safflower oil,1,1
+22979,apple cider vinegar,3,4
+22980,spectracef,1,1
+22984,vitamin e,2,2
+22987,focalin,7,9
+22988,frova,4,4
+22990,tracleer,3,3
+23008,glaspak,1,1
+23025,monoject,5,5
+23035,tb syringe,2,2
+23037,insulin syringe,8,8
+23038,insulin syringe,29,29
+23041,insulin syringe,28,28
+23072,ferric sulfate,10,10
+23090,advicor,5,6
+23093,relpax,25,32
+23164,trelstar,1,1
+23167,elidel,8,10
+23233,arixtra,67,120
+23235,ortho evra,12,13
+23241,invanz,79,147
+23255,neulasta,10,13
+23258,taurine,4,4
+23315,ginkgo,5,5
+23353,interferon beta-1a/albumin human,4,8
+23379,geodon,27,27
+23400,novolog mix,186,204
+23438,buprenorphine,27,44
+23445,proferrin-forte,1,1
+23490,benicar,519,582
+23523,faslodex,8,8
+23650,remodulin,14,14
+23659,glucosamine,305,305
+23660,osteo bi-flex,14,14
+23720,voriconazole,50,61
+23721,nuvaring,26,27
+23805,eye,1,1
+23879,prosight with lutein,7,7
+23881,immulife,2,5
+23919,psyllium fiber,68,120
+24021,artemether/lumefantrine,4,4
+24022,lexapro,1670,2313
+24024,spiriva,5065,5980
+24030,cranberry,1,1
+24035,pegasys,11,12
+24100,insulin syringe,22,22
+24243,omacetaxine mepesuccinate,1,1
+24270,adefovir dipivoxil,1,1
+24291,prepopik,19,19
+24316,eplerenone,110,143
+24353,avandamet,7,7
+24402,dihydro-pe,2,2
+24425,magnesium,896,902
+24429,glipizide-metformin,12,17
+24459,zetia,788,909
+24485,avodart,358,390
+24523,midazolam,1028,1028
+24551,abilify,1032,1191
+24700,forteo,42,43
+24703,atomoxetine hcl,11,21
+24721,primrose oil,6,6
+24759,refresh dry eye therapy,18,18
+24800,humira,76,87
+24819,methotrexate,486,487
+24846,suboxone,153,195
+24859,cialis,184,269
+24864,calcium/magnesium oxide/cholecalciferol (vitamin d3),1,2
+25002,asthmanefrin refill,2,4
+25009,crestor,2890,3417
+25035,levitra,53,70
+25040,ancef,1738,2627
+25044,enfuvirtide,5,5
+25050,lactobacillus,87,87
+25056,oxybutynin,1083,1088
+25058,aprepitant,23,27
+25117,paradigm,1,1
+25118,paradigm,1,1
+25184,excel ap,1,1
+25201,myfortic,114,133
+25202,velcade,7,13
+25225,systane,40,41
+25243,marcaine,5,7
+25246,fentanyl-bupivacaine-ns,2,2
+25247,hydromorph hcl/bupiv hcl/ns/pf,1,1
+25277,1 ml,2880,3955
+25281,1000 ml - potassium chloride in nacl,1043,1050
+25386,fentanyl,28343,105348
+25390,reyataz,195,207
+25399,xolair,9,12
+25426,emtriva,62,97
+25446,benicar hct,38,52
+25476,stalevo,47,54
+25485,"petrolatum, yellow",1,1
+25488,ciprodex,25,45
+25496,glucosamine chondroitin msm,4,9
+25509,risperdal consta,1,1
+25512,palonosetron hcl,11,20
+25557,ca carbonate/mag oxide/vitamin d3/vit b12/fa/vit b6/boron,6,6
+25631,gamunex-c,2,2
+25662,lexiva,1,1
+25663,vicks nyquil,6,8
+25673,daptomycin,60,74
+25734,cerefolin,13,18
+25756,cla,4,4
+25796,pexeva,1,1
+25800,symbyax,7,7
+25804,combigan,119,141
+25827,senna leaf,1,1
+25869,niacin,509,512
+25889,prosource,14,14
+25905,alimta,30,31
+25951,caduet,26,45
+25953,cefuroxime,31,31
+25963,avastin,45,48
+25966,bacitracin,102,102
+25968,esomeprazole,1227,1306
+25973,dianeal pd-2 w-2.5% dextrose,1,1
+25979,flora-q,10,18
+25996,limbrel,4,5
+25998,sensipar,708,811
+26046,gemifloxacin mesylate,1,1
+26066,green tea extract,2,2
+26130,"vit e ac/sorbitan sesq/mineral oil/petrolatum,white/paraffin",3,3
+26201,glucosamine-chondroitin,13,13
+26342,dialyvite,13,13
+26361,vidaza,5,6
+26407,insulin detemir,3991,7350
+26435,"calcium phosphate, dibasic/cholecalciferol (vitamin d3)",1,1
+26470,lyrica,1663,1919
+26475,cinnamon,46,73
+26505,vytorin,238,244
+26515,truvada,205,211
+26521,cymbalta,2032,2726
+26524,epzicom,60,61
+26552,hylan g-f,1,1
+26588,benadryl,10,10
+26595,vesicare,371,403
+26607,amlactin,4,4
+26639,valine,1,1
+26691,"mvi, adult no.2 without vit k",123,125
+26696,infuvite,1055,1055
+26698,"mvi, adult no.1 with vit k",180,180
+26708,trochibase s,1,1
+26714,multi-vitamin,197,241
+26726,mag hydroxide/al hydroxide/simeth/diphenhydramine/lidocaine,14,21
+26745,tarceva,60,71
+26750,tysabri,122,122
+26756,fosrenol,44,58
+26785,tucks,2,3
+26791,lunesta,147,166
+26793,lovaza,368,381
+26794,prostate,14,15
+26808,cefazolin,2941,2941
+26809,cefazolin,148,148
+26810,diltiazem,5,5
+26820,enablex,47,50
+26826,prialt,2,2
+26856,abraxane,1,1
+26859,atrac-tain,1,1
+32676,acidophilus,3,5
+32690,senna,1257,1257
+32691,alvesco,43,89
+32716,glucosamine,40,51
+32727,golden seal extract/echinacea purpurea extract,1,1
+32736,chromium,1,1
+32737,magnesium,69,70
+32801,ferrous gluconate/lysine hcl/vitamin e/vitamin b comp w-c/zn,1,1
+32804,micafungin sodium,64,116
+32805,symlinpen,4,7
+32814,xopenex,26,32
+32827,cellacefate,2,2
+32832,entecavir,64,67
+32834,fluocinolone acetonide,55,55
+32841,fosamax plus d,2,2
+32893,byetta,38,62
+32900,zosyn,3919,5885
+32908,calcium citrate,5,5
+32911,azilect,43,77
+32922,vsl#3,22,22
+32957,os-cal ultra,37,37
+32975,afinitor,3,6
+32986,tigecycline,27,33
+33005,icaps,13,21
+33008,synera,1,1
+33009,bidil,27,31
+33094,ceftriaxone,763,1183
+33111,metamucil plus calcium,4,4
+33126,rozerem,42,60
+33127,glucosamine sulfate,22,22
+33152,insulin glulisine,105,196
+33159,calcium carbonate/vitamin b complex/folic acid,8,8
+33174,zinc sulfate,323,323
+33182,calcium/folic acid/multivitamin w-minerals,1,1
+33188,"glucosamine hcl/chondro su a/collagen, hydrolyzed/hyalur ac",4,7
+33189,centrum silver,208,243
+33191,fluoxetine,1927,1927
+33193,collagen,16,16
+33195,nepafenac,34,53
+33202,actoplus met,36,38
+33220,lipitor,32,33
+33227,saliva substitution combo no.2,2,2
+33229,calcium,742,1446
+33236,airborne,1,1
+33239,certa plus,2,2
+33243,meperidine (pf),2198,3224
+33270,gabadone,8,8
+33276,nulytely with flavor packs,2,2
+33281,bisacodyl/sodium chlor/sodium bicarb/potassium chl/peg,17,17
+33290,gentamicin sulfate,4,4
+33301,vitamin e,287,287
+33307,vitamin a/vitamin e/avobenzone/octinoxate/hydroquinone,1,1
+33309,thera m plus,18,30
+33314,heparin,3982,13552
+33337,deferasirox,39,63
+33338,dermotic,4,4
+33347,omega,1249,2495
+33356,neosporin,14,14
+33371,avandaryl,6,6
+33384,preservision lutein,55,62
+33386,multivital,27,37
+33399,tandem dual action,1,1
+33400,nexavar,36,44
+33412,revlimid,78,81
+33419,methenamine/methylene blue/benzoic acid/salicylate/hyoscy,1,1
+33437,bacitracin zinc,2,2
+33439,critic-aid clear,17,17
+33442,heparin sod (porcine),1474,1862
+33445,sutent,12,12
+33446,ranexa,424,525
+33451,amitiza,175,279
+33455,melatonin,7,7
+33461,posaconazole,201,301
+33470,vitamin e acetate/avobenzone/octinoxate/hydroquinone,1,1
+33502,eraxis (water diluent),3,3
+33510,selegiline,14,18
+33512,zegerid,24,40
+33517,neupro,36,43
+33526,red yeast rice extract,6,6
+33539,freshkote,3,3
+33556,methylphenidate,121,128
+33567,cascara sagrada,3,3
+33592,lidocaine,2460,4851
+33594,lidocaine,51,51
+33598,ondansetron,47854,127625
+33600,ceramides,1,1
+33611,tandem plus,1,1
+33622,viscoat,1,1
+33712,dacogen,2,2
+33766,chantix,157,166
+33770,budesonide,19,23
+33782,vivitrol,9,9
+33792,levonorg-eth estrad eth estrad,1,4
+33799,desenex,44,44
+33811,"colostomy bag, non-sterile",2,2
+33814,benefiber,18,21
+33816,b complex with vitamin c,5,9
+33823,insulin pump cartridge,1,1
+33830,prenatal vitamins no.4/ferrous fumarate/folic acid,3,3
+33835,methylsulfonylmethane,3,6
+33842,prezista,85,147
+33855,sprycel,7,7
+33857,ocuvite with lutein,34,48
+33861,lucentis,8,8
+33873,super b complex,52,53
+33888,atripla,142,163
+33904,tricor,608,1004
+33922,glucosamine chondroitin,6,6
+33930,elaprase,60,60
+33931,surgilube,13,13
+33951,genteal,29,29
+33966,vicks nyquil severe cold-flu,2,2
+33971,iron asp gly & ps cmplx/ascorb calcium/ca-thr/succinic acid,4,4
+33972,iron asp gly&ps cmplx/ascorb.cal/vit b12/fa/ca-thr/succ.acid,1,1
+33976,multigen,1,1
+33988,generess fe,3,3
+33991,duetact,1,2
+34013,green tea,18,18
+34014,zinc,2,3
+34018,glucosamine & chondroitin with multivit.& mins. comb no.3,6,6
+34019,"multivits, iron, minerals combo no #4, folic acid",5,5
+34023,glucosamine chondroitin,26,26
+34026,moviprep,12,12
+34087,brovana,240,264
+34106,potassium and sodium phosphate,1164,2251
+34126,januvia,1128,1248
+34199,calcium carbonate and citrate/magnesium oxide,1,1
+34210,salmon oil,6,8
+34213,multivitamin with minerals/folic acid/lycopene,5,6
+34222,"zinc oxide/petrolatum, yellow",1,1
+34245,carvedilol,4,12
+34272,nephro-vite rx,5,12
+34283,cosopt pf,3,3
+34318,metronidazole/skin cleanser,3,3
+34343,invega,53,78
+34346,aquadeks,2,2
+34359,k-pax,4,4
+34360,k-pax,3,3
+34361,epinephrine,41,41
+34362,gentamicin sulfate in ns,1,1
+34372,vitamin b comp and vit c no.6,12,12
+34381,dexamethasone,101,135
+34400,accu-chek compact,1,1
+34429,calcium carbonate/vit d3/magnesium ox & stearate/zinc sulf,1,2
+34432,ucd,1,1
+34433,exforge,51,65
+34456,aquoral,1,1
+34458,prenatal vitamins comb,2,2
+34486,vyvanse,26,33
+34489,calcium plus vitamin d,10,10
+34493,tekturna,88,104
+34515,biotene,11,11
+34541,tykerb,7,8
+34569,eye-vite,2,2
+34618,soliris,2,2
+34630,hyde-out,1,1
+34632,spironolactone,1874,1874
+34634,advil pm,10,13
+34638,preservision areds,109,158
+34665,janumet,200,214
+34667,polyethylene glycol,134,235
+34668,zeasorb,1,1
+34674,vitamin e,253,253
+34677,megestrol acetate,243,243
+34684,fish oil/omega-3 fatty acids/ascorbic acid/vitamin e,1,1
+34708,altabax,3,3
+34713,travatan,2,4
+34717,reclast,14,15
+34756,fluticasone furoate,1248,1264
+34760,tpn electrolytes,71,71
+34774,flaxseed oil/evening primrose oil/bilberry extract,1,1
+34785,optisource,1,1
+34786,b complex with b-12,6,6
+34794,carnitor,17,17
+34805,hydromorphone hcl,4551,19980
+34827,brompheniramine maleate/phenylephrine hcl/carbetapentane cit,3,6
+34849,letairis,26,35
+34852,excedrin back & body,17,17
+34858,refresh optive,8,8
+34868,nuvigil,18,32
+34882,ubiquinol,11,11
+34884,rivastigmine,58,59
+34908,midazolam,5096,6981
+34925,multivitamin-minerals no.5/folic acid,1,1
+34927,selzentry,83,91
+34934,uribel,3,3
+34946,antihemophilic factor viii (plasma/albumin-free),3,3
+34977,ferrex,3,6
+34982,banzel,7,8
+35004,tocopherol peg,4,4
+35018,omega,2,2
+35019,donnatal,25,27
+35042,azor,87,118
+35057,multivitamins with min no.6/folic acid/lutein/lycop/ubidecar,1,1
+35065,vital-d rx,2,2
+35067,niacinamide,3,3
+35071,tens,1,1
+35072,raltegravir potassium,122,213
+35085,famotidine,15642,24426
+35087,flight ear plugs,2,2
+35092,saw palmetto,41,41
+35093,"multivit, calcium, iron,minerals/folic acid/herb complex",1,1
+35107,famotidine,1143,1183
+35116,flintstones,3,3
+35117,"multivit,calcium,iron,minerals/folic acid/guarana, caffeine",1,1
+35131,"vitamins a,c,e-minerals-herbal complex no.147",1,1
+35133,lithium aspartate,2,2
+35146,os,1,1
+35149,nilotinib hcl,2,3
+35152,inject-ease,2,2
+35160,truform compression stocking,1,1
+35163,"compression stocking, knee high, long length, medium",7,7
+35164,glucosamine hcl-chondroit sul sod-herb cmplx,1,1
+35167,prenatal complete,2,2
+35184,wheelchair,1,1
+35185,v-c forte,2,3
+35225,boswellia serrata extract,3,3
+35243,salicylic acid,1,1
+35252,d-mannose,1,1
+35262,renvela,1352,1691
+35277,sinecatechins,2,2
+35282,cefazolin,2017,2017
+35285,tylenol cold severe congestion,2,2
+35295,parenteral nutrition,5,5
+35342,etravirine,35,64
+35344,multivitamins,760,775
+35395,simcor,8,9
+35403,"compression socks, large",4,4
+35420,pristiq,125,129
+35433,benadryl allergy plus cold,1,3
+35445,tylenol cold & flu severe,9,10
+35451,cnl,1,1
+35456,menthol/aloe vera extract,1,1
+35469,calcium + d3,83,191
+35478,glyburid-metformin hcl,1,1
+35487,insulin pump,113,115
+35504,se,2,2
+35516,ephedrine,836,836
+35517,phenylephrine,182,182
+35534,treximet,17,18
+35554,cimzia,3,3
+35561,iron,7,7
+35565,prenatal vitamin,4,4
+35571,j-cof dhc,1,1
+35575,oxacillin,3,3
+35576,calcium phos/magnesium hydroxide/vit c & d3/phosphorus,2,2
+35577,acidophilus,289,289
+35583,b-12,20,20
+35585,biotin plus-calcium & vit d3,5,5
+35587,phenylephrine,1750,1750
+35595,neomycin sulf/bacitracin zinc/polymyxin b sulf/pramoxine hcl,329,337
+35602,ocuvite,173,173
+35604,pradaxa,520,549
+35606,toviaz,129,154
+35611,relistor,13,17
+35612,zinc oxide,34,52
+35625,lexiscan,1,2
+35627,cardiotek-rx,2,2
+35633,kcentra,1,1
+35639,uti-stat,2,2
+35645,pro-red ac,1,1
+35673,codituss dm,1,1
+35675,mesalamine,81,81
+35696,vit c/cherry ext/celery seed ext/celery seed/grape seed ext,6,7
+35704,grape artificial flavor,1,1
+35708,omega,3,3
+35715,culturelle,16,16
+35718,ferrous sulf/fa/vit b & c no.8,1,1
+35740,calcium,7,8
+35743,cholecalciferol (vit d3)/vitamin k2,122,131
+35747,citranatal rx,1,1
+35749,vitamin b complex,291,294
+35765,flura-safe,72,72
+35779,nicardipine,2668,2668
+35788,cavilon,7,7
+35792,pr,4,5
+35795,alvimopan,5,9
+35800,biotene moisturizing mouth,9,9
+35805,clonidine hcl,54,70
+35821,ocean,8,8
+35822,ocean complete,18,18
+35827,glucosamine-chondroitin,1,2
+35848,cefepime,449,449
+35850,advil pm,3,5
+35872,vimpat,197,282
+35877,sancuso,20,27
+35883,metamucil,161,188
+35897,biotin,238,238
+35900,vitamin d3,181,181
+35902,ca comb no.1/vitamin d3/pyridoxine hcl/fa/vit b12/aloe vera,5,5
+35904,prostate health formula,1,1
+35910,estroven energy,3,3
+35915,xarelto,1381,1630
+35922,"multivits w-ca, other min/folic acid/herbal complex no.157",4,5
+35937,ocean,2,2
+35946,lip balm,1,1
+35951,multivital,11,16
+35962,firazyr,1,1
+35964,aldosterone,1,1
+35989,promacta,11,11
+36003,creatinine,6,6
+36005,toxin control,1,1
+36009,prandimet,1,1
+36019,trilipix,82,94
+36020,fish oil,468,513
+36044,oil of oregano,1,2
+36046,phytosterol combination no.1,4,4
+36085,dexilant,311,358
+36086,atropine,30,34
+36090,spirometers and accessories,3,3
+36092,a + d,4,4
+36095,ubiquinone,8,8
+36097,morphine,3,3
+36106,uloric,158,205
+36117,beta,1,1
+36119,rapaflo,60,93
+36126,liquid protein fortifier,3,3
+36133,chromium picolinate,4,4
+36138,firmagon,5,7
+36140,ciclopirox,21,21
+36144,cysteine,1,1
+36156,bupropion hbr,699,699
+36158,feosol,276,277
+36159,effient,203,268
+36187,stelara,1,1
+36188,provent,2,2
+36207,vit d3/vit k/berberine hcl/hops (humulus lupulus),1,1
+36211,cholecalciferol (vit d3)/soy isoflavone,444,444
+36225,calcium carb&citrate/vitamin d3/mineral comb no.34/genistein,96,109
+36266,integra plus,2,2
+36270,aveeno,9,9
+36278,simponi,11,13
+36292,prenatal vit #16/iron fum & ps complex/folic acid/omega-3,20,21
+36305,amlodipine besylate/valsartan/hydrochlorothiazide,9,11
+36315,lidocaine hcl,22,22
+36320,omega,4,6
+36322,men's,3,3
+36323,calcium carbonate/vitamin d3/arginine/inositol/silicon,3,3
+36324,pnv-dha,1,1
+36325,estradiol valerate/dienogest,1,1
+36344,mometasone furoate/ammonium lactate,1,1
+36346,norepinephrine,6779,7924
+36348,tolvaptan,8,8
+36349,grape seed,6,6
+36350,besifloxacin hcl,4,5
+36361,diabetisource ac,3,3
+36368,zinc,1,1
+36389,eucerin,16,16
+36398,fish oil + vitamin d-3,1,2
+36401,nephplex rx,3,3
+36403,in control blood monitor,1,1
+36411,nucynta,34,51
+36416,bacmin,2,3
+36419,fiber choice,10,10
+36432,vitamin b complex#11/folic acid/ascorbic acid/biotin/zn oxid,1,1
+36436,victoza,100,174
+36437,epinephrine,1467,1467
+36439,feraheme,6,8
+36444,multaq,132,170
+36446,nephronex,8,11
+36466,tocilizumab,32,33
+36471,onglyza,138,195
+36477,dysport,1,1
+36479,invega sustenna,9,11
+36505,timoptic ocudose,2,2
+36510,multi-vite,29,57
+36515,fenofibric acid,23,23
+36516,vit b complex,4,7
+36518,vit b complex,5,5
+36524,urea,9,9
+36537,tyvaso,1,1
+36539,tyvaso,2,2
+36541,treprostinil,10,12
+36550,clonidine,3106,3150
+36551,natural tears,6,6
+36570,prenatal vit with calcium #60/iron/folic acid/dha,1,1
+36576,saphris,13,22
+36578,nystatin/lidocaine hcl/diphenhydramine hcl,1,1
+36589,calcium citrate/magnesium ox/vit d2/manganese/boron/silica,1,1
+36594,glucos/msm/collagen typ ii/vit c/manganese/herb cmplx no.21,8,8
+36630,regenecare,2,2
+36642,hydrocortisone-pramoxine,1,1
+36661,krill oil/omega-3/dha/epa/omega-6/phospholipids/astaxanthin,2,2
+36668,hydrocortisone/emollient combination no.45,1,1
+36683,pedialyte,2,2
+36690,telavancin hcl,1,1
+36693,probiotic formula,1,1
+36694,chlorpheniramine maleate/phenylephrine bitartrate/aspirin,1,1
+36709,votrient,4,5
+36710,lancet device,3,3
+36712,mederma,1,1
+36713,tricode ar,12,12
+36740,chlo tuss,2,2
+36749,lacto acidophilus/l. bulgaricus/bifido b/s. thermophilus,58,79
+36750,calcium cit/magnesium/d3/zinc ox/copper gluc/manganese/boron,9,10
+36755,vitamin b complex no.12/niacinamide,9,9
+36778,fanapt,8,8
+36787,ferractiv iron,4,4
+36798,juven,28,31
+36799,citranatal,1,1
+36801,cystex,1,1
+36808,methylprednisolone sodium succ,4650,10062
+36811,lollibase,2,2
+36817,centrum ultra men's,1,1
+36833,multivitamins with fluoride,4,7
+36843,metanx,56,58
+36856,pneumococcal,1,1
+36860,calcium carbonate & citrate/vitamin d3/phytosterol,7,7
+36861,b-complex,13,13
+36870,chia seed oil,1,1
+36874,velaglucerase alfa,2,2
+36875,hydrocortisone na succinate pf,930,1449
+36879,prenatal mv & min,2,2
+36882,visine,11,11
+36886,women's,2,3
+36887,hydrocortisone acetate/pramoxine hcl/emollient base,2,2
+36899,deplin,16,17
+36905,"calcium carbonate,calcium gluconate/ergocalciferol (vit d2)",2,2
+36910,cerefolin nac,2,2
+36915,vitamin c,22,22
+36919,centrum,49,136
+36921,vitamin c,255,255
+36931,glucosamine-chondroitin,2,2
+36934,"multivitamins with calcium, minerals/folic acid",1,1
+36940,fe,6,7
+36941,lutein,83,86
+36942,decubi vite,50,50
+36948,multivitamin/zinc oxide,1,1
+36961,neuraxon,1,1
+36963,calcium carbonate/vit d3/magnesium oxide/folic acid/vit k,1,1
+36964,vimovo,3,4
+36966,provenge,1,1
+36982,glucosamine/chondr-collagen complex/vit d3/vit c/manganese,1,1
+36983,livalo,34,49
+36984,jalyn,34,34
+36994,choline citrate,2,2
+37004,coral calcium,3,3
+37012,prolia,65,86
+37019,lid scrub compliance,2,2
+37021,cefepime,18,20
+37024,prenatal vitamins,9,9
+37025,prenatal plus,2,2
+37032,prenatal low iron,3,3
+37037,imuhance,4,4
+37050,dulera,337,353
+37053,arthri-flex,2,2
+37060,one a day women's prenatal dha,2,2
+37061,flintstones multi-vit gummies,3,3
+37064,whey protein,11,11
+37082,theanine,10,10
+37087,restora,3,3
+37089,tribenzor,22,28
+37093,acyclovir/hydrocortisone,3,3
+37109,calcium gluconate,2698,2698
+37111,bacillus coagulans/inulin,1,1
+37123,daliresp,478,520
+37127,omega,20,20
+37135,tekamlo,2,2
+37152,suprep,4,4
+37160,hylatopic plus,1,1
+37177,statuss green,1,1
+37180,gilenya,3,3
+37183,vit b complex & vit c no.11/calcium/dha/coenzyme q-10,14,14
+37189,probiotic & acidophilus,4,4
+37200,beyaz,1,1
+37202,resveratrol,15,15
+37207,multivitamin,7147,7147
+37221,alcortin a,1,2
+37237,venaliv,1,1
+37243,teflaro,17,18
+37246,kombiglyze,47,49
+37261,zostavax,18,18
+37278,nuedexta,40,42
+37280,first-mary's,2,2
+37310,"multivit w-ca, min/iron chelate/fa/lutein/herbal #179",106,106
+37319,bifidobacterium bifidum/bifidobacterium longum,3,3
+37321,latuda,92,116
+37328,ticagrelor,1093,1250
+37332,omega-3,15,18
+37333,amturnide,2,2
+37336,hyaluronic acid,11,11
+37346,theragran-m premier,258,258
+37347,echinacea,8,8
+37356,potassium and sodium phosphate,1253,1253
+37358,phenobarbital-ns,4,5
+37378,"multivitamins-a,b,d,e,k,zn",33,64
+37380,flax seed oil,85,96
+37381,cranberry plus vitamin c,8,12
+37387,pediatric multivitamin combination no.25/folic acid,3,3
+37394,analpram advanced,1,1
+37398,morinda citrifolia fruit,2,2
+37410,norepinephrine bitar-0.9% nacl,19,19
+37411,"borage oil/fish oil (anchovy,sardine)/fructose/soy lecithin",1,1
+37420,doxylamine succ/pseudoephedrine hcl/dextromethorphan hbr,1,1
+37424,multivitamin w-minerals/ferrous fumarate/fa/omega,9,9
+37440,estroven nighttime,1,1
+37442,vancomycin,3363,3363
+37444,edarbi,5,5
+37450,clindacin etz,14,14
+37458,buffered lidocaine,2597,2597
+37459,cosamin ds,2,2
+37462,benlysta,4,5
+37478,cosamin asu,7,7
+37503,ipilimumab,1,1
+37537,methylprednisolone,8,8
+37546,echinacea,2,2
+37558,cardiosterol,20,20
+37571,zytiga,30,32
+37574,horizant,2,3
+37576,tradjenta,186,265
+37585,bayer pm,1,1
+37589,phillips' colon health,7,7
+37593,calcium carbonate & lactate-cholecalciferol (vitamin d3),6,6
+37597,vilazodone hydrochloride,35,59
+37602,iron bis-glycinate chelate/fa/vit c/b12/ca-thr/succinic acid,1,1
+37610,calcium citrate/cholecalciferol (vit d3)/isoflavonones no.2,1,1
+37628,edurant,6,12
+37635,prenatal dha+complete prenatal,1,1
+37649,methadone hcl,18,18
+37661,beta glucan,1,1
+37667,potiga,1,1
+37668,glucosamine su dipot chl/chondroitin sul sod/vit c/manganese,2,2
+37669,glucosamine & chondroitin,209,209
+37674,fidaxomicin,1,1
+37677,cranberry,22,23
+37678,nexterone,1418,2426
+37690,vit d3/vit e mixed/se/soy isoflav/gamma tocopherol/lycopene,36,36
+37692,calcium cit/vit d3/vit k/mag ox/strontium cit/sodium borate,1,1
+37693,b complex with vitamin c,2,2
+37701,aloe vera,4,4
+37706,turmeric root extract,2,2
+37714,prenatal no.29/iron carb & asp.glycinate/fa/dha/fish oil,1,1
+37727,prenatal formula,1,1
+37739,calcium carbonate/vitamin d3/magnesium oxide/zinc oxide,3,5
+37740,pediatric multivitamin combination no.29,1,1
+37742,vitamin b comp w-c/calcium carbonate,5,6
+37747,omega,73,74
+37750,daily multivitamin,1,1
+37758,red yeast rice,78,78
+37760,epoprostenol sodium,1,1
+37762,veletri,7,7
+37768,fentanyl citrate,5,5
+37769,ceftazidime,46,46
+37777,prenatal + dha,4,5
+37792,eliquis,511,641
+37793,prenatal vits #4/iron fumarate & polysacc complex/folic acid,1,1
+37822,complera,11,11
+37825,orencia,19,22
+37828,prostate health formula,26,26
+37835,i-caps,20,21
+37837,zelboraf,1,1
+37870,decamethylcyclopentasiloxane,21,21
+37916,xalkori,7,10
+37918,aurodex,2,2
+37939,omega-3/dha/epa/d3/b12/folic acid/pyridox hcl/phytosterol,1,1
+37943,vit,27,27
+38009,lemon flavor extract,2,2
+38018,prenatal formula,1,1
+38027,chlorpheniramine/dextromethorphan/acetaminophen/guaifenesin,5,5
+38039,peg,2,2
+38104,probiotic,2,2
+38109,folate #5/iron/c/calcium-threonate/phosphat-dha/b cmp no.14,50,50
+38114,prednisone,45,45
+38140,cranberry-probiotic,4,5
+38143,cardio omega benefits,5,7
+38161,dexbromphen-pseudoephedrine-dextromethorphan,1,1
+38176,decadron,25,25
+38191,magnesium aluminum silicate,2,2
+38202,jakafi,29,42
+38205,prenatal multivitamins,61,109
+38209,eylea,3,5
+38212,preque,1,1
+38224,hydrazine sulfate,18,18
+38226,dologen,2,2
+38230,prenatal,28,28
+38238,vitamin b comp &c/ferrous fumarate/folic acid/vit d3/zinc ox,154,197
+38284,imidurea,2,2
+38300,cresol (m),5,9
+38327,glucosamine chondroitin,2,2
+38328,chlorpheniramine mal/phenylephrine/d-methorphan hb/aspirin,33,33
+38370,edarbyclor,5,6
+38373,levetiracetam,329,334
+38382,prenata,10,10
+38387,voraxaze,1,1
+38408,celery seed oil,1,1
+38424,bubble gum flavor,1,1
+38438,cardamom oil,2,2
+38446,axitinib,8,16
+38448,"mvi, adult no.4 with vit k",1393,2598
+38451,bydureon,22,24
+38464,jentadueto,6,7
+38480,prena1 plus,1,1
+38494,calcium carb/d3/soy isoflav/horsetail extract/lactobacillus,2,2
+38496,cardiamin,11,11
+38515,vitamin d3 complete,3,3
+38529,systane,61,61
+38595,refresh classic,3,3
+38604,marigold extract,1,1
+38607,prenatal multi + dha,2,2
+38613,lactobacillus acidoph/bifidobact anim/globulin protein conc,147,147
+38631,diphenhydramine hcl in,38,38
+38636,prena1,4,4
+38645,dexamethasone,5,5
+38688,vit b12/iodine/mag ox/znox/selenium/herbal complex no.193,30,30
+38714,provella,2,2
+38733,prorenal qd,1,1
+38771,bioflavonoid citrus,1,1
+38779,osteo bi-flex,42,44
+38858,bioflex,2,3
+38865,azo cranberry,2,2
+38906,tumersaid,2,2
+38916,sulfabenzamide,5,5
+38928,menthol/zinc chloride/benzocaine/cetylpyridinium chloride,1,1
+38941,carboxymethylcellulose sodium/glycerin/polysorbate,1,1
+38953,dymista,22,23
+38980,"multivit, ca, minerals/ferrous gluconate/folic acid/biotin",1,1
+39006,sodium chlorite,4,4
+39013,"multivitamin with calcium, minerals/iron/folic acid/lutein",1,1
+39023,geritol tonic,1,1
+39028,geritol complete,9,9
+39210,ketoconazole/skin cleanser combination no.28,10,10
+39215,krill oil,48,50
+39220,macular benefits,5,6
+39237,delsym cough relief plus,1,1
+39276,prenatal vitamin #50/iron fumarate & bisglycinate/folic acid,9,9
+39287,prenatal vitamin no.51/iron fumarate/fa/omega-3/dha/epa,1,1
+39294,cola flavor,3,3
+39306,hawthorne berry,2,2
+39314,hydromet,19,52
+39322,fluzone high-dose,3,3
+39323,fluzone,9,9
+39326,fluzone,3,3
+39338,carfilzomib,21,23
+39347,phentermine hcl/topiramate,1,2
+39350,omega-3,1,1
+39357,myrbetriq,112,153
+39362,fluvirin,1,1
+39363,afluria,1,1
+39376,bisabolol,13,13
+39380,lubriderm advanced therapy,1,1
+39381,flintstones complete,1,1
+39390,prenatal one,7,7
+39399,tobradex,42,48
+39474,insulin syringe,4,4
+39528,tudorza pressair,157,182
+39531,nafcillin,18,18
+39533,prosource,1,1
+39543,stribild,3,4
+39571,cinnamon bark/chromium picolinate,1,1
+39580,xtandi,27,32
+39581,triamino,1,1
+39583,linzess,68,105
+39590,bosulif,2,2
+39604,cholecalciferol/folic acid/riboflavin/pyridoxine hcl/vit b12,2,2
+39613,vascepa,4,4
+39619,vitament,3,3
+39623,cranberry,106,106
+39624,aubagio,8,10
+39628,fycompa,1,1
+39658,episil,1,1
+39665,stivarga,6,7
+39670,preservision areds,9,11
+39699,pediatric multivit comb no.20,1,1
+39713,amino acids/protein hydrolysate/fiber,1,1
+39723,caltrate,22,32
+39728,eucerin intensive repair,1,1
+39729,calcium,41,51
+39732,astragalus extract,2,2
+39761,cream base no.101,2,2
+39768,xeljanz,1,1
+39801,hydroxypropyl betadex,8,8
+39821,rubidium chloride,1,1
+39826,advil allergy-congestion rlf,1,1
+39828,medihoney,3,3
+39832,advil,1,1
+39837,prenatal plus,14,14
+39843,"prednisolone, micronized",2,2
+39864,cinnamon bark/chromium picolinate/alpha lipoic acid,1,1
+39869,green coffee bean,1,1
+39870,effervescent,4,4
+39883,lomitapide mesylate,3,3
+39888,multivitamin-mineral/herbal complex no.208/beta-sitosterol,3,3
+39897,crofelemer,1,2
+39901,glucosamin/chondr-msm#1/d3/c/mangan/boswellia ser ext/na bor,43,44
+39915,multivit with min/iron/folic acid/k/d3/choline/dha/fish oil,3,3
+39920,iron fumarate & polysac comp/fa/vit b comp & c #18/l. casei,3,3
+39921,multivit w-min/iron fumarate/folic acid/vit k/green tea xt,1,1
+39960,digaz,8,8
+39963,influenza vaccine tri-splt,1,1
+39967,alogliptin benzoate/pioglitazone hcl,2,3
+39968,nesina,3,3
+39970,alogliptin benzoate/metformin hcl,1,1
+39977,cranberry juice,4,4
+39996,pomalyst,3,3
+40005,iron,71,71
+40017,multivitamin w-ca & minerals/iron fumarate/folic acid/vit k,6,7
+40029,cyanocobal-levomef-pyridoxine,5,5
+40037,pnv folic acid + iron,5,5
+40041,kynamro,1,1
+40046,kadcyla,1,1
+40083,levomefol-pyridoxal-mec-algal,2,2
+40096,osphena,1,1
+40115,chlorella,1,1
+40125,advaclear,10,10
+40137,farxiga,10,15
+40164,relion,1,2
+40168,tecfidera,7,7
+40171,invokana,91,98
+40174,probiotic,229,229
+40184,prenatal vitamin no.103/iron fum/fa/dha/epa/other omega-3s,1,1
+40202,desvenlafaxine,12,12
+40218,probiotic,61,61
+40230,dexmedetomidine,2583,5809
+40237,esbriet,1,1
+40242,probiotic complex,1,1
+40260,simbrinza,17,17
+40270,omega-3,4,8
+40279,liptruzet,17,17
+40313,lipichol,3,3
+40319,breo ellipta,34,65
+40329,prenatal,5,5
+40354,remedy calazime,1,1
+40360,dabrafenib mesylate,1,2
+40361,mekinist,1,2
+40373,belviq,2,3
+40380,prenatal no.64/iron fum/l-mefolate ca/algal oil/soy lecithin,1,1
+40390,estroven mood & memory,1,1
+40408,opurity,1,1
+40447,calcium magnesium,7,8
+40452,prezatide copper,2,2
+40506,"immune globulin,bovine/plasma protein fraction, bovine",2,2
+40511,clear eyes complete,1,1
+40528,black cohosh,2,2
+40533,tivicay,19,22
+40566,dna medicated collection,1,2
+40567,0.5 ml - influenza vac split quad,769,769
+40597,zeaxanthin,6,6
+40607,vytone,1,1
+40632,fetzima,3,3
+40637,brintellix,8,9
+40644,adempas,75,75
+40677,opsumit,70,73
+40687,pomegranate fruit extract,4,5
+40710,medroxyprogesterone ac micro,47,47
+40745,imbruvica,5,7
+40751,prenatal vit/folic acid/b6/calcium carb/ginger,1,1
+40771,olysio,4,5
+40795,sofosbuvir,30,52
+40802,urea/emollient combination no,18,18
+40839,"factor xiii a-subunit, recombinant",13,13
+40852,anoro ellipta,41,44
+40869,probiotic acidophilus,1,1
+40871,"multivitamins-a,b,d,e,k,zn",4,4
+40909,velphoro,7,7
+40943,narcosoft ii,1,1
+40967,apremilast,3,3
+40969,olodaterol hcl,1,1
+41001,nephrocaps,112,238
+41013,mag-tab,2,3
+41030,triprolidine hcl/phenylephrine hcl/dextromethorphan hbr,1,1
+41066,bacillus coagulans/calcium carbonate,1,1
+41106,multivitamin and fluoride,5,5
+41114,multi-vitamin w-fluoride-iron,1,1
+41115,umeclidinium bromide,1,1
+41127,"multivitamin with iron,other minerals/folic acid/biotin",5,5
+41149,multivitamins w-fluoride-iron,2,2
+41153,dalbavancin hcl,1,1
+41163,tanzeum,1,1
+41217,jardiance,3,4
+41287,canagliflozin/metformin hcl,1,2
+41293,ayr saline nasal netirinse,2,2
+41313,calcium carb/vit d3/mag ox/zinc/copper/manganese/mg borate,4,4
+41349,ferrous bis-glycinate chelate,7,7
+41378,ferric citrate,1,1
+41403,propanediol,1,1
+41421,trulicity,2,2
+41427,prosight,1,1
+41471,bifidobacterium animalis,1,1
+41542,folate no.7/pcdha/pedha/naca/papain/intrinsic factor/mv #46,1,1
+41600,cholecalciferol (vit d3)/folic acid,101,101
+41641,zerbaxa,1,1
+41644,viekira pak,1,1
+41672,edoxaban tosylate,1,1
+41686,movantik,2,2
+41719,daily multivitamin,8,8
+41733,prenatal vitamin,4,4
+41796,gammagard liquid,4,8
+41883,eldertonic,1,1
+41947,macuvite eye care,2,2
+42248,ocuvite eye + multi,2,2
+42590,estroven energy,2,2

@@ -527,8 +527,12 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
         tuning_events.height,
     )
 
-    train_events = maybe_normalize(train_events, enabled=config.normalize_medications)
-    tuning_events = maybe_normalize(tuning_events, enabled=config.normalize_medications)
+    train_events = maybe_normalize(
+        train_events, enabled=config.normalize_medications, source=config.source
+    )
+    tuning_events = maybe_normalize(
+        tuning_events, enabled=config.normalize_medications, source=config.source
+    )
     train_events = maybe_history_recap(train_events, enabled=config.history_recap)
     tuning_events = maybe_history_recap(tuning_events, enabled=config.history_recap)
     if config.history_recap:

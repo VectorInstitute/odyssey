@@ -683,7 +683,9 @@ def evaluate_alerts(
     concept_names = [c.name for c in concepts_for_source(source)]
 
     raw = load_meds_shards(held_out_shard_dir, max_shards=max_shards)
-    raw = maybe_normalize(raw, enabled=getattr(config, "normalize_medications", False))
+    raw = maybe_normalize(
+        raw, enabled=getattr(config, "normalize_medications", False), source=source
+    )
     raw = maybe_history_recap(raw, enabled=getattr(config, "history_recap", False))
     times = all_event_times(raw, alerts, source)
     visit_start = _visit_starts(raw)
@@ -711,7 +713,9 @@ def evaluate_alerts(
         logger.info("[alerts] fitting GBM baselines on %s", baseline_shard_dir)
         train_raw = load_meds_shards(baseline_shard_dir, max_shards=max_baseline_shards)
         train_raw = maybe_normalize(
-            train_raw, enabled=getattr(config, "normalize_medications", False)
+            train_raw,
+            enabled=getattr(config, "normalize_medications", False),
+            source=source,
         )
         train_raw = maybe_history_recap(
             train_raw, enabled=getattr(config, "history_recap", False)
