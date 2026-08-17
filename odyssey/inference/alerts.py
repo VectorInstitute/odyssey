@@ -75,6 +75,7 @@ from odyssey.data.streaming import NO_SUBJECT, PackedLaneSampler
 from odyssey.data.value_binning import add_value_tokens, clinical_ranges_for_source
 from odyssey.data.vocabulary import Vocabulary, code_type
 from odyssey.inference.baseline_features import StrongFeatureBuilder
+from odyssey.inference.baseline_features import feature_names as strong_feature_names
 from odyssey.inference.run_inference import load_run
 from odyssey.models.sequence_model import SequenceModel
 from odyssey.models.time_to_event import probability_within
@@ -733,6 +734,81 @@ def score_alerts(
     return results
 
 
+def index_row_table(
+    rows: Dict[str, List[IndexRow]],
+    times: Dict[str, EventTimes],
+    *,
+    horizons: Sequence[float] = HORIZONS_HOURS,
+    baselines: Optional[Dict[Tuple[str, float], BaselineModel]] = None,
+    baseline_features_by_event: Optional[Dict[str, np.ndarray]] = None,
+    context_columns: Optional[Dict[str, np.ndarray]] = None,
+    context_names: Optional[Sequence[str]] = None,
+) -> pl.DataFrame:
+    """One row per (event, index time) with every score and outcome, for error analysis.
+
+    Columns: ``event, subject_id, visit_id, time_hours``, one column per
+    model scorer (``concept``, ``next_mass``, ``hazard@{h}h``), per horizon
+    ``y@{h}h`` (1/0, null if censored or not at risk) and, when baselines
+    are given, ``gbm@{h}h``; plus any ``context_names`` columns taken from
+    the baseline feature matrix (e.g. hours into the visit, whether a
+    creatinine was measured in the last 24h). Patient-level: keep it under
+    the run directory, never in git.
+    """
+    frames: List[pl.DataFrame] = []
+    for name, event_rows in rows.items():
+        if not event_rows:
+            continue
+        data: Dict[str, List[Optional[float]]] = {
+            "subject_id": [float(r.subject_id) for r in event_rows],
+            "visit_id": [float(r.visit_id) for r in event_rows],
+            "time_hours": [r.time_hours for r in event_rows],
+        }
+        scorers = sorted({k for r in event_rows for k in r.scores})
+        for s in scorers:
+            data[s] = [r.scores.get(s) for r in event_rows]
+        for h in horizons:
+            outcomes = [outcome_at_horizon(r, times[name], h) for r in event_rows]
+            data[f"y@{h:g}h"] = [None if o is None else float(o) for o in outcomes]
+            if (
+                baselines is not None
+                and (name, h) in baselines
+                and baseline_features_by_event
+                and name in baseline_features_by_event
+            ):
+                p = baselines[(name, h)].predict_proba(baseline_features_by_event[name])
+                data[f"gbm@{h:g}h"] = [float(v) for v in p]
+        if context_columns is not None and name in context_columns and context_names:
+            ctx = context_columns[name]
+            for j, cname in enumerate(context_names):
+                data[f"ctx.{cname}"] = [float(v) for v in ctx[:, j]]
+        frame = pl.DataFrame(data).with_columns(pl.lit(name).alias("event"))
+        frames.append(frame)
+    if not frames:
+        return pl.DataFrame({"event": []})
+    return pl.concat(frames, how="diagonal")
+
+
+# Context columns dumped with the per-row table (names from
+# odyssey.inference.baseline_features.feature_names when the strong set is used).
+ROW_DUMP_CONTEXT: Tuple[str, ...] = (
+    "hours_into_visit",
+    "hours_since_origin",
+    "age_years",
+    "in_icu",
+    "n_events_visit",
+    "creatinine.hours_since_last",
+    "creatinine.last",
+    "creatinine.ratio_visit_min",
+    "lactate.hours_since_last",
+    "map_arterial.hours_since_last",
+    "map_noninvasive.hours_since_last",
+    "heart_rate.hours_since_last",
+    "family.lab.n_24h",
+    "family.medication.n_24h",
+    "drug.vasopressor.ever_visit",
+)
+
+
 # ---------------------------------------------------------------------------
 # End to end
 # ---------------------------------------------------------------------------
@@ -804,8 +880,13 @@ def evaluate_alerts(
     checkpoint_path: Optional[Union[str, Path]] = None,
     baseline_feature_set: str = "strong",
     tune_baselines: bool = True,
+    dump_rows_path: Optional[Union[str, Path]] = None,
 ) -> List[AlertMetrics]:
-    """End to end: model scores + optional GBM baselines, scored on held-out."""
+    """End to end: model scores + optional GBM baselines, scored on held-out.
+
+    ``dump_rows_path`` writes the per-index-row table of
+    :func:`index_row_table` as parquet (patient-level; keep it with the run).
+    """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     model, vocab, binner, config = load_run(
         run_dir, device=device, checkpoint_path=checkpoint_path
@@ -870,6 +951,27 @@ def evaluate_alerts(
             binned, rows, source=source, feature_set=baseline_feature_set
         )
 
+    if dump_rows_path is not None:
+        context_cols = None
+        context_names: Optional[List[str]] = None
+        if features_by_event is not None and baseline_feature_set == "strong":
+            all_names = strong_feature_names()
+            keep_idx = [all_names.index(c) for c in ROW_DUMP_CONTEXT if c in all_names]
+            context_names = [all_names[i] for i in keep_idx]
+            context_cols = {k: v[:, keep_idx] for k, v in features_by_event.items()}
+        table = index_row_table(
+            rows,
+            times,
+            horizons=horizons,
+            baselines=baselines,
+            baseline_features_by_event=features_by_event,
+            context_columns=context_cols,
+            context_names=context_names,
+        )
+        Path(dump_rows_path).parent.mkdir(parents=True, exist_ok=True)
+        table.write_parquet(dump_rows_path)
+        logger.info("[alerts] wrote %d index rows to %s", table.height, dump_rows_path)
+
     return score_alerts(
         rows,
         times,
@@ -904,6 +1006,11 @@ def _main() -> None:
         action="store_true",
         help="skip the GBM hyper-parameter search (fixed 200 rounds)",
     )
+    parser.add_argument(
+        "--dump-rows",
+        default=None,
+        help="write the per-index-row score/outcome table as parquet (patient-level)",
+    )
     args = parser.parse_args()
     run_dir = Path(args.run_dir)
     results = evaluate_alerts(
@@ -918,6 +1025,7 @@ def _main() -> None:
         checkpoint_path=run_dir / (args.checkpoint or "checkpoint_best.pt"),
         baseline_feature_set=args.baseline_features,
         tune_baselines=not args.no_tune_baselines,
+        dump_rows_path=args.dump_rows,
     )
     out = Path(args.output_json)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -957,5 +1065,6 @@ __all__ = [
     "BASELINE_FEATURE_SETS",
     "fit_baselines",
     "score_alerts",
+    "index_row_table",
     "evaluate_alerts",
 ]
