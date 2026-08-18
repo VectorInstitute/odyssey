@@ -150,7 +150,7 @@ class CorpusStats:
     n_subjects: int
     n_events: int
     labels: Dict[Any, torch.Tensor] = field(default_factory=dict)
-    """Concept labels keyed like :data:`ConceptLabelDict` (visit or stay keys)."""
+    """Concept labels keyed by (subject, visit) or subject, like the trainer."""
     masks: Dict[Any, torch.Tensor] = field(default_factory=dict)
     first_times: Dict[Any, torch.Tensor] = field(default_factory=dict)
     event_times: Dict[str, EventTimes] = field(default_factory=dict)
