@@ -1,0 +1,67 @@
+=== env_probe: 2026-08-18T20:41:38Z ===
+host: gpu012.gemini-hpc.ca
+
+--- GPU (nvidia-smi) ---
+name, driver_version, memory.total [MiB]
+NVIDIA H200, 595.45.04, 143771 MiB
+
+Tue Aug 18 16:41:38 2026
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 595.45.04              Driver Version: 595.45.04      CUDA Version: 13.2     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA H200                    On  |   00000000:07:00.0 Off |                    0 |
+| N/A   28C    P0             75W /  700W |       0MiB / 143771MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+
+--- CUDA toolkit ---
+nvcc not found on PATH
+CUDA_HOME=<unset>
+candidate install dirs:
+/usr/local/cuda
+/usr/local/cuda-12
+/usr/local/cuda-12.8
+
+--- environment modules (module avail) ---
+module command not found
+
+--- Python ---
+Python 3.12.3
+/usr/bin/python3
+
+--- package managers ---
+uv       not found
+poetry   ./scripts/gemini/probe_env.sh: line 70: /mnt/nfs/home/krishnanam/.local/bin/poetry: cannot execute: required file not found
+conda    not found
+mamba    not found
+
+--- glibc / libstdc++ ---
+ldd (Ubuntu GLIBC 2.39-0ubuntu8.8) 2.39
+libstdc++: /usr/lib/x86_64-linux-gnu/libstdc++.so.6
+highest GLIBCXX symbols:
+GLIBCXX_3.4.29
+GLIBCXX_3.4.30
+GLIBCXX_3.4.31
+GLIBCXX_3.4.32
+GLIBCXX_3.4.33
+
+--- disk (repo filesystem) ---
+Filesystem                    Size  Used Avail Use% Mounted on
+login.gemini-hpc.ca:/mnt/nfs  8.0T  5.8T  2.3T  73% /mnt/nfs
+
+--- memory ---
+               total        used        free      shared  buff/cache   available
+Mem:           966Gi        11Gi       249Gi       3.9Mi       712Gi       954Gi
+Swap:             0B          0B          0B
