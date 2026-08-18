@@ -183,7 +183,7 @@ def build_corpus_stats(
     alerts: Optional[Sequence[AlertEvent]],
     code_col: str = "code",
 ) -> CorpusStats:
-    """Aggregate per-shard code counts, concept labels/masks/first times and event times."""
+    """Aggregate code counts, concept labels/masks/first times and event times."""
     counts: Counter[str] = Counter()
     stats = CorpusStats(code_counts={}, n_subjects=0, n_events=0)
     for i, path in enumerate(paths):
