@@ -550,6 +550,8 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         time_bin_edges: Optional[Sequence[float]] = None,
         event_names: Optional[Sequence[str]] = None,
         event_head_hidden: int = 0,
+        concept_global_pairs: bool = False,
+        unknown_dim: Optional[int] = None,
     ) -> None:
         """Initialize the concept-bottleneck sequence model.
 
@@ -564,8 +566,10 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
             num_concepts=num_concepts,
             embedding_dim=embedding_dim,
             concept_dropout=concept_dropout,
+            global_pairs=concept_global_pairs,
+            unknown_dim=unknown_dim,
         )
-        bottleneck_dim = (num_concepts + 1) * embedding_dim
+        bottleneck_dim = self.bottleneck.output_dim
         self.lm_head = nn.Linear(bottleneck_dim, vocab_size)
         self.time_head: Optional[TimeToEventHead] = (
             TimeToEventHead(bottleneck_dim, time_bin_edges)

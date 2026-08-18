@@ -431,6 +431,8 @@ def test_value_embeddings_flag_ignores_the_backbone_merge_attention(
     def fake_build_model(cfg, *, vocab_size, num_concepts):  # noqa: ARG001
         seen["value_embeddings"] = cfg.value_embeddings
         seen["event_head_hidden"] = cfg.event_head_hidden
+        seen["concept_global_pairs"] = cfg.concept_global_pairs
+        seen["unknown_dim"] = cfg.unknown_dim
         raise RuntimeError("stop here")
 
     original = ri.build_model
@@ -454,3 +456,16 @@ def test_value_embeddings_flag_ignores_the_backbone_merge_attention(
         ri.build_model = original
     assert seen["value_embeddings"] is True
     assert seen["event_head_hidden"] == 32
+    assert seen["concept_global_pairs"] is False
+
+    # bottleneck variants read off parameter shapes: global pairs, unknown width 6
+    keys["bottleneck.pair_embeddings"] = torch.zeros(3, 2, 4)
+    keys["bottleneck.context_proj.weight"] = torch.zeros(12, 8)
+    torch.save({"model": keys}, run_dir / "checkpoint_final.pt")
+    ri.build_model = fake_build_model
+    try:
+        with pytest.raises(RuntimeError, match="stop here"):
+            load_run(run_dir, device="cpu")
+    finally:
+        ri.build_model = original
+    assert seen["concept_global_pairs"] is True and seen["unknown_dim"] == 6

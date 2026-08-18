@@ -236,6 +236,21 @@ def load_run(
     config.event_hazards = any(
         k.startswith("event_heads.") for k in checkpoint["model"]
     )
+    # Bottleneck variants: global concept pairs and the unknown slot's width
+    # are read off the checkpoint's parameter shapes.
+    state = checkpoint["model"]
+    config.concept_global_pairs = "bottleneck.pair_embeddings" in state
+    ctx = state.get("bottleneck.context_proj.weight")
+    if ctx is not None:
+        rows = int(ctx.shape[0])
+        if config.concept_global_pairs:
+            config.unknown_dim = rows // 2
+        else:
+            n_known = int(state["bottleneck.prob_weight"].shape[0])
+            emb = int(state["bottleneck.prob_weight"].shape[1]) // 2
+            if "bottleneck.unknown_prob_weight" not in state:
+                n_known -= 1  # shared (num_slots, 2d) weight includes the unknown row
+            config.unknown_dim = (rows - n_known * 2 * emb) // 2
     # MLP readout (event_heads.proj.0/2.*) vs the linear one (event_heads.proj.*)
     first_layer = checkpoint["model"].get("event_heads.proj.0.weight")
     config.event_head_hidden = (

@@ -114,6 +114,11 @@ class TrainingConfig:
     event_head_hidden: int = 0
     """Hidden width of the per-event hazard heads' MLP readout; 0 = the
     single linear layer every run before v8 used."""
+    concept_global_pairs: bool = False
+    """Leakage control: input-independent (w+, w-) per known concept, so a
+    concept slot carries only its probability (see ConceptBottleneck)."""
+    unknown_dim: Optional[int] = None
+    """Width of the unknown (residual) slot; None = embedding_dim."""
     """Feed standardized numeric values (``aux.values``) into the token
     embeddings alongside the bin tokens (see
     :class:`~odyssey.models.embeddings.ClinicalEventEmbeddings`). Opt-in;
@@ -396,6 +401,8 @@ def build_model(
         time_bin_edges=time_bin_edges,
         event_names=event_names,
         event_head_hidden=event_head_hidden,
+        concept_global_pairs=bool(getattr(config, "concept_global_pairs", False)),
+        unknown_dim=getattr(config, "unknown_dim", None),
     )
 
 
