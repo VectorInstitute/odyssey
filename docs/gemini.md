@@ -51,6 +51,69 @@ range), that commit itself needs breaking up or the offending large content
 needs to be excluded from what gets mirrored — talk to whoever owns the
 GEMINI sync before trying to force it through.
 
+## Environment (H200 node)
+
+From `scripts/gemini/out/env_probe.txt` (run 2026-08-18):
+
+| | |
+| --- | --- |
+| GPU | 1x NVIDIA H200, 143,771 MiB (~140 GB) |
+| Driver | 595.45.04 (reports CUDA 13.2 as the max the driver supports) |
+| CUDA toolkit | no `nvcc` on `PATH`, `CUDA_HOME` unset, but `/usr/local/cuda-12.8` exists |
+| Python | 3.12.3 (system `/usr/bin/python3`) |
+| uv / poetry / conda | none usable: `uv` not found, `poetry`'s shim is broken (missing binary), no `conda`/`mamba` |
+| glibc / libstdc++ | glibc 2.39, `GLIBCXX` up to 3.4.33 (modern; no old-libstdc++ build failures expected) |
+| Disk | repo lives on NFS (`/mnt/nfs`), 8.0 TB total, 2.3 TB available |
+| RAM | 966 GiB total, 954 GiB available |
+
+**What this implies for torch/mamba-ssm** (see the `cuda` extra's comment in
+`pyproject.toml` for the full reasoning already validated on the MIMIC/eICU
+A100 host): the driver's CUDA 13.2 ceiling isn't the binding constraint —
+drivers are backward compatible — the installed *toolkit* is, since
+`mamba-ssm`'s `torch.utils.cpp_extension` build needs an `nvcc` whose major
+CUDA version matches torch's. GEMINI has CUDA 12.8 installed (major version
+12, just like the A100 host's 12.9), so the existing `torch==2.6.0+cu124` pin
+should apply here too, once `PATH`/`CUDA_HOME` point at
+`/usr/local/cuda-12.8` instead of `12.9`. The H200 is Hopper architecture
+(compute capability 9.0, same family as H100), which `torch==2.6.0`'s cu124
+builds already support, so no separate GPU-architecture concern beyond what's
+already validated on A100.
+
+Since `uv` isn't installed on the node, the CUDA-index pinning
+(`[tool.uv.sources]`/`[[tool.uv.index]]` in `pyproject.toml`) isn't available
+through plain `pip` — torch would need installing explicitly from PyTorch's
+cu124 wheel index first (`pip install torch==2.6.0 --index-url
+https://download.pytorch.org/whl/cu124`), then the rest of the project with
+`--no-deps` so pip doesn't try to re-resolve torch, then `mamba-ssm`'s
+existing two-step forced non-isolated rebuild exactly as documented in
+`pyproject.toml`, substituting `CUDA_HOME=/usr/local/cuda-12.8`. This is real
+work, not a one-liner, and belongs in its own dedicated step when training
+work actually starts (`scripts/gemini/run.sh`, described below, only
+bootstraps the lightweight `gemini` extra today) — not something to automate
+blind ahead of that.
+
+## scripts/gemini/run.sh
+
+The single entry point Amrit actually runs on the node, mirroring
+`gemini-variation-study`'s `run.sh`: it activates (creating if missing) a
+venv under his home directory, installs what the selected step needs, runs
+the step, then commits and pushes only the small output files it produced.
+
+```bash
+scripts/gemini/run.sh probe   # scripts/gemini/probe_env.sh -> env_probe.txt
+scripts/gemini/run.sh schema  # scripts/gemini/explore_schema.py -> schema.json/.md
+scripts/gemini/run.sh         # all steps, in order (the default)
+```
+
+Safe to re-run: venv creation and package installs are idempotent, each step
+overwrites its own output deterministically, and if a step produces nothing
+new since the last run there is nothing to commit. It refuses to commit
+anything outside `scripts/gemini/out/` or `docs/gemini*`, anything over
+900 KB, or any path that looks like data (`.parquet`, `.csv`, `.pt`,
+`.ckpt`, ...) — see the script itself for the exact checks. Future steps
+(extraction, training, eval) are meant to slot in as additional `case`
+branches, not as separate scripts Amrit has to remember to run in order.
+
 ## Credentials
 
 Never hard-code GEMINI database credentials. The pattern (mirrored from the
@@ -108,14 +171,16 @@ it stays inside.
 
 ## Run-there / commit-back workflow
 
-1. We write and test a script against a mocked connection, push it to both
+1. We write and test a script (and, if it's a new step, wire it into
+   `scripts/gemini/run.sh`) against a mocked connection, push it to both
    `origin` and `gemini` (`origin` first; mirror to `gemini` once GitHub CI
    is green).
-2. Amrit pulls on the GEMINI node, runs the script.
-3. The script writes only what is allowed to leave (see Governance above) to
-   a small, predictable output path (e.g. `scripts/gemini/out/`).
-4. Amrit commits and pushes that output back to `gemini`, and it gets
-   mirrored to `origin`/GitHub so the rest of the team can see it.
+2. Amrit pulls on the GEMINI node, runs `scripts/gemini/run.sh <step>`.
+3. The step writes only what is allowed to leave (see Governance above) to
+   `scripts/gemini/out/`.
+4. `run.sh` commits and pushes that output back to `gemini` itself (see
+   the safety checks described under `scripts/gemini/run.sh` above), and it
+   gets mirrored to `origin`/GitHub so the rest of the team can see it.
 5. We iterate from the output — adjust the script, repeat. Every round trip
    costs Amrit's time on the node, so scripts should fail fast and report
    clearly rather than requiring a second run to fix an avoidable mistake.
