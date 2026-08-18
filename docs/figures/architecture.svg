@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="740" viewBox="0 0 900 740" font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+  <title>Odyssey architecture: data, tokenization, model, outputs and evaluation</title>
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5A6270"/>
+    </marker>
+  </defs>
+  <rect width="900" height="740" fill="#FFFFFF"/>
+  <rect x="40" y="32" width="248" height="56" rx="6" ry="6" fill="#E6EDF3" stroke="#5B7A99" stroke-width="1.2"/>
+  <text x="164.0" y="56.6" text-anchor="middle" font-size="11.5" fill="#23272E" font-weight="600">MIMIC-IV 3.1 / eICU-CRD 2.0</text>
+  <text x="164.0" y="71.6" text-anchor="middle" font-size="11.5" fill="#4A5058" >raw EHR tables</text>
+  <rect x="334" y="32" width="248" height="56" rx="6" ry="6" fill="#E6EDF3" stroke="#5B7A99" stroke-width="1.2"/>
+  <text x="458.0" y="56.6" text-anchor="middle" font-size="11.5" fill="#23272E" font-weight="600">MEDS extraction</text>
+  <text x="458.0" y="71.6" text-anchor="middle" font-size="11.5" fill="#4A5058" >meds-extract, MESSY specs</text>
+  <rect x="628" y="32" width="248" height="56" rx="6" ry="6" fill="#E6EDF3" stroke="#5B7A99" stroke-width="1.2"/>
+  <text x="752.0" y="56.6" text-anchor="middle" font-size="11.5" fill="#23272E" font-weight="600">MEDS events</text>
+  <text x="752.0" y="71.6" text-anchor="middle" font-size="11.5" fill="#4A5058" >subject, time, code, numeric value</text>
+  <line x1="288" y1="60.0" x2="333" y2="60.0" stroke="#5A6270" stroke-width="1.3" marker-end="url(#arr)"/>
+  <line x1="582" y1="60.0" x2="627" y2="60.0" stroke="#5A6270" stroke-width="1.3" marker-end="url(#arr)"/>
+  <text x="17" y="60.0" transform="rotate(-90 17 60.0)" text-anchor="middle" font-size="10.5" font-weight="700" letter-spacing="1.6" fill="#5B7A99">DATA</text>
+  <path d="M 752.0 88 V 119" fill="none" stroke="#5A6270" stroke-width="1.3" marker-end="url(#arr)"/>
+  <rect x="40" y="120" width="600" height="140" rx="6" ry="6" fill="#EAF0E2" stroke="#6E8A4E" stroke-width="1.2"/>
+  <text x="56.0" y="143.1" text-anchor="start" font-size="11.5" fill="#23272E" font-weight="600">Token stream per patient</text>
+  <text x="56.0" y="160.1" text-anchor="start" font-size="11.5" fill="#4A5058" >•  code + value bin (clinical ranges keyed by LOINC, quantile fallback)</text>
+  <text x="56.0" y="177.1" text-anchor="start" font-size="11.5" fill="#4A5058" >•  standardized value channel (opt-in)</text>
+  <text x="56.0" y="194.1" text-anchor="start" font-size="11.5" fill="#4A5058" >•  inter-event time, age, visit structure</text>
+  <text x="56.0" y="211.1" text-anchor="start" font-size="11.5" fill="#4A5058" >•  static facts (sex, race) as leading tokens</text>
+  <text x="56.0" y="228.1" text-anchor="start" font-size="11.5" fill="#4A5058" >•  medication codes normalized to ingredient (HICL dictionary on eICU)</text>
+  <text x="56.0" y="245.1" text-anchor="start" font-size="11.5" fill="#4A5058" >•  concept labels from a canonical LOINC-keyed rule registry</text>
+  <rect x="672" y="216" width="204" height="44" rx="6" ry="6" fill="#EAF0E2" stroke="#6E8A4E" stroke-width="1.2"/>
+  <text x="774.0" y="235.0" text-anchor="middle" font-size="11" fill="#23272E" font-weight="600">Concept labels</text>
+  <text x="774.0" y="249.0" text-anchor="middle" font-size="11" fill="#4A5058" >rule-derived supervision targets</text>
+  <line x1="640" y1="240" x2="671" y2="240" stroke="#5A6270" stroke-width="1.3" marker-end="url(#arr)"/>
+  <text x="17" y="190.0" transform="rotate(-90 17 190.0)" text-anchor="middle" font-size="10.5" font-weight="700" letter-spacing="1.6" fill="#6E8A4E">TOKENIZATION</text>
+  <path d="M 340.0 260 V 299" fill="none" stroke="#5A6270" stroke-width="1.3" marker-end="url(#arr)"/>
+  <rect x="40" y="300" width="600" height="52" rx="6" ry="6" fill="#F4ECE2" stroke="#A67B4B" stroke-width="1.2"/>
+  <text x="340.0" y="322.6" text-anchor="middle" font-size="11.5" fill="#23272E" font-weight="600">Hybrid Mamba-2 + attention backbone</text>
+  <text x="340.0" y="337.6" text-anchor="middle" font-size="11.5" fill="#4A5058" >streamed over the whole record in 512-token chunks, carried recurrent state</text>
+  <rect x="668" y="300" width="170" height="52" rx="6" ry="6" fill="#FFFFFF" stroke="#9AA1AB" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <text x="753.0" y="322.8" text-anchor="middle" font-size="10.5" fill="#4A5058" font-style="italic">No-bottleneck baseline variant:</text>
+  <text x="753.0" y="336.8" text-anchor="middle" font-size="10.5" fill="#4A5058" font-style="italic">same backbone and heads</text>
+  <line x1="340.0" y1="352" x2="340.0" y2="377" stroke="#5A6270" stroke-width="1.3" marker-end="url(#arr)"/>
+  <rect x="40" y="378" width="600" height="70" rx="6" ry="6" fill="#F4ECE2" stroke="#A67B4B" stroke-width="1.2"/>
+  <text x="340.0" y="402.1" text-anchor="middle" font-size="11.5" fill="#23272E" font-weight="600">Concept bottleneck</text>
+  <text x="340.0" y="417.1" text-anchor="middle" font-size="11.5" fill="#4A5058" >k named clinical concepts: supervised probabilities, active/inactive embedding pairs</text>
+  <text x="340.0" y="432.1" text-anchor="middle" font-size="11.5" fill="#4A5058" >+ 1 unknown residual channel (orthogonality-penalized)</text>
+  <path d="M 856 260 V 413.0 H 641" fill="none" stroke="#5A6270" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#arr)"/>
+  <text x="748" y="407.0" text-anchor="middle" font-size="10" fill="#4A5058" font-style="italic">concept supervision</text>
+  <line x1="340.0" y1="448" x2="340.0" y2="460" stroke="#5A6270" stroke-width="1.3"/>
+  <line x1="172.0" y1="460" x2="744.0" y2="460" stroke="#5A6270" stroke-width="1.3"/>
+  <line x1="172.0" y1="460" x2="172.0" y2="473" stroke="#5A6270" stroke-width="1.3" marker-end="url(#arr)"/>
+  <line x1="458.0" y1="460" x2="458.0" y2="473" stroke="#5A6270" stroke-width="1.3" marker-end="url(#arr)"/>
+  <line x1="744.0" y1="460" x2="744.0" y2="473" stroke="#5A6270" stroke-width="1.3" marker-end="url(#arr)"/>
+  <rect x="40" y="474" width="264" height="76" rx="6" ry="6" fill="#F4ECE2" stroke="#A67B4B" stroke-width="1.2"/>
+  <text x="172.0" y="501.1" text-anchor="middle" font-size="11.5" fill="#23272E" font-weight="600">Next-event distribution</text>
+  <text x="172.0" y="516.1" text-anchor="middle" font-size="11.5" fill="#4A5058" >bundle-invariant,</text>
+  <text x="172.0" y="531.1" text-anchor="middle" font-size="11.5" fill="#4A5058" >family-restricted loss</text>
+  <rect x="326" y="474" width="264" height="76" rx="6" ry="6" fill="#F4ECE2" stroke="#A67B4B" stroke-width="1.2"/>
+  <text x="458.0" y="508.6" text-anchor="middle" font-size="11.5" fill="#23272E" font-weight="600">Time-to-next-event hazard</text>
+  <text x="458.0" y="523.6" text-anchor="middle" font-size="11.5" fill="#4A5058" >log-time bins</text>
+  <rect x="612" y="474" width="264" height="76" rx="6" ry="6" fill="#F4ECE2" stroke="#A67B4B" stroke-width="1.2"/>
+  <text x="744.0" y="493.6" text-anchor="middle" font-size="11.5" fill="#23272E" font-weight="600">Per-event hazard heads</text>
+  <text x="744.0" y="508.6" text-anchor="middle" font-size="11.5" fill="#4A5058" >vasopressor start, ICU admission,</text>
+  <text x="744.0" y="523.6" text-anchor="middle" font-size="11.5" fill="#4A5058" >AKI, death (right-censored;</text>
+  <text x="744.0" y="538.6" text-anchor="middle" font-size="11.5" fill="#4A5058" >linear or MLP readout)</text>
+  <text x="17" y="425.0" transform="rotate(-90 17 425.0)" text-anchor="middle" font-size="10.5" font-weight="700" letter-spacing="1.6" fill="#A67B4B">MODEL</text>
+  <line x1="172.0" y1="550" x2="172.0" y2="564" stroke="#5A6270" stroke-width="1.3"/>
+  <line x1="458.0" y1="550" x2="458.0" y2="564" stroke="#5A6270" stroke-width="1.3"/>
+  <line x1="744.0" y1="550" x2="744.0" y2="564" stroke="#5A6270" stroke-width="1.3"/>
+  <line x1="172.0" y1="564" x2="744.0" y2="564" stroke="#5A6270" stroke-width="1.3"/>
+  <line x1="458.0" y1="564" x2="458.0" y2="600" stroke="#5A6270" stroke-width="1.3"/>
+  <line x1="140.0" y1="600" x2="776.0" y2="600" stroke="#5A6270" stroke-width="1.3"/>
+  <line x1="140.0" y1="600" x2="140.0" y2="615" stroke="#5A6270" stroke-width="1.3" marker-end="url(#arr)"/>
+  <line x1="352.0" y1="600" x2="352.0" y2="615" stroke="#5A6270" stroke-width="1.3" marker-end="url(#arr)"/>
+  <line x1="564.0" y1="600" x2="564.0" y2="615" stroke="#5A6270" stroke-width="1.3" marker-end="url(#arr)"/>
+  <line x1="776.0" y1="600" x2="776.0" y2="615" stroke="#5A6270" stroke-width="1.3" marker-end="url(#arr)"/>
+  <rect x="262.0" y="571.0" width="392" height="22" rx="11" ry="11" fill="#FFFFFF" stroke="#A67B4B" stroke-width="1.2"/>
+  <text x="458.0" y="586" text-anchor="middle" font-size="11" fill="#23272E" font-style="italic">loss = task + concept + orthogonality + time + event-hazard</text>
+  <rect x="40" y="616" width="200" height="100" rx="6" ry="6" fill="#ECE7F2" stroke="#7A6699" stroke-width="1.2"/>
+  <text x="140.0" y="656.0" text-anchor="middle" font-size="11" fill="#23272E" font-weight="600">Forecasts</text>
+  <text x="140.0" y="670.0" text-anchor="middle" font-size="11" fill="#4A5058" >same-family set top-1 over</text>
+  <text x="140.0" y="684.0" text-anchor="middle" font-size="11" fill="#4A5058" >same-timestamp bundles</text>
+  <rect x="252" y="616" width="200" height="100" rx="6" ry="6" fill="#ECE7F2" stroke="#7A6699" stroke-width="1.2"/>
+  <text x="352.0" y="642.0" text-anchor="middle" font-size="11" fill="#23272E" font-weight="600">Survival curves and alerts</text>
+  <text x="352.0" y="656.0" text-anchor="middle" font-size="11" fill="#4A5058" >P(event within 8/24/72h),</text>
+  <text x="352.0" y="670.0" text-anchor="middle" font-size="11" fill="#4A5058" >AUROC, Brier, calibration</text>
+  <text x="352.0" y="684.0" text-anchor="middle" font-size="11" fill="#4A5058" >vs tuned GBM baseline</text>
+  <text x="352.0" y="698.0" text-anchor="middle" font-size="11" fill="#4A5058" >(609 features)</text>
+  <rect x="464" y="616" width="200" height="100" rx="6" ry="6" fill="#ECE7F2" stroke="#7A6699" stroke-width="1.2"/>
+  <text x="564.0" y="642.0" text-anchor="middle" font-size="11" fill="#23272E" font-weight="600">Concept readout</text>
+  <text x="564.0" y="656.0" text-anchor="middle" font-size="11" fill="#4A5058" >AUROC vs rule labels;</text>
+  <text x="564.0" y="670.0" text-anchor="middle" font-size="11" fill="#4A5058" >intervention test:</text>
+  <text x="564.0" y="684.0" text-anchor="middle" font-size="11" fill="#4A5058" >true / flipped / random</text>
+  <text x="564.0" y="698.0" text-anchor="middle" font-size="11" fill="#4A5058" >at matched displacement</text>
+  <rect x="676" y="616" width="200" height="100" rx="6" ry="6" fill="#ECE7F2" stroke="#7A6699" stroke-width="1.2"/>
+  <text x="776.0" y="663.0" text-anchor="middle" font-size="11" fill="#23272E" font-weight="600">Report + case traces</text>
+  <text x="776.0" y="677.0" text-anchor="middle" font-size="11" fill="#4A5058" >clinician interface (Phase 2)</text>
+  <text x="17" y="666.0" transform="rotate(-90 17 666.0)" text-anchor="middle" font-size="10.5" font-weight="700" letter-spacing="1.6" fill="#7A6699">OUTPUTS / EVAL</text>
+</svg>

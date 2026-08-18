@@ -37,28 +37,9 @@ The forecasting has to be strong across *every* kind of event, not only the freq
 
 ## Architecture
 
-```
-MIMIC-IV 3.1 (hosp + icu)
-    ↓  meds-extract  (Medical-Event-Data-Standard/MIMIC_IV_MEDS spec)
-MEDS parquet  (subject_id · time · code · numeric_value)
-    ↓  concept extraction (rule-derived labels from MEDS codes)
-    ↓
-Hybrid Mamba-2 + attention backbone  (next-token prediction over patient event sequences)
-    ↓
-ConceptBottleneck  (odyssey/models/concept_bottleneck.py)
-    ├─ k known concepts    — each a soft mixture of a learned active/inactive
-    │                        embedding pair, weighted by a supervised probability
-    └─ 1 unknown concept   — same mixture structure, unsupervised, orthogonality-
-                             penalized against the known concepts' embeddings
-    ↓
-heads on the bottleneck output: next-event distribution (bundle-invariant,
-family-restricted loss) · time-to-next-event hazard · per-event hazard heads
-(vasopressor start, ICU admission, AKI, death; linear or small MLP readout)
-    ↓
-task loss + concept loss + orthogonality loss + time loss + event-hazard loss
-    ↓
-forecasts, survival curves and alerts — traceable to concept activations
-```
+![Odyssey architecture](docs/figures/architecture.svg)
+
+*Figure: data flows from MIMIC-IV / eICU through MEDS extraction and tokenization into the hybrid Mamba-2 + attention backbone and concept bottleneck, whose heads produce forecasts, survival curves and alerts, and concept readouts (editable source: `docs/figures/architecture.drawio`).*
 
 Inputs per token: the code (with a clinical or quantile value bin folded in), the
 standardized numeric value (opt-in value channel), inter-event time, age, visit
