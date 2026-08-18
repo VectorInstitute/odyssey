@@ -1,0 +1,122 @@
+<mxfile host="app.diagrams.net" type="device">
+  <diagram id="odyssey-architecture" name="Odyssey architecture">
+    <mxGraphModel dx="900" dy="740" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="900" pageHeight="740" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- Stage labels -->
+        <mxCell id="lbl_data" value="DATA" style="text;html=1;rotation=-90;align=center;verticalAlign=middle;fontSize=10;fontStyle=1;fontColor=#5B7A99;fontFamily=Helvetica;" vertex="1" parent="1">
+          <mxGeometry x="-24" y="50" width="80" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lbl_tok" value="TOKENIZATION" style="text;html=1;rotation=-90;align=center;verticalAlign=middle;fontSize=10;fontStyle=1;fontColor=#6E8A4E;fontFamily=Helvetica;" vertex="1" parent="1">
+          <mxGeometry x="-34" y="180" width="100" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lbl_model" value="MODEL" style="text;html=1;rotation=-90;align=center;verticalAlign=middle;fontSize=10;fontStyle=1;fontColor=#A67B4B;fontFamily=Helvetica;" vertex="1" parent="1">
+          <mxGeometry x="-24" y="415" width="80" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lbl_out" value="OUTPUTS / EVAL" style="text;html=1;rotation=-90;align=center;verticalAlign=middle;fontSize=10;fontStyle=1;fontColor=#7A6699;fontFamily=Helvetica;" vertex="1" parent="1">
+          <mxGeometry x="-34" y="656" width="100" height="20" as="geometry"/>
+        </mxCell>
+
+        <!-- Stage 1: DATA -->
+        <mxCell id="d1" value="&lt;b&gt;MIMIC-IV 3.1 / eICU-CRD 2.0&lt;/b&gt;&lt;br&gt;raw EHR tables" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6EDF3;strokeColor=#5B7A99;fontFamily=Helvetica;fontSize=11;fontColor=#23272E;" vertex="1" parent="1">
+          <mxGeometry x="40" y="32" width="248" height="56" as="geometry"/>
+        </mxCell>
+        <mxCell id="d2" value="&lt;b&gt;MEDS extraction&lt;/b&gt;&lt;br&gt;meds-extract, MESSY specs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6EDF3;strokeColor=#5B7A99;fontFamily=Helvetica;fontSize=11;fontColor=#23272E;" vertex="1" parent="1">
+          <mxGeometry x="334" y="32" width="248" height="56" as="geometry"/>
+        </mxCell>
+        <mxCell id="d3" value="&lt;b&gt;MEDS events&lt;/b&gt;&lt;br&gt;subject, time, code, numeric value" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6EDF3;strokeColor=#5B7A99;fontFamily=Helvetica;fontSize=11;fontColor=#23272E;" vertex="1" parent="1">
+          <mxGeometry x="628" y="32" width="248" height="56" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_d1_d2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#5A6270;endArrow=block;endFill=1;" edge="1" parent="1" source="d1" target="d2">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_d2_d3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#5A6270;endArrow=block;endFill=1;" edge="1" parent="1" source="d2" target="d3">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- Stage 2: TOKENIZATION -->
+        <mxCell id="t1" value="&lt;b&gt;Token stream per patient&lt;/b&gt;&lt;br&gt;&amp;bull; code + value bin (clinical ranges keyed by LOINC, quantile fallback)&lt;br&gt;&amp;bull; standardized value channel (opt-in)&lt;br&gt;&amp;bull; inter-event time, age, visit structure&lt;br&gt;&amp;bull; static facts (sex, race) as leading tokens&lt;br&gt;&amp;bull; medication codes normalized to ingredient (HICL dictionary on eICU)&lt;br&gt;&amp;bull; concept labels from a canonical LOINC-keyed rule registry" style="rounded=1;whiteSpace=wrap;html=1;align=left;spacingLeft=10;fillColor=#EAF0E2;strokeColor=#6E8A4E;fontFamily=Helvetica;fontSize=11;fontColor=#23272E;" vertex="1" parent="1">
+          <mxGeometry x="40" y="120" width="600" height="140" as="geometry"/>
+        </mxCell>
+        <mxCell id="t2" value="&lt;b&gt;Concept labels&lt;/b&gt;&lt;br&gt;rule-derived supervision targets" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EAF0E2;strokeColor=#6E8A4E;fontFamily=Helvetica;fontSize=11;fontColor=#23272E;" vertex="1" parent="1">
+          <mxGeometry x="672" y="216" width="204" height="44" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_d3_t1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#5A6270;endArrow=block;endFill=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.9;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="d3" target="t1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_t1_t2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#5A6270;endArrow=block;endFill=1;exitX=1;exitY=0.86;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="t1" target="t2">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- Stage 3: MODEL -->
+        <mxCell id="m1" value="&lt;b&gt;Hybrid Mamba-2 + attention backbone&lt;/b&gt;&lt;br&gt;streamed over the whole record in 512-token chunks, carried recurrent state" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F4ECE2;strokeColor=#A67B4B;fontFamily=Helvetica;fontSize=11;fontColor=#23272E;" vertex="1" parent="1">
+          <mxGeometry x="40" y="300" width="600" height="52" as="geometry"/>
+        </mxCell>
+        <mxCell id="m_note" value="&lt;i&gt;No-bottleneck baseline variant: same backbone and heads&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#FFFFFF;strokeColor=#9AA1AB;fontFamily=Helvetica;fontSize=10;fontColor=#4A5058;" vertex="1" parent="1">
+          <mxGeometry x="668" y="300" width="170" height="52" as="geometry"/>
+        </mxCell>
+        <mxCell id="m2" value="&lt;b&gt;Concept bottleneck&lt;/b&gt;&lt;br&gt;k named clinical concepts: supervised probabilities, active/inactive embedding pairs&lt;br&gt;+ 1 unknown residual channel (orthogonality-penalized)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F4ECE2;strokeColor=#A67B4B;fontFamily=Helvetica;fontSize=11;fontColor=#23272E;" vertex="1" parent="1">
+          <mxGeometry x="40" y="378" width="600" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="h1" value="&lt;b&gt;Next-event distribution&lt;/b&gt;&lt;br&gt;bundle-invariant, family-restricted loss" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F4ECE2;strokeColor=#A67B4B;fontFamily=Helvetica;fontSize=11;fontColor=#23272E;" vertex="1" parent="1">
+          <mxGeometry x="40" y="474" width="264" height="76" as="geometry"/>
+        </mxCell>
+        <mxCell id="h2" value="&lt;b&gt;Time-to-next-event hazard&lt;/b&gt;&lt;br&gt;log-time bins" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F4ECE2;strokeColor=#A67B4B;fontFamily=Helvetica;fontSize=11;fontColor=#23272E;" vertex="1" parent="1">
+          <mxGeometry x="326" y="474" width="264" height="76" as="geometry"/>
+        </mxCell>
+        <mxCell id="h3" value="&lt;b&gt;Per-event hazard heads&lt;/b&gt;&lt;br&gt;vasopressor start, ICU admission, AKI, death (right-censored; linear or MLP readout)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F4ECE2;strokeColor=#A67B4B;fontFamily=Helvetica;fontSize=11;fontColor=#23272E;" vertex="1" parent="1">
+          <mxGeometry x="612" y="474" width="264" height="76" as="geometry"/>
+        </mxCell>
+        <mxCell id="loss" value="&lt;i&gt;loss = task + concept + orthogonality + time + event-hazard&lt;/i&gt;" style="rounded=1;arcSize=50;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#A67B4B;fontFamily=Helvetica;fontSize=11;fontColor=#23272E;" vertex="1" parent="1">
+          <mxGeometry x="262" y="571" width="392" height="22" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_t1_m1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#5A6270;endArrow=block;endFill=1;" edge="1" parent="1" source="t1" target="m1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_m1_m2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#5A6270;endArrow=block;endFill=1;" edge="1" parent="1" source="m1" target="m2">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_t2_m2" value="concept supervision" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;strokeColor=#5A6270;endArrow=block;endFill=1;exitX=0.9;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;fontFamily=Helvetica;fontSize=10;fontStyle=2;fontColor=#4A5058;" edge="1" parent="1" source="t2" target="m2">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_m2_h1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#5A6270;endArrow=block;endFill=1;" edge="1" parent="1" source="m2" target="h1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_m2_h2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#5A6270;endArrow=block;endFill=1;" edge="1" parent="1" source="m2" target="h2">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_m2_h3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#5A6270;endArrow=block;endFill=1;" edge="1" parent="1" source="m2" target="h3">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- Stage 4: OUTPUTS / EVALUATION -->
+        <mxCell id="o1" value="&lt;b&gt;Forecasts&lt;/b&gt;&lt;br&gt;same-family set top-1 over same-timestamp bundles" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECE7F2;strokeColor=#7A6699;fontFamily=Helvetica;fontSize=11;fontColor=#23272E;" vertex="1" parent="1">
+          <mxGeometry x="40" y="616" width="200" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="o2" value="&lt;b&gt;Survival curves and alerts&lt;/b&gt;&lt;br&gt;P(event within 8/24/72h), AUROC, Brier, calibration vs tuned GBM baseline (609 features)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECE7F2;strokeColor=#7A6699;fontFamily=Helvetica;fontSize=11;fontColor=#23272E;" vertex="1" parent="1">
+          <mxGeometry x="252" y="616" width="200" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="o3" value="&lt;b&gt;Concept readout&lt;/b&gt;&lt;br&gt;AUROC vs rule labels; intervention test (true / flipped / random at matched displacement)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECE7F2;strokeColor=#7A6699;fontFamily=Helvetica;fontSize=11;fontColor=#23272E;" vertex="1" parent="1">
+          <mxGeometry x="464" y="616" width="200" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="o4" value="&lt;b&gt;Report + case traces&lt;/b&gt;&lt;br&gt;clinician interface (Phase 2)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECE7F2;strokeColor=#7A6699;fontFamily=Helvetica;fontSize=11;fontColor=#23272E;" vertex="1" parent="1">
+          <mxGeometry x="676" y="616" width="200" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_h1_o1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#5A6270;endArrow=block;endFill=1;" edge="1" parent="1" source="h1" target="o1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_h2_o2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#5A6270;endArrow=block;endFill=1;" edge="1" parent="1" source="h2" target="o2">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_h2_o3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#5A6270;endArrow=block;endFill=1;" edge="1" parent="1" source="h2" target="o3">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_h3_o4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#5A6270;endArrow=block;endFill=1;" edge="1" parent="1" source="h3" target="o4">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
