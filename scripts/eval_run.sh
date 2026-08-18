@@ -19,7 +19,7 @@
 #
 # Stages (each logs "=== STAGE <name> EXIT <code> <utc time> ==="):
 #   eval          full held-out standard evaluation -> inference_results.json
-#   interventions banded (equal-displacement) lever test on ALERT_SHARDS -> interventions_band15.json
+#   interventions banded (equal-displacement) lever test plus zero_known / zero_unknown completeness probes on ALERT_SHARDS -> interventions_band15.json
 #                 (skipped for model_kind=baseline: no bottleneck)
 #   alerts        hazard heads vs the strong tuned per-event GBM on ALERT_SHARDS -> alerts.json,
 #                 plus the per-index-row table alerts_rows.parquet (patient-level: stays in RUN_DIR)
@@ -52,7 +52,7 @@ echo "run=$RUN_DIR data=$DATA_ROOT model_kind=$MODEL_KIND lanes=$LANES chunk=$CH
 stage eval "$PYTHON" -m odyssey.inference.run_inference --run-dir "$RUN_DIR" --held-out-shard-dir "$DATA_ROOT/held_out" --output-json "$RUN_DIR/inference_results.json" --num-lanes "$LANES" --chunk-size "$CHUNK" --checkpoint "$CHECKPOINT"
 
 if [ "$MODEL_KIND" = "bottleneck" ]; then
-  stage interventions "$PYTHON" -m odyssey.inference.interventions --run-dir "$RUN_DIR" --held-out-shard-dir "$DATA_ROOT/held_out" --output-json "$RUN_DIR/interventions_band15.json" --max-shards "$ALERT_SHARDS" --num-lanes "$LANES" --chunk-size "$CHUNK" --uncertain-band 0.15 --modes none truth flip random --checkpoint "$CHECKPOINT"
+  stage interventions "$PYTHON" -m odyssey.inference.interventions --run-dir "$RUN_DIR" --held-out-shard-dir "$DATA_ROOT/held_out" --output-json "$RUN_DIR/interventions_band15.json" --max-shards "$ALERT_SHARDS" --num-lanes "$LANES" --chunk-size "$CHUNK" --uncertain-band 0.15 --modes none truth flip random zero_known zero_unknown --checkpoint "$CHECKPOINT"
 else
   echo "=== STAGE interventions SKIPPED (baseline model) ==="
 fi
