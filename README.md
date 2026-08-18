@@ -51,10 +51,21 @@ ConceptBottleneck  (odyssey/models/concept_bottleneck.py)
     └─ 1 unknown concept   — same mixture structure, unsupervised, orthogonality-
                              penalized against the known concepts' embeddings
     ↓
-task loss + concept loss + orthogonality loss
+heads on the bottleneck output: next-event distribution (bundle-invariant,
+family-restricted loss) · time-to-next-event hazard · per-event hazard heads
+(vasopressor start, ICU admission, AKI, death; linear or small MLP readout)
     ↓
-forecast (adverse events, deterioration) — traceable to concept activations
+task loss + concept loss + orthogonality loss + time loss + event-hazard loss
+    ↓
+forecasts, survival curves and alerts — traceable to concept activations
 ```
+
+Inputs per token: the code (with a clinical or quantile value bin folded in), the
+standardized numeric value (opt-in value channel), inter-event time, age, visit
+structure, and the patient's static facts (sex, race, ...) placed as the first
+tokens of the sequence. A no-bottleneck variant (`model_kind="baseline"`, same
+backbone and heads) prices the bottleneck. Everything is streamed over each
+patient's whole record in 512-token chunks with carried recurrent state.
 
 The concept bottleneck implements Ismail, Adebayo, Bravo, Ra & Cho, ["Concept Bottleneck Generative Models"](https://proceedings.iclr.cc/paper_files/paper/2024/file/9149fc44c95ce58e3ca529a1e34c2691-Paper-Conference.pdf) (ICLR 2024) — task loss + supervised concept loss + an orthogonality penalty — verified directly against the paper's Section 3.1/Eq. 5 and its official reference code ([prescient-design/CBGM](https://github.com/prescient-design/CBGM), [mateoespinosa/cem](https://github.com/mateoespinosa/cem)), not just the abstract. Each concept (including the unsupervised "unknown" one) is a *mixture of two learned embeddings*, not a scalar — see the module docstring for why that distinction is load-bearing (the paper's own ablation shows removing the unknown concept's embedding capacity, not merely having some free capacity, degrades FID 9.3→44.1).
 
@@ -141,6 +152,8 @@ batch = collate_patient_sequences(sequences)  # -> ClinicalSequenceBatch, ready 
 
 Validated at scale against the real extraction: 500 real patients tokenize in ~2s, mean sequence length ~301 events, 0.8% `[UNK]` rate. Visits are derived from `hadm_id` (events sharing one become one visit; events without one each get their own single-event visit) — a documented v1 simplification, see the module docstring. Inter-event time (including gaps *between* admissions, not just within one) is already encoded regardless of value-binning — `PatientSequence.time_stamps` holds each event's absolute time since the sequence's first event, and `TimeEmbeddingLayer(is_time_delta=True)` computes real consecutive-event deltas from it, so it survives truncation and visit boundaries unchanged.
 
+Two more per-token inputs exist alongside the bin token: with `TrainingConfig.value_embeddings=True` the binner's per-code standardized value (`numeric_z`, from `QuantileBinner.standardize`) is projected into the token embedding, so the model sees how far into a bin a reading is (a creatinine of 0.8 vs 1.4 are both `NORMAL` tokens); and timeless facts (`GENDER//F`, race, ...) lead every sequence at the first event's timestamp as inputs that are never prediction targets. Medication codes are normalized to ingredient level (`odyssey/data/code_normalization.py`), on eICU through a shipped HICL dictionary that resolves the 36% of medication rows with no drug name.
+
 Sequences are built from each subject's **complete history**, not scoped to one admission or a fixed window — see `research_journal/02_sequence_scoping_methodology.html` (local-only) for why. The same pipeline runs unchanged on MIMIC-IV and eICU; cross-hospital/health-system generalization will be assessed on [GEMINI](https://geminimedicine.ca/) (~30 hospitals, inpatient), not between MIMIC and eICU.
 
 ## Development
@@ -164,10 +177,13 @@ uv run mypy odyssey
 9. Extend extraction to MIMIC-IV-ED
 10. ~~Multi-dataset pipeline: the same extraction/tokenization/concept pipeline running on eICU as well as MIMIC-IV~~ — done: `specs/eICU.yaml`, validated on the full eICU-CRD 2.0 (166K stays, 856M events); concept rules and clinical value bins are canonical (LOINC-keyed) and expanded per source
 11. Cross-hospital/health-system generalization: extend the pipeline to [GEMINI](https://geminimedicine.ca/) (~30 hospitals, inpatient/general internal medicine) — the multi-hospital dataset where generalization is actually assessed; MIMIC-IV and eICU serve as pipeline-portability targets, not as a train-on-one/test-on-the-other experiment
-12. ~~Bundle-aware forecasting: permutation-invariant loss within same-timestamp bundles (restricted to the target's own family) and family-balanced loss weighting~~ -- built and measured: same-family set top-1 69.9% -> 74.9% overall on the subset run (labs 75 -> 81, medications 36 -> 42, procedures 24 -> 38); a baseline without the bottleneck reaches 76.6%
-13. ~~Time-to-event: a hazard head for time to the next bundle, and per-event hazard heads (vasopressor start, ICU admission, AKI, death) trained with right censoring; alert evaluation harness scoring P(event within 8/24/72h) with time-dependent AUROC/Brier/calibration against per-event gradient-boosted baselines on hand features~~ -- built; first measured on the v3 subset run the model's pre-existing readouts scored 0.45-0.63 AUROC against the baselines' 0.76-0.87, which is the bar the new heads are trained to meet
+12. ~~Bundle-aware forecasting: permutation-invariant loss within same-timestamp bundles (restricted to the target's own family) and family-balanced loss weighting~~ -- built and measured: same-family set top-1 69.9% -> 75.7% overall on the MIMIC-IV subset (labs 75 -> 81, medications 36 -> 44, diagnoses 31 -> 41, procedures 24 -> 38); with the value channel and static inputs 76.7%; a baseline without the bottleneck reaches 77.9%; eICU 86.4%
+13. ~~Time-to-event: a hazard head for time to the next bundle, and per-event hazard heads (vasopressor start, ICU admission, AKI, death) trained with right censoring; alert evaluation harness scoring P(event within 8/24/72h) with time-dependent AUROC/Brier/calibration against per-event gradient-boosted baselines on hand features~~ -- built and measured: hazard heads reach 0.68-0.95 AUROC across events and horizons on the MIMIC-IV subset (calibrated), against a tuned 609-feature gradient-boosted baseline (`odyssey/inference/baseline_features.py`, fitted on the same training patients) at 0.78-0.97; the head leads only on vasopressor start, and the gap concentrates where a fresh precursor lab exists and late in long stays; per-event survival curves render in the report
 14. Bundle-level set prediction head and hierarchical ICD (category, then code) for discharge diagnoses; prior-diagnosis history recap at admission (built, opt-in, untested at scale)
-15. Phase 2: an LLM agent (e.g. MedGemma) that reads the concept-annotated forecast and assists a clinician
+15. Phase 2: an LLM agent (e.g. MedGemma) that reads the concept-annotated forecast and assists a clinician; retrospective clinician validation on GEMINI
+16. ~~Paper-grade bespoke baselines: best-effort feature panel (48 LOINC-keyed vitals/labs with window statistics and trends, drug-class exposures, ICU/visit context) with per-event, per-horizon tuning; per-index-row dumps for stratified error analysis~~ -- done
+17. ~~eICU spec v2: medication identity via HICL, named infusions, GCS and urine output from the flowsheets~~ -- done; the eICU subset runs replicate the MIMIC-IV findings (forecasting up, concepts up, same alert picture against the tuned baseline)
+18. Full-scale pretraining on all MIMIC-IV training shards (running), then eICU; manuscript in `paper/` (npj Digital Medicine)
 
 ### Known concept-rule limitations
 
