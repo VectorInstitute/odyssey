@@ -260,3 +260,25 @@ def test_maybe_normalize_uses_the_source_dictionary() -> None:
         maybe_normalize(events, enabled=False, source="eicu")["code"].to_list()
         == events["code"].to_list()
     )
+
+
+def test_unknown_drug_after_an_action_stays_the_drug_segment() -> None:
+    # eICU spec v1 shape: UNK is the drug, not a trailing id
+    assert (
+        normalize_medication_code("MEDICATION//STARTED//UNK")
+        == "MEDICATION//STARTED//unk"
+    )
+    assert (
+        normalize_medication_code("MEDICATION//STOPPED//UNK")
+        == "MEDICATION//STOPPED//unk"
+    )
+    # a bare numeric drug segment likewise survives as the drug
+    assert (
+        normalize_medication_code("MEDICATION//START//12345")
+        == "MEDICATION//START//12345"
+    )
+    # MIMIC pharmacy shape unchanged: action, drug, trailing gsn dropped
+    assert (
+        normalize_medication_code("MEDICATION//START//Furosemide 40 mg//8255")
+        == "MEDICATION//START//furosemide"
+    )
