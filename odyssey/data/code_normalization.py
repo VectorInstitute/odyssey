@@ -153,7 +153,12 @@ def normalize_medication_code(
         return code
     segs = parts[1:]
     trailing_id: Optional[str] = None
-    if len(segs) >= 2 and _ID_SEGMENT_RE.fullmatch(segs[-1]):
+    # A trailing pure-ID segment is dropped only if a drug segment remains:
+    # eICU spec v1's ``MEDICATION//STARTED//UNK`` has UNK *as* the drug, and
+    # dropping it left a bare ``MEDICATION//started`` token.
+    action_first = segs[0].upper() in _ACTION_SEGMENTS
+    min_segments = 3 if action_first else 2
+    if len(segs) >= min_segments and _ID_SEGMENT_RE.fullmatch(segs[-1]):
         trailing_id = segs[-1]
         segs = segs[:-1]
     drug_idx = 1 if segs[0].upper() in _ACTION_SEGMENTS and len(segs) > 1 else 0
