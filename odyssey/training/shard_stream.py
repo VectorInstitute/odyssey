@@ -254,7 +254,7 @@ def iter_patients_streaming(
     max_seq_len: Optional[int] = None,
     shuffle_seed: Optional[int] = None,
 ) -> Iterator[PatientSequence]:
-    """Yield patient sequences shard by shard, shards (and subjects) shuffled per seed."""
+    """Yield patient sequences shard by shard; shards and subjects shuffled per seed."""
     order = list(paths)
     if shuffle_seed is not None:
         random.Random(shuffle_seed).shuffle(order)
