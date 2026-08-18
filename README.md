@@ -137,6 +137,10 @@ Two more per-token inputs exist alongside the bin token: with `TrainingConfig.va
 
 Sequences are built from each subject's **complete history**, not scoped to one admission or a fixed window — see `research_journal/02_sequence_scoping_methodology.html` (local-only) for why. The same pipeline runs unchanged on MIMIC-IV and eICU; cross-hospital/health-system generalization will be assessed on [GEMINI](https://geminimedicine.ca/) (~30 hospitals, inpatient), not between MIMIC and eICU.
 
+## GEMINI
+
+Cross-hospital generalization is assessed on [GEMINI](https://geminimedicine.ca/), a ~30-hospital inpatient database. Nobody on this team has a login on the GEMINI node except Amrit, so all GEMINI-facing work is git-mediated: we push a script to a second, 1 MiB-per-push-capped remote, Amrit runs it on the node, and only small aggregate/cell-suppressed output comes back in a commit — never patient-level data or model checkpoints. See [`docs/gemini.md`](docs/gemini.md) for the full workflow, credential pattern, and governance rules.
+
 ## Development
 
 ```bash
