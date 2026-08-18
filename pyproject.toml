@@ -84,6 +84,15 @@ cuda = [
     "mamba-ssm==2.3.0",
 ]
 
+# GEMINI database access (odyssey/data/gemini/). Optional: nobody but Amrit
+# has a login on the GEMINI node, so most of this project never needs a
+# Postgres driver at all — see docs/gemini.md.
+gemini = [
+    "sqlalchemy>=2.0.0",
+    "psycopg2-binary>=2.9.0",
+    "pandas>=2.2.0",
+]
+
 # NOTE: transformers/lightning/etc. are intentionally omitted until the
 # concept-bottleneck architecture actually needs them — add alongside the
 # code that uses them, not speculatively.
