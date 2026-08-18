@@ -35,8 +35,13 @@ if [[ -n "$LIBSTDCPP" ]]; then
     export LD_PRELOAD="$LIBSTDCPP"
 fi
 
-if [[ ! -d "$VENV" ]]; then
+# Check for bin/activate specifically, not just the directory: a venv
+# creation attempt that failed partway through (e.g. system python3 with
+# no ensurepip) can leave a directory behind with no working activate
+# script, which a bare directory-existence check would mistake for done.
+if [[ ! -f "$VENV/bin/activate" ]]; then
     echo "Creating venv at $VENV"
+    rm -rf "$VENV"
     if command -v uv >/dev/null 2>&1; then
         uv venv "$VENV" --python 3.12
     else
