@@ -57,7 +57,7 @@ class ConceptBottleneckOutput(NamedTuple):
     """(..., embedding_dim) the extra, unsupervised concept's mixed embedding."""
 
     bottleneck: torch.Tensor
-    """(..., (num_concepts + 1) * embedding_dim): concat of all mixed embeddings."""
+    """(..., num_concepts * embedding_dim + unknown_dim): all mixed embeddings."""
 
     observability_logits: torch.Tensor
     """(..., num_concepts) predicted "would this concept be observed", pre-sigmoid."""
@@ -161,6 +161,20 @@ class ConceptBottleneck(nn.Module):
         embedding.
     concept_dropout : float
         Dropout applied to the hidden state before the context projection.
+    global_pairs : bool
+        Leakage control (see the module docstring). ``False`` (default, the
+        CEM design): each known concept's ``(w+, w-)`` pair is produced from
+        the hidden state, so both vectors encode the context and overriding
+        ``c`` only re-weights two context-carrying vectors. ``True``: each
+        known concept's pair is a learned, input-independent parameter, so
+        the concept slot carries exactly one number, ``c``, and an
+        intervention on ``c`` fully determines that slot; the concept
+        probability is then predicted directly from the hidden state. The
+        unknown slot keeps its context-dependent pair either way (it is the
+        residual channel by design).
+    unknown_dim : Optional[int]
+        Width of the unknown (residual) slot; defaults to ``embedding_dim``.
+        Smaller widths cap how much task signal can bypass the concepts.
     """
 
     def __init__(
@@ -170,6 +184,8 @@ class ConceptBottleneck(nn.Module):
         embedding_dim: int,
         *,
         concept_dropout: float = 0.1,
+        global_pairs: bool = False,
+        unknown_dim: Optional[int] = None,
     ) -> None:
         """Initialize the concept bottleneck layer."""
         super().__init__()
@@ -177,22 +193,61 @@ class ConceptBottleneck(nn.Module):
             raise ValueError("num_concepts must be positive")
         if embedding_dim <= 0:
             raise ValueError("embedding_dim must be positive")
+        unknown_dim = embedding_dim if unknown_dim is None else int(unknown_dim)
+        if unknown_dim <= 0:
+            raise ValueError("unknown_dim must be positive")
 
         self.hidden_size = hidden_size
         self.num_concepts = num_concepts
         self.embedding_dim = embedding_dim
+        self.unknown_dim = unknown_dim
+        self.global_pairs = bool(global_pairs)
         self.num_slots = num_concepts + 1  # known concepts + 1 unknown concept
+        self.output_dim = num_concepts * embedding_dim + unknown_dim
 
         self.dropout = nn.Dropout(concept_dropout)
-        self.context_proj = nn.Linear(hidden_size, self.num_slots * 2 * embedding_dim)
         self.context_act = nn.LeakyReLU()
-
-        # Per-slot probability network Psi_i([w+, w-]) -> logit. Implemented
-        # as one (num_slots, 2*embedding_dim) weight so every slot's logit
-        # only depends on that slot's own embeddings, not the others'.
-        self.prob_weight = nn.Parameter(torch.empty(self.num_slots, 2 * embedding_dim))
-        self.prob_bias = nn.Parameter(torch.zeros(self.num_slots))
-        nn.init.xavier_uniform_(self.prob_weight)
+        # Parameter layout is kept byte-compatible with earlier checkpoints
+        # for the default configuration (context pairs, unknown_dim ==
+        # embedding_dim): one context_proj over all slots (unknown last) and
+        # one (num_slots, 2*embedding_dim) probability weight.
+        if self.global_pairs:
+            # Known concepts: input-independent (w+, w-) per concept and a
+            # direct probability head; the unknown slot keeps a context pair.
+            self.pair_embeddings = nn.Parameter(
+                torch.empty(num_concepts, 2, embedding_dim)
+            )
+            nn.init.xavier_uniform_(self.pair_embeddings)
+            self.concept_prob_proj = nn.Linear(hidden_size, num_concepts)
+            self.context_proj = nn.Linear(hidden_size, 2 * unknown_dim)
+            self.unknown_prob_weight = nn.Parameter(torch.empty(1, 2 * unknown_dim))
+            self.unknown_prob_bias = nn.Parameter(torch.zeros(1))
+            nn.init.xavier_uniform_(self.unknown_prob_weight)
+        else:
+            # One Linear producing every slot's (w+, w-) pair: equivalent to
+            # independent per-concept context networks since each slot's
+            # output only depends on its own weight rows.
+            self.context_proj = nn.Linear(
+                hidden_size, num_concepts * 2 * embedding_dim + 2 * unknown_dim
+            )
+            if unknown_dim == embedding_dim:
+                # Per-slot probability network Psi_i([w+, w-]) -> logit; one
+                # weight row per slot so no slot's logit sees another's pair.
+                self.prob_weight = nn.Parameter(
+                    torch.empty(self.num_slots, 2 * embedding_dim)
+                )
+                self.prob_bias = nn.Parameter(torch.zeros(self.num_slots))
+                nn.init.xavier_uniform_(self.prob_weight)
+            else:
+                # The unknown slot has its own width, so its own weight.
+                self.prob_weight = nn.Parameter(
+                    torch.empty(num_concepts, 2 * embedding_dim)
+                )
+                self.prob_bias = nn.Parameter(torch.zeros(num_concepts))
+                nn.init.xavier_uniform_(self.prob_weight)
+                self.unknown_prob_weight = nn.Parameter(torch.empty(1, 2 * unknown_dim))
+                self.unknown_prob_bias = nn.Parameter(torch.zeros(1))
+                nn.init.xavier_uniform_(self.unknown_prob_weight)
 
         # Independent of the concept-value pathway above: predicts whether
         # each known concept would be observed at all, from the same
@@ -214,45 +269,63 @@ class ConceptBottleneck(nn.Module):
         """
         batch_shape = hidden_states.shape[:-1]
         x = self.dropout(hidden_states)
+        k, d, u = self.num_concepts, self.embedding_dim, self.unknown_dim
 
-        context = self.context_act(self.context_proj(x))
-        context = context.view(*batch_shape, self.num_slots, 2, self.embedding_dim)
-        w_pos = context[..., 0, :]
-        w_neg = context[..., 1, :]
-
-        joint = torch.cat([w_pos, w_neg], dim=-1)  # (..., num_slots, 2*embedding_dim)
-        logits = (
-            torch.einsum("...sd,sd->...s", joint, self.prob_weight) + self.prob_bias
-        )
-        probs = torch.sigmoid(logits)
-
-        mix_probs = probs
-        if intervention is not None and intervention.probs is not None:
-            own = probs[..., : self.num_concepts]
-            override = intervention.probs.to(own.dtype).expand_as(own)
-            apply = intervention_apply_mask(intervention, own)
-            if apply is not None:
-                override = torch.where(apply, override, own)
-            mix_probs = torch.cat([override, probs[..., self.num_concepts :]], dim=-1)
-
-        mixed = mix_probs.unsqueeze(-1) * w_pos + (1 - mix_probs.unsqueeze(-1)) * w_neg
-        if intervention is not None and (
-            intervention.zero_known or intervention.zero_unknown
-        ):
-            slot_keep = torch.ones(
-                self.num_slots, dtype=mixed.dtype, device=mixed.device
+        # Known concepts: (w+, w-) pairs and activation logits.
+        if self.global_pairs:
+            pairs = self.pair_embeddings.expand(*batch_shape, k, 2, d)
+            k_pos, k_neg = pairs[..., 0, :], pairs[..., 1, :]
+            concept_logits = self.concept_prob_proj(x)
+            unknown_ctx = self.context_act(self.context_proj(x)).view(
+                *batch_shape, 2, u
             )
-            if intervention.zero_known:
-                slot_keep[: self.num_concepts] = 0.0
-            if intervention.zero_unknown:
-                slot_keep[self.num_concepts] = 0.0
-            mixed = mixed * slot_keep.unsqueeze(-1)
+        else:
+            context = self.context_act(self.context_proj(x))
+            known_ctx = context[..., : k * 2 * d].view(*batch_shape, k, 2, d)
+            unknown_ctx = context[..., k * 2 * d :].view(*batch_shape, 2, u)
+            k_pos, k_neg = known_ctx[..., 0, :], known_ctx[..., 1, :]
+            joint = torch.cat([k_pos, k_neg], dim=-1)  # (..., k, 2d)
+            concept_logits = (
+                torch.einsum("...sd,sd->...s", joint, self.prob_weight[:k])
+                + self.prob_bias[:k]
+            )
+        concept_probs = torch.sigmoid(concept_logits)
 
-        concept_logits = logits[..., : self.num_concepts]
-        concept_probs = probs[..., : self.num_concepts]
-        concept_embeddings = mixed[..., : self.num_concepts, :]
-        unknown_embedding = mixed[..., self.num_concepts, :]
-        bottleneck = mixed.reshape(*batch_shape, self.num_slots * self.embedding_dim)
+        # Unknown (residual) slot: always a context-dependent pair.
+        u_pos, u_neg = unknown_ctx[..., 0, :], unknown_ctx[..., 1, :]
+        if hasattr(self, "unknown_prob_weight"):
+            u_weight, u_bias = self.unknown_prob_weight[0], self.unknown_prob_bias[0]
+        else:  # shared (num_slots, 2d) weight: the unknown slot is the last row
+            u_weight, u_bias = self.prob_weight[k], self.prob_bias[k]
+        unknown_logit = torch.cat([u_pos, u_neg], dim=-1) @ u_weight + u_bias
+        unknown_prob = torch.sigmoid(unknown_logit)
+
+        mix_probs = concept_probs
+        if intervention is not None and intervention.probs is not None:
+            override = intervention.probs.to(concept_probs.dtype).expand_as(
+                concept_probs
+            )
+            apply = intervention_apply_mask(intervention, concept_probs)
+            if apply is not None:
+                override = torch.where(apply, override, concept_probs)
+            mix_probs = override
+
+        concept_embeddings = (
+            mix_probs.unsqueeze(-1) * k_pos + (1 - mix_probs.unsqueeze(-1)) * k_neg
+        )
+        unknown_embedding = (
+            unknown_prob.unsqueeze(-1) * u_pos
+            + (1 - unknown_prob.unsqueeze(-1)) * u_neg
+        )
+        if intervention is not None and intervention.zero_known:
+            concept_embeddings = torch.zeros_like(concept_embeddings)
+        if intervention is not None and intervention.zero_unknown:
+            unknown_embedding = torch.zeros_like(unknown_embedding)
+
+        bottleneck = torch.cat(
+            [concept_embeddings.reshape(*batch_shape, k * d), unknown_embedding],
+            dim=-1,
+        )
 
         observability_logits: torch.Tensor = self.observability_proj(x)
         observability_probs = torch.sigmoid(observability_logits)
@@ -328,8 +401,13 @@ def orthogonality_loss(
     satisfy the concept loss without those concepts' embeddings being
     load-bearing for the task, defeating the point of the bottleneck.
     Mean absolute cosine similarity between each known concept's embedding
-    and the unknown concept's embedding (Eq. 5 of the CBGM paper).
+    and the unknown concept's embedding (Eq. 5 of the CBGM paper). When the
+    unknown slot has a different width (``unknown_dim``), the similarity is
+    undefined and the term is zero: the width cap is then the leakage
+    control instead of the orthogonality penalty.
     """
+    if concept_embeddings.shape[-1] != unknown_embedding.shape[-1]:
+        return unknown_embedding.new_zeros(())
     cos_sim = F.cosine_similarity(
         concept_embeddings, unknown_embedding.unsqueeze(-2), dim=-1
     )
