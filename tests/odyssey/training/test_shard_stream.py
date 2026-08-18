@@ -46,26 +46,42 @@ def _write_shards(shard_dir: Path, n_shards: int, subjects_per_shard: int) -> No
             sid += 1
             hadm = 1000 + sid
             base = T0 + timedelta(days=sid)
-            rows.append((sid, "GENDER//F" if sid % 2 else "GENDER//M", None, None, None))
+            rows.append(
+                (sid, "GENDER//F" if sid % 2 else "GENDER//M", None, None, None)
+            )
             rows.append((sid, "HOSPITAL_ADMISSION//EW", base, None, hadm))
             for i in range(30):
                 t = base + timedelta(hours=i)
-                rows.append((sid, "LAB//220045//bpm", t, 60.0 + 3 * ((sid + i) % 20), hadm))
-                rows.append((sid, "LAB//RESULT//50912//mg/dL", t, 0.6 + 0.1 * (i % 9), hadm))
+                rows.append(
+                    (sid, "LAB//220045//bpm", t, 60.0 + 3 * ((sid + i) % 20), hadm)
+                )
+                rows.append(
+                    (sid, "LAB//RESULT//50912//mg/dL", t, 0.6 + 0.1 * (i % 9), hadm)
+                )
                 if i % 5 == 0:
-                    rows.append((sid, "MEDICATION//furosemide//Administered", t, None, hadm))
+                    rows.append(
+                        (sid, "MEDICATION//furosemide//Administered", t, None, hadm)
+                    )
                 if sid % 3 == 0 and i == 12:
-                    rows.append((sid, "MEDICATION//norepinephrine//Administered", t, None, hadm))
+                    rows.append(
+                        (sid, "MEDICATION//norepinephrine//Administered", t, None, hadm)
+                    )
                     rows.append((sid, "ICU_ADMISSION//MICU", t, None, hadm))
-            rows.append((sid, "DIAGNOSIS//ICD//10//I50", base + timedelta(hours=31), None, hadm))
-        pl.DataFrame(rows, schema=SCHEMA, orient="row").write_parquet(shard_dir / f"{k}.parquet")
+            rows.append(
+                (sid, "DIAGNOSIS//ICD//10//I50", base + timedelta(hours=31), None, hadm)
+            )
+        pl.DataFrame(rows, schema=SCHEMA, orient="row").write_parquet(
+            shard_dir / f"{k}.parquet"
+        )
 
 
 def test_streaming_matches_in_memory_preparation(tmp_path: Path) -> None:
     shard_dir = tmp_path / "train"
     _write_shards(shard_dir, n_shards=3, subjects_per_shard=6)
     paths = shard_paths(shard_dir)
-    prepare = make_preparer(normalize_medications=True, history_recap=False, source="mimic_iv")
+    prepare = make_preparer(
+        normalize_medications=True, history_recap=False, source="mimic_iv"
+    )
     concepts = concepts_for_source("mimic_iv")
 
     whole = prepare(load_meds_shards(shard_dir))
@@ -109,20 +125,27 @@ def test_streaming_matches_in_memory_preparation(tmp_path: Path) -> None:
         assert stats.event_times[name].censor == times.censor
         assert stats.event_times[name].subject_scoped == times.subject_scoped
 
-    vocab_stream = Vocabulary.build_from_counts(stats.code_counts, min_count=1, max_size=1000)
+    vocab_stream = Vocabulary.build_from_counts(
+        stats.code_counts, min_count=1, max_size=1000
+    )
     vocab_ref = build_vocabulary(whole_binned, min_count=1, max_size=1000)
     assert vocab_stream.token_to_id == vocab_ref.token_to_id
 
-    w_stream = family_loss_weights_from_counts(stats.code_counts, alpha=0.5, n_families=9)
+    w_stream = family_loss_weights_from_counts(
+        stats.code_counts, alpha=0.5, n_families=9
+    )
     w_ref = family_loss_weights(whole_binned, alpha=0.5, n_families=9)
     assert torch.allclose(w_stream, w_ref)
 
     streamed = {
         s.subject_id: s.concept_ids
-        for s in iter_patients_streaming(paths, prepare, binner, vocab_ref, source="mimic_iv")
+        for s in iter_patients_streaming(
+            paths, prepare, binner, vocab_ref, source="mimic_iv"
+        )
     }
     reference = {
-        s.subject_id: s.concept_ids for s in iter_patient_sequences(whole_binned, vocab_ref)
+        s.subject_id: s.concept_ids
+        for s in iter_patient_sequences(whole_binned, vocab_ref)
     }
     assert streamed == reference
 

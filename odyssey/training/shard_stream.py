@@ -29,7 +29,7 @@ import random
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Iterator, List, Optional, Sequence, Union
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Union
 
 import polars as pl
 import torch
@@ -41,7 +41,6 @@ from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.sequences import PatientSequence
 from odyssey.data.value_binning import QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import Vocabulary, code_type
-from odyssey.models.sequence_model import ConceptLabelDict
 from odyssey.training.data import (
     build_concept_first_times,
     build_concept_label_dicts,
@@ -57,7 +56,9 @@ logger = logging.getLogger(__name__)
 Preparer = Callable[[pl.DataFrame], pl.DataFrame]
 
 
-def shard_paths(shard_dir: Union[str, Path], max_shards: Optional[int] = None) -> List[Path]:
+def shard_paths(
+    shard_dir: Union[str, Path], max_shards: Optional[int] = None
+) -> List[Path]:
     """Numerically ordered shard paths of a split (same rule as load_meds_shards)."""
     paths = sorted(Path(shard_dir).glob("*.parquet"), key=lambda p: int(p.stem))
     if max_shards is not None:
@@ -105,13 +106,15 @@ def fit_binner_streaming(
     shards, and exact for codes with fewer values than the per-shard cap.
     """
     per_shard = max(sample_per_code // max(len(paths), 1), 200)
-    counts: Counter = Counter()
+    counts: Counter[str] = Counter()
     samples: List[pl.DataFrame] = []
     for k, path in enumerate(paths):
         frame = prepare(load_meds_shard(path))
         if value_col not in frame.columns:
             continue
-        numeric = frame.select(code_col, value_col).filter(pl.col(value_col).is_not_null())
+        numeric = frame.select(code_col, value_col).filter(
+            pl.col(value_col).is_not_null()
+        )
         if numeric.height == 0:
             continue
         counts.update(dict(numeric.group_by(code_col).len().iter_rows()))
@@ -146,17 +149,22 @@ class CorpusStats:
     code_counts: Dict[str, int]
     n_subjects: int
     n_events: int
-    labels: ConceptLabelDict = field(default_factory=dict)
-    masks: ConceptLabelDict = field(default_factory=dict)
-    first_times: ConceptLabelDict = field(default_factory=dict)
+    labels: Dict[Any, torch.Tensor] = field(default_factory=dict)
+    """Concept labels keyed like :data:`ConceptLabelDict` (visit or stay keys)."""
+    masks: Dict[Any, torch.Tensor] = field(default_factory=dict)
+    first_times: Dict[Any, torch.Tensor] = field(default_factory=dict)
     event_times: Dict[str, EventTimes] = field(default_factory=dict)
 
 
-def _merge_event_times(into: Dict[str, EventTimes], part: Dict[str, EventTimes]) -> None:
+def _merge_event_times(
+    into: Dict[str, EventTimes], part: Dict[str, EventTimes]
+) -> None:
     for name, times in part.items():
         if name not in into:
             into[name] = EventTimes(
-                onset=dict(times.onset), censor=dict(times.censor), subject_scoped=times.subject_scoped
+                onset=dict(times.onset),
+                censor=dict(times.censor),
+                subject_scoped=times.subject_scoped,
             )
         else:
             into[name].onset.update(times.onset)
@@ -176,7 +184,7 @@ def build_corpus_stats(
     code_col: str = "code",
 ) -> CorpusStats:
     """Aggregate per-shard code counts, concept labels/masks/first times and event times."""
-    counts: Counter = Counter()
+    counts: Counter[str] = Counter()
     stats = CorpusStats(code_counts={}, n_subjects=0, n_events=0)
     for i, path in enumerate(paths):
         raw = prepare(load_meds_shard(path))
@@ -184,6 +192,8 @@ def build_corpus_stats(
         counts.update(dict(binned.group_by(code_col).len().iter_rows()))
         stats.n_subjects += int(binned["subject_id"].n_unique())
         stats.n_events += binned.height
+        labels: Dict[Any, torch.Tensor]
+        masks: Dict[Any, torch.Tensor]
         if concept_supervision == "visit":
             labels, masks = build_visit_concept_label_dicts(raw, concepts)
             if with_first_times:
@@ -212,7 +222,7 @@ def family_loss_weights_from_counts(
     n_families: Optional[int] = None,
 ) -> torch.Tensor:
     """Per-family loss weights from code counts (see ``family_loss_weights``)."""
-    per_family: Counter = Counter()
+    per_family: Counter[int] = Counter()
     for code, cnt in code_counts.items():
         per_family[code_type(code)] += cnt
     n_fam = max(max(per_family) + 1, n_families or 0)
@@ -220,7 +230,9 @@ def family_loss_weights_from_counts(
     for fam, cnt in per_family.items():
         n[fam] = float(cnt)
     share = n / n.sum()
-    raw = torch.where(share > 0, share.clamp_min(1e-12) ** (-alpha), torch.zeros_like(share))
+    raw = torch.where(
+        share > 0, share.clamp_min(1e-12) ** (-alpha), torch.zeros_like(share)
+    )
     scale = (share * raw).sum()
     weights = torch.where(scale > 0, raw / scale, raw)
     weights = torch.where(share > 0, weights, torch.ones_like(weights))
