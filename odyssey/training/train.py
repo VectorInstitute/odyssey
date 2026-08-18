@@ -45,15 +45,16 @@ import logging
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, Dict, Optional, TypeVar
+from typing import Callable, Dict, Iterator, Optional, Sequence, TypeVar
 
 import polars as pl
 import torch
 
 from odyssey.data.alert_events import ALERT_EVENTS, all_event_times
 from odyssey.data.code_normalization import maybe_normalize
-from odyssey.data.concepts import concepts_for_source
+from odyssey.data.concepts import AnyConceptDefinition, concepts_for_source
 from odyssey.data.history_recap import maybe_history_recap
+from odyssey.data.sequences import PatientSequence
 from odyssey.data.streaming import PackedLaneSampler
 from odyssey.data.value_binning import QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import PAD_ID, Vocabulary
@@ -82,6 +83,14 @@ from odyssey.training.data import (
 )
 from odyssey.training.event_targets import EventTimeTables, event_hazard_targets
 from odyssey.training.running_labels import randint_intervention
+from odyssey.training.shard_stream import (
+    build_corpus_stats,
+    family_loss_weights_from_counts,
+    fit_binner_streaming,
+    iter_patients_streaming,
+    make_preparer,
+    shard_paths,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -114,6 +123,12 @@ class TrainingConfig:
     event_head_hidden: int = 0
     """Hidden width of the per-event hazard heads' MLP readout; 0 = the
     single linear layer every run before v8 used."""
+    stream_shards: bool = False
+    """Prepare the training split shard by shard (vocabulary, binner,
+    concept labels, event times and the per-epoch token stream) instead
+    of loading it whole: required at full-extraction scale (292 MIMIC-IV
+    shards OOM-killed an 83 GB host in concept labeling). Tuning shards
+    stay in memory. See :mod:`odyssey.training.shard_stream`."""
     concept_global_pairs: bool = False
     """Leakage control: input-independent (w+, w-) per known concept, so a
     concept slot carries only its probability (see ConceptBottleneck)."""
@@ -409,21 +424,37 @@ def build_model(
 def build_objective(
     config: TrainingConfig,
     vocab: Vocabulary,
-    train_events_binned: pl.DataFrame,
+    train_events_binned: Optional[pl.DataFrame],
     device: str,
+    *,
+    code_counts: Optional[Dict[str, int]] = None,
 ) -> ForecastObjective:
-    """Construct the :class:`ForecastObjective` a run trains and validates with."""
+    """Construct the :class:`ForecastObjective` a run trains and validates with.
+
+    Family weights come from the binned training events, or from
+    ``code_counts`` (the shard-streaming path) when no frame is held.
+    """
     family_weights = None
     # token -> family is always needed: the bundle-invariant loss restricts
     # membership to the target's own family (see _bundle_log_likelihood).
     token_types = token_type_lookup(vocab).to(device)
     if config.family_balance_alpha > 0.0:
-        family_weights = family_loss_weights(
-            train_events_binned,
-            alpha=config.family_balance_alpha,
-            cap=config.family_weight_cap,
-            n_families=int(token_types.max().item()) + 1,
-        ).to(device)
+        n_families = int(token_types.max().item()) + 1
+        if code_counts is not None:
+            family_weights = family_loss_weights_from_counts(
+                code_counts,
+                alpha=config.family_balance_alpha,
+                cap=config.family_weight_cap,
+                n_families=n_families,
+            ).to(device)
+        else:
+            assert train_events_binned is not None
+            family_weights = family_loss_weights(
+                train_events_binned,
+                alpha=config.family_balance_alpha,
+                cap=config.family_weight_cap,
+                n_families=n_families,
+            ).to(device)
         logger.info(
             "[loss] family weights (alpha=%.2f): %s",
             config.family_balance_alpha,
@@ -525,6 +556,9 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(config.seed)
+
+    if config.stream_shards:
+        return _train_streaming(config, output_dir, device)
 
     logger.info("[data] loading train shards from %s", config.train_shard_dir)
     train_events = load_meds_shards(
@@ -650,6 +684,168 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
         config.event_hazards = any(k.startswith("event_heads.") for k in resume_keys)
         del resume_keys
     objective = build_objective(config, vocab, train_events_binned, device)
+
+    def make_train_patients(epoch: int) -> Iterator[PatientSequence]:
+        return iter_patient_sequences(
+            train_events_binned,
+            vocab,
+            max_seq_len=config.max_seq_len,
+            shuffle_seed=config.seed + epoch,
+        )
+
+    corpus = PreparedCorpus(
+        vocab=vocab,
+        concepts=concepts,
+        objective=objective,
+        train_labels=train_labels,
+        train_masks=train_masks,
+        train_first_times=train_first_times,
+        tuning_labels=tuning_labels,
+        tuning_masks=tuning_masks,
+        train_event_tables=train_event_tables,
+        tuning_event_tables=tuning_event_tables,
+        tuning_events_binned=tuning_events_binned,
+        make_train_patients=make_train_patients,
+    )
+    return _run_training(config, output_dir, device, corpus)
+
+
+@dataclass
+class PreparedCorpus:
+    """Everything the training loop needs, however the corpus was prepared."""
+
+    vocab: Vocabulary
+    concepts: Sequence[AnyConceptDefinition]
+    objective: ForecastObjective
+    train_labels: ConceptLabelDict
+    train_masks: ConceptLabelDict
+    train_first_times: ConceptLabelDict
+    tuning_labels: ConceptLabelDict
+    tuning_masks: ConceptLabelDict
+    train_event_tables: Optional[EventTimeTables]
+    tuning_event_tables: Optional[EventTimeTables]
+    tuning_events_binned: pl.DataFrame
+    make_train_patients: Callable[[int], Iterator[PatientSequence]]
+    """epoch -> the training patient stream for that epoch."""
+
+
+def _train_streaming(config: TrainingConfig, output_dir: Path, device: str) -> Path:
+    """Shard-streaming corpus preparation (see :mod:`odyssey.training.shard_stream`)."""
+    paths = shard_paths(config.train_shard_dir, config.max_train_shards)
+    prepare = make_preparer(
+        normalize_medications=config.normalize_medications,
+        history_recap=config.history_recap,
+        source=config.source,
+    )
+    concepts = concepts_for_source(config.source)
+    logger.info("[stream] fitting quantile binner over %d train shards", len(paths))
+    binner = fit_binner_streaming(
+        paths,
+        prepare,
+        n_bins=config.quantile_n_bins,
+        min_count=config.quantile_min_count,
+        seed=config.seed,
+    )
+    binner.save(output_dir / "quantile_binner.json")
+    logger.info("[stream] corpus statistics, concept labels and event times")
+    stats = build_corpus_stats(
+        paths,
+        prepare,
+        binner,
+        source=config.source,
+        concepts=concepts,
+        concept_supervision=config.concept_supervision,
+        with_first_times=config.randint_prob > 0.0,
+        alerts=ALERT_EVENTS if config.event_hazards else None,
+    )
+    logger.info(
+        "[data] train: %d subjects, %d events (streamed)",
+        stats.n_subjects,
+        stats.n_events,
+    )
+    vocab = Vocabulary.build_from_counts(
+        stats.code_counts,
+        min_count=config.vocab_min_count,
+        max_size=config.vocab_max_size,
+        backoff=config.vocab_backoff,
+    )
+    vocab.save(output_dir / "vocabulary.json")
+    logger.info("[data] vocab size: %d", len(vocab))
+
+    logger.info("[data] loading tuning shards from %s", config.tuning_shard_dir)
+    tuning_events = prepare(
+        load_meds_shards(config.tuning_shard_dir, max_shards=config.max_tuning_shards)
+    )
+    tuning_labels: ConceptLabelDict
+    tuning_masks: ConceptLabelDict
+    if config.concept_supervision == "visit":
+        tuning_labels, tuning_masks = build_visit_concept_label_dicts(
+            tuning_events, concepts
+        )
+    else:
+        tuning_labels, tuning_masks = build_concept_label_dicts(tuning_events, concepts)
+    event_names = [a.name for a in ALERT_EVENTS]
+    train_event_tables = (
+        EventTimeTables(stats.event_times, event_names)
+        if config.event_hazards
+        else None
+    )
+    tuning_event_tables = (
+        EventTimeTables(
+            all_event_times(tuning_events, ALERT_EVENTS, config.source), event_names
+        )
+        if config.event_hazards
+        else None
+    )
+    tuning_events_binned = add_value_tokens(tuning_events, binner, source=config.source)
+    del tuning_events
+
+    objective = build_objective(
+        config, vocab, None, device, code_counts=stats.code_counts
+    )
+
+    def make_train_patients(epoch: int) -> Iterator[PatientSequence]:
+        return iter_patients_streaming(
+            paths,
+            prepare,
+            binner,
+            vocab,
+            source=config.source,
+            max_seq_len=config.max_seq_len,
+            shuffle_seed=config.seed + epoch,
+        )
+
+    corpus = PreparedCorpus(
+        vocab=vocab,
+        concepts=concepts,
+        objective=objective,
+        train_labels=_labels_to_device(stats.labels, device),
+        train_masks=_labels_to_device(stats.masks, device),
+        train_first_times=_labels_to_device(stats.first_times, device),
+        tuning_labels=_labels_to_device(tuning_labels, device),
+        tuning_masks=_labels_to_device(tuning_masks, device),
+        train_event_tables=train_event_tables,
+        tuning_event_tables=tuning_event_tables,
+        tuning_events_binned=tuning_events_binned,
+        make_train_patients=make_train_patients,
+    )
+    return _run_training(config, output_dir, device, corpus)
+
+
+def _run_training(  # noqa: PLR0912, PLR0915
+    config: TrainingConfig, output_dir: Path, device: str, corpus: PreparedCorpus
+) -> Path:
+    """Run the training loop proper over a :class:`PreparedCorpus`."""
+    vocab = corpus.vocab
+    concepts = corpus.concepts
+    objective = corpus.objective
+    train_labels, train_masks = corpus.train_labels, corpus.train_masks
+    train_first_times = corpus.train_first_times
+    tuning_labels, tuning_masks = corpus.tuning_labels, corpus.tuning_masks
+    train_event_tables = corpus.train_event_tables
+    tuning_event_tables = corpus.tuning_event_tables
+    tuning_events_binned = corpus.tuning_events_binned
+
     model = build_model(config, vocab_size=len(vocab), num_concepts=len(concepts)).to(
         device
     )
@@ -740,12 +936,7 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
         )
 
     def make_train_sampler(epoch: int) -> PackedLaneSampler:
-        patients = iter_patient_sequences(
-            train_events_binned,
-            vocab,
-            max_seq_len=config.max_seq_len,
-            shuffle_seed=config.seed + epoch,
-        )
+        patients = corpus.make_train_patients(epoch)
         return PackedLaneSampler(
             patients,
             num_lanes=config.num_lanes,

@@ -72,10 +72,19 @@ def load_meds_shards(
         paths = paths[:max_shards]
     if not paths:
         raise FileNotFoundError(f"no .parquet shards found in {shard_dir}")
-    lf = pl.scan_parquet(paths)
+    return _load_meds_paths(paths)
+
+
+def _load_meds_paths(paths: Sequence[Path]) -> pl.DataFrame:
+    lf = pl.scan_parquet(list(paths))
     available = set(lf.collect_schema().names())
     columns = [c for c in _MEDS_EVENT_COLUMNS if c in available]
     return lf.select(columns).collect(engine="streaming")
+
+
+def load_meds_shard(path: Union[str, Path]) -> pl.DataFrame:
+    """Load one MEDS shard with the column projection of :func:`load_meds_shards`."""
+    return _load_meds_paths([Path(path)])
 
 
 def _shuffle_buffered(

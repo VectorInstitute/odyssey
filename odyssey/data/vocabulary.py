@@ -109,9 +109,12 @@ class Vocabulary:
                     rolled[code] += count
                 else:
                     rolled[backoff_fn(code) or code] += count
-        kept = [
-            code for code, count in rolled.most_common(max_size) if count >= min_count
-        ]
+        # Deterministic order regardless of how the counts were assembled:
+        # by count descending, then by code (most_common alone breaks ties
+        # by insertion order, which differs between the in-memory and the
+        # shard-streaming corpus paths).
+        ranked = sorted(rolled.items(), key=lambda kv: (-kv[1], kv[0]))[:max_size]
+        kept = [code for code, count in ranked if count >= min_count]
         token_to_id = {tok: i for i, tok in enumerate(_SPECIAL_TOKENS)}
         for code in kept:
             token_to_id[code] = len(token_to_id)

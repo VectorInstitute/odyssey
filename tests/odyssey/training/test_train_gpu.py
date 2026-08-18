@@ -173,6 +173,27 @@ def test_train_runs_end_to_end_and_produces_expected_outputs(tmp_path: Path) -> 
 
 
 @cuda_required
+def test_train_streams_shards_end_to_end(tmp_path: Path) -> None:
+    """stream_shards=True prepares the corpus shard by shard and trains the same way."""
+    train_dir = tmp_path / "data" / "train"
+    tuning_dir = tmp_path / "data" / "tuning"
+    _write_shards(train_dir, n_subjects=12, n_events_per_subject=30)
+    _write_shards(tuning_dir, n_subjects=4, n_events_per_subject=30)
+    output_dir = tmp_path / "run_stream"
+    config = _tiny_config(train_dir, tuning_dir, output_dir)
+    config.stream_shards = True
+    result_dir = train(config)
+    assert result_dir == output_dir
+    for name in (
+        "config.json",
+        "vocabulary.json",
+        "quantile_binner.json",
+        "checkpoint_final.pt",
+    ):
+        assert (output_dir / name).exists(), name
+    assert json.loads((output_dir / "config.json").read_text())["stream_shards"] is True
+
+
 def test_train_resumes_from_an_epoch_checkpoint(tmp_path: Path) -> None:
     train_dir = tmp_path / "data" / "train"
     tuning_dir = tmp_path / "data" / "tuning"
