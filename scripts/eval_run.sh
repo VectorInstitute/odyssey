@@ -13,6 +13,9 @@
 #   CHUNK=512              chunk size (must match what the run trained with)
 #   ALERT_SHARDS=4         held-out shards for interventions/alerts
 #   BASELINE_SHARDS=30     train shards the GBM baseline is fitted on (= the run's max_train_shards)
+#   STREAM_BASELINE=0      1 = fit the GBM baseline shard by shard instead of loading
+#                          BASELINE_SHARDS whole into memory; set for full-scale runs
+#                          (hundreds of shards), where the whole-frame path OOMs
 #   CHECKPOINT=checkpoint_best.pt
 #   PYTHON=<path>          interpreter (default: RUN_DIR/../../odyssey/.venv/bin/python, else `python`)
 #   DRY_RUN=1              print the commands instead of running them
@@ -29,7 +32,9 @@
 set -u
 RUN_DIR="${1:?RUN_DIR required}"; DATA_ROOT="${2:?DATA_ROOT required}"; OUT_HTML="${3:-$RUN_DIR/report.html}"
 LANES="${LANES:-64}"; CHUNK="${CHUNK:-512}"; ALERT_SHARDS="${ALERT_SHARDS:-4}"; BASELINE_SHARDS="${BASELINE_SHARDS:-30}"
-CHECKPOINT="${CHECKPOINT:-checkpoint_best.pt}"; DRY_RUN="${DRY_RUN:-0}"
+CHECKPOINT="${CHECKPOINT:-checkpoint_best.pt}"; DRY_RUN="${DRY_RUN:-0}"; STREAM_BASELINE="${STREAM_BASELINE:-0}"
+ALERTS_ARGS=(--run-dir "$RUN_DIR" --held-out-shard-dir "$DATA_ROOT/held_out" --baseline-shard-dir "$DATA_ROOT/train" --max-shards "$ALERT_SHARDS" --max-baseline-shards "$BASELINE_SHARDS" --num-lanes "$LANES" --chunk-size "$CHUNK" --output-json "$RUN_DIR/alerts.json" --dump-rows "$RUN_DIR/alerts_rows.parquet" --checkpoint "$CHECKPOINT")
+[ "$STREAM_BASELINE" = "1" ] && ALERTS_ARGS+=(--stream-baseline-shards)
 if [ -z "${PYTHON:-}" ]; then
   if [ -x "$HOME/odyssey/.venv/bin/python" ]; then PYTHON="$HOME/odyssey/.venv/bin/python"; else PYTHON="python"; fi
 fi
@@ -57,7 +62,7 @@ else
   echo "=== STAGE interventions SKIPPED (baseline model) ==="
 fi
 
-stage alerts "$PYTHON" -m odyssey.inference.alerts --run-dir "$RUN_DIR" --held-out-shard-dir "$DATA_ROOT/held_out" --baseline-shard-dir "$DATA_ROOT/train" --max-shards "$ALERT_SHARDS" --max-baseline-shards "$BASELINE_SHARDS" --num-lanes "$LANES" --chunk-size "$CHUNK" --output-json "$RUN_DIR/alerts.json" --dump-rows "$RUN_DIR/alerts_rows.parquet" --checkpoint "$CHECKPOINT"
+stage alerts "$PYTHON" -m odyssey.inference.alerts "${ALERTS_ARGS[@]}"
 
 if [ "$MODEL_KIND" = "bottleneck" ]; then
   stage cases "$PYTHON" -m odyssey.inference.case_study --run-dir "$RUN_DIR" --held-out-shard-dir "$DATA_ROOT/held_out" --output-json "$RUN_DIR/case_studies.json" --n-cases 15 --max-shards 2 --checkpoint "$CHECKPOINT"
