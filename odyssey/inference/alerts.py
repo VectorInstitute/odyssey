@@ -72,14 +72,28 @@ from odyssey.data.concepts import concepts_for_source
 from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.sequences import BIRTH_CODE
 from odyssey.data.streaming import NO_SUBJECT, PackedLaneSampler
-from odyssey.data.value_binning import add_value_tokens, clinical_ranges_for_source
+from odyssey.data.value_binning import (
+    QuantileBinner,
+    add_value_tokens,
+    clinical_ranges_for_source,
+)
 from odyssey.data.vocabulary import Vocabulary, code_type
 from odyssey.inference.baseline_features import StrongFeatureBuilder
 from odyssey.inference.baseline_features import feature_names as strong_feature_names
 from odyssey.inference.run_inference import load_run
 from odyssey.models.sequence_model import SequenceModel
 from odyssey.models.time_to_event import probability_within
-from odyssey.training.data import iter_patient_sequences, load_meds_shards
+from odyssey.training.data import (
+    iter_patient_sequences,
+    load_meds_shard,
+    load_meds_shards,
+)
+from odyssey.training.shard_stream import (
+    Preparer,
+    make_preparer,
+    merge_event_times,
+    shard_paths,
+)
 from odyssey.training.train import _move_chunk_to_device
 
 
@@ -576,6 +590,66 @@ def _tune_gbm(
     return best[1], best[2]
 
 
+def _fit_baseline_grid(
+    x_all: np.ndarray,
+    rows: Sequence[IndexRow],
+    times: EventTimes,
+    *,
+    horizons: Sequence[float],
+    feature_set: str,
+    seed: int,
+    tune: bool,
+    event_name: str,
+) -> Dict[float, BaselineModel]:
+    """Fit one GBM per horizon for a single event, given a pre-built feature matrix.
+
+    ``x_all`` and ``rows`` are already aligned (row ``i`` of ``x_all`` is
+    ``rows[i]``'s feature vector); everything upstream of this -- how the
+    features were built, whether from one in-memory frame
+    (:func:`fit_baselines`) or shard by shard
+    (:func:`fit_baselines_streaming`) -- is irrelevant here. Shared by both
+    so the two paths fit identically once the feature matrix exists.
+    """
+    groups_all = np.array([r.subject_id for r in rows])
+    out: Dict[float, BaselineModel] = {}
+    for h in horizons:
+        y = np.array(
+            [outcome_at_horizon(r, times, h) for r in rows],
+            dtype=object,
+        )
+        keep = np.array([v is not None for v in y])
+        if keep.sum() < 50 or len({int(v) for v in y[keep]}) < 2:
+            continue
+        x_fit = x_all[keep]
+        y_fit = y[keep].astype(int)
+        fill_columns = sparse_columns(x_fit)
+        x_prep = np.array(x_fit, dtype=np.float32, copy=True)
+        x_prep[:, fill_columns] = np.nan_to_num(x_prep[:, fill_columns], nan=0.0)
+        if tune:
+            params, n_rounds = _tune_gbm(x_prep, y_fit, groups_all[keep], seed=seed)
+        else:
+            params, n_rounds = {}, 200
+        clf = HistGradientBoostingClassifier(
+            random_state=seed, max_iter=n_rounds, early_stopping=False, **params
+        )
+        clf.fit(x_prep, y_fit)
+        out[h] = BaselineModel(
+            clf,
+            fill_columns,
+            feature_set=feature_set,
+            params={**params, "n_rounds": float(n_rounds)},
+        )
+        logger.info(
+            "[alerts] GBM %s@%gh: %s features, rounds=%d, params=%s",
+            event_name,
+            h,
+            feature_set,
+            n_rounds,
+            params,
+        )
+    return out
+
+
 def fit_baselines(
     train_events_binned: pl.DataFrame,
     train_rows: Dict[str, List[IndexRow]],
@@ -589,7 +663,10 @@ def fit_baselines(
 ) -> Dict[Tuple[str, float], BaselineModel]:
     """One gradient-boosted classifier per (event, horizon) on baseline features.
 
-    With ``tune`` the hyper-parameters and round count come from
+    ``train_events_binned`` is held whole in memory, so this scales to
+    however many baseline shards fit in RAM; past that,
+    :func:`fit_baselines_streaming` fits the same models one shard at a
+    time. With ``tune`` the hyper-parameters and round count come from
     :func:`_tune_gbm` per (event, horizon); otherwise a fixed 200-round
     default is fitted (fast path for tests and smoke runs).
     """
@@ -600,43 +677,88 @@ def fit_baselines(
     for name, rows in train_rows.items():
         if not rows:
             continue
-        x_all = features[name]
-        groups_all = np.array([r.subject_id for r in rows])
-        for h in horizons:
-            y = np.array(
-                [outcome_at_horizon(r, train_times[name], h) for r in rows],
-                dtype=object,
-            )
-            keep = np.array([v is not None for v in y])
-            if keep.sum() < 50 or len({int(v) for v in y[keep]}) < 2:
-                continue
-            x_fit = x_all[keep]
-            y_fit = y[keep].astype(int)
-            fill_columns = sparse_columns(x_fit)
-            x_prep = np.array(x_fit, dtype=np.float32, copy=True)
-            x_prep[:, fill_columns] = np.nan_to_num(x_prep[:, fill_columns], nan=0.0)
-            if tune:
-                params, n_rounds = _tune_gbm(x_prep, y_fit, groups_all[keep], seed=seed)
-            else:
-                params, n_rounds = {}, 200
-            clf = HistGradientBoostingClassifier(
-                random_state=seed, max_iter=n_rounds, early_stopping=False, **params
-            )
-            clf.fit(x_prep, y_fit)
-            models[(name, h)] = BaselineModel(
-                clf,
-                fill_columns,
-                feature_set=feature_set,
-                params={**params, "n_rounds": float(n_rounds)},
-            )
-            logger.info(
-                "[alerts] GBM %s@%gh: %s features, rounds=%d, params=%s",
-                name,
-                h,
-                feature_set,
-                n_rounds,
-                params,
-            )
+        per_horizon = _fit_baseline_grid(
+            features[name],
+            rows,
+            train_times[name],
+            horizons=horizons,
+            feature_set=feature_set,
+            seed=seed,
+            tune=tune,
+            event_name=name,
+        )
+        for h, model in per_horizon.items():
+            models[(name, h)] = model
+    return models
+
+
+def fit_baselines_streaming(
+    paths: Sequence[Path],
+    prepare: Preparer,
+    binner: Optional[QuantileBinner],
+    *,
+    alerts: Sequence[AlertEvent],
+    horizons: Sequence[float] = HORIZONS_HOURS,
+    source: str = "mimic_iv",
+    landmark_hours: float = 4.0,
+    seed: int = 0,
+    feature_set: str = "strong",
+    tune: bool = True,
+) -> Dict[Tuple[str, float], BaselineModel]:
+    """Fit the same models as :func:`fit_baselines`, but shard by shard.
+
+    The full-scale baseline shard set (hundreds of shards, hundreds of
+    millions of events) does not fit in memory as one frame -- the same
+    problem :mod:`odyssey.training.shard_stream` solves for the training
+    corpus. It applies here too: baseline features
+    (:mod:`odyssey.inference.baseline_features`) and landmark index rows
+    are entirely per-subject, and subjects never span shards, so both can
+    be built one shard at a time. Only the resulting feature matrix (one
+    row per landmark, not per raw event) and index rows are kept across
+    shards; the raw per-shard frame is dropped once its features are
+    extracted. Every alert shares the same landmarks (the buckets are not
+    alert-specific), so features are built once per shard and reused
+    across events, exactly like :func:`features_for_events` does for the
+    in-memory path. GBM fitting itself is unchanged, delegated to
+    :func:`_fit_baseline_grid`.
+    """
+    event_times: Dict[str, EventTimes] = {}
+    all_rows: List[IndexRow] = []
+    feature_chunks: List[np.ndarray] = []
+    for path in paths:
+        raw = prepare(load_meds_shard(path))
+        binned = add_value_tokens(raw, binner, source=source)
+        merge_event_times(event_times, all_event_times(raw, alerts, source))
+        shard_rows = _index_rows_from_events(
+            binned, alerts, landmark_hours=landmark_hours
+        )[alerts[0].name]
+        if not shard_rows:
+            continue
+        if feature_set == "strong":
+            feats = strong_baseline_features(binned, shard_rows, source=source)
+        else:
+            feats = baseline_features(binned, shard_rows, source=source)
+        all_rows.extend(shard_rows)
+        feature_chunks.append(feats)
+    models: Dict[Tuple[str, float], BaselineModel] = {}
+    if not all_rows:
+        return models
+    x_all = np.concatenate(feature_chunks, axis=0)
+    for alert in alerts:
+        if alert.name not in event_times:
+            continue
+        per_horizon = _fit_baseline_grid(
+            x_all,
+            all_rows,
+            event_times[alert.name],
+            horizons=horizons,
+            feature_set=feature_set,
+            seed=seed,
+            tune=tune,
+            event_name=alert.name,
+        )
+        for h, model in per_horizon.items():
+            models[(alert.name, h)] = model
     return models
 
 
@@ -906,12 +1028,18 @@ def evaluate_alerts(
     checkpoint_path: Optional[Union[str, Path]] = None,
     baseline_feature_set: str = "strong",
     tune_baselines: bool = True,
+    stream_baseline: bool = False,
     dump_rows_path: Optional[Union[str, Path]] = None,
 ) -> List[AlertMetrics]:
     """End to end: model scores + optional GBM baselines, scored on held-out.
 
     ``dump_rows_path`` writes the per-index-row table of
     :func:`index_row_table` as parquet (patient-level; keep it with the run).
+    ``stream_baseline`` fits the GBM baselines shard by shard
+    (:func:`fit_baselines_streaming`) instead of loading
+    ``baseline_shard_dir`` whole into memory (:func:`fit_baselines`); use it
+    once ``max_baseline_shards`` is large enough that the whole-frame path
+    risks OOM (full-scale runs, hundreds of shards).
     """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     model, vocab, binner, config = load_run(
@@ -947,7 +1075,31 @@ def evaluate_alerts(
 
     baselines = None
     features_by_event = None
-    if baseline_shard_dir is not None:
+    if baseline_shard_dir is not None and stream_baseline:
+        logger.info(
+            "[alerts] fitting GBM baselines on %s (streaming)", baseline_shard_dir
+        )
+        baseline_paths = shard_paths(baseline_shard_dir, max_shards=max_baseline_shards)
+        prepare = make_preparer(
+            normalize_medications=getattr(config, "normalize_medications", False),
+            history_recap=getattr(config, "history_recap", False),
+            source=source,
+        )
+        baselines = fit_baselines_streaming(
+            baseline_paths,
+            prepare,
+            binner,
+            alerts=alerts,
+            horizons=horizons,
+            source=source,
+            landmark_hours=landmark_hours,
+            feature_set=baseline_feature_set,
+            tune=tune_baselines,
+        )
+        features_by_event = features_for_events(
+            binned, rows, source=source, feature_set=baseline_feature_set
+        )
+    elif baseline_shard_dir is not None:
         logger.info("[alerts] fitting GBM baselines on %s", baseline_shard_dir)
         train_raw = load_meds_shards(baseline_shard_dir, max_shards=max_baseline_shards)
         train_raw = maybe_normalize(
@@ -1033,6 +1185,15 @@ def _main() -> None:
         help="skip the GBM hyper-parameter search (fixed 200 rounds)",
     )
     parser.add_argument(
+        "--stream-baseline-shards",
+        action="store_true",
+        help=(
+            "fit the GBM baselines shard by shard instead of loading "
+            "--baseline-shard-dir whole into memory; use for large "
+            "--max-baseline-shards (full-scale runs, hundreds of shards)"
+        ),
+    )
+    parser.add_argument(
         "--dump-rows",
         default=None,
         help="write the per-index-row score/outcome table as parquet (patient-level)",
@@ -1051,6 +1212,7 @@ def _main() -> None:
         checkpoint_path=run_dir / (args.checkpoint or "checkpoint_best.pt"),
         baseline_feature_set=args.baseline_features,
         tune_baselines=not args.no_tune_baselines,
+        stream_baseline=args.stream_baseline_shards,
         dump_rows_path=args.dump_rows,
     )
     out = Path(args.output_json)

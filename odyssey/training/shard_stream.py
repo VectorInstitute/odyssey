@@ -156,9 +156,15 @@ class CorpusStats:
     event_times: Dict[str, EventTimes] = field(default_factory=dict)
 
 
-def _merge_event_times(
-    into: Dict[str, EventTimes], part: Dict[str, EventTimes]
-) -> None:
+def merge_event_times(into: Dict[str, EventTimes], part: Dict[str, EventTimes]) -> None:
+    """Merge one shard's per-event onset/censor times into a running accumulator.
+
+    Subjects never span shards, so each shard contributes disjoint keys;
+    merging is a plain dict update per event. Shared by
+    :func:`build_corpus_stats` (training corpus stats) and
+    :func:`~odyssey.inference.alerts.fit_baselines_streaming` (baseline
+    GBM fitting), the two streaming consumers of per-event time tables.
+    """
     for name, times in part.items():
         if name not in into:
             into[name] = EventTimes(
@@ -207,7 +213,7 @@ def build_corpus_stats(
         stats.labels.update(labels)
         stats.masks.update(masks)
         if alerts:
-            _merge_event_times(stats.event_times, all_event_times(raw, alerts, source))
+            merge_event_times(stats.event_times, all_event_times(raw, alerts, source))
         if (i + 1) % 20 == 0:
             logger.info("[stream] stats: %d/%d shards", i + 1, len(paths))
     stats.code_counts = dict(counts)
@@ -276,5 +282,6 @@ __all__ = [
     "fit_binner_streaming",
     "iter_patients_streaming",
     "make_preparer",
+    "merge_event_times",
     "shard_paths",
 ]

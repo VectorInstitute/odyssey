@@ -1,7 +1,8 @@
 """Tests for the alert (time-to-event) evaluation harness."""
 
 from datetime import datetime, timedelta
-from typing import List, Optional, Tuple
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import polars as pl
@@ -27,6 +28,7 @@ from odyssey.inference.alerts import (
     collect_model_scores,
     features_for_events,
     fit_baselines,
+    fit_baselines_streaming,
     index_row_table,
     outcome_at_horizon,
     score_alerts,
@@ -36,6 +38,8 @@ from odyssey.inference.baseline_features import feature_names
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
 from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
 from odyssey.models.time_to_event import DEFAULT_TIME_BIN_EDGES_HOURS
+from odyssey.training.data import load_meds_shard, load_meds_shards
+from odyssey.training.shard_stream import make_preparer, merge_event_times, shard_paths
 
 
 T0 = datetime(2024, 1, 1)
@@ -366,3 +370,188 @@ def test_sparse_columns_are_filled_at_fit_and_predict() -> None:
     feats = features_for_events(binned, rows, feature_set="strong")
     p = model.predict_proba(feats["vasopressor_start"])
     assert np.isfinite(p).all()
+
+
+def _write_event_shards(
+    shard_dir: Path, n_shards: int, subjects_per_shard: int
+) -> None:
+    """Write the planted-deterioration signal from ``_events``, split across shards.
+
+    Subjects are assigned to shards in contiguous blocks (never split
+    across files), matching the real pipeline's invariant that a subject's
+    full record lives in one shard.
+    """
+    shard_dir.mkdir(parents=True)
+    sid = 0
+    for k in range(n_shards):
+        rows: List[Tuple[int, str, datetime, Optional[float], int]] = []
+        for _ in range(subjects_per_shard):
+            sid += 1
+            hadm = 1000 + sid
+            for h in range(24):
+                hr = 80.0
+                if sid % 2 == 0 and h >= 12:
+                    hr = 130.0
+                rows.append(
+                    (sid, "LAB//220045//bpm", T0 + timedelta(hours=h), hr, hadm)
+                )
+            if sid % 2 == 0:
+                rows.append(
+                    (
+                        sid,
+                        "MEDICATION//norepinephrine//Administered",
+                        T0 + timedelta(hours=14),
+                        None,
+                        hadm,
+                    )
+                )
+            if sid % 4 == 0:
+                rows.append(
+                    (sid, "ICU_ADMISSION//MICU", T0 + timedelta(hours=6), None, hadm)
+                )
+        pl.DataFrame(
+            rows,
+            schema={
+                "subject_id": pl.Int64,
+                "code": pl.Utf8,
+                "time": pl.Datetime,
+                "numeric_value": pl.Float32,
+                "hadm_id": pl.Int64,
+            },
+            orient="row",
+        ).write_parquet(shard_dir / f"{k}.parquet")
+
+
+def test_fit_baselines_streaming_event_times_match_in_memory(tmp_path: Path) -> None:
+    shard_dir = tmp_path / "train"
+    _write_event_shards(shard_dir, n_shards=3, subjects_per_shard=20)
+    whole = load_meds_shards(shard_dir)
+    ref_times = all_event_times(whole, ALERT_EVENTS, "mimic_iv")
+
+    paths = shard_paths(shard_dir)
+    prepare = make_preparer(
+        normalize_medications=False, history_recap=False, source="mimic_iv"
+    )
+    streamed_times: Dict[str, EventTimes] = {}
+    for path in paths:
+        raw = prepare(load_meds_shard(path))
+        merge_event_times(
+            streamed_times, all_event_times(raw, ALERT_EVENTS, "mimic_iv")
+        )
+
+    assert streamed_times.keys() == ref_times.keys()
+    for name, times in ref_times.items():
+        assert streamed_times[name].onset == times.onset
+        assert streamed_times[name].censor == times.censor
+        assert streamed_times[name].subject_scoped == times.subject_scoped
+
+
+@pytest.mark.parametrize("feature_set", ["basic", "strong"])
+def test_fit_baselines_streaming_matches_in_memory(
+    tmp_path: Path, feature_set: str
+) -> None:
+    """Streaming and in-memory baseline fitting agree on the rows fit.
+
+    Both fit a comparably discriminating model on the same planted
+    signal. Row order can differ between the two paths (the in-memory path groups
+    over one concatenated frame, the streaming path over each shard
+    separately), so this does not require bit-identical models -- only
+    that they see the same landmark rows and both learn the planted
+    vasopressor signal. See ``test_shard_stream.py`` for the analogous
+    training-corpus comparison, where the deterministic parts (counts,
+    labels, event times) are checked for exact equality and the
+    non-deterministic parts (fit results) are not.
+    """
+    shard_dir = tmp_path / "train"
+    _write_event_shards(shard_dir, n_shards=3, subjects_per_shard=20)
+    whole = load_meds_shards(shard_dir)
+    binned = add_value_tokens(whole, None, source="mimic_iv")
+    times = all_event_times(binned, ALERT_EVENTS, "mimic_iv")
+    ref_rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+    ref_baselines = fit_baselines(
+        binned, ref_rows, times, horizons=(8.0,), feature_set=feature_set, tune=False
+    )
+
+    paths = shard_paths(shard_dir)
+    prepare = make_preparer(
+        normalize_medications=False, history_recap=False, source="mimic_iv"
+    )
+    streamed_baselines = fit_baselines_streaming(
+        paths,
+        prepare,
+        None,
+        alerts=ALERT_EVENTS,
+        horizons=(8.0,),
+        feature_set=feature_set,
+        tune=False,
+    )
+
+    # same (event, horizon) pairs cleared the fit threshold in both paths
+    assert set(streamed_baselines) == set(ref_baselines)
+
+    # same landmark rows, regardless of which order each path visited them in
+    ref_key_set = {
+        (r.subject_id, r.visit_id, r.time_hours) for r in ref_rows["vasopressor_start"]
+    }
+    streamed_row_count = 0
+    for path in paths:
+        raw = prepare(load_meds_shard(path))
+        shard_binned = add_value_tokens(raw, None, source="mimic_iv")
+        shard_rows = _index_rows_from_events(
+            shard_binned, ALERT_EVENTS, landmark_hours=4.0
+        )["vasopressor_start"]
+        streamed_row_count += len(shard_rows)
+        assert {(r.subject_id, r.visit_id, r.time_hours) for r in shard_rows} <= (
+            ref_key_set
+        )
+    assert streamed_row_count == len(ref_key_set)
+
+    # the streamed model learned the same planted signal as the in-memory one
+    model = streamed_baselines[("vasopressor_start", 8.0)]
+    feats = features_for_events(binned, ref_rows, feature_set=feature_set)
+    results = score_alerts(
+        ref_rows,
+        times,
+        horizons=(8.0,),
+        baselines={("vasopressor_start", 8.0): model},
+        baseline_features_by_event=feats,
+    )
+    gbm = next(
+        r
+        for r in results
+        if r.scorer == "baseline_gbm" and r.event == "vasopressor_start"
+    )
+    assert gbm.auroc is not None and gbm.auroc > 0.75
+
+
+def test_fit_baselines_streaming_empty_shards_returns_no_models(
+    tmp_path: Path,
+) -> None:
+    shard_dir = tmp_path / "train"
+    shard_dir.mkdir()
+    # a single subject, no alert events ever trigger
+    pl.DataFrame(
+        [(1, "LAB//220045//bpm", T0, 80.0, 1001)],
+        schema={
+            "subject_id": pl.Int64,
+            "code": pl.Utf8,
+            "time": pl.Datetime,
+            "numeric_value": pl.Float32,
+            "hadm_id": pl.Int64,
+        },
+        orient="row",
+    ).write_parquet(shard_dir / "0.parquet")
+    paths = shard_paths(shard_dir)
+    prepare = make_preparer(
+        normalize_medications=False, history_recap=False, source="mimic_iv"
+    )
+    models = fit_baselines_streaming(
+        paths,
+        prepare,
+        None,
+        alerts=ALERT_EVENTS,
+        horizons=(8.0,),
+        feature_set="basic",
+        tune=False,
+    )
+    assert models == {}
