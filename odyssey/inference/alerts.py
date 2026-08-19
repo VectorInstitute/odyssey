@@ -527,6 +527,18 @@ GBM_GRID: Tuple[Dict[str, float], ...] = (
 )
 GBM_MAX_ITER = 400
 GBM_TUNE_MAX_ROWS = 200_000
+GBM_FIT_MAX_ROWS = 1_000_000
+"""Row cap on the final refit (after tuning picks params/rounds).
+
+A gradient-boosted tree with at most 63 leaves and 400 rounds has long
+since converged well inside this many rows; at full-scale corpora
+(millions of landmark rows for a 292-shard run) fitting on everything
+kept both a full feature-matrix copy and HistGradientBoostingClassifier's
+own internal working set (binned representation, gradients, per-tree
+node arrays) large enough to matter, so both this and the tuning step
+above use the same seeded-subsample pattern rather than the whole kept
+set.
+"""
 
 
 # HistGradientBoosting bins features on a random subsample of 200,000 rows;
@@ -609,17 +621,27 @@ def _fit_baseline_grid(
     (:func:`fit_baselines`) or shard by shard
     (:func:`fit_baselines_streaming`) -- is irrelevant here. Shared by both
     so the two paths fit identically once the feature matrix exists.
+
+    Rows are capped at :data:`GBM_FIT_MAX_ROWS` (same reasoning as
+    :data:`GBM_TUNE_MAX_ROWS` for tuning, see there) *before* indexing into
+    ``x_all``, not after: at full corpus scale (millions of rows) building
+    the uncapped feature-matrix slice first and subsampling afterward would
+    still pay for the full-size copy every horizon, on top of ``x_all``
+    itself.
     """
     groups_all = np.array([r.subject_id for r in rows])
+    rng = np.random.default_rng(seed)
     out: Dict[float, BaselineModel] = {}
     for h in horizons:
         y = np.array(
             [outcome_at_horizon(r, times, h) for r in rows],
             dtype=object,
         )
-        keep = np.array([v is not None for v in y])
-        if keep.sum() < 50 or len({int(v) for v in y[keep]}) < 2:
+        keep = np.flatnonzero([v is not None for v in y])
+        if len(keep) < 50 or len({int(y[i]) for i in keep}) < 2:
             continue
+        if len(keep) > GBM_FIT_MAX_ROWS:
+            keep = rng.choice(keep, GBM_FIT_MAX_ROWS, replace=False)
         x_fit = x_all[keep]
         y_fit = y[keep].astype(int)
         fill_columns = sparse_columns(x_fit)
@@ -744,6 +766,7 @@ def fit_baselines_streaming(
     if not all_rows:
         return models
     x_all = np.concatenate(feature_chunks, axis=0)
+    del feature_chunks  # concatenated: the per-shard copies are dead weight now
     for alert in alerts:
         if alert.name not in event_times:
             continue
