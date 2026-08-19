@@ -18,6 +18,7 @@ from odyssey.data.alert_events import (
 from odyssey.data.concepts import concepts_for_source
 from odyssey.data.value_binning import add_value_tokens
 from odyssey.data.vocabulary import Vocabulary
+from odyssey.inference import alerts as alerts_module
 from odyssey.inference.alerts import (
     GBM_MIN_OBSERVED,
     IndexRow,
@@ -555,3 +556,28 @@ def test_fit_baselines_streaming_empty_shards_returns_no_models(
         tune=False,
     )
     assert models == {}
+
+
+def test_fit_baseline_grid_caps_rows_before_the_final_fit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At full corpus scale GBM_FIT_MAX_ROWS keeps the refit bounded.
+
+    Row-capping is exercised here at a size a unit test can afford by
+    lowering the cap itself rather than growing the data to it; the cap
+    logic is data-size-agnostic (it only compares a row count to a
+    constant), so this exercises the same code path full-scale runs hit.
+    """
+    monkeypatch.setattr(alerts_module, "GBM_FIT_MAX_ROWS", 20)
+    events = _events(n_subjects=40)
+    binned = add_value_tokens(events, None, source="mimic_iv")
+    times = all_event_times(binned, ALERT_EVENTS, "mimic_iv")
+    rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+    assert len(rows["vasopressor_start"]) > 20  # more rows than the lowered cap
+    baselines = fit_baselines(
+        binned, rows, times, horizons=(8.0,), feature_set="basic", tune=False
+    )
+    model = baselines[("vasopressor_start", 8.0)]
+    feats = features_for_events(binned, rows, feature_set="basic")
+    p = model.predict_proba(feats["vasopressor_start"])
+    assert np.isfinite(p).all()
