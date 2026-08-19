@@ -527,18 +527,16 @@ GBM_GRID: Tuple[Dict[str, float], ...] = (
 )
 GBM_MAX_ITER = 400
 GBM_TUNE_MAX_ROWS = 200_000
-GBM_FIT_MAX_ROWS = 1_000_000
-"""Row cap on the final refit (after tuning picks params/rounds).
 
-A gradient-boosted tree with at most 63 leaves and 400 rounds has long
-since converged well inside this many rows; at full-scale corpora
-(millions of landmark rows for a 292-shard run) fitting on everything
-kept both a full feature-matrix copy and HistGradientBoostingClassifier's
-own internal working set (binned representation, gradients, per-tree
-node arrays) large enough to matter, so both this and the tuning step
-above use the same seeded-subsample pattern rather than the whole kept
-set.
-"""
+# Row cap on the final refit (after tuning picks params/rounds). A
+# gradient-boosted tree with at most 63 leaves and 400 rounds has long
+# since converged well inside this many rows; at full-scale corpora
+# (millions of landmark rows for a 292-shard run) fitting on everything
+# kept both a full feature-matrix copy and HistGradientBoostingClassifier's
+# own internal working set (binned representation, gradients, per-tree node
+# arrays) large enough to matter, so both this and the tuning step above
+# use the same seeded-subsample pattern rather than the whole kept set.
+GBM_FIT_MAX_ROWS = 1_000_000
 
 
 # HistGradientBoosting bins features on a random subsample of 200,000 rows;
