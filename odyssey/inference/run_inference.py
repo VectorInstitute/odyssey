@@ -182,12 +182,19 @@ class _RunningTimeMetrics:
 
 
 def _latest_checkpoint(run_dir: Path) -> Path:
-    """Return ``checkpoint_final.pt`` if present, else the highest-step periodic one.
+    """Return the run's default evaluation checkpoint.
 
-    Lets evaluation run against an in-progress training run (e.g. to
-    sanity-check the pipeline before a long run finishes), not only a
-    fully completed one.
+    ``checkpoint_best.pt`` (the validation-selected model, the convention
+    every published number uses) when present; else ``checkpoint_final.pt``;
+    else the highest-step periodic checkpoint, so evaluation can also run
+    against an in-progress training run. Library callers and the CLIs now
+    resolve identically -- a silent divergence here (CLIs defaulted to
+    best, library calls to final) cost a night of debugging when the same
+    checkpoint dir scored 0.83 one way and 0.91 the other.
     """
+    best = run_dir / "checkpoint_best.pt"
+    if best.exists():
+        return best
     final = run_dir / "checkpoint_final.pt"
     if final.exists():
         return final
