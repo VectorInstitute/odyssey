@@ -124,6 +124,7 @@ elif DB_USER and DB_PASS and DB_NAME:
 else:
     DB_URL = None
 
+
 def credentials_help() -> str:
     """Human-readable hint naming exactly which configuration is missing.
 
