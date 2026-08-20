@@ -212,4 +212,3 @@ def test_fit_ebm_baselines_no_row_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     # outcome) and are filtered out before fitting, same as the GBM/TabICL
     # baselines; the guarantee under test is no cap on TOP of that filter.
     assert 10 < fit.x_fit.shape[0] <= n_at_risk
-    assert fit.x_fit.shape[0] == n_at_risk
