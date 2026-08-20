@@ -67,6 +67,7 @@ from odyssey.training.metrics import (
     orthogonality_diagnostic,
 )
 from odyssey.training.train import TrainingConfig, _move_chunk_to_device, build_model
+from odyssey.utils.env_fingerprint import verify_run_provenance
 
 
 logger = logging.getLogger(__name__)
@@ -262,6 +263,7 @@ def load_run(
     model.load_state_dict(checkpoint["model"])
     model = model.to(device)
     model.eval()
+    verify_run_provenance(run_dir, model, len(vocab), device=device)
     return model, vocab, binner, config
 
 
