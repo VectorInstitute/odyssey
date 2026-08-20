@@ -102,6 +102,15 @@ tabicl = [
     "tabicl>=2.0.0",
 ]
 
+# InterpretML's ExplainableBoostingClassifier (odyssey/inference/ebm_baseline.py),
+# a third comparator against the alerts evaluation: intrinsic, training-time
+# interpretability (per-feature shape functions, pairwise interactions), unlike
+# the GBM's post-hoc explainers or TabICL's zero-shot prediction. CPU-only,
+# optional: nothing in the training/inference path depends on it.
+ebm = [
+    "interpret>=0.6.0",
+]
+
 # NOTE: transformers/lightning/etc. are intentionally omitted until the
 # concept-bottleneck architecture actually needs them — add alongside the
 # code that uses them, not speculatively.
