@@ -16,24 +16,35 @@
 
 ## Goal
 
-Odyssey builds one general forecasting model of a patient's clinical timeline and uses it to alert clinicians. A second, still-unproven aim is a constrained form of "what if": a clinician overrides one of the model's named clinical concepts and the forecast updates.
+Odyssey builds and tests a single general model of a patient's clinical timeline: forecast which events come next and when, produce calibrated time-to-event risk for events that matter (vasopressor start, kidney injury, ICU admission, death), expose named physiological states a clinician can inspect, and, the open frontier, support interventions a clinician can trust ("assume they are hypotensive, what changes?"). That scope is the reason for a sequence model: forecasting whole timelines, timing as survival curves, and interactive what-ifs are capabilities no tabular model family offers at all.
 
-Most clinical AI models are bespoke: one model for mortality, another for sepsis, another for deterioration, each trained on its own labels and useless outside its task. Odyssey instead trains a single model to forecast the patient's event sequence itself (labs, vitals, medications, diagnoses, procedures, admissions, outcomes) the way a language model forecasts the next word, over the whole record. Prior work ([EHRMamba](https://arxiv.org/abs/2405.14567)) showed this learns strong representations. Everything downstream is derived from the same model rather than trained separately:
+The commitment is to the outcome, not to the method: the goal is the single best model or ensemble system across the three axes below, and the timeline-forecasting pretraining is the current best candidate, not dogma. Adapting on top of it (task heads, ensembling with tabular models, post-training on rollouts, or replacing components outright) is squarely in scope whenever the evidence says so.
 
-- **Alerts.** From a patient's current state, the model gives the time-to-event distribution for events that matter (vasopressor start, ICU transfer, acute kidney injury, death), read as survival curves over the next hours and days. One model, every alert.
-- **Interaction (aim, not yet a capability).** Override the model's belief about the patient ("assume they are hypotensive", "assume they are not septic") and see what the forecast does. That is a well-defined intervention on a named clinical concept, unlike inserting hypothetical treatments into an observational record, which the model would read as "a sick patient" (confounding by indication). Whether the model's forecasts actually respond to such an override is tested with causal interventions; on the current subset runs they do not yet, and intervention-aware training is the fix under evaluation.
+The discipline of the project is that this candidate must *earn* each capability against the strongest specialized alternative, on the same data, tasks, and held-out patients, and the current score is stated plainly:
 
-For that to be usable at the bedside the forecasts have to be inspectable, so Odyssey puts a **concept bottleneck** between the sequence model and its predictions: everything flows through a small set of named clinical concepts (tachycardia, hypotension, acute kidney injury, SIRS, on vasopressors, ...) plus one unnamed residual channel. Each concept probability is supervised against rule-derived clinical labels and scored on held-out patients, so the readout a clinician sees is measured, not assumed; each forecast can be traced to the concepts that drove it; and a clinician can override a concept and watch the forecast update. Whether the concepts really are that lever, rather than a decorative side channel, is itself tested with causal interventions, and the results are reported honestly either way. **Making those interventions work reliably, without the model leaking information around the concepts through the residual channel, is a central goal of this work, not a nice-to-have**: today the readout is faithful but interventions are measured inert on every run (see below), which is the known concept-leakage failure of bottleneck models, and closing it (capacity-limited residual, hard or intervention-aware bottlenecks, input-level counterfactuals) is on the critical path alongside forecasting strength.
+- **Gradient-boosted trees**, tuned per task on a best-effort feature panel (`odyssey/inference/baseline_features.py`). The strongest bar on the shared alert slice, consistent with the tabular-ML literature (Grinsztajn et al. 2022; Shwartz-Ziv & Armon 2022), and currently ahead there: 12/12 event-horizon pairs at 30-shard scale, 10/12 at full MIMIC-IV scale, with the gap narrowing as training data grows.
+- **Tabular foundation models** ([TabICLv2](https://github.com/soda-inria/tabicl), `odyssey/inference/tabicl_baseline.py`): pretrained once, applied zero-shot via in-context learning; by the strict definition, the only model in this comparison that is a foundation model today, and in first eICU runs it wins exactly where our hazard head is weakest (AKI, death).
+- **Additive models** (NAM/GAM): structurally interpretable per-feature curves, no post-hoc explainer; implementation selected, not yet run (see the research journal comparator plan).
 
-The pipeline is built to travel. One codebase extracts, tokenizes, labels concepts, trains and evaluates on MIMIC-IV and on eICU (clinical knowledge is written once, keyed by LOINC, and expanded per source). Those two prove portability; cross-hospital generalization is assessed on [GEMINI](https://geminimedicine.ca/), a multi-hospital inpatient dataset.
+These references are bars to clear and *diagnostic probes*: where they win, they localize what the sequence model is missing. The stratified error analysis proved the probe value: the AKI gap tracks the staleness of the last creatinine monotonically (the GBM has `hours_since_last` as an explicit feature; the sequence model must infer it), and the in-ICU gap turns out to be a distinct readmission-like sub-task. Probe wins convert directly into input-design experiments.
 
-The forecasting has to be strong across *every* kind of event, not only the frequent ones. Events arrive in bundles at one timestamp (a lab panel, a medication order set, the diagnoses coded at discharge) with no meaningful order inside a bundle, so the model is framed as a marked temporal point process over bundles: at each step it forecasts *when* the next bundle arrives (a hazard, so survival curves and "within N hours" fall out naturally) and *which* events it contains (a set, scored as such). Medications, procedures, diagnoses and billing are held to the same bar as labs.
+Whichever model carries a capability, it must win on three axes at once. (A fourth axis, ease of deployment and compute, is deliberately excluded: bespoke GBMs are cheap to train and deploy but task-specific and need per-site refitting, while foundation-style models generalize and scale with data but cost more compute, ours included; conditioning the comparison on today's compute economics would bias it against exactly the models whose value grows with scale.)
 
-**What success looks like.** On patients the model has never seen: strong set-based forecasting in every event family, close to an otherwise identical model without the bottleneck (that cost is measured, not assumed: about 2 points of set top-1 overall on the current MIMIC-IV subset runs, with the no-bottleneck model matching or leading in every family, see the research journal); event survival curves whose calibration and discrimination at fixed horizons match or beat bespoke single-task models (on the current subset runs the hazard heads are within 0.01 to 0.09 AUROC of a tuned, best-effort 609-feature gradient-boosted baseline and ahead of it only on vasopressor start; against a basic feature set they led on 7 of 12 pairs, so the bar is the tuned one); concept probabilities that track the patient's real state (AUROC 0.6 to 0.99 on MIMIC-IV and eICU); concept interventions that move forecasts in the clinically expected direction (not yet: measured inert on every run so far, RandInt training buys a barely detectable effect at a large forecasting cost; this is the leakage problem named above and a first-class target); and all of it holding across hospitals.
+- **Generalizability**: the same pipeline, unchanged, produces a strong model on MIMIC-IV, eICU, and (externally) [GEMINI](https://geminimedicine.ca/). For the sequence model there is a further, harder test it has not yet attempted: pretrain once, transfer across systems, the test TabICL passes by construction and per-task-refit GBMs sidestep by design.
+- **Performance**, with **calibration** as a first-class subcomponent (an uncalibrated risk is a performance failure, not a style issue). Scaling behavior is part of this axis: the sequence model improves monotonically with data (set top-1 74.6 to 80.4 across the full-scale learning curve, alert gaps closing concurrently) while the tabular references are static; the comparison is between a curve and a point, and the roadmap tests where the curve goes.
+- **Interpretability**, defined causally, where today *no* family passes: SHAP-style attribution is not causal and fails the bar by construction; NAM is structurally interpretable but absent; and our concept bottleneck's lever is, as measured, correlational (interventions move forecasts in proportion to how unusual the forced value is, base-rate correlation 0.97, not whether it is true). Three levers, each with a test: (1) a **faithful readout** of named clinical states, achieved and measured (concept AUROC 0.6 to 0.99 across both datasets); (2) a **concept-level intervention** a clinician can apply, where independent training produced the first genuinely working instance (truth beats no-intervention, correctly ordered) at a real, quantified forecasting cost now being mapped; the near-term clinical what-if extends this lever with input-level counterfactual rollouts (edit the observations that define a state, roll the forecast forward) which require no special training; (3) **population-level causal effect estimation** (amortized causal inference, e.g. CausalPFN and related work from [Rahul G. Krishnan's group](https://www.cs.toronto.edu/~rahulgk/)), a different question (what does this treatment do on average) pursued as an exploratory track rather than a bolted-on claim.
 
-**What this is not.** Not a diagnostic system, not trained on outcome labels, and not a claim of interpretability by construction: every interpretability property above has a test, and the research journal records where the model currently falls short.
+Because demoting competitors to "probes" must not become a one-way ratchet, the promotion criteria are explicit: a reference family becomes the first-class answer for any capability where it matches the sequence model at matched inputs and can either extend to timeline scope or show that scope is clinically unnecessary; conversely, the sequence model loses its default status on any axis where it remains behind at full scale with matched inputs. The honest end state may be a hybrid (sequence model for forecasting and what-ifs, a tabular model for some alerts), and the evaluation is designed to detect that rather than assume it away.
 
-**Status: active research.** Trained and evaluated on MIMIC-IV subsets; the eICU pipeline is validated end to end; the bundle/time-to-event formulation and full-scale MIMIC-IV training are next. See [Roadmap](#roadmap).
+The forecasting itself is framed as a marked temporal point process over same-timestamp bundles: at each step the model forecasts *when* the next bundle arrives (a hazard, so survival curves fall out naturally) and *which* events it contains (a set, scored as such, every event family held to the same bar).
+
+**What success looks like.** A model that forecasts strongly across every event family on unseen patients; calibrated time-to-event alerts that match or beat the tuned references; the same result, pipeline unchanged, on three hospital systems; and at least one intervention mechanism that passes its causal test. Current honest status: forecasting and calibration strong and improving with scale; alerts within 0.01-0.09 AUROC of the tuned GBM at full scale (ahead on 2 of 12 pairs); readout faithful; lever working only under independent training and at a cost; external generalization not yet attempted.
+
+**What this is not.** Not a diagnostic system, not trained on outcome labels, not a claim that the sequence model has already won, and not interpretability by construction: every claim above has a test, and the research journal records where each model falls short.
+
+**Sequencing.** Research questions first, deployment packaging after: (1) can the alert gap be closed with probe-derived inputs and scale; (2) what does a trustworthy lever cost, and can the cost be brought down; (3) does any of it transfer to a third hospital system unchanged.
+
+**Status: active research.** Full-scale runs complete on MIMIC-IV and eICU; independent-training lever verified on both; comparator suite (TabICL, NAM/GAM, SurvivalPFN) in progress; GEMINI groundwork done, awaiting scheduling. See [Roadmap](#roadmap).
 
 ## Architecture
 
@@ -48,7 +59,7 @@ tokens of the sequence. A no-bottleneck variant (`model_kind="baseline"`, same
 backbone and heads) prices the bottleneck. Everything is streamed over each
 patient's whole record in 512-token chunks with carried recurrent state.
 
-The concept bottleneck implements Ismail, Adebayo, Bravo, Ra & Cho, ["Concept Bottleneck Generative Models"](https://proceedings.iclr.cc/paper_files/paper/2024/file/9149fc44c95ce58e3ca529a1e34c2691-Paper-Conference.pdf) (ICLR 2024) — task loss + supervised concept loss + an orthogonality penalty — verified directly against the paper's Section 3.1/Eq. 5 and its official reference code ([prescient-design/CBGM](https://github.com/prescient-design/CBGM), [mateoespinosa/cem](https://github.com/mateoespinosa/cem)), not just the abstract. Each concept (including the unsupervised "unknown" one) is a *mixture of two learned embeddings*, not a scalar — see the module docstring for why that distinction is load-bearing (the paper's own ablation shows removing the unknown concept's embedding capacity, not merely having some free capacity, degrades FID 9.3→44.1).
+The concept bottleneck implements Ismail, Adebayo, Bravo, Ra & Cho, ["Concept Bottleneck Generative Models"](https://proceedings.iclr.cc/paper_files/paper/2024/file/9149fc44c95ce58e3ca529a1e34c2691-Paper-Conference.pdf) (ICLR 2024): task loss plus supervised concept loss plus an orthogonality penalty, verified directly against the paper's Section 3.1/Eq. 5 and its official reference code ([prescient-design/CBGM](https://github.com/prescient-design/CBGM), [mateoespinosa/cem](https://github.com/mateoespinosa/cem)), not just the abstract. Each concept (including the unsupervised "unknown" one) is a *mixture of two learned embeddings*, not a scalar; see the module docstring for why that distinction is load-bearing (the paper's own ablation shows removing the unknown concept's embedding capacity, not merely having some free capacity, degrades FID 9.3 to 44.1).
 
 ## Installation
 
@@ -70,10 +81,10 @@ Local (CPU/MPS) development uses a lightweight stand-in backbone so the concept-
 
 ## Data pipeline
 
-MIMIC-IV → MEDS extraction uses the standard [`meds-extract`](https://github.com/Medical-Event-Data-Standard/MIMIC_IV_MEDS) tooling (`hosp` + `icu` modules only — MIMIC-IV-ED is a separate dataset/DUA and is not yet wired in).
+MIMIC-IV to MEDS extraction uses the standard [`meds-extract`](https://github.com/Medical-Event-Data-Standard/MIMIC_IV_MEDS) tooling (`hosp` + `icu` modules only; MIMIC-IV-ED is a separate dataset/DUA and is not yet wired in).
 
 ```bash
-# No credentials needed — validates the pipeline against the public demo:
+# No credentials needed, validates the pipeline against the public demo:
 uv run meds-extract-run spec=MIMIC-IV output_dir=<output_dir> dataset_key=demo
 
 # Full MIMIC-IV 3.1, already downloaded locally:
@@ -81,7 +92,7 @@ uv run meds-extract-run spec=MIMIC-IV output_dir=<output_dir> \
     do_download=false input_dir=<path_to_mimiciv_3.1>
 ```
 
-`do_download=false` skips *all* downloads, including ten small auxiliary concept-mapping CSVs the pipeline fetches from `MIT-LCP/mimic-code` on GitHub (not PhysioNet) for `extract_code_metadata` — these aren't part of the MIMIC-IV release itself. If you're pointing `input_dir` at a manually-downloaded copy, fetch those into its root first:
+`do_download=false` skips *all* downloads, including ten small auxiliary concept-mapping CSVs the pipeline fetches from `MIT-LCP/mimic-code` on GitHub (not PhysioNet) for `extract_code_metadata`; these aren't part of the MIMIC-IV release itself. If you're pointing `input_dir` at a manually-downloaded copy, fetch those into its root first:
 
 ```bash
 BASE="https://raw.githubusercontent.com/MIT-LCP/mimic-code/v2.4.0/mimic-iv/concepts/concept_map"
@@ -92,14 +103,14 @@ for f in meas_chartevents_main.csv inputevents_to_rxnorm.csv lab_itemid_to_loinc
 done
 ```
 
-Validated end-to-end against the real, credentialed MIMIC-IV 3.1 (364,627 subjects, 148,193 distinct codes) — not just the demo.
+Validated end-to-end against the real, credentialed MIMIC-IV 3.1 (364,627 subjects, 148,193 distinct codes), not just the demo.
 
 ### eICU-CRD
 
-eICU uses the same `meds-extract` tooling with a project-local MESSY spec at [`specs/eICU.yaml`](specs/eICU.yaml) (the reference `eicu-meds` PyPI package predates MESSY and pins an incompatible `meds-transforms`/`polars`, so the extraction is expressed declaratively there instead — see that file's header for the eICU-specific design notes: subjects are health-system stays, and all timestamps are pseudotimes reconstructed from minute offsets, so only intra-subject relative times are meaningful):
+eICU uses the same `meds-extract` tooling with a project-local MESSY spec at [`specs/eICU.yaml`](specs/eICU.yaml) (the reference `eicu-meds` PyPI package predates MESSY and pins an incompatible `meds-transforms`/`polars`, so the extraction is expressed declaratively there instead; see that file's header for the eICU-specific design notes: subjects are health-system stays, and all timestamps are pseudotimes reconstructed from minute offsets, so only intra-subject relative times are meaningful):
 
 ```bash
-# No credentials needed — validates the pipeline against the public eICU demo:
+# No credentials needed, validates the pipeline against the public eICU demo:
 uv run meds-extract-run spec=./specs/eICU.yaml output_dir=<output_dir> dataset_key=demo
 
 # Full eICU-CRD 2.0, already downloaded locally:
@@ -113,7 +124,7 @@ Spec v2 (the current file) also fixes two medication-identity gaps in the refere
 
 ### Tokenization
 
-`odyssey/data/vocabulary.py` and `odyssey/data/sequences.py` turn raw MEDS events into the batches the model consumes. `odyssey/data/value_binning.py` runs first, folding each numeric-valued event's magnitude into the token itself — `"LAB//220045//bpm"` (a heart-rate reading, any value) becomes `"LAB//220045//bpm::HIGH"` — via curated clinical ranges for the vitals/labs `odyssey/data/concepts.py` already defines thresholds for, and per-code quantile bins (fit on the training split only) elsewhere. Codes with no numeric value (a diagnosis, a procedure) pass through unchanged, since the event's occurrence is already the full signal:
+`odyssey/data/vocabulary.py` and `odyssey/data/sequences.py` turn raw MEDS events into the batches the model consumes. `odyssey/data/value_binning.py` runs first, folding each numeric-valued event's magnitude into the token itself: `"LAB//220045//bpm"` (a heart-rate reading, any value) becomes `"LAB//220045//bpm::HIGH"`, via curated clinical ranges for the vitals/labs `odyssey/data/concepts.py` already defines thresholds for, and per-code quantile bins (fit on the training split only) elsewhere. Codes with no numeric value (a diagnosis, a procedure) pass through unchanged, since the event's occurrence is already the full signal:
 
 ```python
 from odyssey.data.value_binning import QuantileBinner, add_value_tokens
@@ -131,15 +142,15 @@ sequences = [
 batch = collate_patient_sequences(sequences)  # -> ClinicalSequenceBatch, ready for the model
 ```
 
-Validated at scale against the real extraction: 500 real patients tokenize in ~2s, mean sequence length ~301 events, 0.8% `[UNK]` rate. Visits are derived from `hadm_id` (events sharing one become one visit; events without one each get their own single-event visit) — a documented v1 simplification, see the module docstring. Inter-event time (including gaps *between* admissions, not just within one) is already encoded regardless of value-binning — `PatientSequence.time_stamps` holds each event's absolute time since the sequence's first event, and `TimeEmbeddingLayer(is_time_delta=True)` computes real consecutive-event deltas from it, so it survives truncation and visit boundaries unchanged.
+Validated at scale against the real extraction: 500 real patients tokenize in ~2s, mean sequence length ~301 events, 0.8% `[UNK]` rate. Visits are derived from `hadm_id` (events sharing one become one visit; events without one each get their own single-event visit), a documented v1 simplification, see the module docstring. Inter-event time (including gaps *between* admissions, not just within one) is already encoded regardless of value-binning: `PatientSequence.time_stamps` holds each event's absolute time since the sequence's first event, and `TimeEmbeddingLayer(is_time_delta=True)` computes real consecutive-event deltas from it, so it survives truncation and visit boundaries unchanged.
 
 Two more per-token inputs exist alongside the bin token: with `TrainingConfig.value_embeddings=True` the binner's per-code standardized value (`numeric_z`, from `QuantileBinner.standardize`) is projected into the token embedding, so the model sees how far into a bin a reading is (a creatinine of 0.8 vs 1.4 are both `NORMAL` tokens); and timeless facts (`GENDER//F`, race, ...) lead every sequence at the first event's timestamp as inputs that are never prediction targets. Medication codes are normalized to ingredient level (`odyssey/data/code_normalization.py`), on eICU through a shipped HICL dictionary that resolves the 36% of medication rows with no drug name.
 
-Sequences are built from each subject's **complete history**, not scoped to one admission or a fixed window — see `research_journal/02_sequence_scoping_methodology.html` (local-only) for why. The same pipeline runs unchanged on MIMIC-IV and eICU; cross-hospital/health-system generalization will be assessed on [GEMINI](https://geminimedicine.ca/) (~30 hospitals, inpatient), not between MIMIC and eICU.
+Sequences are built from each subject's **complete history**, not scoped to one admission or a fixed window; see `research_journal/02_sequence_scoping_methodology.html` (local-only) for why. The same pipeline runs unchanged on MIMIC-IV and eICU; cross-hospital/health-system generalization will be assessed on [GEMINI](https://geminimedicine.ca/) (~30 hospitals, inpatient), not between MIMIC and eICU.
 
 ## GEMINI
 
-Cross-hospital generalization is assessed on [GEMINI](https://geminimedicine.ca/), a ~30-hospital inpatient database. Nobody on this team has a login on the GEMINI node except Amrit, so all GEMINI-facing work is git-mediated: we push a script to a second, 1 MiB-per-push-capped remote, Amrit runs it on the node, and only small aggregate/cell-suppressed output comes back in a commit — never patient-level data or model checkpoints. See [`docs/gemini.md`](docs/gemini.md) for the full workflow, credential pattern, and governance rules.
+Cross-hospital generalization is assessed on [GEMINI](https://geminimedicine.ca/), a ~30-hospital inpatient database. Nobody on this team has a login on the GEMINI node except Amrit, so all GEMINI-facing work is git-mediated: we push a script to a second, 1 MiB-per-push-capped remote, Amrit runs it on the node, and only small aggregate/cell-suppressed output comes back in a commit, never patient-level data or model checkpoints. See [`docs/gemini.md`](docs/gemini.md) for the full workflow, credential pattern, and governance rules.
 
 ## Development
 
@@ -151,24 +162,36 @@ uv run mypy odyssey
 
 ## Roadmap
 
-1. ~~Validate the MEDS extraction pipeline (hosp + icu) end-to-end~~
-2. ~~Implement and rigorously test the concept bottleneck layer~~
-3. ~~Derive real clinical concept labels from MIMIC-IV codes (rule-based, e.g. SIRS criteria, AKI, hypotension)~~
-4. ~~Wire the concept bottleneck into a real Mamba backbone; validate forward+backward on a real GPU~~
-5. ~~Run the real MEDS extraction on full, credentialed MIMIC-IV 3.1 (364,627 subjects)~~
-6. ~~Build patient-sequence tokenization (MEDS events -> the token/type/time/age/visit-order sequences the model consumes)~~
-7. ~~Fold numeric lab/vital values into the token itself (clinical-range + quantile-bin fallback), not code-identity alone~~
-8. ~~Streaming truncated-BPTT training and evaluation over full patient histories (subset runs on MIMIC-IV, with visit-scoped concept supervision, set-based next-event scoring, and causal-intervention evaluation)~~; next: leakage-free interventions (capacity-limited residual channel, hard/intervention-aware bottleneck variants, input-level counterfactual rollouts), measured with the matched-displacement intervention test on every run; full-scale MIMIC-IV pretraining is running
-9. Extend extraction to MIMIC-IV-ED
-10. ~~Multi-dataset pipeline: the same extraction/tokenization/concept pipeline running on eICU as well as MIMIC-IV~~ — done: `specs/eICU.yaml`, validated on the full eICU-CRD 2.0 (166K stays, 856M events); concept rules and clinical value bins are canonical (LOINC-keyed) and expanded per source
-11. Cross-hospital/health-system generalization: extend the pipeline to [GEMINI](https://geminimedicine.ca/) (~30 hospitals, inpatient/general internal medicine) — the multi-hospital dataset where generalization is actually assessed; MIMIC-IV and eICU serve as pipeline-portability targets, not as a train-on-one/test-on-the-other experiment
-12. ~~Bundle-aware forecasting: permutation-invariant loss within same-timestamp bundles (restricted to the target's own family) and family-balanced loss weighting~~ -- built and measured: same-family set top-1 69.9% -> 75.7% overall on the MIMIC-IV subset (labs 75 -> 81, medications 36 -> 44, diagnoses 31 -> 41, procedures 24 -> 38); with the value channel and static inputs 76.7%; a baseline without the bottleneck reaches 77.9%; eICU 86.4%
-13. ~~Time-to-event: a hazard head for time to the next bundle, and per-event hazard heads (vasopressor start, ICU admission, AKI, death) trained with right censoring; alert evaluation harness scoring P(event within 8/24/72h) with time-dependent AUROC/Brier/calibration against per-event gradient-boosted baselines on hand features~~ -- built and measured: hazard heads reach 0.68-0.95 AUROC across events and horizons on the MIMIC-IV subset (calibrated), against a tuned 609-feature gradient-boosted baseline (`odyssey/inference/baseline_features.py`, fitted on the same training patients) at 0.78-0.97; the head leads only on vasopressor start, and the gap concentrates where a fresh precursor lab exists and late in long stays; per-event survival curves render in the report
-14. Bundle-level set prediction head and hierarchical ICD (category, then code) for discharge diagnoses; prior-diagnosis history recap at admission (built, opt-in, untested at scale)
-15. Phase 2: an LLM agent (e.g. MedGemma) that reads the concept-annotated forecast and assists a clinician; retrospective clinician validation on GEMINI
-16. ~~Paper-grade bespoke baselines: best-effort feature panel (48 LOINC-keyed vitals/labs with window statistics and trends, drug-class exposures, ICU/visit context) with per-event, per-horizon tuning; per-index-row dumps for stratified error analysis~~ -- done
-17. ~~eICU spec v2: medication identity via HICL, named infusions, GCS and urine output from the flowsheets~~ -- done; the eICU subset runs replicate the MIMIC-IV findings (forecasting up, concepts up, same alert picture against the tuned baseline)
-18. Full-scale pretraining on all MIMIC-IV training shards (running), then eICU; manuscript in `paper/` (npj Digital Medicine)
+Organized by research track; the foundational plumbing that is finished lives in the collapsed list at the end. The project's central open finding stays at the top where it belongs:
+
+> **The concept lever is not yet causal.** Interventions on concept probabilities move forecasts in proportion to surprise, not truth (base-rate correlation 0.97); RandInt training cannot fix this because it never trains on counterfactual values. Independent training produces the first working lever at a quantified forecasting cost. Mapping and shrinking that cost is the core interpretability work. (Research journal entries 23, 25, 26.)
+
+**Track A: performance and probes**
+1. Recency/staleness inputs to the hazard heads (per-signal hours-since-last-observation), the direct answer to the stratified error analysis; A/B on the 30-shard subset
+2. Second epoch of full-scale MIMIC-IV training (learning curve still monotone after one)
+3. MEDS-Tab as the field-standard external baseline on our own MEDS data
+4. TabICLv2 three-way comparison (vs tuned GBM and hazard heads) on both datasets, after the branch scoring regression is fixed; NAM/GAM baseline per the comparator plan; SurvivalPFN as a zero-shot survival baseline
+
+**Track B: interpretability and causality**
+5. The stage-B cost frontier: longer training, partial unfreezing, small stage-A task weight (M-series, running); acceptance test is the six-mode banded intervention suite
+6. Concept-set widening (the completeness axis: richer concept vocabulary from structured data), plus leakage metrics (CTL/ICL) reported per run
+7. Input-level counterfactual rollouts as the near-term clinician what-if
+8. Population-level causal effect estimation (exploratory; CausalPFN line)
+
+**Track C: generalization**
+9. GEMINI: environment build on the H200, schema-driven MEDS extraction, then external validation of frozen models (groundwork complete: `docs/gemini.md`, `scripts/gemini/`)
+10. EHRSHOT-style few-shot/transfer protocol, the pretrain-once test
+
+**Track D: platform and clinical interface**
+11. Reproducibility: environment fingerprints and numeric canaries recorded with every run (done); eval-protocol pinning (scores comparable only at matched lane/chunk settings)
+12. Report generator fixes (baseline-model description bug) and shared how-to page (done in journal)
+13. Phase 2: an LLM agent (e.g. MedGemma) reading the concept-annotated forecast, with retrospective clinician validation on GEMINI; gated on Tracks B and C
+
+<details>
+<summary>Foundational work, complete (items 1-8, 10, 12, 13, 16, 17 of the original list)</summary>
+
+MEDS extraction validated end to end on credentialed MIMIC-IV 3.1 and eICU-CRD 2.0 (spec v2: HICL medication identity, named infusions, GCS, urine output); concept bottleneck implemented and tested; rule-derived clinical concept labels (LOINC-keyed canonical registry, per-source expansion); patient-sequence tokenization with clinical-range and quantile value bins, the opt-in standardized value channel, and static facts as leading inputs; streaming truncated-BPTT training over full histories with the shard-streaming corpus path for full-scale runs; bundle-invariant family-restricted loss with family balancing; time-to-next-event and per-event hazard heads with right censoring; the tuned-GBM alert harness with per-row dumps; full-scale pretraining on all MIMIC-IV and eICU shards. Dropped: MIMIC-IV-ED extraction (superseded by the GEMINI track).
+</details>
 
 ### Known concept-rule limitations
 
@@ -176,7 +199,7 @@ Concept labels are rule-derived, per visit, and evaluated over a visit's whole w
 
 ### GPU notes
 
-The real backbone (`EHRHybridBackbone`, `odyssey/models/backbones/hybrid.py`) runs a Mamba-2 mixer and an attention mixer in parallel on every position, fused by a small learned attention (`MergeAttention`) — not a sequential stack, so it's built directly rather than through `mamba_ssm`'s high-level `MixerModel` dispatcher, which only supports one mixer per block. The Mamba branch carries real state across TBTT chunks (`hybrid.py` patches a minimal `Mamba2` subclass that seeds `mamba_chunk_scan_combined`'s `initial_states`, which upstream never wires up); the attention branch runs fresh, full attention over just the current chunk, with no cross-chunk memory — a deliberate trade-off, not a bug: Mamba handles compressed long-range recall across the whole sequence, attention handles precise local recall within a chunk. See `_make_mamba2_with_state_cls` in that module and `research_journal/03_backbone_architecture.html` (local-only) for the full writeup.
+The real backbone (`EHRHybridBackbone`, `odyssey/models/backbones/hybrid.py`) runs a Mamba-2 mixer and an attention mixer in parallel on every position, fused by a small learned attention (`MergeAttention`), not a sequential stack, so it's built directly rather than through `mamba_ssm`'s high-level `MixerModel` dispatcher, which only supports one mixer per block. The Mamba branch carries real state across TBTT chunks (`hybrid.py` patches a minimal `Mamba2` subclass that seeds `mamba_chunk_scan_combined`'s `initial_states`, which upstream never wires up); the attention branch runs fresh, full attention over just the current chunk, with no cross-chunk memory, a deliberate trade-off, not a bug: Mamba handles compressed long-range recall across the whole sequence, attention handles precise local recall within a chunk. See `_make_mamba2_with_state_cls` in that module and `research_journal/03_backbone_architecture.html` (local-only) for the full writeup.
 
 ## Citation
 

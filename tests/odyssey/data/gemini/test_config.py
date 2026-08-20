@@ -9,6 +9,7 @@ error) -- see :func:`odyssey.data.gemini.config._env`.
 import os
 from pathlib import Path
 
+from odyssey.data.gemini import config
 from odyssey.data.gemini.config import _env, _env_optional, _load_dotenv
 
 
@@ -63,3 +64,32 @@ def test_load_dotenv_sets_missing_but_respects_existing(
 
 def test_load_dotenv_missing_file_is_noop(tmp_path: Path) -> None:
     _load_dotenv(tmp_path / "does-not-exist.env")  # must not raise
+
+
+def test_load_dotenv_accepts_shell_export_prefix(tmp_path, monkeypatch):
+    monkeypatch.delenv("SOME_EXPORTED_KEY", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text('export SOME_EXPORTED_KEY="v1"\n')
+    _load_dotenv(env_file)
+    assert os.environ.get("SOME_EXPORTED_KEY") == "v1"
+    monkeypatch.delenv("SOME_EXPORTED_KEY", raising=False)
+
+
+def test_credentials_help_names_each_missing_var_when_url_unset(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(config, "DB_URL", None)
+    monkeypatch.setattr(config, "DB_USER", None)
+    monkeypatch.setattr(config, "DB_PASS", "set")
+    monkeypatch.setattr(config, "DB_NAME", None)
+    msg = config.credentials_help()
+    assert "GEMINI_DB_USER" in msg
+    assert "GEMINI_DB_NAME" in msg
+    assert "GEMINI_DB_PASS" not in msg  # was set, shouldn't be named as missing
+
+
+def test_credentials_help_names_datacut_when_url_complete(monkeypatch) -> None:
+    monkeypatch.setattr(config, "DB_URL", "postgresql+psycopg2://u:p@h:5432/db")
+    monkeypatch.setattr(config, "DATACUT", None)
+    msg = config.credentials_help()
+    assert "GEMINI_DATACUT" in msg

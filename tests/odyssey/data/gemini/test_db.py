@@ -94,3 +94,26 @@ def test_query_sets_search_path_and_returns_read_sql_result(
         "SET search_path TO some_datacut" in stmt
         for stmt in fake_engine.connection.executed
     )
+
+
+def test_list_available_schemata_does_not_require_datacut(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # No DATACUT set at all -- must not raise, unlike query().
+    monkeypatch.setattr(config, "DATACUT", None)
+    fake_engine = _FakeEngine()
+    monkeypatch.setattr(db, "get_engine", lambda: fake_engine)
+
+    expected = pd.DataFrame({"schema_name": ["cut_a", "cut_b"]})
+
+    def fake_read_sql(sql: Any, _con: Any) -> pd.DataFrame:
+        assert "information_schema.schemata" in str(sql)
+        return expected
+
+    monkeypatch.setattr(db.pd, "read_sql", fake_read_sql)
+
+    result = db.list_available_schemata()
+
+    assert result is expected
+    # No search_path statement -- this path never needs a chosen data cut.
+    assert fake_engine.connection.executed == []

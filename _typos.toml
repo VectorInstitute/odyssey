@@ -7,3 +7,6 @@ OINT = "OINT"
 # codebase (EHR-Mamba3, CachedEHREmbeddings, ...), not a typo for "HER".
 EHR = "EHR"
 ehr = "ehr"
+# NAM = Neural Additive Model (Agarwal et al.), a model family in the README.
+NAM = "NAM"
+NAMs = "NAMs"

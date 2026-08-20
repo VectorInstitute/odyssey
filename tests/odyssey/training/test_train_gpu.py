@@ -444,3 +444,212 @@ def test_baseline_model_kind_trains_and_evaluates(tmp_path: Path) -> None:
     assert results.task_metrics.n_predictions > 0
     assert results.concept_metrics == []
     assert results.time_metrics is not None
+
+
+def test_init_from_loads_weights_without_resuming_optimizer_or_step_state(
+    tmp_path: Path,
+) -> None:
+    """init_from seeds a fresh run's weights; it is not resume_from.
+
+    Stage one of independent training: run with task_weight=0.0 so the
+    backbone/bottleneck are shaped by concept supervision alone.
+    """
+    train_dir = tmp_path / "data" / "train"
+    tuning_dir = tmp_path / "data" / "tuning"
+    _write_shards(train_dir, n_subjects=12, n_events_per_subject=30)
+    _write_shards(tuning_dir, n_subjects=4, n_events_per_subject=30)
+
+    stage_one_dir = tmp_path / "stage_one"
+    stage_one_config = _tiny_config(
+        train_dir,
+        tuning_dir,
+        stage_one_dir,
+        task_weight=0.0,
+        checkpoint_every=100000,
+    )
+    train(stage_one_config)
+    stage_one_checkpoint = stage_one_dir / "checkpoint_epoch_0.pt"
+    assert stage_one_checkpoint.exists()
+    stage_one_step = torch.load(stage_one_checkpoint, map_location="cpu")["step"]
+
+    stage_two_dir = tmp_path / "stage_two"
+    stage_two_config = _tiny_config(
+        train_dir,
+        tuning_dir,
+        stage_two_dir,
+        init_from=str(stage_one_checkpoint),
+        checkpoint_every=100000,
+    )
+    train(stage_two_config)
+
+    stage_two_checkpoint = torch.load(
+        stage_two_dir / "checkpoint_epoch_0.pt", map_location="cpu"
+    )
+    # init_from is not resume_from: stage two's own step counter starts
+    # over, it does not continue from stage one's.
+    assert stage_two_checkpoint["step"] < stage_one_step + 1
+    assert stage_two_checkpoint["step"] > 0
+
+    stage_one_model = torch.load(stage_one_checkpoint, map_location="cpu")["model"]
+    # Model differs after further (unfrozen) training on top of the
+    # init_from weights -- confirms the weights were actually loaded as a
+    # starting point and then genuinely trained, not left untouched or
+    # reinitialized from scratch.
+    assert not torch.allclose(
+        stage_one_model["lm_head.weight"],
+        stage_two_checkpoint["model"]["lm_head.weight"],
+    )
+
+
+def test_freeze_bottleneck_trains_only_the_task_heads(tmp_path: Path) -> None:
+    """freeze_bottleneck is stage two of independent training.
+
+    Paired with init_from (a stage_weight=0.0 checkpoint) and
+    randint_prob=1.0, so the task heads train against the ground-truth
+    concept mixture while backbone/bottleneck weights stay exactly at
+    their stage-one values.
+    """
+    train_dir = tmp_path / "data" / "train"
+    tuning_dir = tmp_path / "data" / "tuning"
+    _write_shards(train_dir, n_subjects=12, n_events_per_subject=30)
+    _write_shards(tuning_dir, n_subjects=4, n_events_per_subject=30)
+
+    stage_one_dir = tmp_path / "stage_one"
+    stage_one_config = _tiny_config(
+        train_dir, tuning_dir, stage_one_dir, task_weight=0.0, checkpoint_every=100000
+    )
+    train(stage_one_config)
+    stage_one_checkpoint = stage_one_dir / "checkpoint_epoch_0.pt"
+    stage_one_model = torch.load(stage_one_checkpoint, map_location="cpu")["model"]
+
+    stage_two_dir = tmp_path / "stage_two"
+    stage_two_config = _tiny_config(
+        train_dir,
+        tuning_dir,
+        stage_two_dir,
+        init_from=str(stage_one_checkpoint),
+        freeze_bottleneck=True,
+        randint_prob=1.0,
+        checkpoint_every=100000,
+    )
+    train(stage_two_config)
+    stage_two_model = torch.load(
+        stage_two_dir / "checkpoint_epoch_0.pt", map_location="cpu"
+    )["model"]
+
+    frozen_param_names = [
+        name
+        for name in stage_one_model
+        if name.startswith("backbone.") or name.startswith("bottleneck.")
+    ]
+    assert frozen_param_names  # sanity: the model actually has such params
+    for name in frozen_param_names:
+        assert torch.equal(stage_one_model[name], stage_two_model[name]), (
+            f"{name} changed despite freeze_bottleneck"
+        )
+
+    # the task heads are exactly what's left unfrozen, and did train.
+    assert not torch.allclose(
+        stage_one_model["lm_head.weight"], stage_two_model["lm_head.weight"]
+    )
+
+
+def test_unfreeze_top_backbone_layers_leaves_earlier_layers_frozen(
+    tmp_path: Path,
+) -> None:
+    """unfreeze_top_backbone_layers is a middle ground: frozen vs. joint.
+
+    The bottleneck stays frozen regardless (only backbone.layers is
+    affected); the top N backbone blocks train, the rest stay pinned
+    at their stage-one values, same as plain freeze_bottleneck does
+    for the whole backbone.
+    """
+    train_dir = tmp_path / "data" / "train"
+    tuning_dir = tmp_path / "data" / "tuning"
+    _write_shards(train_dir, n_subjects=12, n_events_per_subject=30)
+    _write_shards(tuning_dir, n_subjects=4, n_events_per_subject=30)
+
+    stage_one_dir = tmp_path / "stage_one"
+    stage_one_config = _tiny_config(
+        train_dir, tuning_dir, stage_one_dir, task_weight=0.0, checkpoint_every=100000
+    )
+    train(stage_one_config)
+    stage_one_checkpoint = stage_one_dir / "checkpoint_epoch_0.pt"
+    stage_one_model = torch.load(stage_one_checkpoint, map_location="cpu")["model"]
+
+    stage_two_dir = tmp_path / "stage_two"
+    stage_two_config = _tiny_config(
+        train_dir,
+        tuning_dir,
+        stage_two_dir,
+        init_from=str(stage_one_checkpoint),
+        freeze_bottleneck=True,
+        unfreeze_top_backbone_layers=1,
+        randint_prob=1.0,
+        checkpoint_every=100000,
+    )
+    train(stage_two_config)
+    stage_two_model = torch.load(
+        stage_two_dir / "checkpoint_epoch_0.pt", map_location="cpu"
+    )["model"]
+
+    # _tiny_config uses num_hidden_layers=2: layer 0 stays frozen, layer 1
+    # (the last one) is the one unfrozen_top_backbone_layers=1 re-enables.
+    frozen_layer_names = [
+        name for name in stage_one_model if name.startswith("backbone.layers.0.")
+    ]
+    unfrozen_layer_names = [
+        name for name in stage_one_model if name.startswith("backbone.layers.1.")
+    ]
+    bottleneck_names = [
+        name for name in stage_one_model if name.startswith("bottleneck.")
+    ]
+    assert frozen_layer_names and unfrozen_layer_names and bottleneck_names
+
+    for name in frozen_layer_names + bottleneck_names:
+        assert torch.equal(stage_one_model[name], stage_two_model[name]), (
+            f"{name} changed despite staying frozen"
+        )
+    assert any(
+        not torch.equal(stage_one_model[name], stage_two_model[name])
+        for name in unfrozen_layer_names
+    ), "no re-unfrozen backbone-layer parameter changed"
+
+
+def test_freeze_bottleneck_without_bottleneck_model_raises(tmp_path: Path) -> None:
+    train_dir = tmp_path / "data" / "train"
+    tuning_dir = tmp_path / "data" / "tuning"
+    _write_shards(train_dir, n_subjects=12, n_events_per_subject=30)
+    _write_shards(tuning_dir, n_subjects=4, n_events_per_subject=30)
+    output_dir = tmp_path / "run"
+    config = _tiny_config(
+        train_dir,
+        tuning_dir,
+        output_dir,
+        model_kind="baseline",
+        freeze_bottleneck=True,
+    )
+    with pytest.raises(ValueError, match="freeze_bottleneck"):
+        train(config)
+
+
+def test_init_from_and_resume_from_together_raises(tmp_path: Path) -> None:
+    train_dir = tmp_path / "data" / "train"
+    tuning_dir = tmp_path / "data" / "tuning"
+    _write_shards(train_dir, n_subjects=12, n_events_per_subject=30)
+    _write_shards(tuning_dir, n_subjects=4, n_events_per_subject=30)
+    output_dir = tmp_path / "run"
+    config = _tiny_config(train_dir, tuning_dir, output_dir, checkpoint_every=100000)
+    train(config)
+    checkpoint_path = output_dir / "checkpoint_epoch_0.pt"
+
+    resumed_output_dir = tmp_path / "run2"
+    bad_config = _tiny_config(
+        train_dir,
+        tuning_dir,
+        resumed_output_dir,
+        init_from=str(checkpoint_path),
+        resume_from=str(checkpoint_path),
+    )
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        train(bad_config)

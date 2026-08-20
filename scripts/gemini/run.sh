@@ -4,12 +4,27 @@
 # nobody but Amrit can log into the node, so this is what he actually runs.
 #
 # Usage (on the GEMINI node, from the repo root):
-#   scripts/gemini/run.sh [probe|schema|all]
+#   scripts/gemini/run.sh [probe|schema|env-gpu|extract-dry|extract|train|eval|all]
 #
 # Steps:
-#   probe   scripts/gemini/probe_env.sh  -> scripts/gemini/out/env_probe.txt
-#   schema  scripts/gemini/explore_schema.py -> scripts/gemini/out/schema.{json,md}
-#   all     every step above, in order (default)
+#   probe        scripts/gemini/probe_env.sh -> scripts/gemini/out/env_probe.txt
+#   schema       scripts/gemini/explore_schema.py -> scripts/gemini/out/schema.{json,md}
+#   env-gpu      builds the H200 training venv (pinned torch cu124 + the
+#                two-step mamba-ssm CUDA rebuild, docs/gemini.md's recipe)
+#                and writes scripts/gemini/out/env_fingerprint.json. Separate
+#                from the lightweight venv the other steps use -- this one
+#                pulls in torch/mamba-ssm, which none of them need.
+#   extract-dry  scripts/gemini/extract_dry.py -> scripts/gemini/out/
+#                extract_dry.{json,md}. Needs schema.json (run `schema`
+#                first); prints "pending schema report" and does nothing
+#                otherwise.
+#   extract      not built yet -- extraction spec isn't written until the
+#                schema report has actually been read. Prints "pending
+#                schema report" and exits.
+#   train        not built yet, same reason.
+#   eval         not built yet, same reason.
+#   all          probe, schema, extract-dry, in order (default; deliberately
+#                excludes env-gpu and the not-yet-built steps -- see below)
 #
 # Activates (creating if missing) a venv under $HOME, installs only what the
 # selected step needs, runs it, then commits and pushes ONLY the output it
@@ -75,12 +90,87 @@ run_schema() {
     python scripts/gemini/explore_schema.py
 }
 
+run_extract_dry() {
+    echo "=== extract-dry ==="
+    python scripts/gemini/extract_dry.py
+}
+
+run_pending_stub() {
+    # extract / train / eval: real work belongs here once the schema
+    # report has actually been read and there's a MEDS extraction spec to
+    # run against it. Until then this is intentionally a no-op that always
+    # succeeds, so wiring these into an operator's routine `all` run (once
+    # they're added there) never fails on a step that isn't built yet.
+    echo "=== $1 ==="
+    echo "pending schema report -- $1 is not built yet, see docs/gemini.md"
+}
+
+run_env_gpu() {
+    echo "=== env-gpu ==="
+    GPU_VENV="${GEMINI_GPU_VENV:-$HOME/.venvs/odyssey-gemini-gpu}"
+    if [[ ! -f "$GPU_VENV/bin/activate" ]]; then
+        echo "Creating GPU venv at $GPU_VENV"
+        rm -rf "$GPU_VENV"
+        python3 -m venv "$GPU_VENV"
+    fi
+    # shellcheck source=/dev/null
+    source "$GPU_VENV/bin/activate"
+
+    # Idempotent: only (re)installs torch/rebuilds mamba-ssm if they aren't
+    # already importable. The mamba-ssm rebuild specifically is a real ~30
+    # minute CUDA compile (docs/gemini.md), not something to redo blind on
+    # every run.
+    if python -c "import torch; assert torch.__version__.startswith('2.6.0')" 2>/dev/null; then
+        echo "torch==2.6.0 already installed, skipping."
+    else
+        echo "Installing torch==2.6.0+cu124..."
+        pip install -q torch==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+    fi
+
+    echo "Installing odyssey (editable, no deps)..."
+    pip install -q -e . --no-deps
+
+    if python -c "from mamba_ssm.modules.mamba2 import Mamba2" 2>/dev/null; then
+        echo "mamba_ssm already importable, skipping rebuild."
+    else
+        echo "Force-rebuilding mamba-ssm==2.3.0 against CUDA 12.8 (real compile, ~30 min)..."
+        PATH="/usr/local/cuda-12.8/bin:$PATH" \
+            CUDA_HOME=/usr/local/cuda-12.8 MAX_JOBS=12 \
+            MAMBA_FORCE_BUILD=TRUE \
+            pip install --no-build-isolation --no-binary mamba-ssm \
+            --no-deps --no-cache-dir --force-reinstall 'mamba-ssm==2.3.0'
+    fi
+
+    echo "Import-checking mamba_ssm..."
+    python -c "from mamba_ssm.modules.mamba2 import Mamba2; print('mamba_ssm import OK')"
+
+    echo "Writing env fingerprint..."
+    mkdir -p scripts/gemini/out
+    python -c "
+import json
+from odyssey.utils.env_fingerprint import environment_fingerprint
+with open('scripts/gemini/out/env_fingerprint.json', 'w') as f:
+    json.dump(environment_fingerprint(), f, indent=2)
+"
+    cat scripts/gemini/out/env_fingerprint.json
+
+    deactivate
+    # Back to the lightweight venv, in case a later step in the same
+    # invocation (e.g. `all`) doesn't want torch/mamba-ssm on its path.
+    source "$VENV/bin/activate"
+}
+
 case "$STEP" in
     probe) run_probe ;;
     schema) run_schema ;;
-    all) run_probe; run_schema ;;
+    env-gpu) run_env_gpu ;;
+    extract-dry) run_extract_dry ;;
+    extract) run_pending_stub extract ;;
+    train) run_pending_stub train ;;
+    eval) run_pending_stub eval ;;
+    all) run_probe; run_schema; run_extract_dry ;;
     *)
-        echo "unknown step: $STEP (expected probe, schema, or all)" >&2
+        echo "unknown step: $STEP (expected probe, schema, env-gpu, extract-dry, extract, train, eval, or all)" >&2
         exit 1
         ;;
 esac
