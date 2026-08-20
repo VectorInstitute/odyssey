@@ -57,7 +57,7 @@ def test_build_report_skips_views_and_suppresses_counts(
         "datacut": "some_cut",
         "objects": [
             {
-                "kind": "table",
+                "kind": "matview",
                 "name": "admdad_subset",
                 "row_count": "1000",
                 "columns": [{"name": "genc_id", "type": "integer"}],
@@ -68,14 +68,140 @@ def test_build_report_skips_views_and_suppresses_counts(
     report = mod.build_report(schema)
 
     assert report["datacut"] == "some_cut"
-    assert len(report["tables"]) == 1  # the view is skipped
+    assert len(report["tables"]) == 1  # the view is skipped, matview is not
     table = report["tables"][0]
     assert table["name"] == "admdad_subset"
     assert table["row_count"] == "1000"  # 1234 rounded to nearest 1000
     assert table["columns"] == [{"name": "genc_id", "n_null": "<6"}]  # 2 -> suppressed
 
 
-def test_render_markdown_includes_tables_and_columns() -> None:
+def test_build_report_skips_null_fraction_check_for_large_tables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+
+    def fake_query(sql: str, params: object = None) -> pd.DataFrame:
+        raise AssertionError(f"should not query a table over the size threshold: {sql}")
+
+    monkeypatch.setattr(mod.db, "query", fake_query)
+
+    schema = {
+        "datacut": "some_cut",
+        "objects": [
+            {
+                "kind": "matview",
+                "name": "lab_subset",
+                "row_count": str(mod.LARGE_TABLE_ROW_THRESHOLD),
+                "columns": [{"name": "genc_id", "type": "integer"}],
+            }
+        ],
+    }
+    report = mod.build_report(schema)
+
+    table = report["tables"][0]
+    assert table["name"] == "lab_subset"
+    assert table["row_count"] == str(mod.LARGE_TABLE_ROW_THRESHOLD)
+    assert table["columns"] is None
+
+
+def test_concept_frequencies_returns_code_desc_and_suppressed_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+
+    def fake_query(sql: str, params: object = None) -> pd.DataFrame:
+        assert "lab_subset" in sql
+        assert "lookup_lab_concept" in sql
+        return pd.DataFrame(
+            {"code": ["3020891"], "concept_desc": ["Creatinine"], "n": [12345]}
+        )
+
+    monkeypatch.setattr(mod.db, "query", fake_query)
+
+    rows = mod.concept_frequencies(
+        "lab_subset", "test_type_mapped_omop", "lookup_lab_concept"
+    )
+    assert rows == [{"code": "3020891", "concept_desc": "Creatinine", "n": "12000"}]
+
+
+def test_table_date_ranges_handles_null_years(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = _load_module()
+    monkeypatch.setattr(
+        mod, "DATE_COLUMNS_BY_TABLE", {"admdad_subset": ["admission_date_time"]}
+    )
+
+    def fake_query(sql: str, params: object = None) -> pd.DataFrame:
+        return pd.DataFrame({"min_year": [None], "max_year": [None]})
+
+    monkeypatch.setattr(mod.db, "query", fake_query)
+
+    ranges = mod.table_date_ranges()
+    assert ranges == {
+        "admdad_subset": {"admission_date_time": {"min_year": None, "max_year": None}}
+    }
+
+
+def test_hospital_coverage_stringifies_row_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+
+    def fake_query(sql: str, params: object = None) -> pd.DataFrame:
+        assert "lookup_data_coverage" in sql
+        return pd.DataFrame(
+            {
+                "data": ["lab_subset"],
+                "min_date": ["2015-01-01"],
+                "max_date": ["2023-12-31"],
+                "hospital_num": [1],
+                "additional_info": [None],
+            }
+        )
+
+    monkeypatch.setattr(mod.db, "query", fake_query)
+
+    rows = mod.hospital_coverage()
+    assert rows == [
+        {
+            "data": "lab_subset",
+            "min_date": "2015-01-01",
+            "max_date": "2023-12-31",
+            "hospital_num": "1",
+            "additional_info": None,
+        }
+    ]
+
+
+def test_encounters_per_year_suppresses_and_handles_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+
+    def fake_query(sql: str, params: object = None) -> pd.DataFrame:
+        return pd.DataFrame({"year": [2020, None], "n": [54321, 2]})
+
+    monkeypatch.setattr(mod.db, "query", fake_query)
+
+    counts = mod.encounters_per_year()
+    assert counts == {"2020": "54000", "unknown": "<6"}
+
+
+def test_lookup_emptiness_uses_exists_not_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    monkeypatch.setattr(mod, "SUSPECT_EMPTY_LOOKUPS", ["lookup_vitals_concept"])
+
+    def fake_query(sql: str, params: object = None) -> pd.DataFrame:
+        assert "EXISTS" in sql
+        return pd.DataFrame({"any_rows": [False]})
+
+    monkeypatch.setattr(mod.db, "query", fake_query)
+
+    assert mod.lookup_emptiness() == {"lookup_vitals_concept": True}
+
+
+def test_render_markdown_includes_tables_and_design_queries() -> None:
     mod = _load_module()
     report = {
         "datacut": "some_cut",
@@ -84,14 +210,35 @@ def test_render_markdown_includes_tables_and_columns() -> None:
                 "name": "admdad_subset",
                 "row_count": "1000",
                 "columns": [{"name": "genc_id", "n_null": "<6"}],
-            }
+            },
+            {"name": "lab_subset", "row_count": "659000000", "columns": None},
         ],
+        "design_queries": {
+            "lab_concept_frequencies": [
+                {"code": "123", "concept_desc": "Creatinine", "n": "12000"}
+            ],
+            "vitals_concept_frequencies": [
+                {"code": "456", "concept_desc": None, "n": "8000"}
+            ],
+            "table_date_ranges": {
+                "admdad_subset": {
+                    "admission_date_time": {"min_year": 2015, "max_year": 2023}
+                }
+            },
+            "hospital_coverage": [{"data": "lab_subset", "hospital_num": "1"}],
+            "encounters_per_year": {"2020": "54000"},
+            "lookup_emptiness": {"lookup_vitals_concept": True},
+        },
     }
     text = mod.render_markdown(report)
     assert "some_cut" in text
     assert "admdad_subset" in text
     assert "genc_id" in text
-    assert "<6" in text
+    assert "too large" in text.lower()
+    assert "Creatinine" in text
+    assert "2015" in text and "2023" in text
+    assert "54000" in text
+    assert "lookup_vitals_concept" in text
 
 
 def test_main_writes_report_when_schema_present(
@@ -106,7 +253,7 @@ def test_main_writes_report_when_schema_present(
                 "datacut": "some_cut",
                 "objects": [
                     {
-                        "kind": "table",
+                        "kind": "matview",
                         "name": "admdad_subset",
                         "row_count": "1000",
                         "columns": [{"name": "genc_id", "type": "integer"}],
@@ -117,10 +264,20 @@ def test_main_writes_report_when_schema_present(
     )
     monkeypatch.setattr(mod, "SCHEMA_PATH", schema_path)
     monkeypatch.setattr(mod, "OUT_DIR", tmp_path)
+    # Keep the design-query surface small and deterministic for this
+    # end-to-end test -- each piece is already unit-tested above.
+    monkeypatch.setattr(mod, "DATE_COLUMNS_BY_TABLE", {})
+    monkeypatch.setattr(mod, "SUSPECT_EMPTY_LOOKUPS", [])
 
     def fake_query(sql: str, params: object = None) -> pd.DataFrame:
         if "COUNT(*) - COUNT(" in sql:
             return pd.DataFrame({"n_null": [0]})
+        if "lookup_data_coverage" in sql:
+            return pd.DataFrame({"data": [], "hospital_num": []})
+        if "GROUP BY year" in sql or "year" in sql.lower() and "COUNT" in sql:
+            return pd.DataFrame({"year": [2020], "n": [10]})
+        if "lookup_lab_concept" in sql or "lookup_vitals_concept" in sql:
+            return pd.DataFrame({"code": [], "concept_desc": [], "n": []})
         return pd.DataFrame({"n": [10]})
 
     monkeypatch.setattr(mod.db, "query", fake_query)
@@ -129,3 +286,5 @@ def test_main_writes_report_when_schema_present(
 
     assert (tmp_path / "extract_dry.json").exists()
     assert (tmp_path / "extract_dry.md").exists()
+    written = json.loads((tmp_path / "extract_dry.json").read_text())
+    assert "design_queries" in written
