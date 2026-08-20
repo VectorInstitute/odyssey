@@ -554,6 +554,68 @@ def test_freeze_bottleneck_trains_only_the_task_heads(tmp_path: Path) -> None:
     )
 
 
+def test_unfreeze_top_backbone_layers_leaves_earlier_layers_frozen(
+    tmp_path: Path,
+) -> None:
+    """unfreeze_top_backbone_layers is a middle ground: frozen vs. joint.
+
+    The bottleneck stays frozen regardless (only backbone.layers is
+    affected); the top N backbone blocks train, the rest stay pinned
+    at their stage-one values, same as plain freeze_bottleneck does
+    for the whole backbone.
+    """
+    train_dir = tmp_path / "data" / "train"
+    tuning_dir = tmp_path / "data" / "tuning"
+    _write_shards(train_dir, n_subjects=12, n_events_per_subject=30)
+    _write_shards(tuning_dir, n_subjects=4, n_events_per_subject=30)
+
+    stage_one_dir = tmp_path / "stage_one"
+    stage_one_config = _tiny_config(
+        train_dir, tuning_dir, stage_one_dir, task_weight=0.0, checkpoint_every=100000
+    )
+    train(stage_one_config)
+    stage_one_checkpoint = stage_one_dir / "checkpoint_epoch_0.pt"
+    stage_one_model = torch.load(stage_one_checkpoint, map_location="cpu")["model"]
+
+    stage_two_dir = tmp_path / "stage_two"
+    stage_two_config = _tiny_config(
+        train_dir,
+        tuning_dir,
+        stage_two_dir,
+        init_from=str(stage_one_checkpoint),
+        freeze_bottleneck=True,
+        unfreeze_top_backbone_layers=1,
+        randint_prob=1.0,
+        checkpoint_every=100000,
+    )
+    train(stage_two_config)
+    stage_two_model = torch.load(
+        stage_two_dir / "checkpoint_epoch_0.pt", map_location="cpu"
+    )["model"]
+
+    # _tiny_config uses num_hidden_layers=2: layer 0 stays frozen, layer 1
+    # (the last one) is the one unfrozen_top_backbone_layers=1 re-enables.
+    frozen_layer_names = [
+        name for name in stage_one_model if name.startswith("backbone.layers.0.")
+    ]
+    unfrozen_layer_names = [
+        name for name in stage_one_model if name.startswith("backbone.layers.1.")
+    ]
+    bottleneck_names = [
+        name for name in stage_one_model if name.startswith("bottleneck.")
+    ]
+    assert frozen_layer_names and unfrozen_layer_names and bottleneck_names
+
+    for name in frozen_layer_names + bottleneck_names:
+        assert torch.equal(stage_one_model[name], stage_two_model[name]), (
+            f"{name} changed despite staying frozen"
+        )
+    assert any(
+        not torch.equal(stage_one_model[name], stage_two_model[name])
+        for name in unfrozen_layer_names
+    ), "no re-unfrozen backbone-layer parameter changed"
+
+
 def test_freeze_bottleneck_without_bottleneck_model_raises(tmp_path: Path) -> None:
     train_dir = tmp_path / "data" / "train"
     tuning_dir = tmp_path / "data" / "tuning"
