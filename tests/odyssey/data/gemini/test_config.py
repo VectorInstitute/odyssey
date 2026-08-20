@@ -63,3 +63,12 @@ def test_load_dotenv_sets_missing_but_respects_existing(
 
 def test_load_dotenv_missing_file_is_noop(tmp_path: Path) -> None:
     _load_dotenv(tmp_path / "does-not-exist.env")  # must not raise
+
+
+def test_load_dotenv_accepts_shell_export_prefix(tmp_path, monkeypatch):
+    monkeypatch.delenv("SOME_EXPORTED_KEY", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text('export SOME_EXPORTED_KEY="v1"\n')
+    _load_dotenv(env_file)
+    assert os.environ.get("SOME_EXPORTED_KEY") == "v1"
+    monkeypatch.delenv("SOME_EXPORTED_KEY", raising=False)
