@@ -1932,6 +1932,9 @@ gemini = [
     { name = "psycopg2-binary" },
     { name = "sqlalchemy" },
 ]
+tabicl = [
+    { name = "tabicl" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -1964,11 +1967,12 @@ requires-dist = [
     { name = "psycopg2-binary", marker = "extra == 'gemini'", specifier = ">=2.9.0" },
     { name = "scikit-learn", specifier = ">=1.7.0" },
     { name = "sqlalchemy", marker = "extra == 'gemini'", specifier = ">=2.0.0" },
+    { name = "tabicl", marker = "extra == 'tabicl'", specifier = ">=2.0.0" },
     { name = "torch", marker = "sys_platform != 'linux'", specifier = ">=2.12.1" },
     { name = "torch", marker = "sys_platform == 'linux'", specifier = "==2.6.0", index = "https://download.pytorch.org/whl/cu124" },
     { name = "urllib3", specifier = ">=2.7.0" },
 ]
-provides-extras = ["cuda", "gemini"]
+provides-extras = ["cuda", "gemini", "tabicl"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -3142,6 +3146,26 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/83/d3/803453b36afefb7c2bb238361cd4ae6125a569b4db67cd9e79846ba2d68c/sympy-1.14.0.tar.gz", hash = "sha256:d3d3fe8df1e5a0b42f0e7bdf50541697dbe7d23746e894990c030e2b05e72517", size = 7793921, upload-time = "2025-04-27T18:05:01.611Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a2/09/77d55d46fd61b4a135c444fc97158ef34a095e5681d0a6c10b75bf356191/sympy-1.14.0-py3-none-any.whl", hash = "sha256:e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5", size = 6299353, upload-time = "2025-04-27T18:04:59.103Z" },
+]
+
+[[package]]
+name = "tabicl"
+version = "2.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "einops" },
+    { name = "huggingface-hub" },
+    { name = "numpy" },
+    { name = "psutil" },
+    { name = "scikit-learn" },
+    { name = "scipy" },
+    { name = "torch", version = "2.6.0+cu124", source = { registry = "https://download.pytorch.org/whl/cu124" }, marker = "sys_platform == 'linux'" },
+    { name = "torch", version = "2.13.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e0/c3/ef8bcc7645bc1eedae4563df6429f6f5438aaea5e293682a9367bf2c2ddb/tabicl-2.1.1.tar.gz", hash = "sha256:7abdb1fa878e7a1edfa1c6606bf4189e9cccc20935e8011d7e690f4693c9c5c5", size = 224680, upload-time = "2026-04-29T15:57:46.302Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/60/d3/f6eadcef58322b1b0253df1c17d9230db9934274f52e0d952458f6c6ab41/tabicl-2.1.1-py3-none-any.whl", hash = "sha256:cb4405cc93335c688bc9bcb703c7944032fcf542b43ebb66820f1a5acb5651b1", size = 252909, upload-time = "2026-04-29T15:57:47.775Z" },
 ]
 
 [[package]]
