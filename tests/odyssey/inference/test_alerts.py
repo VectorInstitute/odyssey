@@ -581,3 +581,98 @@ def test_fit_baseline_grid_caps_rows_before_the_final_fit(
     feats = features_for_events(binned, rows, feature_set="basic")
     p = model.predict_proba(feats["vasopressor_start"])
     assert np.isfinite(p).all()
+
+
+# ---------------------------------------------------------------------------
+# extra_baselines: a second, named baseline family alongside the GBM
+# (odyssey.inference.tabicl_baseline is the real use case; a fake stand-in
+# here keeps these tests independent of the optional tabicl dependency)
+# ---------------------------------------------------------------------------
+
+
+class _FakeBaselineModel:
+    """Duck-typed like BaselineModel/TabICLBaselineModel: a fixed, checkable score."""
+
+    def __init__(self, value: float, n_features: int) -> None:
+        self.value = value
+        self.feature_set = "fake"
+        self.n_features = n_features
+        self.params: Dict[str, float] = {"fixed_value": value}
+
+    def predict_proba(self, x: np.ndarray) -> np.ndarray:
+        return np.full(x.shape[0], self.value)
+
+
+def test_score_alerts_extra_baselines_scores_alongside_the_gbm() -> None:
+    events = _events(24)
+    binned = add_value_tokens(events)
+    times = all_event_times(binned, ALERT_EVENTS, "mimic_iv")
+    rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+    baselines = fit_baselines(
+        binned, rows, times, horizons=(8.0,), feature_set="basic", tune=False
+    )
+    feats = features_for_events(binned, rows, feature_set="basic")
+
+    fake_models = {
+        (name, 8.0): _FakeBaselineModel(0.5, feats[name].shape[1])
+        for name in rows
+        if rows[name]
+    }
+    results = score_alerts(
+        rows,
+        times,
+        horizons=(8.0,),
+        baselines=baselines,
+        baseline_features_by_event=feats,
+        extra_baselines={"baseline_fake": (fake_models, feats)},
+    )
+    by = {(r.event, r.scorer): r for r in results}
+    # both the existing GBM path and the new named family are present,
+    # neither disturbing the other
+    assert ("vasopressor_start", "baseline_gbm") in by
+    fake = by[("vasopressor_start", "baseline_fake")]
+    # a constant 0.5 prediction is uninformative: AUROC collapses to chance
+    assert fake.auroc == pytest.approx(0.5)
+    assert fake.baseline_feature_set == "fake"
+    assert fake.brier is not None and fake.calibration
+
+
+def test_score_alerts_extra_baselines_missing_cell_is_skipped_not_erroring() -> None:
+    """A scorer_name entry with no model for this (event, horizon) is silently absent.
+
+    Mirrors how the built-in GBM path already behaves when an event/horizon
+    combination has no fitted model (too few rows, single outcome class).
+    """
+    events = _events(24)
+    binned = add_value_tokens(events)
+    times = all_event_times(binned, ALERT_EVENTS, "mimic_iv")
+    rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+    results = score_alerts(
+        rows,
+        times,
+        horizons=(8.0,),
+        extra_baselines={"baseline_fake": ({}, {})},
+    )
+    assert not any(r.scorer == "baseline_fake" for r in results)
+
+
+def test_index_row_table_extra_baselines_adds_a_named_column() -> None:
+    events = _events(24)
+    binned = add_value_tokens(events)
+    times = all_event_times(binned, ALERT_EVENTS, "mimic_iv")
+    rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+    feats = features_for_events(binned, rows, feature_set="basic")
+    fake_models = {
+        (name, 8.0): _FakeBaselineModel(0.5, feats[name].shape[1])
+        for name in rows
+        if rows[name]
+    }
+    table = index_row_table(
+        rows,
+        times,
+        horizons=(8.0,),
+        extra_baselines={"tabicl": (fake_models, feats)},
+    )
+    assert "tabicl@8h" in table.columns
+    vaso = table.filter(pl.col("event") == "vasopressor_start")
+    assert (vaso["tabicl@8h"] == 0.5).all()

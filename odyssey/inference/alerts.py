@@ -51,7 +51,7 @@ import logging
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Protocol, Sequence, Tuple, Union
 
 import numpy as np
 import polars as pl
@@ -825,6 +825,58 @@ def _calibration(
     ]
 
 
+class _ScoredBaseline(Protocol):
+    """Structural interface a fitted baseline model must satisfy to be scored.
+
+    :class:`BaselineModel` (the GBM) and any other baseline family (e.g.
+    :class:`~odyssey.inference.tabicl_baseline.TabICLBaselineModel`)
+    satisfy this without inheriting from anything -- ``score_alerts``
+    only ever reads these four attributes.
+    """
+
+    feature_set: str
+    n_features: int
+    params: dict[str, float]
+
+    def predict_proba(self, x: np.ndarray) -> np.ndarray:
+        """Positive-class probabilities, ``(n,)``."""
+        ...  # noqa: PIE790
+
+
+def _score_named_baseline(
+    scorer_name: str,
+    event: str,
+    horizon: float,
+    model: _ScoredBaseline,
+    x: np.ndarray,
+    *,
+    y: np.ndarray,
+    n_censored: int,
+) -> AlertMetrics:
+    """One :class:`AlertMetrics` row for one fitted baseline at one horizon.
+
+    Shared by the built-in GBM baseline and any additional named baseline
+    family passed via ``extra_baselines`` -- every baseline is scored the
+    same way (AUROC, Brier, calibration; it always outputs a probability),
+    so this is the one place that logic lives.
+    """
+    p = model.predict_proba(x)
+    return AlertMetrics(
+        event=event,
+        horizon_hours=horizon,
+        scorer=scorer_name,
+        n_at_risk=int(len(y)),
+        n_positive=int(y.sum()),
+        n_censored=n_censored,
+        auroc=float(roc_auc_score(y, p)),
+        brier=float(brier_score_loss(y, p)),
+        calibration=_calibration(p, y),
+        baseline_feature_set=model.feature_set,
+        baseline_n_features=model.n_features,
+        baseline_params=model.params or None,
+    )
+
+
 def score_alerts(
     rows: Dict[str, List[IndexRow]],
     times: Dict[str, EventTimes],
@@ -832,8 +884,21 @@ def score_alerts(
     horizons: Sequence[float] = HORIZONS_HOURS,
     baselines: Optional[Dict[Tuple[str, float], BaselineModel]] = None,
     baseline_features_by_event: Optional[Dict[str, np.ndarray]] = None,
+    extra_baselines: dict[
+        str, tuple[dict[tuple[str, float], _ScoredBaseline], dict[str, np.ndarray]]
+    ]
+    | None = None,
 ) -> List[AlertMetrics]:
-    """Score every (event, horizon, scorer) present in ``rows``."""
+    """Score every (event, horizon, scorer) present in ``rows``.
+
+    ``extra_baselines`` scores additional baseline families beyond the
+    built-in GBM, keyed by scorer name (e.g. ``"baseline_tabicl"``) ->
+    ``(models, features_by_event)``, each shaped exactly like
+    ``baselines``/``baseline_features_by_event``. Lets a new baseline
+    family (see :mod:`odyssey.inference.tabicl_baseline`) be compared
+    without this function needing to know it exists beyond this one
+    generic hook.
+    """
     results: List[AlertMetrics] = []
     for name, event_rows in rows.items():
         if not event_rows:
@@ -882,22 +947,32 @@ def score_alerts(
                 and baseline_features_by_event
             ):
                 x = baseline_features_by_event[name][keep]
-                model = baselines[(name, h)]
-                p = model.predict_proba(x)
                 results.append(
-                    AlertMetrics(
-                        event=name,
-                        horizon_hours=h,
-                        scorer="baseline_gbm",
-                        n_at_risk=int(len(keep)),
-                        n_positive=int(y.sum()),
+                    _score_named_baseline(
+                        "baseline_gbm",
+                        name,
+                        h,
+                        baselines[(name, h)],
+                        x,
+                        y=y,
                         n_censored=n_censored,
-                        auroc=float(roc_auc_score(y, p)),
-                        brier=float(brier_score_loss(y, p)),
-                        calibration=_calibration(p, y),
-                        baseline_feature_set=model.feature_set,
-                        baseline_n_features=model.n_features,
-                        baseline_params=model.params or None,
+                    )
+                )
+            for scorer_name, (models, features_by_event) in (
+                extra_baselines or {}
+            ).items():
+                if (name, h) not in models or name not in features_by_event:
+                    continue
+                x = features_by_event[name][keep]
+                results.append(
+                    _score_named_baseline(
+                        scorer_name,
+                        name,
+                        h,
+                        models[(name, h)],
+                        x,
+                        y=y,
+                        n_censored=n_censored,
                     )
                 )
     return results
@@ -912,6 +987,10 @@ def index_row_table(
     baseline_features_by_event: Optional[Dict[str, np.ndarray]] = None,
     context_columns: Optional[Dict[str, np.ndarray]] = None,
     context_names: Optional[Sequence[str]] = None,
+    extra_baselines: dict[
+        str, tuple[dict[tuple[str, float], _ScoredBaseline], dict[str, np.ndarray]]
+    ]
+    | None = None,
 ) -> pl.DataFrame:
     """One row per (event, index time) with every score and outcome, for error analysis.
 
@@ -922,6 +1001,18 @@ def index_row_table(
     the baseline feature matrix (e.g. hours into the visit, whether a
     creatinine was measured in the last 24h). Patient-level: keep it under
     the run directory, never in git.
+
+    ``extra_baselines`` adds one column per horizon per named family (e.g.
+    ``tabicl@{h}h`` for a
+    :func:`~odyssey.inference.tabicl_baseline.fit_tabicl_baselines` result
+    passed as ``{"tabicl": (models, features_by_event)}``), shaped exactly
+    like ``baselines``/``baseline_features_by_event``. Once present, a
+    third baseline family participates in the same stratified error
+    analysis as ``gbm@{h}h`` already does (group by any ``ctx.*`` column,
+    e.g. ``ctx.hours_into_visit`` as a proxy for sequence length so far,
+    exactly as entry 22 of the research journal stratifies the GBM) --
+    without this function needing any more baseline-specific logic than
+    a name and a column prefix.
     """
     frames: List[pl.DataFrame] = []
     for name, event_rows in rows.items():
@@ -946,6 +1037,11 @@ def index_row_table(
             ):
                 p = baselines[(name, h)].predict_proba(baseline_features_by_event[name])
                 data[f"gbm@{h:g}h"] = [float(v) for v in p]
+            for prefix, (models, features_by_event) in (extra_baselines or {}).items():
+                if (name, h) not in models or name not in features_by_event:
+                    continue
+                p = models[(name, h)].predict_proba(features_by_event[name])
+                data[f"{prefix}@{h:g}h"] = [float(v) for v in p]
         if context_columns is not None and name in context_columns and context_names:
             ctx = context_columns[name]
             for j, cname in enumerate(context_names):
