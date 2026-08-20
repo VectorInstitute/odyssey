@@ -421,6 +421,14 @@ class ConceptBottleneckLossWeights:
     concept: float = 1.0
     orthogonality: float = 0.1
     observability: float = 0.1
+    task: float = 1.0
+    """Weight of the forecasting (task) loss. 0 excludes it from the
+    backward pass entirely, so the backbone/bottleneck are shaped only
+    by concept/orthogonality/observability supervision -- the
+    "independent training" regime (Koh et al. 2020's classical CBM
+    training scheme, applied to CEM-style embeddings): concept
+    representations that carry no gradient signal from what helps the
+    forecast, only from being a correct, well-separated concept."""
 
     concept_pos_weight: Optional[torch.Tensor] = None
     """Optional per-concept ``(num_concepts,)`` positive-class weight for
@@ -468,7 +476,7 @@ def combined_loss(
         else task_loss.new_zeros(())
     )
     total = (
-        task_loss
+        weights.task * task_loss
         + weights.concept * c_loss
         + weights.orthogonality * o_loss
         + weights.observability * obs_loss
