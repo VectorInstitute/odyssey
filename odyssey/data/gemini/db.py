@@ -36,7 +36,7 @@ def get_engine() -> Engine:
         or database name -- see :data:`odyssey.data.gemini.config.DB_URL`).
     """
     if config.DB_URL is None:
-        raise RuntimeError(config.CREDENTIALS_HELP)
+        raise RuntimeError(config.credentials_help())
     return create_engine(config.DB_URL)
 
 
@@ -67,8 +67,42 @@ def query(sql: str, params: Optional[dict[str, Any]] = None) -> pd.DataFrame:
         cut (:data:`odyssey.data.gemini.config.DATACUT`).
     """
     if config.DATACUT is None:
-        raise RuntimeError(config.CREDENTIALS_HELP)
+        raise RuntimeError(config.credentials_help())
     engine = get_engine()
     with engine.connect() as conn:
         conn.execute(text(f"SET search_path TO {config.DATACUT};"))
         return pd.read_sql(text(sql), conn, params=params)
+
+
+def list_available_schemata() -> pd.DataFrame:
+    """List schema names visible in the configured database, no data cut needed.
+
+    Bypasses :data:`odyssey.data.gemini.config.DATACUT` entirely (unlike
+    :func:`query`, which requires it) -- meant for exactly one situation:
+    the database connection is configured (:data:`config.DB_URL` is set)
+    but no data cut has been chosen yet, so callers don't know what to set
+    ``GEMINI_DATACUT`` to. See ``scripts/gemini/explore_schema.py``.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One column, ``schema_name``, excluding Postgres' own internal
+        schemas (``pg_%``, ``information_schema``).
+
+    Raises
+    ------
+    RuntimeError
+        If the database connection itself is not configured
+        (:data:`odyssey.data.gemini.config.DB_URL` is unset).
+    """
+    engine = get_engine()
+    with engine.connect() as conn:
+        return pd.read_sql(
+            text(
+                "SELECT schema_name FROM information_schema.schemata "
+                "WHERE schema_name NOT LIKE 'pg_%' "
+                "AND schema_name != 'information_schema' "
+                "ORDER BY schema_name"
+            ),
+            conn,
+        )

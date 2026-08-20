@@ -469,3 +469,12 @@ def test_value_embeddings_flag_ignores_the_backbone_merge_attention(
     finally:
         ri.build_model = original
     assert seen["concept_global_pairs"] is True and seen["unknown_dim"] == 6
+
+
+def test_default_checkpoint_prefers_best_matching_the_clis(tmp_path: Path) -> None:
+    """Library default and CLI default must resolve the same checkpoint."""
+    (tmp_path / "checkpoint_500.pt").touch()
+    (tmp_path / "checkpoint_final.pt").touch()
+    assert _latest_checkpoint(tmp_path) == tmp_path / "checkpoint_final.pt"
+    (tmp_path / "checkpoint_best.pt").touch()
+    assert _latest_checkpoint(tmp_path) == tmp_path / "checkpoint_best.pt"
