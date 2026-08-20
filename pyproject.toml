@@ -93,6 +93,15 @@ gemini = [
     "pandas>=2.2.0",
 ]
 
+# TabICLv2 in-context-learning baseline (odyssey/inference/tabicl_baseline.py),
+# a second comparator against the alerts evaluation's tuned GBM. Optional:
+# nothing in the training/inference path depends on it, only that one
+# baseline module, whose own import of `tabicl` is itself deferred to call
+# time -- installing this extra is only needed to actually fit one.
+tabicl = [
+    "tabicl>=2.0.0",
+]
+
 # NOTE: transformers/lightning/etc. are intentionally omitted until the
 # concept-bottleneck architecture actually needs them — add alongside the
 # code that uses them, not speculatively.
