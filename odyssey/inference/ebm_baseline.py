@@ -120,7 +120,10 @@ def _grouped_subsample(
     subjects, counts = np.unique(groups, return_counts=True)
     order = rng.permutation(len(subjects))
     cum = np.cumsum(counts[order])
-    n_subjects = int(np.searchsorted(cum, cap, side="right")) + 1
+    # side="right" already gives the count of prefix subjects whose
+    # cumulative row count stays at or under cap; max(..., 1) guarantees at
+    # least one subject even if their row count alone exceeds cap.
+    n_subjects = max(1, int(np.searchsorted(cum, cap, side="right")))
     n_subjects = min(n_subjects, len(subjects))
     selected = set(subjects[order[:n_subjects]].tolist())
     mask = np.array([g in selected for g in groups])
