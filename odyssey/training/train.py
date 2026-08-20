@@ -193,6 +193,28 @@ class TrainingConfig:
     concept_weight: float = 1.0
     orthogonality_weight: float = 0.1
     observability_weight: float = 0.1
+    task_weight: float = 1.0
+    """Weight of the forecasting (task) loss; see
+    ConceptBottleneckLossWeights.task. 0.0, paired with init_from and
+    an unweighted run to resume from, is stage one of independent
+    (Koh et al. 2020) training: shape the bottleneck from concept
+    supervision alone, no forecast gradient."""
+
+    freeze_bottleneck: bool = False
+    """Stop gradient at the bottleneck: only lm_head/time_head/event_heads
+    are optimized, backbone and bottleneck parameters are frozen. Stage
+    two of independent training, paired with init_from pointing at a
+    task_weight=0.0 checkpoint and randint_prob=1.0 (so the task heads
+    train against the ground-truth concept mixture, never the model's
+    own predicted probability -- Koh et al.'s classical "train f on
+    true c" step, adapted to CEM's embedding mixture)."""
+
+    init_from: Optional[str] = None
+    """Load a checkpoint's model weights only (not optimizer/step/epoch
+    state) before training starts, unlike resume_from which continues
+    an interrupted run of the same config. Use with freeze_bottleneck
+    to start stage two of independent training from a stage-one
+    checkpoint."""
 
     # Logging/checkpointing cadence, in optimizer steps.
     log_every: int = 20
@@ -849,11 +871,45 @@ def _run_training(  # noqa: PLR0912, PLR0915
     model = build_model(config, vocab_size=len(vocab), num_concepts=len(concepts)).to(
         device
     )
+    if config.init_from is not None:
+        if config.resume_from is not None:
+            raise ValueError(
+                "init_from and resume_from are mutually exclusive: init_from "
+                "starts a fresh run seeded with another checkpoint's weights, "
+                "resume_from continues an interrupted run of this same config"
+            )
+        logger.info("[init] loading weights only from %s", config.init_from)
+        init_checkpoint = torch.load(config.init_from, map_location=device)
+        model.load_state_dict(init_checkpoint["model"])
+    if config.freeze_bottleneck:
+        if not isinstance(model, ConceptBottleneckSequenceModel):
+            raise ValueError(
+                "freeze_bottleneck requires model_kind='bottleneck' "
+                f"(got {config.model_kind!r}, no bottleneck to freeze)"
+            )
+        for p in model.backbone.parameters():
+            p.requires_grad_(False)
+        for p in model.bottleneck.parameters():
+            p.requires_grad_(False)
+        n_frozen = sum(p.numel() for p in model.parameters() if not p.requires_grad)
+        logger.info(
+            "[freeze] backbone + bottleneck frozen (%.1fM parameters); "
+            "training only the task heads",
+            n_frozen / 1e6,
+        )
     n_params = sum(p.numel() for p in model.parameters())
-    logger.info("[model] %.1fM parameters on %s", n_params / 1e6, device)
+    n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info(
+        "[model] %.1fM parameters (%.1fM trainable) on %s",
+        n_params / 1e6,
+        n_trainable / 1e6,
+        device,
+    )
 
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
+        [p for p in model.parameters() if p.requires_grad],
+        lr=config.learning_rate,
+        weight_decay=config.weight_decay,
     )
     pos_weight = None
     if config.concept_pos_weight and not train_labels:
@@ -877,6 +933,7 @@ def _run_training(  # noqa: PLR0912, PLR0915
         concept=config.concept_weight,
         orthogonality=config.orthogonality_weight,
         observability=config.observability_weight,
+        task=config.task_weight,
         concept_pos_weight=pos_weight,
     )
 
