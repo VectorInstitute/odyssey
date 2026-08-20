@@ -194,9 +194,10 @@ def test_fit_one_ebm_skips_a_horizon_below_min_rows(
     assert not _RecordingFakeClassifier.instances
 
 
-def test_fit_ebm_baselines_no_row_cap(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Unlike TabICL, EBM has no context-size cap: every row with a
-    determinable outcome at this horizon is fit on, none subsampled away."""
+def test_fit_ebm_baselines_below_the_cap_fits_every_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Below EBM_MAX_ROWS, every row with a determinable outcome is kept."""
     monkeypatch.setattr(ebm_module, "EBM_MIN_ROWS", 2)
     events = _events(40)
     binned = add_value_tokens(events)
@@ -210,5 +211,41 @@ def test_fit_ebm_baselines_no_row_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     assert fit.x_fit is not None
     # some at-risk rows are right-censored at this horizon (no determinable
     # outcome) and are filtered out before fitting, same as the GBM/TabICL
-    # baselines; the guarantee under test is no cap on TOP of that filter.
+    # baselines; the guarantee under test is no cap on TOP of that filter,
+    # since n_at_risk here is well under EBM_MAX_ROWS.
     assert 10 < fit.x_fit.shape[0] <= n_at_risk
+
+
+def test_grouped_subsample_never_splits_a_subject() -> None:
+    """Unit test of the grouping primitive directly: a capped subsample's
+    row count for every included subject exactly matches that subject's
+    full row count in the input, never a partial slice of it."""
+    rng = np.random.default_rng(0)
+    groups = np.repeat(np.arange(20), 5)  # 20 subjects, 5 rows each, 100 total
+    keep = np.arange(100)
+
+    subsample = ebm_module._grouped_subsample(keep, groups, cap=37, rng=rng)
+
+    assert 0 < len(subsample) <= 37
+    kept_groups = groups[subsample]
+    included_subjects, counts = np.unique(kept_groups, return_counts=True)
+    assert (counts == 5).all()  # every included subject's full 5 rows, no partial
+
+
+def test_fit_one_ebm_caps_rows_and_records_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Above EBM_MAX_ROWS, fewer rows are fit on and the model records it."""
+    monkeypatch.setattr(ebm_module, "EBM_MIN_ROWS", 2)
+    monkeypatch.setattr(ebm_module, "EBM_MAX_ROWS", 50)
+    events = _events(40)
+    binned = add_value_tokens(events)
+    times = all_event_times(binned, ALERT_EVENTS, "mimic_iv")
+    rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+    assert len(rows["vasopressor_start"]) > 50  # more rows than the lowered cap
+
+    models = fit_ebm_baselines(binned, rows, times, horizons=(8.0,), feature_set="basic")
+    model = models[("vasopressor_start", 8.0)]
+    assert model.params["row_capped"] == 1.0
+
+    fit = _RecordingFakeClassifier.instances[0]
+    assert fit.x_fit is not None
+    assert fit.x_fit.shape[0] <= 50

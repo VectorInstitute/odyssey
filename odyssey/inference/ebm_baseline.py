@@ -49,6 +49,15 @@ logger = logging.getLogger(__name__)
 # floor (50) for the GBM baseline, same reasoning.
 EBM_MIN_ROWS = 50
 
+# Row cap on the fit, same spirit as odyssey.inference.alerts.GBM_TUNE_MAX_ROWS
+# (200k) but larger, since EBM's own docs report fitting well past this scale
+# in practice. Subject-grouped (whole subjects are kept or dropped, never
+# split) unlike the GBM's final-fit cap, which subsamples individual rows --
+# a subject straddling the cap boundary would otherwise contribute some but
+# not all of their at-risk positions, a subtle, avoidable leakage-adjacent
+# inconsistency for a baseline meant to be directly comparable to the GBM.
+EBM_MAX_ROWS = 500_000
+
 
 def _load_ebm_classifier() -> Any:
     """Import and return ``interpret.glassbox.ExplainableBoostingClassifier``.
@@ -99,6 +108,25 @@ class EBMBaselineModel:
         return result
 
 
+def _grouped_subsample(
+    keep: np.ndarray, groups: np.ndarray, cap: int, rng: np.random.Generator
+) -> np.ndarray:
+    """Shrink ``keep`` to at most ``cap`` rows, dropping whole subjects only.
+
+    Shuffles subjects, then adds each subject's full row set in turn until
+    the cap would be exceeded, so no subject contributes a partial set of
+    their own at-risk positions.
+    """
+    subjects, counts = np.unique(groups, return_counts=True)
+    order = rng.permutation(len(subjects))
+    cum = np.cumsum(counts[order])
+    n_subjects = int(np.searchsorted(cum, cap, side="right")) + 1
+    n_subjects = min(n_subjects, len(subjects))
+    selected = set(subjects[order[:n_subjects]].tolist())
+    mask = np.array([g in selected for g in groups])
+    return keep[mask]
+
+
 def _fit_one_ebm(
     x_all: np.ndarray,
     rows: Sequence[IndexRow],
@@ -108,17 +136,22 @@ def _fit_one_ebm(
     feature_set: str,
     seed: int,
     event_name: str,
+    n_jobs: int,
 ) -> dict[float, EBMBaselineModel]:
     """Fit one EBM per horizon for a single event, given a feature matrix.
 
     Structurally mirrors :func:`odyssey.inference.alerts._fit_baseline_grid`
     (same row selection, same skip condition) so the GBM, TabICL, and EBM
-    baselines are all trained on directly comparable data. No row cap:
-    EBM's own documentation reports fitting datasets with 100 million
-    samples in several hours, CPU-only, well past anything this project's
-    landmark tables reach.
+    baselines are all trained on directly comparable data. Rows are capped
+    at :data:`EBM_MAX_ROWS`, subject-grouped (see :func:`_grouped_subsample`),
+    once fitting at full scale on this project's landmark tables turned out
+    to be far slower in practice than EBM's own stated large-scale numbers,
+    on this host's CPU core count specifically -- see entry 30's method
+    note for the measured wall-clock this cap was chosen against.
     """
     ebm_classifier_cls = _load_ebm_classifier()
+    groups_all = np.array([r.subject_id for r in rows])
+    rng = np.random.default_rng(seed)
     out: dict[float, EBMBaselineModel] = {}
     for h in horizons:
         y = np.array(
@@ -128,23 +161,27 @@ def _fit_one_ebm(
         keep = np.flatnonzero([v is not None for v in y])
         if len(keep) < EBM_MIN_ROWS or len({int(y[i]) for i in keep}) < 2:
             continue
+        capped = len(keep) > EBM_MAX_ROWS
+        if capped:
+            keep = _grouped_subsample(keep, groups_all[keep], EBM_MAX_ROWS, rng)
         x_fit = np.array(x_all[keep], dtype=np.float64, copy=True)
         y_fit = y[keep].astype(int)
 
-        clf = ebm_classifier_cls(random_state=seed)
+        clf = ebm_classifier_cls(random_state=seed, n_jobs=n_jobs)
         clf.fit(x_fit, y_fit)
         out[h] = EBMBaselineModel(
             clf,
             feature_set=feature_set,
             n_features=int(x_all.shape[1]),
-            params={"n_rows": float(len(keep))},
+            params={"n_rows": float(len(keep)), "row_capped": float(capped)},
         )
         logger.info(
-            "[ebm] %s@%gh: %s features, %d rows",
+            "[ebm] %s@%gh: %s features, %d rows%s",
             event_name,
             h,
             feature_set,
             len(keep),
+            " (capped)" if capped else "",
         )
     return out
 
@@ -158,6 +195,7 @@ def fit_ebm_baselines(
     source: str = "mimic_iv",
     seed: int = 0,
     feature_set: str = "strong",
+    n_jobs: int = 12,
 ) -> dict[tuple[str, float], EBMBaselineModel]:
     """One ``ExplainableBoostingClassifier`` per (event, horizon).
 
@@ -167,6 +205,11 @@ def fit_ebm_baselines(
     ``train_events_binned``/``train_rows``/``train_times`` shape, same
     ``feature_set``) so all three baselines fit from the same prepared
     data and compare like-for-like.
+
+    ``n_jobs`` is passed straight to ``ExplainableBoostingClassifier``
+    (default matches this project's GPU VMs' 12 vCPUs); left unset, EBM's
+    own default parallelizes past the actual core count, oversubscribing
+    and slowing every fit down rather than speeding it up.
 
     Requires the optional ``interpret`` package (see the module
     docstring); raises ``ImportError`` with install instructions if it is
@@ -187,6 +230,7 @@ def fit_ebm_baselines(
             feature_set=feature_set,
             seed=seed,
             event_name=name,
+            n_jobs=n_jobs,
         )
         for h, model in per_horizon.items():
             models[(name, h)] = model
@@ -194,6 +238,7 @@ def fit_ebm_baselines(
 
 
 __all__ = [
+    "EBM_MAX_ROWS",
     "EBM_MIN_ROWS",
     "EBMBaselineModel",
     "fit_ebm_baselines",
