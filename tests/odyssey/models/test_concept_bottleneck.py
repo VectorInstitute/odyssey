@@ -280,6 +280,44 @@ def test_combined_loss_components_and_weighting() -> None:
     assert not components["concept_loss"].requires_grad
 
 
+def test_combined_loss_task_weight_zero_drops_task_gradient() -> None:
+    """task=0.0 is independent-training stage one: no forecast gradient at all."""
+    layer = ConceptBottleneck(hidden_size=8, num_concepts=3, embedding_dim=4)
+    hidden_states = torch.randn(5, 8, requires_grad=True)
+    out = layer(hidden_states)
+    labels = torch.randint(0, 2, (5, 3)).float()
+    # a task_loss connected to hidden_states, so its gradient contribution
+    # is checkable, not just its value.
+    task_loss = hidden_states.sum()
+
+    weights = ConceptBottleneckLossWeights(concept=1.0, orthogonality=0.0, task=0.0)
+    total, components = combined_loss(
+        task_loss,
+        out.concept_logits,
+        labels,
+        out.concept_embeddings,
+        out.unknown_embedding,
+        observability_logits=out.observability_logits,
+        weights=weights,
+    )
+
+    # task_loss itself is still reported (unweighted) for logging, matching
+    # how concept/orthogonality/observability are also logged unweighted.
+    assert components["task_loss"].item() == pytest.approx(task_loss.item())
+    assert torch.allclose(total, components["concept_loss"])
+
+    total.backward()
+    # hidden_states only reaches the graph through task_loss (a plain
+    # .sum()) and, separately, through the bottleneck layer feeding
+    # concept_loss -- so its gradient here is entirely the concept-loss
+    # path, not task_loss's all-ones gradient. A weight of 1.0 would make
+    # every element's gradient >= 1.0 (task_loss's own contribution
+    # alone); confirming it is not tests that task_loss's gradient path
+    # was actually excluded, not just that the value dropped out.
+    assert hidden_states.grad is not None
+    assert not torch.all(hidden_states.grad >= 1.0)
+
+
 def test_combined_loss_observability_term_present_when_concept_mask_given() -> None:
     layer = ConceptBottleneck(hidden_size=8, num_concepts=3, embedding_dim=4)
     hidden_states = torch.randn(5, 8)
