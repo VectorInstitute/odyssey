@@ -10,3 +10,12 @@ ehr = "ehr"
 # NAM = Neural Additive Model (Agarwal et al.), a model family in the README.
 NAM = "NAM"
 NAMs = "NAMs"
+
+[files]
+# scripts/gemini/out/ holds verbatim reports of GEMINI's own database
+# catalog (schema/extract-dry reports) -- real external column/table names
+# (e.g. StatCan census abbreviations like "c16_eth_oce", "usres") are not
+# ours to rename and will keep showing up as new false positives every time
+# a fresh report is committed, so the whole directory is excluded rather
+# than growing an extend-words entry per column.
+extend-exclude = ["scripts/gemini/out/"]
