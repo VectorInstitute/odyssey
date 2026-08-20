@@ -107,8 +107,14 @@ tabicl = [
 # interpretability (per-feature shape functions, pairwise interactions), unlike
 # the GBM's post-hoc explainers or TabICL's zero-shot prediction. CPU-only,
 # optional: nothing in the training/inference path depends on it.
+# `interpret-core` (not the full `interpret` metapackage) deliberately: the
+# full package's default extras pull in `interpret-core[shap]` -> `shap` ->
+# a pinned old `llvmlite` that only supports Python <3.10, incompatible with
+# this project's 3.12 pin. `interpret-core` alone still provides
+# `interpret.glassbox.ExplainableBoostingClassifier`, the only thing this
+# module imports.
 ebm = [
-    "interpret>=0.6.0",
+    "interpret-core>=0.6.0",
 ]
 
 # NOTE: transformers/lightning/etc. are intentionally omitted until the
