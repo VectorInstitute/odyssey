@@ -236,3 +236,58 @@ def test_fit_one_tabicl_skips_a_horizon_below_min_rows(
 
 def test_module_constants_are_ordered_sensibly() -> None:
     assert TABICL_MIN_ROWS < TABICL_MAX_ROWS
+
+
+# ---------------------------------------------------------------------------
+# all-NaN column handling (entry 28's repro, entry 29's fix spec)
+# ---------------------------------------------------------------------------
+
+
+def test_fit_one_tabicl_neutralizes_an_all_nan_column(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fit succeeds with a synthetic all-NaN column, and it stays present.
+
+    tabicl's own predict_proba drops all-NaN columns internally before
+    building its feature_mask, desyncing the mask from the caller's
+    column count. Substituting 0.0 for these columns at both fit and
+    predict time means tabicl's internal preprocessing never sees a
+    real all-NaN column, so the drop-and-desync never happens; column
+    counts stay aligned end to end.
+    """
+    monkeypatch.setattr(tabicl_module, "TABICL_MIN_ROWS", 10)
+    events = _events(24)
+    binned = add_value_tokens(events)
+    times = all_event_times(binned, ALERT_EVENTS, "mimic_iv")
+    rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+
+    real_features_for_events = tabicl_module.features_for_events
+
+    def _with_all_nan_column(*args: object, **kwargs: object) -> dict:
+        feats = real_features_for_events(*args, **kwargs)  # type: ignore[arg-type]
+        out = {}
+        for name, arr in feats.items():
+            padded = np.full((arr.shape[0], arr.shape[1] + 1), np.nan, dtype=arr.dtype)
+            padded[:, :-1] = arr
+            out[name] = padded
+        return out
+
+    monkeypatch.setattr(tabicl_module, "features_for_events", _with_all_nan_column)
+
+    models = fit_tabicl_baselines(
+        binned, rows, times, horizons=(8.0,), feature_set="basic"
+    )
+    model = models[("vasopressor_start", 8.0)]
+
+    assert model.all_nan_cols is not None
+    assert model.all_nan_cols[-1]
+    assert not model.all_nan_cols[:-1].any()
+
+    fit = _RecordingFakeClassifier.instances[0]
+    assert fit.x_fit is not None
+    assert not np.isnan(fit.x_fit).any()
+    assert fit.x_fit.shape[1] == model.n_features
+
+    p = model.predict_proba(np.full((5, model.n_features), np.nan))
+    assert p.shape == (5,)
+    assert not np.isnan(p).any()
