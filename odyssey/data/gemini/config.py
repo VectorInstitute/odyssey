@@ -99,13 +99,14 @@ def _env_optional(name: str) -> Optional[str]:
 DB_HOST = _env("GEMINI_DB_HOST", "db.gemini-hpc.ca")
 DB_PORT = int(_env("GEMINI_DB_PORT", "5432"))
 
-# Project-specific, no default: which database and data cut odyssey queries
-# is not decided yet, so both must be set explicitly for a connection to be
-# attempted at all.
-DB_NAME = _env_optional("GEMINI_DB_NAME")
+# Defaults mirror the proven gemini-variation-study setup so a .env with
+# only user+password works; override GEMINI_DB_NAME/GEMINI_DATACUT to point
+# odyssey at a different cut (the subdural cut is fine for schema
+# exploration; odyssey's own training cut will be chosen explicitly).
+DB_NAME = _env("GEMINI_DB_NAME", "gemini_h4h_template_v5_0_1")
 
 #: Schema (data cut) that every query runs against via ``SET search_path``.
-DATACUT = _env_optional("GEMINI_DATACUT")
+DATACUT = _env("GEMINI_DATACUT", "subdural_hematoma_v1_0_0")
 
 # Secrets: no defaults. Must come from the environment or .env.
 DB_USER = _env_optional("GEMINI_DB_USER")
@@ -123,10 +124,41 @@ elif DB_USER and DB_PASS and DB_NAME:
 else:
     DB_URL = None
 
-#: Human-readable hint shown when configuration is incomplete.
-CREDENTIALS_HELP = (
-    "GEMINI database configuration is incomplete. Create a .env file at the "
-    "repository root (see docs/gemini.md) with GEMINI_DB_USER, GEMINI_DB_PASS, "
-    "GEMINI_DB_NAME, and GEMINI_DATACUT, or export them / GEMINI_DB_URL in the "
-    "environment."
-)
+def credentials_help() -> str:
+    """Human-readable hint naming exactly which configuration is missing.
+
+    Checked at call time (not import time), so it always reflects whichever
+    variables are actually unset right now rather than a generic message
+    that doesn't say which one to fix.
+
+    Returns
+    -------
+    str
+        Names each missing required variable individually, plus where to
+        set it (a .env file or the real environment; see ``docs/gemini.md``).
+    """
+    if DB_URL is None:
+        missing = [
+            name
+            for name, value in (
+                ("GEMINI_DB_USER", DB_USER),
+                ("GEMINI_DB_PASS", DB_PASS),
+                ("GEMINI_DB_NAME", DB_NAME),
+            )
+            if not value
+        ]
+        return (
+            "GEMINI database configuration is incomplete: missing "
+            + ", ".join(missing)
+            + " (or set GEMINI_DB_URL directly). Set them via a .env file "
+            "at the repository root (see docs/gemini.md) or export them in "
+            "the environment."
+        )
+    if DATACUT is None:
+        return (
+            "GEMINI_DATACUT is not set. The database connection itself is "
+            "configured, but no data cut (schema) has been chosen -- set "
+            "GEMINI_DATACUT via a .env file at the repository root (see "
+            "docs/gemini.md) or the environment."
+        )
+    return "GEMINI database configuration is incomplete."
