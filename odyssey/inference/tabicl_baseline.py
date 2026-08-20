@@ -124,9 +124,21 @@ class TabICLBaselineModel:
     feature_set: str = "strong"
     n_features: int = 0
     params: dict[str, float] = field(default_factory=dict)
+    all_nan_cols: np.ndarray | None = None
+    """Boolean ``(n_features,)`` mask of columns that were entirely NaN in
+    the fit-time context, or ``None`` if none were. tabicl's own
+    ``predict_proba`` builds a ``feature_mask`` sized for the original
+    input column count but the classifier internally drops all-NaN
+    columns first, desyncing the two; substituting a fixed neutral value
+    (0.0, there is no real data in an all-NaN column to preserve) for
+    these columns at both fit and predict time keeps every call seeing
+    the same column count and avoids the mismatch entirely."""
 
     def predict_proba(self, x: np.ndarray) -> np.ndarray:
         """Positive-class (label ``1``) probabilities, ``(n,)``."""
+        if self.all_nan_cols is not None:
+            x = x.copy()
+            x[:, self.all_nan_cols] = 0.0
         proba = self.clf.predict_proba(x)  # type: ignore[attr-defined]
         classes = np.asarray(self.clf.classes_)  # type: ignore[attr-defined]
         pos_idx = int(np.flatnonzero(classes == 1)[0]) if 1 in classes else 1
@@ -172,6 +184,10 @@ def _fit_one_tabicl(
         x_fit = np.array(x_all[keep], dtype=np.float32, copy=True)
         y_fit = y[keep].astype(int)
 
+        all_nan_cols = np.all(np.isnan(x_fit), axis=0)
+        if all_nan_cols.any():
+            x_fit[:, all_nan_cols] = 0.0
+
         clf = tabicl_classifier_cls(
             n_estimators=n_estimators,
             device=device,
@@ -186,6 +202,7 @@ def _fit_one_tabicl(
                 "n_context_rows": float(len(keep)),
                 "n_estimators": float(n_estimators),
             },
+            all_nan_cols=all_nan_cols if all_nan_cols.any() else None,
         )
         logger.info(
             "[tabicl] %s@%gh: %s features, %d context rows, n_estimators=%d",
