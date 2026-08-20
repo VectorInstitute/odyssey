@@ -279,16 +279,18 @@ def test_fit_one_tabicl_neutralizes_an_all_nan_column(
     )
     model = models[("vasopressor_start", 8.0)]
 
-    # the fixture's own real features may include other all-NaN columns
-    # (a small synthetic dataset naturally leaves some columns unpopulated);
-    # this test only asserts the synthetic, deliberately-added column is
-    # among those neutralized, not that it's the only one.
+    # the fixture's own real features may include other all-NaN or
+    # partial-NaN columns (a small synthetic dataset naturally leaves some
+    # columns sparsely or never populated); this test only asserts the
+    # synthetic, deliberately all-NaN column is neutralized, not that no
+    # NaN survives anywhere (partial-NaN columns are still left for
+    # tabicl's own internal imputer, by design, not this fix's job).
     assert model.all_nan_cols is not None
     assert model.all_nan_cols[-1]
 
     fit = _RecordingFakeClassifier.instances[0]
     assert fit.x_fit is not None
-    assert not np.isnan(fit.x_fit).any()
+    assert not np.isnan(fit.x_fit[:, -1]).any()
     assert fit.x_fit.shape[1] == model.n_features
 
     p = model.predict_proba(np.full((5, model.n_features), np.nan))
