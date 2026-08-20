@@ -228,7 +228,7 @@ def test_grouped_subsample_never_splits_a_subject() -> None:
 
     assert 0 < len(subsample) <= 37
     kept_groups = groups[subsample]
-    included_subjects, counts = np.unique(kept_groups, return_counts=True)
+    _, counts = np.unique(kept_groups, return_counts=True)
     assert (counts == 5).all()  # every included subject's full 5 rows, no partial
 
 
