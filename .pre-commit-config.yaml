@@ -51,7 +51,12 @@ repos:
         args: []
         # the experiment registry is full of short git hashes that read as words
         # drug dictionaries are brand names, not prose
-        exclude: ^(docs/experiments\.md|odyssey/data/resources/.*\.csv)$
+        # scripts/gemini/out/ is verbatim GEMINI database catalog dumps --
+        # real external column/table names (StatCan census abbreviations
+        # etc.), not ours to rename; see _typos.toml for the same exclusion
+        # (this one is what actually stops the hook, since pre-commit's own
+        # file filtering runs before typos ever sees its own config)
+        exclude: ^(docs/experiments\.md|odyssey/data/resources/.*\.csv|scripts/gemini/out/.*)$
 
   - repo: https://github.com/nbQA-dev/nbQA
     rev: 1.9.1
