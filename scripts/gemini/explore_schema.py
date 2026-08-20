@@ -175,7 +175,20 @@ def render_markdown(report: dict[str, Any]) -> str:
 
 
 def main() -> None:
-    """Query the configured data cut and write schema.json and schema.md."""
+    """Query the configured data cut and write schema.json and schema.md.
+
+    If the database connection is configured but no data cut
+    (``GEMINI_DATACUT``) has been chosen yet, lists the schemata actually
+    visible in the database instead of raising the generic credentials
+    error, so there's something to set ``GEMINI_DATACUT`` to.
+    """
+    if config.DB_URL is not None and config.DATACUT is None:
+        names = db.list_available_schemata()["schema_name"].tolist()
+        print("GEMINI_DATACUT is not set. Available schemata:")
+        for name in names:
+            print(f"  {name}")
+        print("Set GEMINI_DATACUT to one of these.")
+        return
     report = build_schema_report()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     (OUT_DIR / "schema.json").write_text(json.dumps(report, indent=2) + "\n")

@@ -89,3 +89,25 @@ def test_build_schema_report_uses_suppressed_counts(
     assert obj["name"] == "admdad_subset"
     assert obj["row_count"] == "<6"  # 3 rows -> suppressed
     assert obj["columns"] == [{"name": "genc_id", "type": "integer"}]
+
+
+def test_main_lists_available_schemata_when_datacut_unset(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    mod = _load_module()
+    monkeypatch.setattr(mod.config, "DB_URL", "postgresql+psycopg2://u:p@h:5432/db")
+    monkeypatch.setattr(mod.config, "DATACUT", None)
+    monkeypatch.setattr(
+        mod.db,
+        "list_available_schemata",
+        lambda: pd.DataFrame({"schema_name": ["cut_a", "cut_b"]}),
+    )
+
+    mod.main()
+
+    out = capsys.readouterr().out
+    assert "GEMINI_DATACUT is not set" in out
+    assert "cut_a" in out
+    assert "cut_b" in out
+    assert "set gemini_datacut to one of these" in out.lower()

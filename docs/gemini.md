@@ -34,22 +34,61 @@ odyssey has two git remotes:
 hook rejects any incoming pack over that size — this is a *pack* size limit,
 not a per-file limit, so even a small file's diff can be rejected if it lands
 in a commit whose surrounding history pushes the pack over the cap). A normal
-incremental `git push gemini main` is usually fine; if it is rejected:
+incremental `git push gemini main` is usually fine; if it is rejected, push
+in chunks -- but **never chunk-push directly to `refs/heads/main`**: a
+mid-sequence force-push briefly leaves `main` pointing at an old, partial
+commit, and anyone who happens to `git pull` in that window (Amrit has) sees
+a broken-looking repo, even though the *final* state is correct. Stage the
+full history on a throwaway ref first, then flip `main` to the real tip in
+one atomic push:
 
 ```bash
-# Push history in increasing chunks instead of the whole branch at once.
-# Find commits between the remote's current tip and your local tip:
+# 1. Push history in increasing chunks to a staging ref, not main. Find
+#    commits between the remote's current tip and your local tip:
 git rev-list --reverse gemini/main..main
 
-# Push progressively further commits as the new tip, smallest step that
-# clears the cap; --force is safe here since each step is strictly forward:
-git push gemini <sha>:refs/heads/main --force
+# 2. Push progressively further commits as the new tip of the STAGING ref,
+#    smallest step that clears the cap; --force is safe here since each
+#    step is strictly forward and nothing reads this ref but you:
+git push gemini <sha>:refs/heads/_mirror-staging --force
+
+# 3. Once the staging ref's tip is the real, current local tip, flip main
+#    in one atomic, near-zero-transfer push (every object already exists
+#    on the server from step 2):
+git push gemini --force <local-tip-sha>:refs/heads/main
+
+# 4. Clean up the staging ref:
+git push gemini --delete _mirror-staging
 ```
 
 If a single commit's own diff exceeds the cap (not just a multi-commit
-range), that commit itself needs breaking up or the offending large content
-needs to be excluded from what gets mirrored — talk to whoever owns the
-GEMINI sync before trying to force it through.
+range), it usually means an old, large blob is still in history somewhere
+(a full-history mirror can drag in years of prior commits, not just recent
+ones). Strip it in a scratch clone before mirroring, rather than trying to
+chunk around it -- chunking can't help when *one* commit alone is over the
+cap:
+
+```bash
+git clone --no-local <path-to-your-working-repo> /tmp/gemini-mirror-clone
+cd /tmp/gemini-mirror-clone && git remote remove origin
+git-filter-repo --force --strip-blobs-bigger-than 900K
+# then push this clone's (rewritten-history) main via steps 1-4 above
+```
+
+`--strip-blobs-bigger-than` (size-based, not a named path) is deliberate:
+the two offenders found in this repo's history so far (a 105 MB `.whl` file
+and a 3.8 MB Jupyter notebook with embedded plot output, both from 2024)
+were different files in different commits, so a general size cutoff catches
+both -- and whatever the next one turns out to be -- without needing to
+know its name in advance. This only rewrites the *scratch clone*; it never
+touches `origin`'s real history, which is why `origin` stays canonical and
+`gemini`'s own commit hashes are allowed to differ from GitHub's after every
+mirror (they will not fast-forward against each other, which is expected --
+`git push gemini <sha>:main --force` is the correct move each time, not a
+sign something is wrong). GEMINI's own `legacy-*` branches (its git server's
+history from before this project's current mirroring approach) are never
+touched by any of the above -- only `refs/heads/main` (via
+`_mirror-staging`) is ever written.
 
 ## Environment (H200 node)
 
@@ -87,10 +126,10 @@ https://download.pytorch.org/whl/cu124`), then the rest of the project with
 `--no-deps` so pip doesn't try to re-resolve torch, then `mamba-ssm`'s
 existing two-step forced non-isolated rebuild exactly as documented in
 `pyproject.toml`, substituting `CUDA_HOME=/usr/local/cuda-12.8`. This is real
-work, not a one-liner, and belongs in its own dedicated step when training
-work actually starts (`scripts/gemini/run.sh`, described below, only
-bootstraps the lightweight `gemini` extra today) — not something to automate
-blind ahead of that.
+work, not a one-liner (the mamba-ssm rebuild alone is a genuine ~30 minute
+CUDA compile) -- built as its own dedicated step, `env-gpu`, in a separate
+venv from the lightweight one `probe`/`schema`/`extract-dry` share, since
+none of those need torch/mamba-ssm at all.
 
 ## scripts/gemini/run.sh
 
@@ -100,10 +139,26 @@ venv under his home directory, installs what the selected step needs, runs
 the step, then commits and pushes only the small output files it produced.
 
 ```bash
-scripts/gemini/run.sh probe   # scripts/gemini/probe_env.sh -> env_probe.txt
-scripts/gemini/run.sh schema  # scripts/gemini/explore_schema.py -> schema.json/.md
-scripts/gemini/run.sh         # all steps, in order (the default)
+scripts/gemini/run.sh probe        # scripts/gemini/probe_env.sh -> env_probe.txt
+scripts/gemini/run.sh schema       # scripts/gemini/explore_schema.py -> schema.json/.md
+scripts/gemini/run.sh env-gpu      # builds the H200 training venv (torch + mamba-ssm),
+                                    # writes env_fingerprint.json; separate GPU venv,
+                                    # idempotent -- skips reinstall/rebuild if already done
+scripts/gemini/run.sh extract-dry  # scripts/gemini/extract_dry.py -> extract_dry.{json,md};
+                                    # needs schema.json first, else prints "pending
+                                    # schema report" and does nothing
+scripts/gemini/run.sh extract      # not built yet -- same "pending schema report" stub
+scripts/gemini/run.sh train        # not built yet -- same stub
+scripts/gemini/run.sh eval         # not built yet -- same stub
+scripts/gemini/run.sh              # default: probe, schema, extract-dry, in order
+                                    # (deliberately excludes env-gpu -- see below)
 ```
+
+`env-gpu` is left out of the default `all` run on purpose: it's a real,
+multi-minute, GPU-dependent build step, not a quick sanity check, so it only
+runs when explicitly asked for (`scripts/gemini/run.sh env-gpu`), the same
+way the not-yet-built `extract`/`train`/`eval` steps aren't wired into `all`
+either -- `all` stays a fast, safe, no-surprises default.
 
 Safe to re-run: venv creation and package installs are idempotent, each step
 overwrites its own output deterministically, and if a step produces nothing
@@ -121,18 +176,31 @@ existing `gemini-variation-study` repo, which has already validated it in
 production against this exact database) is: a git-ignored `.env` file at the
 repository root, loaded automatically at import time, with real environment
 variables always taking precedence over `.env` values. Copy `.env.example`
-(added alongside `odyssey/data/gemini/config.py`) to `.env` and fill in:
+(added alongside `odyssey/data/gemini/config.py`) to `.env` and fill in all
+four required variables -- none of them have a default:
 
 ```bash
+# Secrets -- no defaults in code, ever.
 GEMINI_DB_USER=your_username
 GEMINI_DB_PASS=your_password
+
+# Not secrets, but also no defaults: which database and data cut odyssey
+# actually queries is a project decision, not something the code should
+# guess at.
+GEMINI_DB_NAME=your_database
+GEMINI_DATACUT=your_datacut
 ```
 
-Non-secret connection parameters (`GEMINI_DB_HOST`, `GEMINI_DB_PORT`,
-`GEMINI_DB_NAME`, `GEMINI_DATACUT`) have defaults the environment can
-override; secrets have no defaults and connecting fails with a clear message
-if they are missing, rather than a confusing driver error. See
-`odyssey/data/gemini/config.py` and `db.py`.
+Only `GEMINI_DB_HOST` and `GEMINI_DB_PORT` have real defaults
+(`db.gemini-hpc.ca` / `5432`) the environment can override; `GEMINI_DB_USER`,
+`GEMINI_DB_PASS`, `GEMINI_DB_NAME`, and `GEMINI_DATACUT` all have none, and
+connecting fails with a clear message naming exactly which one is missing
+(`odyssey.data.gemini.config.credentials_help`), rather than a generic
+"incomplete" message or a confusing driver error. If the database connection
+itself is configured but `GEMINI_DATACUT` specifically isn't set yet,
+`scripts/gemini/run.sh schema` lists the schemata actually visible in the
+database instead of raising, so there's something concrete to set it to.
+See `odyssey/data/gemini/config.py` and `db.py`.
 
 ## Governance: what may leave GEMINI
 
@@ -178,10 +246,39 @@ it stays inside.
 2. Amrit pulls on the GEMINI node, runs `scripts/gemini/run.sh <step>`.
 3. The step writes only what is allowed to leave (see Governance above) to
    `scripts/gemini/out/`.
-4. `run.sh` commits and pushes that output back to `gemini` itself (see
-   the safety checks described under `scripts/gemini/run.sh` above), and it
-   gets mirrored to `origin`/GitHub so the rest of the team can see it.
-5. We iterate from the output — adjust the script, repeat. Every round trip
+4. `run.sh` commits and pushes that output back to `gemini main` directly
+   (see the safety checks described under `scripts/gemini/run.sh` above) --
+   this is the one case where `gemini main` legitimately moves ahead of
+   `origin main`, since GEMINI's git server is the only place that commit
+   could have been made.
+5. Someone with GitHub push access fetches it back: `git fetch gemini main`,
+   then copies only the new/changed files under `scripts/gemini/out/` (and
+   `docs/gemini*` if Amrit's run touched docs) into a normal commit on
+   `origin main` --
+
+   ```bash
+   git fetch gemini main
+   git diff --stat main gemini/main -- scripts/gemini/out/ docs/gemini.md
+   # copy out the specific files that changed, e.g.:
+   git show gemini/main:scripts/gemini/out/schema.json > scripts/gemini/out/schema.json
+   git add scripts/gemini/out/schema.json
+   git commit -m "GEMINI: schema report from Amrit's run.sh schema"
+   git push origin main
+   ```
+
+   **Never `git merge`/`git rebase` `gemini/main` into `main`** -- the two
+   branches' histories are unrelated by design (see the mirroring section
+   above: `gemini`'s commit hashes never match `origin`'s), so a graph merge
+   would import GEMINI's entire divergent history into the canonical
+   GitHub repo. Copying the specific output files as their own new commit
+   keeps `origin main`'s history clean and is also naturally consistent
+   with Governance below, since it's a deliberate look at exactly what's
+   about to leave GEMINI, file by file, not a bulk import.
+6. Once `origin main`'s CI is green, the *next* full mirror (GitHub → GEMINI,
+   per the mirroring section above) carries this content back to `gemini
+   main` too, so both sides end up consistent again -- `gemini main`
+   temporarily leading between steps 4 and 6 is expected, not a conflict.
+7. We iterate from the output — adjust the script, repeat. Every round trip
    costs Amrit's time on the node, so scripts should fail fast and report
    clearly rather than requiring a second run to fix an avoidable mistake.
 
