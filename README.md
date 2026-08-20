@@ -18,6 +18,8 @@
 
 Odyssey builds and tests a single general model of a patient's clinical timeline: forecast which events come next and when, produce calibrated time-to-event risk for events that matter (vasopressor start, kidney injury, ICU admission, death), expose named physiological states a clinician can inspect, and, the open frontier, support interventions a clinician can trust ("assume they are hypotensive, what changes?"). That scope is the reason for a sequence model: forecasting whole timelines, timing as survival curves, and interactive what-ifs are capabilities no tabular model family offers at all.
 
+The commitment is to the outcome, not to the method: the goal is the single best model or ensemble system across the three axes below, and the timeline-forecasting pretraining is the current best candidate, not dogma. Adapting on top of it (task heads, ensembling with tabular models, post-training on rollouts, or replacing components outright) is squarely in scope whenever the evidence says so.
+
 The discipline of the project is that this candidate must *earn* each capability against the strongest specialized alternative, on the same data, tasks, and held-out patients, and the current score is stated plainly:
 
 - **Gradient-boosted trees**, tuned per task on a best-effort feature panel (`odyssey/inference/baseline_features.py`). The strongest bar on the shared alert slice, consistent with the tabular-ML literature (Grinsztajn et al. 2022; Shwartz-Ziv & Armon 2022), and currently ahead there: 12/12 event-horizon pairs at 30-shard scale, 10/12 at full MIMIC-IV scale, with the gap narrowing as training data grows.
@@ -26,7 +28,7 @@ The discipline of the project is that this candidate must *earn* each capability
 
 These references are bars to clear and *diagnostic probes*: where they win, they localize what the sequence model is missing. The stratified error analysis proved the probe value: the AKI gap tracks the staleness of the last creatinine monotonically (the GBM has `hours_since_last` as an explicit feature; the sequence model must infer it), and the in-ICU gap turns out to be a distinct readmission-like sub-task. Probe wins convert directly into input-design experiments.
 
-Whichever model carries a capability, it must win on three axes at once:
+Whichever model carries a capability, it must win on three axes at once. (A fourth axis, ease of deployment and compute, is deliberately excluded: bespoke GBMs are cheap to train and deploy but task-specific and need per-site refitting, while foundation-style models generalize and scale with data but cost more compute, ours included; conditioning the comparison on today's compute economics would bias it against exactly the models whose value grows with scale.)
 
 - **Generalizability**: the same pipeline, unchanged, produces a strong model on MIMIC-IV, eICU, and (externally) [GEMINI](https://geminimedicine.ca/). For the sequence model there is a further, harder test it has not yet attempted: pretrain once, transfer across systems, the test TabICL passes by construction and per-task-refit GBMs sidestep by design.
 - **Performance**, with **calibration** as a first-class subcomponent (an uncalibrated risk is a performance failure, not a style issue). Scaling behavior is part of this axis: the sequence model improves monotonically with data (set top-1 74.6 to 80.4 across the full-scale learning curve, alert gaps closing concurrently) while the tabular references are static; the comparison is between a curve and a point, and the roadmap tests where the curve goes.
