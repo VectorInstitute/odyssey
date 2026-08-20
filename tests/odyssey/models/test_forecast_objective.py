@@ -347,6 +347,104 @@ def test_event_heads_train_and_survival_within_is_a_probability() -> None:
     assert ((p8 >= 0) & (p8 <= 1)).all()
 
 
+def test_task_weight_zero_gates_time_and_event_loss_too_not_just_next_token() -> None:
+    """task_weight=0 must zero ALL of next-token + time + event gradient.
+
+    ConceptBottleneckSequenceModel.compute_streaming_loss bundles
+    next_token_loss + time_weight*time_loss + event_hazard_weight*event_loss
+    into one forecast_loss *before* handing it to combined_loss as its
+    single task_loss argument, so ConceptBottleneckLossWeights.task=0.0
+    scales that whole bundle at once, not just the next-token term. This
+    pins that down directly (not just by reading the code): with a time
+    head and event heads both active and weighted 1.0, after
+    task_weight=0.0's backward pass, their own parameters -- reachable
+    only through time_loss/event_loss -- must show exactly zero
+    gradient, even though the logged (unweighted, for-visibility)
+    time_loss/event_loss values are themselves nonzero and would change
+    step to step as concept/orthogonality training moves the shared
+    bottleneck output under them.
+    """
+    from odyssey.data.alert_events import EventTimes  # noqa: PLC0415
+    from odyssey.training.event_targets import (  # noqa: PLC0415
+        EventTimeTables,
+        event_hazard_targets,
+    )
+
+    torch.manual_seed(0)
+    model = ConceptBottleneckSequenceModel(
+        backbone=TinyGRUBackbone(
+            vocab_size=VOCAB, hidden_size=8, num_layers=1, padding_idx=0
+        ),
+        vocab_size=VOCAB,
+        num_concepts=2,
+        embedding_dim=4,
+        padding_idx=0,
+        time_bin_edges=DEFAULT_TIME_BIN_EDGES_HOURS,
+        event_names=["vaso", "death"],
+    )
+    seq = PatientSequence(
+        subject_id=1,
+        concept_ids=[2, 3, 4, 5, 6],
+        type_ids=[1] * 5,
+        time_stamps=[0.0, 5.0, 10.0, 20.0, 30.0],
+        ages=[50.0] * 5,
+        visit_orders=[0] * 5,
+        visit_segments=[0] * 5,
+        visit_ids=[7] * 5,
+        visit_ends=[False] * 4 + [True],
+    )
+    chunk = _chunk([seq], chunk_size=8)
+    tables = EventTimeTables(
+        {
+            "vaso": EventTimes(
+                onset={(1, 7): 12.0}, censor={(1, 7): 30.0}, subject_scoped=False
+            ),
+            "death": EventTimes(onset={}, censor={(1, -1): 30.0}, subject_scoped=True),
+        },
+        ["vaso", "death"],
+    )
+    event_targets = event_hazard_targets(chunk, tables)
+    labels = {1: torch.tensor([1.0, 0.0])}
+
+    from odyssey.models.concept_bottleneck import (  # noqa: PLC0415
+        ConceptBottleneckLossWeights,
+    )
+
+    total, comp, _ = model.compute_streaming_loss(
+        chunk,
+        labels,
+        loss_weights=ConceptBottleneckLossWeights(task=0.0),
+        objective=ForecastObjective(time_weight=1.0, event_hazard_weight=1.0),
+        event_targets=event_targets,
+    )
+    # the logged values are the boring, expected source of odyssey-6e's
+    # "moving every step" observation: nonzero and free to change as the
+    # shared bottleneck output moves under concept/orthogonality training,
+    # with no bearing on whether they contribute gradient (checked below).
+    assert comp["time_loss"].item() > 0.0
+    assert comp["event_loss"].item() > 0.0
+
+    total.backward()
+
+    assert model.time_head is not None
+    assert model.event_heads is not None
+    for name, p in list(model.time_head.named_parameters()) + list(
+        model.event_heads.named_parameters()
+    ):
+        assert p.grad is None or torch.all(p.grad == 0), (
+            f"{name} received nonzero gradient under task_weight=0.0"
+        )
+    for name, p in model.lm_head.named_parameters():
+        assert p.grad is None or torch.all(p.grad == 0), (
+            f"lm_head.{name} received nonzero gradient under task_weight=0.0"
+        )
+    # contrast: the bottleneck itself DOES move (concept/orthogonality
+    # supervision is unaffected by task_weight), confirming this isn't a
+    # trivially-disconnected graph where nothing gets gradient at all.
+    assert model.bottleneck.context_proj.weight.grad is not None
+    assert torch.any(model.bottleneck.context_proj.weight.grad != 0)
+
+
 def test_bundle_loss_credits_only_the_targets_own_family() -> None:
     """A discharge bundle mixes diagnoses with the discharge/DRG tokens.
 
