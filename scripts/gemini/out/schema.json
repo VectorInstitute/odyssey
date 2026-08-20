@@ -1,0 +1,2487 @@
+{
+  "datacut": "subdural_hematoma_v1_0_0",
+  "objects": [
+    {
+      "kind": "matview",
+      "name": "admdad_subset",
+      "row_count": "2268000",
+      "columns": [
+        {
+          "name": "genc_id",
+          "type": "integer"
+        },
+        {
+          "name": "country",
+          "type": "text"
+        },
+        {
+          "name": "admitting_service_raw",
+          "type": "text"
+        },
+        {
+          "name": "discharging_service_raw",
+          "type": "text"
+        },
+        {
+          "name": "total_direct_cost",
+          "type": "double precision"
+        },
+        {
+          "name": "total_indirect_cost",
+          "type": "double precision"
+        },
+        {
+          "name": "total_cost",
+          "type": "double precision"
+        },
+        {
+          "name": "admit_category",
+          "type": "text"
+        },
+        {
+          "name": "discharge_disposition",
+          "type": "integer"
+        },
+        {
+          "name": "responsibility_for_payment",
+          "type": "text"
+        },
+        {
+          "name": "province_territory_issuing_health_card_number",
+          "type": "text"
+        },
+        {
+          "name": "number_of_alc_days",
+          "type": "integer"
+        },
+        {
+          "name": "institution_from",
+          "type": "text"
+        },
+        {
+          "name": "institution_to",
+          "type": "text"
+        },
+        {
+          "name": "readmission",
+          "type": "text"
+        },
+        {
+          "name": "residence_code",
+          "type": "integer"
+        },
+        {
+          "name": "gender",
+          "type": "text"
+        },
+        {
+          "name": "age",
+          "type": "integer"
+        },
+        {
+          "name": "mrp_service",
+          "type": "text"
+        },
+        {
+          "name": "entry_code",
+          "type": "text"
+        },
+        {
+          "name": "admission_date_time",
+          "type": "text"
+        },
+        {
+          "name": "discharge_date_time",
+          "type": "text"
+        },
+        {
+          "name": "admitting_service_mapped",
+          "type": "text"
+        },
+        {
+          "name": "discharging_service_mapped",
+          "type": "text"
+        },
+        {
+          "name": "patient_id_hashed",
+          "type": "text"
+        },
+        {
+          "name": "mrp_service_raw",
+          "type": "text"
+        },
+        {
+          "name": "patient_service_subservice",
+          "type": "text"
+        },
+        {
+          "name": "patient_service_subservice_mapped",
+          "type": "text"
+        },
+        {
+          "name": "mrp_service_mapped",
+          "type": "text"
+        },
+        {
+          "name": "admit_via_ambulance",
+          "type": "text"
+        },
+        {
+          "name": "alc_service_transfer_flag",
+          "type": "text"
+        },
+        {
+          "name": "blood_transfusion_indicator",
+          "type": "text"
+        },
+        {
+          "name": "main_patient_service_raw",
+          "type": "text"
+        },
+        {
+          "name": "main_patient_service_mapped",
+          "type": "text"
+        },
+        {
+          "name": "row_num",
+          "type": "bigint"
+        },
+        {
+          "name": "hospital_num",
+          "type": "integer"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "cohort",
+      "row_count": "2268000",
+      "columns": [
+        {
+          "name": "genc_id",
+          "type": "integer"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "derived_variables_subset",
+      "row_count": "2268000",
+      "columns": [
+        {
+          "name": "genc_id",
+          "type": "integer"
+        },
+        {
+          "name": "mlaps",
+          "type": "double precision"
+        },
+        {
+          "name": "admit_charlson_derived",
+          "type": "integer"
+        },
+        {
+          "name": "all_charlson_derived",
+          "type": "integer"
+        },
+        {
+          "name": "los_days_derived",
+          "type": "double precision"
+        },
+        {
+          "name": "readmission_30d_derived",
+          "type": "boolean"
+        },
+        {
+          "name": "readmission_7d_derived",
+          "type": "boolean"
+        },
+        {
+          "name": "readmission_30d_derived_cihi",
+          "type": "boolean"
+        },
+        {
+          "name": "readmission_7d_derived_cihi",
+          "type": "boolean"
+        },
+        {
+          "name": "in_hospital_mortality_derived",
+          "type": "boolean"
+        },
+        {
+          "name": "icu_entry_derived",
+          "type": "boolean"
+        },
+        {
+          "name": "icu_entry_in_24hr_derived",
+          "type": "boolean"
+        },
+        {
+          "name": "icu_entry_in_48hr_derived",
+          "type": "boolean"
+        },
+        {
+          "name": "icu_entry_in_72hr_derived",
+          "type": "boolean"
+        },
+        {
+          "name": "icu_los_days_derived",
+          "type": "double precision"
+        },
+        {
+          "name": "icu_los_hrs_derived",
+          "type": "double precision"
+        },
+        {
+          "name": "n_img_xray_derived",
+          "type": "integer"
+        },
+        {
+          "name": "n_img_ct_derived",
+          "type": "integer"
+        },
+        {
+          "name": "n_img_mri_derived",
+          "type": "integer"
+        },
+        {
+          "name": "n_img_us_derived",
+          "type": "integer"
+        },
+        {
+          "name": "n_img_int_derived",
+          "type": "integer"
+        },
+        {
+          "name": "n_rbc_transfusion_derived",
+          "type": "integer"
+        },
+        {
+          "name": "n_app_rbc_transfusion_derived",
+          "type": "integer"
+        },
+        {
+          "name": "n_routine_bloodwork_derived",
+          "type": "integer"
+        },
+        {
+          "name": "from_acute_care_institution_derived",
+          "type": "boolean"
+        },
+        {
+          "name": "to_acute_care_institution_derived",
+          "type": "boolean"
+        },
+        {
+          "name": "covid_icd_confirmed_derived",
+          "type": "boolean"
+        },
+        {
+          "name": "covid_icd_suspected_derived",
+          "type": "boolean"
+        },
+        {
+          "name": "epicare",
+          "type": "integer"
+        },
+        {
+          "name": "mlaps_24hrs",
+          "type": "double precision"
+        },
+        {
+          "name": "gim",
+          "type": "boolean"
+        },
+        {
+          "name": "all_med",
+          "type": "boolean"
+        },
+        {
+          "name": "hospital_num",
+          "type": "integer"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "er_subset",
+      "row_count": "1859000",
+      "columns": [
+        {
+          "name": "genc_id",
+          "type": "integer"
+        },
+        {
+          "name": "admit_via_ambulance",
+          "type": "text"
+        },
+        {
+          "name": "triage_level",
+          "type": "text"
+        },
+        {
+          "name": "ambulance_arrival_date_time",
+          "type": "text"
+        },
+        {
+          "name": "physician_initial_assessment_date_time",
+          "type": "text"
+        },
+        {
+          "name": "triage_date_time",
+          "type": "text"
+        },
+        {
+          "name": "disposition_date_time",
+          "type": "text"
+        },
+        {
+          "name": "left_er_date_time",
+          "type": "text"
+        },
+        {
+          "name": "registration_date_time",
+          "type": "text"
+        },
+        {
+          "name": "duration_er_stay_derived",
+          "type": "double precision"
+        },
+        {
+          "name": "cacs",
+          "type": "text"
+        },
+        {
+          "name": "ed_discharge_diagnosis",
+          "type": "text"
+        },
+        {
+          "name": "institution_number",
+          "type": "text"
+        },
+        {
+          "name": "institution_from",
+          "type": "text"
+        },
+        {
+          "name": "institution_to",
+          "type": "text"
+        },
+        {
+          "name": "visit_disposition",
+          "type": "text"
+        },
+        {
+          "name": "cacs_methodology_year",
+          "type": "text"
+        },
+        {
+          "name": "cacs_riw",
+          "type": "text"
+        },
+        {
+          "name": "cacs_riw_on",
+          "type": "text"
+        },
+        {
+          "name": "mac_code",
+          "type": "text"
+        },
+        {
+          "name": "blood_transfusion_indicator",
+          "type": "text"
+        },
+        {
+          "name": "referral_source_prior_to_ambulatory_care_visit",
+          "type": "text"
+        },
+        {
+          "name": "row_num",
+          "type": "bigint"
+        },
+        {
+          "name": "non_physician_initial_assessment_date_time",
+          "type": "text"
+        },
+        {
+          "name": "hospital_num",
+          "type": "integer"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "erconsults_subset",
+      "row_count": "1899000",
+      "columns": [
+        {
+          "name": "genc_id",
+          "type": "integer"
+        },
+        {
+          "name": "consult_occurrence",
+          "type": "text"
+        },
+        {
+          "name": "consult_service_code",
+          "type": "text"
+        },
+        {
+          "name": "consult_service_description",
+          "type": "text"
+        },
+        {
+          "name": "consult_request_date_time",
+          "type": "text"
+        },
+        {
+          "name": "consult_arrival_date_time",
+          "type": "text"
+        },
+        {
+          "name": "row_num",
+          "type": "bigint"
+        },
+        {
+          "name": "hospital_num",
+          "type": "integer"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "erdiagnosis_subset",
+      "row_count": "5221000",
+      "columns": [
+        {
+          "name": "genc_id",
+          "type": "integer"
+        },
+        {
+          "name": "er_diagnosis_code",
+          "type": "text"
+        },
+        {
+          "name": "er_diagnosis_type",
+          "type": "text"
+        },
+        {
+          "name": "row_num",
+          "type": "bigint"
+        },
+        {
+          "name": "hospital_num",
+          "type": "integer"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "erintervention_subset",
+      "row_count": "2936000",
+      "columns": [
+        {
+          "name": "genc_id",
+          "type": "integer"
+        },
+        {
+          "name": "intervention_type",
+          "type": "integer"
+        },
+        {
+          "name": "intervention_code",
+          "type": "text"
+        },
+        {
+          "name": "intervention_location_attribute",
+          "type": "text"
+        },
+        {
+          "name": "intervention_status_attribute",
+          "type": "text"
+        },
+        {
+          "name": "intervention_extent_attribute",
+          "type": "text"
+        },
+        {
+          "name": "out_of_hospital_indicator",
+          "type": "text"
+        },
+        {
+          "name": "intervention_episode_start_date_time",
+          "type": "text"
+        },
+        {
+          "name": "row_num",
+          "type": "bigint"
+        },
+        {
+          "name": "hospital_num",
+          "type": "integer"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "ipcmg_subset",
+      "row_count": "2092000",
+      "columns": [
+        {
+          "name": "genc_id",
+          "type": "integer"
+        },
+        {
+          "name": "methodology_year",
+          "type": "integer"
+        },
+        {
+          "name": "cmg",
+          "type": "text"
+        },
+        {
+          "name": "diagnosis_for_cmg_assignment",
+          "type": "text"
+        },
+        {
+          "name": "cmg_intervention",
+          "type": "text"
+        },
+        {
+          "name": "comorbidity_level",
+          "type": "text"
+        },
+        {
+          "name": "riw_inpatient_atypical_indicator",
+          "type": "text"
+        },
+        {
+          "name": "riw",
+          "type": "double precision"
+        },
+        {
+          "name": "row_num",
+          "type": "bigint"
+        },
+        {
+          "name": "hospital_num",
+          "type": "integer"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "ipdiagnosis_subset",
+      "row_count": "13895000",
+      "columns": [
+        {
+          "name": "genc_id",
+          "type": "integer"
+        },
+        {
+          "name": "diagnosis_code",
+          "type": "text"
+        },
+        {
+          "name": "diagnosis_cluster",
+          "type": "text"
+        },
+        {
+          "name": "diagnosis_type",
+          "type": "text"
+        },
+        {
+          "name": "diagnosis_prefix",
+          "type": "text"
+        },
+        {
+          "name": "row_num",
+          "type": "bigint"
+        },
+        {
+          "name": "hospital_num",
+          "type": "integer"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "iphig_subset",
+      "row_count": "2242000",
+      "columns": [
+        {
+          "name": "genc_id",
+          "type": "integer"
+        },
+        {
+          "name": "hig_methodology_year",
+          "type": "smallint"
+        },
+        {
+          "name": "hig_code",
+          "type": "text"
+        },
+        {
+          "name": "hig_description",
+          "type": "text"
+        },
+        {
+          "name": "hig_atypical_code",
+          "type": "smallint"
+        },
+        {
+          "name": "hig_atypical_code_desc",
+          "type": "text"
+        },
+        {
+          "name": "hig_weight",
+          "type": "text"
+        },
+        {
+          "name": "hig_elos",
+          "type": "text"
+        },
+        {
+          "name": "age_category",
+          "type": "text"
+        },
+        {
+          "name": "homecare_flag",
+          "type": "smallint"
+        },
+        {
+          "name": "scu_flag",
+          "type": "smallint"
+        },
+        {
+          "name": "cardioversion_flag",
+          "type": "smallint"
+        },
+        {
+          "name": "cell_saver_flag",
+          "type": "smallint"
+        },
+        {
+          "name": "chemotherapy_flag",
+          "type": "smallint"
+        },
+        {
+          "name": "dialysis_flag",
+          "type": "smallint"
+        },
+        {
+          "name": "feeding_tube_flag",
+          "type": "smallint"
+        },
+        {
+          "name": "heart_resuscitation_flag",
+          "type": "smallint"
+        },
+        {
+          "name": "invasive_ventilation_ge_96h_flag",
+          "type": "smallint"
+        },
+        {
+          "name": "invasive_ventilation_lt_96h_flag",
+          "type": "smallint"
+        },
+        {
+          "name": "paracentesis_flag",
+          "type": "smallint"
+        },
+        {
+          "name": "parenteral_nutrition_flag",
+          "type": "smallint"
+        },
+        {
+          "name": "pleurocentesis_flag",
+          "type": "smallint"
+        },
+        {
+          "name": "radiotherapy_flag",
+          "type": "smallint"
+        },
+        {
+          "name": "tracheostomy_flag",
+          "type": "smallint"
+        },
+        {
+          "name": "vascular_access_device_flag",
+          "type": "smallint"
+        },
+        {
+          "name": "row_num",
+          "type": "bigint"
+        },
+        {
+          "name": "hospital_num",
+          "type": "integer"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "ipintervention_subset",
+      "row_count": "4329000",
+      "columns": [
+        {
+          "name": "genc_id",
+          "type": "integer"
+        },
+        {
+          "name": "intervention_type",
+          "type": "integer"
+        },
+        {
+          "name": "intervention_code",
+          "type": "text"
+        },
+        {
+          "name": "procedure_location",
+          "type": "text"
+        },
+        {
+          "name": "intervention_location_attribute",
+          "type": "text"
+        },
+        {
+          "name": "intervention_status_attribute",
+          "type": "text"
+        },
+        {
+          "name": "intervention_extent_attribute",
+          "type": "text"
+        },
+        {
+          "name": "intervention_episode_start_date_time",
+          "type": "text"
+        },
+        {
+          "name": "row_num",
+          "type": "bigint"
+        },
+        {
+          "name": "hospital_num",
+          "type": "integer"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "ipscu_subset",
+      "row_count": "632000",
+      "columns": [
+        {
+          "name": "genc_id",
+          "type": "integer"
+        },
+        {
+          "name": "scu_admit_date_time",
+          "type": "text"
+        },
+        {
+          "name": "scu_discharge_date_time",
+          "type": "text"
+        },
+        {
+          "name": "icu_flag",
+          "type": "boolean"
+        },
+        {
+          "name": "row_num",
+          "type": "bigint"
+        },
+        {
+          "name": "scu_unit_number",
+          "type": "integer"
+        },
+        {
+          "name": "hospital_num",
+          "type": "integer"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "lab_subset",
+      "row_count": "659381000",
+      "columns": [
+        {
+          "name": "test_name_raw",
+          "type": "text"
+        },
+        {
+          "name": "test_code_raw",
+          "type": "text"
+        },
+        {
+          "name": "genc_id",
+          "type": "integer"
+        },
+        {
+          "name": "result_value",
+          "type": "text"
+        },
+        {
+          "name": "result_unit",
+          "type": "text"
+        },
+        {
+          "name": "collection_date_time",
+          "type": "text"
+        },
+        {
+          "name": "reference_range",
+          "type": "text"
+        },
+        {
+          "name": "test_type_mapped_omop",
+          "type": "integer"
+        },
+        {
+          "name": "row_num",
+          "type": "bigint"
+        },
+        {
+          "name": "hospital_num",
+          "type": "integer"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "locality_variables_subset",
+      "row_count": "2268000",
+      "columns": [
+        {
+          "name": "genc_id",
+          "type": "integer"
+        },
+        {
+          "name": "da16uid",
+          "type": "integer"
+        },
+        {
+          "name": "da11uid",
+          "type": "integer"
+        },
+        {
+          "name": "version",
+          "type": "text"
+        },
+        {
+          "name": "row_num",
+          "type": "bigint"
+        },
+        {
+          "name": "da21uid",
+          "type": "integer"
+        },
+        {
+          "name": "hospital_num",
+          "type": "integer"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "lookup_cci",
+      "row_count": "17000",
+      "columns": [
+        {
+          "name": "intervention_code",
+          "type": "text"
+        },
+        {
+          "name": "cci_short_title",
+          "type": "text"
+        },
+        {
+          "name": "cci_long_title",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "lookup_ccsr",
+      "row_count": "1000",
+      "columns": [
+        {
+          "name": "ccsr",
+          "type": "text"
+        },
+        {
+          "name": "ccsr_desc",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "lookup_cihi_codes",
+      "row_count": "1000",
+      "columns": [
+        {
+          "name": "table_name",
+          "type": "text"
+        },
+        {
+          "name": "column_name",
+          "type": "text"
+        },
+        {
+          "name": "value",
+          "type": "text"
+        },
+        {
+          "name": "description",
+          "type": "text"
+        },
+        {
+          "name": "version",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "lookup_data_coverage",
+      "row_count": "1000",
+      "columns": [
+        {
+          "name": "data",
+          "type": "text"
+        },
+        {
+          "name": "min_date",
+          "type": "date"
+        },
+        {
+          "name": "max_date",
+          "type": "date"
+        },
+        {
+          "name": "hospital_num",
+          "type": "integer"
+        },
+        {
+          "name": "additional_info",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "lookup_hospital",
+      "row_count": "0",
+      "columns": [
+        {
+          "name": "institution_id",
+          "type": "smallint"
+        },
+        {
+          "name": "hospital_num",
+          "type": "integer"
+        },
+        {
+          "name": "hospital_type",
+          "type": "character varying(50)"
+        },
+        {
+          "name": "additional_info",
+          "type": "text"
+        },
+        {
+          "name": "gim_cohort_avail",
+          "type": "character varying(50)"
+        },
+        {
+          "name": "other_med_cohort_avail",
+          "type": "character varying(50)"
+        },
+        {
+          "name": "icu_cohort_avail",
+          "type": "character varying(50)"
+        },
+        {
+          "name": "other_inpatient_cohort_avail",
+          "type": "character varying(50)"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "lookup_icd10_ca_description",
+      "row_count": "19000",
+      "columns": [
+        {
+          "name": "diagnosis_code",
+          "type": "text"
+        },
+        {
+          "name": "short_description",
+          "type": "text"
+        },
+        {
+          "name": "long_description",
+          "type": "text"
+        },
+        {
+          "name": "type",
+          "type": "text"
+        },
+        {
+          "name": "version",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "lookup_icd10_ca_to_ccsr",
+      "row_count": "82000",
+      "columns": [
+        {
+          "name": "diagnosis_code",
+          "type": "text"
+        },
+        {
+          "name": "ccsr_default",
+          "type": "text"
+        },
+        {
+          "name": "ccsr_1",
+          "type": "text"
+        },
+        {
+          "name": "ccsr_2",
+          "type": "text"
+        },
+        {
+          "name": "ccsr_3",
+          "type": "text"
+        },
+        {
+          "name": "ccsr_4",
+          "type": "text"
+        },
+        {
+          "name": "ccsr_5",
+          "type": "text"
+        },
+        {
+          "name": "ccsr_6",
+          "type": "text"
+        },
+        {
+          "name": "gemini_derived",
+          "type": "boolean"
+        },
+        {
+          "name": "ccsr_version",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "lookup_lab_concept",
+      "row_count": "1000",
+      "columns": [
+        {
+          "name": "concept_id",
+          "type": "text"
+        },
+        {
+          "name": "vocabulary_id",
+          "type": "text"
+        },
+        {
+          "name": "concept_desc",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "lookup_pharmacy_mapping",
+      "row_count": "15000",
+      "columns": [
+        {
+          "name": "search_type",
+          "type": "text"
+        },
+        {
+          "name": "raw_input",
+          "type": "text"
+        },
+        {
+          "name": "rxnorm_match",
+          "type": "text"
+        },
+        {
+          "name": "drug_group",
+          "type": "text"
+        },
+        {
+          "name": "project_name",
+          "type": "text"
+        },
+        {
+          "name": "last_updated",
+          "type": "timestamp with time zone"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "lookup_pharmacy_route",
+      "row_count": "0",
+      "columns": [
+        {
+          "name": "route",
+          "type": "text"
+        },
+        {
+          "name": "route_administration",
+          "type": "text"
+        },
+        {
+          "name": "route_delivery",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "lookup_statcan_v2016",
+      "row_count": "48000",
+      "columns": [
+        {
+          "name": "da16uid",
+          "type": "integer"
+        },
+        {
+          "name": "c16_popdw_popdens_sqkm",
+          "type": "double precision"
+        },
+        {
+          "name": "c16_inc_limat",
+          "type": "double precision"
+        },
+        {
+          "name": "c16_immcit",
+          "type": "integer"
+        },
+        {
+          "name": "c16_immcit_cancit",
+          "type": "integer"
+        },
+        {
+          "name": "c16_immcit_cancit_bel18",
+          "type": "integer"
+        },
+        {
+          "name": "c16_immcit_cancit_18up",
+          "type": "integer"
+        },
+        {
+          "name": "c16_immcit_notcan",
+          "type": "integer"
+        },
+        {
+          "name": "c16_immsta",
+          "type": "integer"
+        },
+        {
+          "name": "c16_immsta_notimm",
+          "type": "integer"
+        },
+        {
+          "name": "c16_immsta_imm",
+          "type": "integer"
+        },
+        {
+          "name": "c16_immsta_imm5yrs",
+          "type": "integer"
+        },
+        {
+          "name": "c16_immsta_nonpr",
+          "type": "integer"
+        },
+        {
+          "name": "c16_ab",
+          "type": "integer"
+        },
+        {
+          "name": "c16_ab_singab",
+          "type": "integer"
+        },
+        {
+          "name": "c16_ab_singab_fn",
+          "type": "integer"
+        },
+        {
+          "name": "c16_ab_singab_met",
+          "type": "integer"
+        },
+        {
+          "name": "c16_ab_singab_in",
+          "type": "integer"
+        },
+        {
+          "name": "c16_ab_multab",
+          "type": "integer"
+        },
+        {
+          "name": "c16_ab_abnotelse",
+          "type": "integer"
+        },
+        {
+          "name": "c16_ab_nonab",
+          "type": "integer"
+        },
+        {
+          "name": "c16_vismin",
+          "type": "integer"
+        },
+        {
+          "name": "c16_vismin_not",
+          "type": "integer"
+        },
+        {
+          "name": "c16_eth_ab_nam",
+          "type": "integer"
+        },
+        {
+          "name": "c16_eth_other_nam",
+          "type": "integer"
+        },
+        {
+          "name": "c16_eth_eur",
+          "type": "integer"
+        },
+        {
+          "name": "c16_eth_car",
+          "type": "integer"
+        },
+        {
+          "name": "c16_eth_lat",
+          "type": "integer"
+        },
+        {
+          "name": "c16_eth_afr",
+          "type": "integer"
+        },
+        {
+          "name": "c16_eth_asi",
+          "type": "integer"
+        },
+        {
+          "name": "c16_eth_oce",
+          "type": "integer"
+        },
+        {
+          "name": "c16_ed_15over",
+          "type": "integer"
+        },
+        {
+          "name": "c16_ed_15over_nocert",
+          "type": "integer"
+        },
+        {
+          "name": "c16_ed_15over_secschool",
+          "type": "integer"
+        },
+        {
+          "name": "c16_ed_15over_postsec",
+          "type": "integer"
+        },
+        {
+          "name": "c16_ed_25to64",
+          "type": "integer"
+        },
+        {
+          "name": "c16_ed_25to64_nocert",
+          "type": "integer"
+        },
+        {
+          "name": "c16_ed_25to64_secschool",
+          "type": "integer"
+        },
+        {
+          "name": "c16_ed_25to64_postsec",
+          "type": "integer"
+        },
+        {
+          "name": "c16_lab_ind_allind",
+          "type": "integer"
+        },
+        {
+          "name": "c16_lab_ind",
+          "type": "integer"
+        },
+        {
+          "name": "c16_lab_ind_notappl",
+          "type": "integer"
+        },
+        {
+          "name": "c16_lab_occ",
+          "type": "integer"
+        },
+        {
+          "name": "c16_lab_occ_notappl",
+          "type": "integer"
+        },
+        {
+          "name": "c16_lab_occ_allocc",
+          "type": "integer"
+        },
+        {
+          "name": "c16_lab_prh",
+          "type": "integer"
+        },
+        {
+          "name": "c16_lab_prh_wfh",
+          "type": "integer"
+        },
+        {
+          "name": "c16_lab_prh_out_of_can",
+          "type": "integer"
+        },
+        {
+          "name": "c16_lab_prh_nfaddr_work",
+          "type": "integer"
+        },
+        {
+          "name": "c16_lab_prh_usplace",
+          "type": "integer"
+        },
+        {
+          "name": "c16_lab_class",
+          "type": "integer"
+        },
+        {
+          "name": "c16_lab_class_allcl",
+          "type": "integer"
+        },
+        {
+          "name": "c16_lab_class_allcl_empl",
+          "type": "integer"
+        },
+        {
+          "name": "c16_lab_class_allcl_selfem",
+          "type": "integer"
+        },
+        {
+          "name": "c16_lab_avg_weeks_worked",
+          "type": "double precision"
+        },
+        {
+          "name": "c16_lab_wact_work",
+          "type": "integer"
+        },
+        {
+          "name": "c16_lab_wact_full",
+          "type": "integer"
+        },
+        {
+          "name": "c16_lab_wact_part",
+          "type": "integer"
+        },
+        {
+          "name": "c16_lab_wact_dnw",
+          "type": "integer"
+        },
+        {
+          "name": "c16_lab_wact",
+          "type": "integer"
+        },
+        {
+          "name": "c16_lab_labf",
+          "type": "integer"
+        },
+        {
+          "name": "c16_lab_labf_inlf",
+          "type": "integer"
+        },
+        {
+          "name": "c16_lab_labf_unempl",
+          "type": "integer"
+        },
+        {
+          "name": "c16_lab_labf_empl",
+          "type": "integer"
+        },
+        {
+          "name": "c16_lab_labf_notin",
+          "type": "integer"
+        },
+        {
+          "name": "c16_lab_part_rate",
+          "type": "double precision"
+        },
+        {
+          "name": "c16_lab_empl_rate",
+          "type": "double precision"
+        },
+        {
+          "name": "c16_lab_unempl_rate",
+          "type": "double precision"
+        },
+        {
+          "name": "instability_da16",
+          "type": "double precision"
+        },
+        {
+          "name": "instability_q_da16",
+          "type": "integer"
+        },
+        {
+          "name": "deprivation_da16",
+          "type": "double precision"
+        },
+        {
+          "name": "deprivation_q_da16",
+          "type": "integer"
+        },
+        {
+          "name": "dependency_da16",
+          "type": "double precision"
+        },
+        {
+          "name": "dependency_q_da16",
+          "type": "integer"
+        },
+        {
+          "name": "ethniccon_da16",
+          "type": "double precision"
+        },
+        {
+          "name": "ethniccon_q_da16",
+          "type": "integer"
+        },
+        {
+          "name": "cm_atype",
+          "type": "text"
+        },
+        {
+          "name": "btippe",
+          "type": "integer"
+        },
+        {
+          "name": "atippe",
+          "type": "integer"
+        },
+        {
+          "name": "qabtippe",
+          "type": "integer"
+        },
+        {
+          "name": "qnbtippe",
+          "type": "integer"
+        },
+        {
+          "name": "dabtippe",
+          "type": "integer"
+        },
+        {
+          "name": "dnbtippe",
+          "type": "integer"
+        },
+        {
+          "name": "qaatippe",
+          "type": "integer"
+        },
+        {
+          "name": "qnatippe",
+          "type": "integer"
+        },
+        {
+          "name": "daatippe",
+          "type": "integer"
+        },
+        {
+          "name": "dnatippe",
+          "type": "integer"
+        },
+        {
+          "name": "impflg",
+          "type": "text"
+        },
+        {
+          "name": "c16_inc_total_u5_ct",
+          "type": "integer"
+        },
+        {
+          "name": "c16_inc_total_5to10_ct",
+          "type": "integer"
+        },
+        {
+          "name": "c16_inc_total_10to15_ct",
+          "type": "integer"
+        },
+        {
+          "name": "c16_inc_total_15to20_ct",
+          "type": "integer"
+        },
+        {
+          "name": "c16_inc_total_20to25_ct",
+          "type": "integer"
+        },
+        {
+          "name": "c16_inc_total_25to30_ct",
+          "type": "integer"
+        },
+        {
+          "name": "c16_inc_total_30to35_ct",
+          "type": "integer"
+        },
+        {
+          "name": "c16_inc_total_30to40_ct",
+          "type": "integer"
+        },
+        {
+          "name": "c16_inc_total_40to45_ct",
+          "type": "integer"
+        },
+        {
+          "name": "c16_inc_total_45to50_ct",
+          "type": "integer"
+        },
+        {
+          "name": "c16_inc_total_50to60_ct",
+          "type": "integer"
+        },
+        {
+          "name": "c16_inc_total_60to70_ct",
+          "type": "integer"
+        },
+        {
+          "name": "c16_inc_total_70to80_ct",
+          "type": "integer"
+        },
+        {
+          "name": "c16_inc_total_80to90_ct",
+          "type": "integer"
+        },
+        {
+          "name": "c16_inc_total_90to100_ct",
+          "type": "integer"
+        },
+        {
+          "name": "c16_inc_total_100to125_ct",
+          "type": "integer"
+        },
+        {
+          "name": "c16_inc_total_125to150_ct",
+          "type": "integer"
+        },
+        {
+          "name": "c16_inc_total_150to200_ct",
+          "type": "integer"
+        },
+        {
+          "name": "c16_inc_total_200up_ct",
+          "type": "integer"
+        },
+        {
+          "name": "c16_inc_num_ct",
+          "type": "integer"
+        },
+        {
+          "name": "ice_inc_c16_ct",
+          "type": "double precision"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "lookup_statcan_v2021",
+      "row_count": "58000",
+      "columns": [
+        {
+          "name": "da21uid",
+          "type": "integer"
+        },
+        {
+          "name": "c21_prov_code",
+          "type": "integer"
+        },
+        {
+          "name": "c21_prov_name",
+          "type": "text"
+        },
+        {
+          "name": "c21_cd_code",
+          "type": "integer"
+        },
+        {
+          "name": "c21_cd_name",
+          "type": "text"
+        },
+        {
+          "name": "c21_da_name",
+          "type": "integer"
+        },
+        {
+          "name": "c21_popdw_pop21",
+          "type": "integer"
+        },
+        {
+          "name": "c21_popdw_pop16",
+          "type": "integer"
+        },
+        {
+          "name": "c21_popdw_pop_perc_change",
+          "type": "double precision"
+        },
+        {
+          "name": "c21_popdw_privdw_total",
+          "type": "integer"
+        },
+        {
+          "name": "c21_popdw_privdw_usres",
+          "type": "integer"
+        },
+        {
+          "name": "c21_popdw_popdens_sqkm",
+          "type": "double precision"
+        },
+        {
+          "name": "c21_land_area_sqkm",
+          "type": "double precision"
+        },
+        {
+          "name": "c21_inc_stats",
+          "type": "integer"
+        },
+        {
+          "name": "c21_inc_total_grps",
+          "type": "integer"
+        },
+        {
+          "name": "c21_inc_num",
+          "type": "integer"
+        },
+        {
+          "name": "c21_inc_med",
+          "type": "double precision"
+        },
+        {
+          "name": "c21_inc_total",
+          "type": "integer"
+        },
+        {
+          "name": "c21_inc_total_u5",
+          "type": "integer"
+        },
+        {
+          "name": "c21_inc_total_5to10",
+          "type": "integer"
+        },
+        {
+          "name": "c21_inc_total_10to15",
+          "type": "integer"
+        },
+        {
+          "name": "c21_inc_total_100up",
+          "type": "integer"
+        },
+        {
+          "name": "c21_inc_total_90to100",
+          "type": "integer"
+        },
+        {
+          "name": "c21_inc_total_70to80",
+          "type": "integer"
+        },
+        {
+          "name": "c21_inc_total_60to70",
+          "type": "integer"
+        },
+        {
+          "name": "c21_inc_total_50to60",
+          "type": "integer"
+        },
+        {
+          "name": "c21_inc_total_45to50",
+          "type": "integer"
+        },
+        {
+          "name": "c21_inc_total_15to20",
+          "type": "integer"
+        },
+        {
+          "name": "c21_inc_total_20to25",
+          "type": "integer"
+        },
+        {
+          "name": "c21_inc_total_100to125",
+          "type": "integer"
+        },
+        {
+          "name": "c21_inc_total_125to150",
+          "type": "integer"
+        },
+        {
+          "name": "c21_inc_total_150to200",
+          "type": "integer"
+        },
+        {
+          "name": "c21_inc_total_200up",
+          "type": "integer"
+        },
+        {
+          "name": "c21_inc_med_total_fam",
+          "type": "double precision"
+        },
+        {
+          "name": "c21_inc_aft_tax_med",
+          "type": "double precision"
+        },
+        {
+          "name": "c21_prev_inc_limat",
+          "type": "double precision"
+        },
+        {
+          "name": "c21_inc_licoat",
+          "type": "integer"
+        },
+        {
+          "name": "c21_prev_inc_licoat",
+          "type": "double precision"
+        },
+        {
+          "name": "c21_incavg_num",
+          "type": "integer"
+        },
+        {
+          "name": "c21_incavg_avg",
+          "type": "double precision"
+        },
+        {
+          "name": "c21_immcit",
+          "type": "integer"
+        },
+        {
+          "name": "c21_immcit_cancit",
+          "type": "integer"
+        },
+        {
+          "name": "c21_immcit_cancit_bel18",
+          "type": "integer"
+        },
+        {
+          "name": "c21_immcit_cancit_18up",
+          "type": "integer"
+        },
+        {
+          "name": "c21_immcit_notcan",
+          "type": "integer"
+        },
+        {
+          "name": "c21_immsta",
+          "type": "integer"
+        },
+        {
+          "name": "c21_immsta_notimm",
+          "type": "integer"
+        },
+        {
+          "name": "c21_immsta_imm",
+          "type": "integer"
+        },
+        {
+          "name": "c21_immsta_imm_11to21",
+          "type": "integer"
+        },
+        {
+          "name": "c21_immsta_imm_11to15",
+          "type": "integer"
+        },
+        {
+          "name": "c21_immsta_imm_16to21",
+          "type": "integer"
+        },
+        {
+          "name": "c21_immsta_nonpr",
+          "type": "integer"
+        },
+        {
+          "name": "c21_ind",
+          "type": "integer"
+        },
+        {
+          "name": "c21_ind_id",
+          "type": "integer"
+        },
+        {
+          "name": "c21_ind_id_singind",
+          "type": "integer"
+        },
+        {
+          "name": "c21_ind_id_singind_fn",
+          "type": "integer"
+        },
+        {
+          "name": "c21_ind_id_singind_met",
+          "type": "integer"
+        },
+        {
+          "name": "c21_ind_id_singind_inuit",
+          "type": "integer"
+        },
+        {
+          "name": "c21_ind_id_multind",
+          "type": "integer"
+        },
+        {
+          "name": "c21_ind_id_indnotelse",
+          "type": "integer"
+        },
+        {
+          "name": "c21_ind_id_nonind",
+          "type": "integer"
+        },
+        {
+          "name": "c21_vismin",
+          "type": "integer"
+        },
+        {
+          "name": "c21_vismin_not",
+          "type": "integer"
+        },
+        {
+          "name": "c21_eth_ab_nam",
+          "type": "integer"
+        },
+        {
+          "name": "c21_eth_eur",
+          "type": "integer"
+        },
+        {
+          "name": "c21_eth_asi",
+          "type": "integer"
+        },
+        {
+          "name": "c21_eth_afr",
+          "type": "integer"
+        },
+        {
+          "name": "c21_eth_lat",
+          "type": "integer"
+        },
+        {
+          "name": "c21_eth_car",
+          "type": "integer"
+        },
+        {
+          "name": "c21_eth_other_nam",
+          "type": "integer"
+        },
+        {
+          "name": "c21_eth_cult_orig",
+          "type": "integer"
+        },
+        {
+          "name": "c21_ed_15over",
+          "type": "integer"
+        },
+        {
+          "name": "c21_ed_15over_nocert",
+          "type": "integer"
+        },
+        {
+          "name": "c21_ed_15over_secschool",
+          "type": "integer"
+        },
+        {
+          "name": "c21_ed_15over_postsec",
+          "type": "integer"
+        },
+        {
+          "name": "c21_ed_25to64",
+          "type": "integer"
+        },
+        {
+          "name": "c21_ed_25to64_nocert",
+          "type": "integer"
+        },
+        {
+          "name": "c21_ed_25to64_secschool",
+          "type": "integer"
+        },
+        {
+          "name": "c21_ed_25to64_postsec",
+          "type": "integer"
+        },
+        {
+          "name": "c21_lab_occ",
+          "type": "integer"
+        },
+        {
+          "name": "c21_lab_occ_notappl",
+          "type": "integer"
+        },
+        {
+          "name": "c21_lab_occ_allocc",
+          "type": "integer"
+        },
+        {
+          "name": "c21_lab_ind",
+          "type": "integer"
+        },
+        {
+          "name": "c21_lab_ind_allind",
+          "type": "integer"
+        },
+        {
+          "name": "c21_lab_ind_notappl",
+          "type": "integer"
+        },
+        {
+          "name": "c21_lab_class",
+          "type": "integer"
+        },
+        {
+          "name": "c21_lab_class_allcl",
+          "type": "integer"
+        },
+        {
+          "name": "c21_lab_class_allcl_empl",
+          "type": "integer"
+        },
+        {
+          "name": "c21_lab_class_allcl_selfem",
+          "type": "integer"
+        },
+        {
+          "name": "c21_lab_wact",
+          "type": "integer"
+        },
+        {
+          "name": "c21_lab_wact_work",
+          "type": "integer"
+        },
+        {
+          "name": "c21_lab_wact_dnw",
+          "type": "integer"
+        },
+        {
+          "name": "c21_lab_wact_full",
+          "type": "integer"
+        },
+        {
+          "name": "c21_lab_wact_part",
+          "type": "integer"
+        },
+        {
+          "name": "c21_lab_avg_weeks_worked",
+          "type": "double precision"
+        },
+        {
+          "name": "c21_lab_labf",
+          "type": "integer"
+        },
+        {
+          "name": "c21_lab_labf_inlf",
+          "type": "integer"
+        },
+        {
+          "name": "c21_lab_labf_notin",
+          "type": "integer"
+        },
+        {
+          "name": "c21_lab_labf_empl",
+          "type": "integer"
+        },
+        {
+          "name": "c21_lab_labf_unempl",
+          "type": "integer"
+        },
+        {
+          "name": "c21_lab_part_rate",
+          "type": "double precision"
+        },
+        {
+          "name": "c21_lab_empl_rate",
+          "type": "double precision"
+        },
+        {
+          "name": "c21_lab_unempl_rate",
+          "type": "double precision"
+        },
+        {
+          "name": "c21_lab_plw",
+          "type": "integer"
+        },
+        {
+          "name": "c21_lab_plw_wfh",
+          "type": "integer"
+        },
+        {
+          "name": "c21_lab_plw_out_of_can",
+          "type": "integer"
+        },
+        {
+          "name": "c21_lab_plw_nfaddr_work",
+          "type": "integer"
+        },
+        {
+          "name": "c21_lab_plw_usplace",
+          "type": "integer"
+        },
+        {
+          "name": "c21_inc_total_25to30",
+          "type": "integer"
+        },
+        {
+          "name": "c21_inc_total_30to35",
+          "type": "integer"
+        },
+        {
+          "name": "c21_inc_total_40to45",
+          "type": "integer"
+        },
+        {
+          "name": "c21_inc_total_35to40",
+          "type": "integer"
+        },
+        {
+          "name": "Pop2021",
+          "type": "double precision"
+        },
+        {
+          "name": "households_dwellings_DA21",
+          "type": "double precision"
+        },
+        {
+          "name": "material_resources_DA21",
+          "type": "double precision"
+        },
+        {
+          "name": "age_labourforce_DA21",
+          "type": "double precision"
+        },
+        {
+          "name": "racialized_NC_pop_DA21",
+          "type": "double precision"
+        },
+        {
+          "name": "households_dwellings_q_DA21",
+          "type": "double precision"
+        },
+        {
+          "name": "material_resources_q_DA21",
+          "type": "double precision"
+        },
+        {
+          "name": "age_labourforce_q_DA21",
+          "type": "double precision"
+        },
+        {
+          "name": "racialized_NC_pop_q_DA21",
+          "type": "double precision"
+        },
+        {
+          "name": "btippe",
+          "type": "integer"
+        },
+        {
+          "name": "atippe",
+          "type": "integer"
+        },
+        {
+          "name": "qabtippe",
+          "type": "integer"
+        },
+        {
+          "name": "qnbtippe",
+          "type": "integer"
+        },
+        {
+          "name": "dabtippe",
+          "type": "integer"
+        },
+        {
+          "name": "dnbtippe",
+          "type": "integer"
+        },
+        {
+          "name": "qaatippe",
+          "type": "integer"
+        },
+        {
+          "name": "qnatippe",
+          "type": "integer"
+        },
+        {
+          "name": "daatippe",
+          "type": "integer"
+        },
+        {
+          "name": "dnatippe",
+          "type": "integer"
+        },
+        {
+          "name": "impflg",
+          "type": "integer"
+        },
+        {
+          "name": "popctrraclass",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "lookup_transfer_subset",
+      "row_count": "1250000",
+      "columns": [
+        {
+          "name": "genc_id",
+          "type": "integer"
+        },
+        {
+          "name": "institution_from_mns",
+          "type": "text"
+        },
+        {
+          "name": "institution_to_mns",
+          "type": "text"
+        },
+        {
+          "name": "institution_to_type_mns",
+          "type": "text"
+        },
+        {
+          "name": "institution_from_type_mns",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "lookup_transfusion_concept",
+      "row_count": "0",
+      "columns": [
+        {
+          "name": "concept_id",
+          "type": "integer"
+        },
+        {
+          "name": "vocabulary_id",
+          "type": "text"
+        },
+        {
+          "name": "concept_desc",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "lookup_vitals_concept",
+      "row_count": "0",
+      "columns": [
+        {
+          "name": "concept_id",
+          "type": "text"
+        },
+        {
+          "name": "vocabulary_id",
+          "type": "text"
+        },
+        {
+          "name": "concept_desc",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "pharmacy_subset",
+      "row_count": "84266000",
+      "columns": [
+        {
+          "name": "genc_id",
+          "type": "integer"
+        },
+        {
+          "name": "med_id_generic_name_raw",
+          "type": "text"
+        },
+        {
+          "name": "med_id_brand_name_raw",
+          "type": "text"
+        },
+        {
+          "name": "med_id_din",
+          "type": "text"
+        },
+        {
+          "name": "med_id_ndc",
+          "type": "text"
+        },
+        {
+          "name": "med_id_ahfs",
+          "type": "text"
+        },
+        {
+          "name": "med_id_ahfs_description_raw",
+          "type": "text"
+        },
+        {
+          "name": "med_id_hospital_code_raw",
+          "type": "text"
+        },
+        {
+          "name": "dose_amount",
+          "type": "text"
+        },
+        {
+          "name": "dose_unit",
+          "type": "text"
+        },
+        {
+          "name": "route",
+          "type": "text"
+        },
+        {
+          "name": "frequency",
+          "type": "text"
+        },
+        {
+          "name": "order_description",
+          "type": "text"
+        },
+        {
+          "name": "order_number",
+          "type": "text"
+        },
+        {
+          "name": "finalvolume",
+          "type": "text"
+        },
+        {
+          "name": "rate",
+          "type": "text"
+        },
+        {
+          "name": "iv_component_type",
+          "type": "text"
+        },
+        {
+          "name": "PRN_IND",
+          "type": "text"
+        },
+        {
+          "name": "strength_dose",
+          "type": "text"
+        },
+        {
+          "name": "med_start_date_time",
+          "type": "text"
+        },
+        {
+          "name": "med_end_date_time",
+          "type": "text"
+        },
+        {
+          "name": "medication_suspend_start_date_time",
+          "type": "text"
+        },
+        {
+          "name": "medication_suspend_end_date_time",
+          "type": "text"
+        },
+        {
+          "name": "row_num",
+          "type": "bigint"
+        },
+        {
+          "name": "hospital_num",
+          "type": "integer"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "physicians_subset",
+      "row_count": "2267000",
+      "columns": [
+        {
+          "name": "genc_id",
+          "type": "integer"
+        },
+        {
+          "name": "admitting_physician_gim",
+          "type": "text"
+        },
+        {
+          "name": "discharging_physician_gim",
+          "type": "text"
+        },
+        {
+          "name": "mrp_gim",
+          "type": "text"
+        },
+        {
+          "name": "mrp_cpso_hashed",
+          "type": "character varying(64)"
+        },
+        {
+          "name": "adm_phy_cpso_hashed",
+          "type": "character varying(64)"
+        },
+        {
+          "name": "dis_phy_cpso_hashed",
+          "type": "character varying(64)"
+        },
+        {
+          "name": "row_num",
+          "type": "bigint"
+        },
+        {
+          "name": "hospital_num",
+          "type": "integer"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "radiology_subset",
+      "row_count": "8687000",
+      "columns": [
+        {
+          "name": "genc_id",
+          "type": "integer"
+        },
+        {
+          "name": "test_name_raw",
+          "type": "text"
+        },
+        {
+          "name": "ordered_date_time",
+          "type": "text"
+        },
+        {
+          "name": "performed_date_time",
+          "type": "text"
+        },
+        {
+          "name": "modality_mapped",
+          "type": "text"
+        },
+        {
+          "name": "body_part_mapped",
+          "type": "text"
+        },
+        {
+          "name": "imaging_order_id",
+          "type": "text"
+        },
+        {
+          "name": "modality_raw",
+          "type": "text"
+        },
+        {
+          "name": "row_num",
+          "type": "bigint"
+        },
+        {
+          "name": "imaging_result",
+          "type": "text"
+        },
+        {
+          "name": "hospital_num",
+          "type": "integer"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "rxnorm_cache",
+      "row_count": "713000",
+      "columns": [
+        {
+          "name": "rxcui",
+          "type": "integer"
+        },
+        {
+          "name": "score",
+          "type": "double precision"
+        },
+        {
+          "name": "search_type",
+          "type": "text"
+        },
+        {
+          "name": "raw_input",
+          "type": "text"
+        },
+        {
+          "name": "manually_added",
+          "type": "boolean"
+        },
+        {
+          "name": "date_added",
+          "type": "text"
+        },
+        {
+          "name": "active",
+          "type": "boolean"
+        },
+        {
+          "name": "row_num",
+          "type": "bigint"
+        }
+      ]
+    },
+    {
+      "kind": "matview",
+      "name": "vitals_subset",
+      "row_count": "411962000",
+      "columns": [
+        {
+          "name": "genc_id",
+          "type": "integer"
+        },
+        {
+          "name": "measurement_name",
+          "type": "text"
+        },
+        {
+          "name": "measure_date_time",
+          "type": "text"
+        },
+        {
+          "name": "measurement_value",
+          "type": "text"
+        },
+        {
+          "name": "reference_range",
+          "type": "text"
+        },
+        {
+          "name": "measurement_mapped_omop",
+          "type": "integer"
+        },
+        {
+          "name": "measurement_unit",
+          "type": "text"
+        },
+        {
+          "name": "row_num",
+          "type": "bigint"
+        },
+        {
+          "name": "hospital_num",
+          "type": "integer"
+        }
+      ]
+    }
+  ]
+}

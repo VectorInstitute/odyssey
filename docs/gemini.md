@@ -284,24 +284,10 @@ it stays inside.
 
 ## GEMINI to MEDS
 
-*Pending the first schema report (`scripts/gemini/out/schema.json`,
-`schema.md`) from `scripts/gemini/explore_schema.py`.* The intended shape,
-to validate once the real schema is in hand:
-
-- **Subject**: a patient, or a hospital encounter if patient-level linkage
-  across encounters is not straightforward in this data cut — to be
-  confirmed from the schema report.
-- **Events**: drawn from admissions, diagnoses, labs, pharmacy, and
-  radiology tables (see `gemini-variation-study`'s `admdad_subset`,
-  `ipdiagnosis_subset`, `radiology_subset` for the table-naming convention
-  in GEMINI's native schema, which is not MEDS or OMOP CDM).
-- **Coding**: GEMINI maps some lab/measurement columns to OMOP concept IDs
-  internally (e.g. `test_type_mapped_omop`, `measurement_mapped_omop`); the
-  intent is to go through those OMOP-mapped columns to LOINC, the same
-  vocabulary the existing MIMIC-IV/eICU concept rules are already keyed by
-  (see the README's [Data pipeline](../README.md#data-pipeline) and
-  `odyssey/data/code_mapping.py`), rather than writing a third,
-  GEMINI-specific rule set from scratch.
-
-No extraction code exists yet — this section is a target to validate against
-the real schema, not a spec to implement blind.
+The first real schema report has landed (`scripts/gemini/out/schema.json`,
+`schema.md`, run 2026-08-20 against datacut `subdural_hematoma_v1_0_0`) --
+the full MEDS mapping drafted against it, its open questions, and the
+sharding/output rules now live in their own doc:
+**[`docs/gemini_extraction.md`](gemini_extraction.md)**, kept separate from
+this page since it's specific to the extraction design rather than the
+git-only workflow this page documents. No extraction code exists yet.
