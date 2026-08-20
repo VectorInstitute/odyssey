@@ -91,6 +91,7 @@ from odyssey.training.shard_stream import (
     make_preparer,
     shard_paths,
 )
+from odyssey.utils.env_fingerprint import write_run_provenance
 
 
 logger = logging.getLogger(__name__)
@@ -215,6 +216,17 @@ class TrainingConfig:
     an interrupted run of the same config. Use with freeze_bottleneck
     to start stage two of independent training from a stage-one
     checkpoint."""
+
+    unfreeze_top_backbone_layers: int = 0
+    """With freeze_bottleneck, re-enable gradient on the last N blocks
+    of the backbone's layer stack after the full freeze, so stage two
+    can partially re-shape the backbone instead of only training the
+    task heads. The bottleneck itself stays frozen regardless (this
+    only ever affects backbone.layers). 0 (default) reproduces plain
+    freeze_bottleneck exactly. A middle ground between "fully frozen"
+    (independent training's Koh et al. purity) and "fully joint"
+    (ordinary training): tests whether a little backbone re-shaping
+    recovers forecasting power without losing the intervention gain."""
 
     # Logging/checkpointing cadence, in optimizer steps.
     log_every: int = 20
@@ -891,20 +903,43 @@ def _run_training(  # noqa: PLR0912, PLR0915
             p.requires_grad_(False)
         for p in model.bottleneck.parameters():
             p.requires_grad_(False)
+        n_unfreeze = config.unfreeze_top_backbone_layers
+        if n_unfreeze > 0:
+            backbone_layers = getattr(model.backbone, "layers", None)
+            if not isinstance(backbone_layers, torch.nn.ModuleList):
+                raise ValueError(
+                    "unfreeze_top_backbone_layers requires a backbone with a "
+                    f"'layers' ModuleList (got {type(model.backbone).__name__})"
+                )
+            for layer in backbone_layers[-n_unfreeze:]:
+                for p in layer.parameters():
+                    p.requires_grad_(True)
         n_frozen = sum(p.numel() for p in model.parameters() if not p.requires_grad)
         logger.info(
-            "[freeze] backbone + bottleneck frozen (%.1fM parameters); "
-            "training only the task heads",
+            "[freeze] backbone + bottleneck frozen (%.1fM parameters, top %d "
+            "backbone layer(s) re-unfrozen); training the task heads%s",
             n_frozen / 1e6,
+            n_unfreeze,
+            " and the re-unfrozen backbone layers" if n_unfreeze > 0 else "",
         )
     n_params = sum(p.numel() for p in model.parameters())
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    write_run_provenance(output_dir, model, len(vocab), device=device)
     logger.info(
         "[model] %.1fM parameters (%.1fM trainable) on %s",
         n_params / 1e6,
         n_trainable / 1e6,
         device,
     )
+    for name, module in model.named_children():
+        m_trainable = sum(p.numel() for p in module.parameters() if p.requires_grad)
+        m_total = sum(p.numel() for p in module.parameters())
+        logger.info(
+            "[model] %s: %.2fM / %.2fM trainable",
+            name,
+            m_trainable / 1e6,
+            m_total / 1e6,
+        )
 
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
