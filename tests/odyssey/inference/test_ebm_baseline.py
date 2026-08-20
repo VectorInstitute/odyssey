@@ -195,7 +195,8 @@ def test_fit_one_ebm_skips_a_horizon_below_min_rows(
 
 
 def test_fit_ebm_baselines_no_row_cap(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Unlike TabICL, EBM has no context-size cap: every kept row is fit on."""
+    """Unlike TabICL, EBM has no context-size cap: every row with a
+    determinable outcome at this horizon is fit on, none subsampled away."""
     monkeypatch.setattr(ebm_module, "EBM_MIN_ROWS", 2)
     events = _events(40)
     binned = add_value_tokens(events)
@@ -207,4 +208,8 @@ def test_fit_ebm_baselines_no_row_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     fit_ebm_baselines(binned, rows, times, horizons=(8.0,), feature_set="basic")
     fit = _RecordingFakeClassifier.instances[0]
     assert fit.x_fit is not None
+    # some at-risk rows are right-censored at this horizon (no determinable
+    # outcome) and are filtered out before fitting, same as the GBM/TabICL
+    # baselines; the guarantee under test is no cap on TOP of that filter.
+    assert 10 < fit.x_fit.shape[0] <= n_at_risk
     assert fit.x_fit.shape[0] == n_at_risk
