@@ -26,6 +26,7 @@ from odyssey.inference.alerts import (
     IndexRow,
     _index_rows_from_events,
     _landmark_mask,
+    _positive_class_proba,
     _stamp_landmark_protocol_version,
     _tune_gbm,
     _visit_starts,
@@ -488,6 +489,33 @@ def test_index_row_table_has_scores_outcomes_and_gbm_columns() -> None:
     assert "ctx.hours_into_visit" in table.columns
     assert set(vaso["y@8h"].drop_nulls().unique().to_list()) <= {0.0, 1.0}
     assert vaso["y@8h"].null_count() > 0  # censored / not-at-risk rows are null
+
+
+class _FakeClassifier:
+    """Duck-typed classifier: only the ``classes_`` attribute matters here."""
+
+    def __init__(self, classes: List[int]) -> None:
+        self.classes_ = np.array(classes)
+
+
+def test_positive_class_proba_picks_the_column_for_label_1() -> None:
+    # Shared by EBMBaselineModel/TabICLBaselineModel (review finding 15,
+    # deduplicating what used to be two identical copies of this logic).
+    proba = np.array([[0.9, 0.1], [0.2, 0.8]])
+    assert _positive_class_proba(_FakeClassifier([0, 1]), proba).tolist() == [0.1, 0.8]
+
+
+def test_positive_class_proba_handles_reordered_classes() -> None:
+    # classes_ = [1, 0] (label 1 in column 0) -- must not assume column 1.
+    proba = np.array([[0.1, 0.9], [0.8, 0.2]])
+    assert _positive_class_proba(_FakeClassifier([1, 0]), proba).tolist() == [0.1, 0.8]
+
+
+def test_positive_class_proba_falls_back_to_column_1_when_label_1_absent() -> None:
+    # Only label 0 was ever observed (a real, if rare, single-class fold) --
+    # the documented, if imperfect, fallback: still try column 1.
+    proba = np.array([[1.0, 0.0]])
+    assert _positive_class_proba(_FakeClassifier([0]), proba).tolist() == [0.0]
 
 
 def test_load_index_row_table_logs_current_version_when_present(

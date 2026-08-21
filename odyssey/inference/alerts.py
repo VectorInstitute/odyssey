@@ -595,6 +595,38 @@ def features_for_events(
     }
 
 
+def _positive_class_proba(clf: object, proba: np.ndarray) -> np.ndarray:
+    """Positive-class (label ``1``) column of a classifier's ``predict_proba`` output.
+
+    Shared by :class:`~odyssey.inference.ebm_baseline.EBMBaselineModel` and
+    :class:`~odyssey.inference.tabicl_baseline.TabICLBaselineModel` (both
+    previously duplicated this exact block) -- looks up label ``1``'s
+    actual column index via ``clf.classes_`` rather than assuming it's
+    column 1, since a classifier fit on a fold where only one class was
+    observed can return ``classes_`` with fewer than 2 entries in an order
+    that doesn't match the label values.
+
+    Parameters
+    ----------
+    clf : object
+        A fitted classifier exposing ``classes_`` (typed ``object``, not a
+        specific sklearn/interpret protocol, so callers referencing an
+        optional dependency's classifier type don't force it on this
+        module).
+    proba : numpy.ndarray
+        ``clf.predict_proba(x)``'s full ``(n, n_classes)`` output.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(n,)``, the probability of label ``1``.
+    """
+    classes = np.asarray(clf.classes_)  # type: ignore[attr-defined]
+    pos_idx = int(np.flatnonzero(classes == 1)[0]) if 1 in classes else 1
+    result: np.ndarray = proba[:, pos_idx]
+    return result
+
+
 class BaselineModel:
     """A fitted GBM plus the all-missing columns it had to fill at fit time.
 

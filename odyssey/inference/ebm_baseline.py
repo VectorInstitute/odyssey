@@ -38,6 +38,7 @@ import polars as pl
 from odyssey.inference.alerts import (
     EventTimes,
     IndexRow,
+    _positive_class_proba,
     features_for_events,
     outcome_at_horizon,
 )
@@ -119,10 +120,7 @@ class EBMBaselineModel:
     def predict_proba(self, x: np.ndarray) -> np.ndarray:
         """Positive-class (label ``1``) probabilities, ``(n,)``."""
         proba = self.clf.predict_proba(x)  # type: ignore[attr-defined]
-        classes = np.asarray(self.clf.classes_)  # type: ignore[attr-defined]
-        pos_idx = int(np.flatnonzero(classes == 1)[0]) if 1 in classes else 1
-        result: np.ndarray = proba[:, pos_idx]
-        return result
+        return _positive_class_proba(self.clf, proba)
 
 
 def _grouped_subsample(
