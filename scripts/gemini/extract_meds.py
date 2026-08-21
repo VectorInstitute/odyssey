@@ -10,7 +10,14 @@ and value-binning integration to ``odyssey/data/code_mapping.py`` -- MEDS
 ICD-10-CA codes, CCI codes, ...), namespaced but not yet translated to the
 canonical LOINC-keyed vocabulary the rest of the pipeline uses. That
 translation is a later, separate concept-labeling stage, same as MIMIC-IV
-and eICU.
+and eICU. Lab/vitals codes carry their literal, normalized unit
+(:func:`_normalize_unit`) as a third ``//``-separated segment
+(``LAB//<omop_id>//<unit>``/``VITALS//<omop_id>//<unit>``, the same shape
+MIMIC-IV's own ``LAB//<itemid>//<unit>`` codes use) rather than assuming one
+unit per concept: GEMINI is multi-hospital, and the same OMOP concept can
+carry a different unit at a different site, so the unit has to be part of
+the token identity for a later unit-aware clinical range to key on the
+prefix correctly and for mixed-unit values to never share a quantile bin.
 
 **Governance, same rule as everywhere else in this package (see
 docs/gemini.md): MEDS parquet shards are patient-level data and never leave
@@ -23,6 +30,12 @@ output (see ``run.sh``'s own path/size checks).
 
 Design, one function per source table, streaming throughout:
 
+- :func:`preflight_shard_capacity` -- one cheap ``COUNT(DISTINCT
+  patient_id_hashed)`` (:func:`count_distinct_subjects`) sizes the shard
+  count before anything else runs, then makes sure this process can
+  actually open that many files at once (raises the soft ``NOFILE`` limit
+  if needed, fails loudly with the exact ``ulimit -n`` to run otherwise) --
+  see :class:`MedsShardWriter`'s one-open-file-per-shard design below.
 - :func:`fetch_admission_index` -- one pass over ``admdad_subset`` mapping
   ``genc_id -> (patient_id_hashed, admission time)``, held in memory for the
   whole run (every event table carries only ``genc_id``, and the
@@ -53,6 +66,7 @@ import hashlib
 import json
 import logging
 import os
+import resource
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any, Optional
@@ -77,6 +91,11 @@ SUMMARY_PATH = Path(__file__).resolve().parent / "out" / "extraction_summary.jso
 
 #: Target subjects per shard (rounded, see docs/gemini_extraction.md).
 SUBJECTS_PER_SHARD = 1000
+
+#: Extra open file descriptors reserved for stdio, the DB connection, log
+#: handles, etc., on top of one handle per shard -- see
+#: :func:`preflight_shard_capacity`.
+FD_HEADROOM = 64
 
 #: Rows per keyset-paginated batch read from Postgres.
 BATCH_ROWS = 50_000
@@ -226,6 +245,32 @@ def _parse_numeric(raw: object) -> Optional[float]:
     if pd.isna(value):
         return None
     return float(value)
+
+
+def _normalize_unit(raw: object) -> str:
+    """Normalize a raw unit string for inclusion in a MEDS ``code``.
+
+    Stripped and lowercased, ``"UNK"`` for missing/blank -- GEMINI is
+    multi-hospital and the same OMOP concept can carry different units per
+    site (see docs/gemini_extraction.md's Units section), so the unit must
+    ride in the code itself, the same ``LAB//<id>//<unit>`` shape MIMIC-IV
+    already uses, rather than being dropped or assumed constant. Mixed
+    units under one code must never share a quantile bin.
+
+    Parameters
+    ----------
+    raw : object
+        A single cell's raw ``result_unit``/``measurement_unit`` value.
+
+    Returns
+    -------
+    str
+        The normalized unit, or ``"UNK"``.
+    """
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+        return "UNK"
+    normalized = str(raw).strip().lower()
+    return normalized if normalized else "UNK"
 
 
 def _paginate_rows(
@@ -470,8 +515,14 @@ def extract_labs(
 ) -> Iterator[pd.DataFrame]:
     """Lab result events from ``lab_subset``.
 
-    ``code`` is the raw OMOP concept id, namespaced (``LAB//<id>``) -- not
-    yet translated to LOINC, see the module docstring. Rows whose
+    ``code`` is ``LAB//<omop_id>//<unit>`` -- the raw OMOP concept id plus
+    the normalized unit (:func:`_normalize_unit`), the same
+    ``LAB//<itemid>//<unit>`` shape MIMIC-IV already uses. GEMINI is
+    multi-hospital and the same concept can carry different units per
+    site (see docs/gemini_extraction.md's Units section) -- the unit rides
+    in the code itself so the per-unit clinical ranges can key on the
+    prefix and mixed-unit values never share a quantile bin. Not yet
+    translated to LOINC, see the module docstring. Rows whose
     ``test_type_mapped_omop`` has no real mapped concept at all (not in
     ``lab_concepts``, the deduplicated lookup from
     :func:`fetch_lab_concept_lookup`) are dropped, not extracted as
@@ -491,7 +542,13 @@ def extract_labs(
     """
     for batch in _paginate_rows(
         "lab_subset",
-        ["genc_id", "test_type_mapped_omop", "result_value", "collection_date_time"],
+        [
+            "genc_id",
+            "test_type_mapped_omop",
+            "result_value",
+            "result_unit",
+            "collection_date_time",
+        ],
     ):
         subject_ids: list[Optional[str]] = []
         times: list[Optional[pd.Timestamp]] = []
@@ -505,7 +562,8 @@ def extract_labs(
             genc_id = int(row["genc_id"])
             subject_ids.append(subject_by_genc.get(genc_id))
             times.append(_parse_gemini_datetime(row["collection_date_time"]))
-            codes.append(f"LAB//{int(concept_id)}")
+            unit = _normalize_unit(row["result_unit"])
+            codes.append(f"LAB//{int(concept_id)}//{unit}")
             numeric_values.append(_parse_numeric(row["result_value"]))
             hadm_ids.append(genc_id)
         yield _meds_batch(subject_ids, times, codes, numeric_values, hadm_ids)
@@ -514,10 +572,13 @@ def extract_labs(
 def extract_vitals(subject_by_genc: dict[int, str]) -> Iterator[pd.DataFrame]:
     """Vital-sign events from ``vitals_subset``.
 
-    ``code`` is the raw OMOP concept id, namespaced (``VITAL//<id>``); no
-    dedup step needed here -- ``lookup_vitals_concept`` (unlike
-    ``lookup_lab_concept``) doesn't exhibit the duplicate-row issue at the
-    scale checked so far (see docs/gemini_extraction.md's open question 3).
+    ``code`` is ``VITALS//<omop_id>//<unit>`` -- same reasoning as
+    :func:`extract_labs`: GEMINI is multi-hospital, units can differ per
+    site for the same concept, so the normalized unit
+    (:func:`_normalize_unit`) rides in the code itself. No dedup step
+    needed here -- ``lookup_vitals_concept`` (unlike ``lookup_lab_concept``)
+    doesn't exhibit the duplicate-row issue at the scale checked so far
+    (see docs/gemini_extraction.md's open question 3).
 
     Parameters
     ----------
@@ -535,6 +596,7 @@ def extract_vitals(subject_by_genc: dict[int, str]) -> Iterator[pd.DataFrame]:
             "genc_id",
             "measurement_mapped_omop",
             "measurement_value",
+            "measurement_unit",
             "measure_date_time",
         ],
     ):
@@ -550,7 +612,8 @@ def extract_vitals(subject_by_genc: dict[int, str]) -> Iterator[pd.DataFrame]:
             genc_id = int(row["genc_id"])
             subject_ids.append(subject_by_genc.get(genc_id))
             times.append(_parse_gemini_datetime(row["measure_date_time"]))
-            codes.append(f"VITAL//{int(concept_id)}")
+            unit = _normalize_unit(row["measurement_unit"])
+            codes.append(f"VITALS//{int(concept_id)}//{unit}")
             numeric_values.append(_parse_numeric(row["measurement_value"]))
             hadm_ids.append(genc_id)
         yield _meds_batch(subject_ids, times, codes, numeric_values, hadm_ids)
@@ -748,6 +811,99 @@ def extract_radiology(
         yield _meds_batch(subject_ids, times, codes, [None] * n, hadm_ids)
 
 
+_SUBJECT_COUNT_SQL = "SELECT COUNT(DISTINCT {column}) AS n FROM {table}"
+
+
+def count_distinct_subjects() -> int:
+    """One ``COUNT(DISTINCT patient_id_hashed)`` on ``admdad_subset``.
+
+    Cheap and targeted -- used by :func:`preflight_shard_capacity` to size
+    the shard count before paying for the full admission index
+    (:func:`fetch_admission_index`, which reads every column of every row).
+
+    Returns
+    -------
+    int
+        The real (unsuppressed) distinct subject count.
+    """
+    result = db.query(
+        _SUBJECT_COUNT_SQL.format(
+            column=_quote_ident("patient_id_hashed"),
+            table=_quote_ident("admdad_subset"),
+        )
+    )
+    return int(result["n"].iloc[0])
+
+
+def preflight_shard_capacity(
+    n_subjects: int, *, subjects_per_shard: int = SUBJECTS_PER_SHARD
+) -> int:
+    """Compute the shard count and make sure this process can open that many files.
+
+    :class:`MedsShardWriter` keeps one Parquet writer (one open file
+    handle) open per shard for the whole run -- a real constraint once
+    ``n_subjects / subjects_per_shard`` climbs past a typical 1024 default
+    soft ``NOFILE`` limit. Tries to raise the soft limit toward the hard
+    limit first (``resource.setrlimit``, works without root as long as the
+    hard limit itself is high enough); if that's not enough, fails loudly
+    with the exact command to run before retrying, rather than dying deep
+    into a multi-hour extraction on file descriptor #1025.
+
+    Parameters
+    ----------
+    n_subjects : int
+        From :func:`count_distinct_subjects`.
+    subjects_per_shard : int
+        Same default as :func:`assign_shards`.
+
+    Returns
+    -------
+    int
+        The shard count that will be used.
+
+    Raises
+    ------
+    RuntimeError
+        If even the hard limit doesn't allow enough headroom -- the
+        message names the exact ``ulimit -n`` to run first.
+    """
+    n_shards = _shard_count(n_subjects, subjects_per_shard)
+    needed = n_shards + FD_HEADROOM
+
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if soft < needed:
+        target = min(needed, hard)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+
+    if soft < needed:
+        raise RuntimeError(
+            f"Need at least {needed} open file descriptors for {n_shards} shards "
+            f"(+{FD_HEADROOM} headroom), but the hard NOFILE limit ({hard}) won't "
+            f"allow raising the soft limit ({soft}) that high. Run this in your "
+            f"shell before retrying:\n\n"
+            f"    ulimit -n {needed}\n"
+        )
+    logger.info(
+        "[extract_meds] %d subjects -> %d shards, NOFILE soft limit %d (needed %d)",
+        n_subjects,
+        n_shards,
+        soft,
+        needed,
+    )
+    return n_shards
+
+
+def _shard_count(n_subjects: int, subjects_per_shard: int = SUBJECTS_PER_SHARD) -> int:
+    """``ceil(n_subjects / subjects_per_shard)``, at least 1.
+
+    Shared by :func:`assign_shards` and :func:`preflight_shard_capacity` so
+    the two never compute a different shard count for the same subject
+    universe.
+    """
+    return max(1, -(-n_subjects // subjects_per_shard))
+
+
 def assign_shards(
     subject_ids: Iterable[str], *, subjects_per_shard: int = SUBJECTS_PER_SHARD
 ) -> dict[str, int]:
@@ -773,7 +929,7 @@ def assign_shards(
         ``{subject_id: shard_index}``.
     """
     unique_subjects = sorted(set(subject_ids))
-    n_shards = max(1, -(-len(unique_subjects) // subjects_per_shard))
+    n_shards = _shard_count(len(unique_subjects), subjects_per_shard)
     return {
         subject_id: int(hashlib.sha256(subject_id.encode()).hexdigest(), 16) % n_shards
         for subject_id in unique_subjects
@@ -888,6 +1044,11 @@ def run_extraction(output_dir: Optional[Path] = None) -> dict[str, Any]:
         :func:`_suppressed`.
     """
     target_dir = output_dir if output_dir is not None else OUTPUT_DIR
+
+    logger.info("[extract_meds] counting distinct subjects for the preflight check...")
+    n_subjects_estimate = count_distinct_subjects()
+    preflight_shard_capacity(n_subjects_estimate)
+
     logger.info("[extract_meds] building admission index...")
     subject_by_genc, admission_by_genc = fetch_admission_index()
     logger.info("[extract_meds] %d encounters indexed", len(subject_by_genc))
