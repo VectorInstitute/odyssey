@@ -279,6 +279,77 @@ def test_lookup_emptiness_uses_exists_not_count(
     assert mod.lookup_emptiness() == {"lookup_vitals_concept": True}
 
 
+def test_unit_samples_groups_by_code_and_suppresses_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+
+    def fake_query(sql: str, params: object = None) -> pd.DataFrame:
+        assert "IN (3020564, 3018405)" in sql
+        return pd.DataFrame(
+            {
+                "code": [3020564, 3020564, 3018405],
+                "unit": ["umol/L", None, "mmol/L"],
+                "n": [12345, 5, 6789],
+            }
+        )
+
+    monkeypatch.setattr(mod.db, "query", fake_query)
+
+    samples = mod.unit_samples(
+        "lab_subset", "test_type_mapped_omop", "result_unit", [3020564, 3018405]
+    )
+
+    assert samples == {
+        "3020564": [{"unit": "umol/L", "n": "12000"}, {"unit": None, "n": "<6"}],
+        "3018405": [{"unit": "mmol/L", "n": "7000"}],
+    }
+
+
+def test_int_list_sql_renders_a_safe_literal_list() -> None:
+    mod = _load_module()
+    assert mod._int_list_sql([3020564, 3018405]) == "(3020564, 3018405)"
+
+
+def test_safe_query_recovers_from_a_raising_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+
+    def boom() -> None:
+        raise RuntimeError("column does not exist")
+
+    result = mod._safe_query("some_query", boom)
+    assert result == {"error": "column does not exist"}
+
+
+def test_design_queries_survives_one_query_failing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # One bad design query (e.g. a column-name assumption that doesn't
+    # hold) must not stop every other design query from running -- Amrit
+    # cannot iterate interactively on the GEMINI node.
+    mod = _load_module()
+
+    def fake_query(sql: str, params: object = None) -> pd.DataFrame:
+        if "lookup_lab_concept" in sql:
+            raise RuntimeError("boom")
+        if "EXISTS" in sql:
+            return pd.DataFrame({"any_rows": [False]})
+        if "lookup_data_coverage" in sql:
+            return pd.DataFrame({"data": [], "hospital_num": []})
+        if "GROUP BY year" in sql or ("year" in sql.lower() and "COUNT" in sql):
+            return pd.DataFrame({"year": [2020], "n": [10]})
+        return pd.DataFrame({"code": [], "unit": [], "n": []})
+
+    monkeypatch.setattr(mod.db, "query", fake_query)
+
+    dq = mod.design_queries()
+
+    assert dq["lab_concept_frequencies"] == {"error": "boom"}
+    assert "error" not in dq["lookup_emptiness"]
+
+
 def test_render_markdown_includes_tables_and_design_queries() -> None:
     mod = _load_module()
     report = {

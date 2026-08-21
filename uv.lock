@@ -1948,6 +1948,7 @@ ebm = [
 gemini = [
     { name = "pandas" },
     { name = "psycopg2-binary" },
+    { name = "pyarrow" },
     { name = "sqlalchemy" },
 ]
 tabicl = [
@@ -1984,6 +1985,7 @@ requires-dist = [
     { name = "pandas", marker = "extra == 'gemini'", specifier = ">=2.2.0" },
     { name = "polars", specifier = ">=1.30.0" },
     { name = "psycopg2-binary", marker = "extra == 'gemini'", specifier = ">=2.9.0" },
+    { name = "pyarrow", marker = "extra == 'gemini'", specifier = ">=15.0.0" },
     { name = "scikit-learn", specifier = ">=1.7.0" },
     { name = "sqlalchemy", marker = "extra == 'gemini'", specifier = ">=2.0.0" },
     { name = "tabicl", marker = "extra == 'tabicl'", specifier = ">=2.0.0" },
