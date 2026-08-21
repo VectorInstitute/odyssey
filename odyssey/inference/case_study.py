@@ -135,6 +135,12 @@ def extract_patient_case(
                 chunk.batch, state=state, reset_mask=chunk.reset_mask
             )
             logits, bottleneck_out, state = fwd.logits, fwd.bottleneck, fwd.state
+            # Case traces read concept/observability probabilities, which
+            # only the bottleneck variant produces (fwd.bottleneck is None
+            # for the baseline model).
+            assert bottleneck_out is not None, (  # noqa: S101
+                "extract_patient_case requires a concept-bottleneck model"
+            )
             # One lane, one patient, no resets: real input positions are a
             # contiguous prefix (padding only where the lane runs out).
             input_real = chunk.subject_ids[0] != NO_SUBJECT
