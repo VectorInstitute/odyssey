@@ -310,6 +310,19 @@ class TrainingConfig:
 
     seed: int = 0
 
+    def __post_init__(self) -> None:
+        """Validate fields whose bad values would otherwise fail deep into a run.
+
+        ``checkpoint_every=0`` in particular used to raise
+        ``ZeroDivisionError`` from ``global_step % config.checkpoint_every``
+        the first time a checkpoint was due, hours into a real run rather
+        than at config-load time.
+        """
+        if self.checkpoint_every < 1:
+            raise ValueError(
+                f"checkpoint_every must be >= 1, got {self.checkpoint_every}"
+            )
+
 
 def _atomic_torch_save(obj: object, path: Path) -> None:
     """Save ``obj`` via ``torch.save``, atomically -- never a partial file.

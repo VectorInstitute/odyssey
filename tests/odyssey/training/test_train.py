@@ -206,3 +206,17 @@ def test_training_config_requires_only_the_three_paths() -> None:
     assert config.hidden_size == 256
     assert config.num_epochs == 3
     assert config.max_train_shards is None
+
+
+def test_training_config_rejects_checkpoint_every_below_one() -> None:
+    # Real bug this guards against: checkpoint_every=0 used to raise
+    # ZeroDivisionError from `global_step % config.checkpoint_every` the
+    # first time a checkpoint was due -- hours into a real run, not at
+    # config-load time. Validate at construction instead.
+    with pytest.raises(ValueError, match="checkpoint_every"):
+        TrainingConfig(
+            train_shard_dir="/train",
+            tuning_shard_dir="/tuning",
+            output_dir="/out",
+            checkpoint_every=0,
+        )
