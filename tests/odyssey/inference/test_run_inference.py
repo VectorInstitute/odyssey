@@ -395,9 +395,7 @@ def test_streaming_inference_scores_a_baseline_model() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _events_for_subjects(
-    subject_lengths: dict, codes: list
-) -> pl.DataFrame:
+def _events_for_subjects(subject_lengths: dict, codes: list) -> pl.DataFrame:
     rows = []
     for sid, n in subject_lengths.items():
         for i in range(n):

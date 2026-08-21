@@ -97,13 +97,13 @@ from odyssey.utils.env_fingerprint import write_run_provenance
 
 logger = logging.getLogger(__name__)
 
+#: Either sampler this loop can drive: PackedLaneSampler for the recurrent
+#: hybrid backbone (persistent lanes, carried state), PackedContextSampler
+#: for the stateless transformer backbone (whole/truncated patients packed
+#: per row, no carried state). Both yield StreamingChunk, so the
+#: training/eval loop bodies below are backbone-agnostic; only sampler
+#: *construction* differs, in make_train_sampler/make_tuning_sampler.
 StreamingSampler = Union[PackedLaneSampler, PackedContextSampler]
-"""Either sampler this loop can drive: PackedLaneSampler for the recurrent
-hybrid backbone (persistent lanes, carried state), PackedContextSampler for
-the stateless transformer backbone (whole/truncated patients packed per
-row, no carried state). Both yield StreamingChunk, so the training/eval
-loop bodies below are backbone-agnostic; only sampler *construction*
-differs, in make_train_sampler/make_tuning_sampler."""
 
 
 @dataclass
