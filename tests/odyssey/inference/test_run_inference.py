@@ -25,6 +25,7 @@ from odyssey.inference.run_inference import (
     run_streaming_inference,
 )
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
+from odyssey.models.concept_bottleneck import ConceptBottleneck
 from odyssey.models.sequence_model import BaselineSequenceModel
 from odyssey.models.time_to_event import DEFAULT_TIME_BIN_EDGES_HOURS
 from odyssey.training.metrics import (
@@ -469,6 +470,69 @@ def test_value_embeddings_flag_ignores_the_backbone_merge_attention(
     finally:
         ri.build_model = original
     assert seen["concept_global_pairs"] is True and seen["unknown_dim"] == 6
+
+
+def test_unknown_dim_round_trips_for_the_non_global_pairs_unequal_width_case(
+    tmp_path: Path,
+) -> None:
+    """Round-trip test for review finding 7 (test-only, per instruction).
+
+    load_run's non-global-pairs unknown_dim reconstruction (rows -
+    n_known*2*emb) // 2) had zero test coverage -- only the
+    concept_global_pairs=True branch was exercised
+    (test_value_embeddings_flag_ignores_the_backbone_merge_attention).
+    This builds a *real* ConceptBottleneck (global_pairs=False,
+    unknown_dim != embedding_dim -- the branch with a separate
+    unknown_prob_weight, the least-covered shape combination), takes its
+    actual state_dict, and checks the reconstructed config.unknown_dim
+    matches what the module was actually built with.
+
+    If this fails: the reconstruction formula is wrong for this shape
+    combination -- stop and report to odyssey-db, do not fix it here.
+    """
+    num_concepts = 5
+    embedding_dim = 8
+    unknown_dim = 6  # deliberately != embedding_dim
+    bottleneck = ConceptBottleneck(
+        hidden_size=16,
+        num_concepts=num_concepts,
+        embedding_dim=embedding_dim,
+        global_pairs=False,
+        unknown_dim=unknown_dim,
+    )
+    assert "unknown_prob_weight" in dict(bottleneck.named_parameters()), (
+        "fixture assumption broken: expected the separate-unknown-weight branch"
+    )
+
+    run_dir = tmp_path
+    config = TrainingConfig(train_shard_dir="a", tuning_shard_dir="b", output_dir="c")
+    (run_dir / "config.json").write_text(json.dumps(config.__dict__))
+    Vocabulary({"[PAD]": 0, "[UNK]": 1, "LAB//220045//bpm": 2}).save(
+        run_dir / "vocabulary.json"
+    )
+    (run_dir / "quantile_binner.json").write_text(
+        json.dumps({"n_bins": 5, "boundaries": {}})
+    )
+    state = {f"bottleneck.{k}": v for k, v in bottleneck.state_dict().items()}
+    torch.save({"model": state}, run_dir / "checkpoint_final.pt")
+
+    seen = {}
+
+    def fake_build_model(cfg, *, vocab_size, num_concepts):  # noqa: ARG001
+        seen["unknown_dim"] = cfg.unknown_dim
+        seen["concept_global_pairs"] = cfg.concept_global_pairs
+        raise RuntimeError("stop here")
+
+    original = ri.build_model
+    ri.build_model = fake_build_model
+    try:
+        with pytest.raises(RuntimeError, match="stop here"):
+            load_run(run_dir, device="cpu")
+    finally:
+        ri.build_model = original
+
+    assert seen["concept_global_pairs"] is False
+    assert seen["unknown_dim"] == unknown_dim
 
 
 def test_default_checkpoint_prefers_best_matching_the_clis(tmp_path: Path) -> None:
