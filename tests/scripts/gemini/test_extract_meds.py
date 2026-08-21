@@ -200,6 +200,7 @@ def test_extract_labs_drops_rows_with_no_mapped_concept(
             "genc_id": [1, 1],
             "test_type_mapped_omop": [3020564, 999999],  # second is unmapped
             "result_value": ["1.2", "5.0"],
+            "result_unit": ["umol/L", "mg/dL"],
             "collection_date_time": ["2020-01-02 08:00:00", "2020-01-02 09:00:00"],
             "row_num": [1, 2],
         }
@@ -211,8 +212,70 @@ def test_extract_labs_drops_rows_with_no_mapped_concept(
     )
 
     assert len(rows) == 1
-    assert rows.iloc[0]["code"] == "LAB//3020564"
+    assert rows.iloc[0]["code"] == "LAB//3020564//umol/l"
     assert rows.iloc[0]["numeric_value"] == 1.2
+
+
+def test_extract_labs_carries_the_literal_unit_and_normalizes_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The real reason: GEMINI is multi-hospital and the same OMOP concept
+    # can carry different units per site -- the unit must ride in the
+    # code, and mixed units under one concept must produce different codes.
+    mod = _load_module()
+    subject_by_genc = {1: "pA", 2: "pB"}
+    lab_concepts = {3020564: "Creatinine"}
+    batch = pd.DataFrame(
+        {
+            "genc_id": [1, 2],
+            "test_type_mapped_omop": [3020564, 3020564],
+            "result_value": ["70.0", "1.1"],
+            "result_unit": [" umol/L ", None],  # whitespace/case, then missing
+            "collection_date_time": ["2020-01-02 08:00:00", "2020-01-02 09:00:00"],
+            "row_num": [1, 2],
+        }
+    )
+    monkeypatch.setattr(mod.db, "query", _sequenced_fake_query({"lab_subset": [batch]}))
+
+    rows = pd.concat(
+        list(mod.extract_labs(subject_by_genc, lab_concepts)), ignore_index=True
+    )
+
+    codes = sorted(rows["code"])
+    assert codes == ["LAB//3020564//UNK", "LAB//3020564//umol/l"]
+
+
+def test_extract_vitals_carries_the_literal_unit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    subject_by_genc = {1: "pA"}
+    batch = pd.DataFrame(
+        {
+            "genc_id": [1],
+            "measurement_mapped_omop": [3027018],
+            "measurement_value": ["88"],
+            "measurement_unit": ["bpm"],
+            "measure_date_time": ["2020-01-02 08:00:00"],
+            "row_num": [1],
+        }
+    )
+    monkeypatch.setattr(
+        mod.db, "query", _sequenced_fake_query({"vitals_subset": [batch]})
+    )
+
+    rows = pd.concat(list(mod.extract_vitals(subject_by_genc)), ignore_index=True)
+
+    assert rows.iloc[0]["code"] == "VITALS//3027018//bpm"
+
+
+def test_normalize_unit_strips_lowercases_and_falls_back_to_unk() -> None:
+    mod = _load_module()
+    assert mod._normalize_unit(" Umol/L ") == "umol/l"
+    assert mod._normalize_unit(None) == "UNK"
+    assert mod._normalize_unit(float("nan")) == "UNK"
+    assert mod._normalize_unit("") == "UNK"
+    assert mod._normalize_unit("   ") == "UNK"
 
 
 def test_extract_pharmacy_applies_the_admission_guard(
@@ -282,6 +345,51 @@ def test_extract_radiology_applies_the_admission_guard(
 
     assert len(rows) == 1
     assert rows.iloc[0]["code"] == "IMAGING//CT//Head"
+
+
+# --- preflight -------------------------------------------------------
+
+
+def test_count_distinct_subjects_issues_a_count_distinct_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+
+    def fake_query(sql: str, params: object = None) -> pd.DataFrame:
+        assert "COUNT(DISTINCT" in sql
+        assert '"admdad_subset"' in sql
+        return pd.DataFrame({"n": [12345]})
+
+    monkeypatch.setattr(mod.db, "query", fake_query)
+
+    assert mod.count_distinct_subjects() == 12345
+
+
+def test_preflight_shard_capacity_returns_shard_count_when_within_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    # Pretend the process already has plenty of headroom, regardless of
+    # the real limits on whatever machine runs this test.
+    monkeypatch.setattr(mod.resource, "getrlimit", lambda _which: (10_000, 10_000))
+
+    n_shards = mod.preflight_shard_capacity(2500, subjects_per_shard=1000)
+
+    assert n_shards == 3  # ceil(2500 / 1000)
+
+
+def test_preflight_shard_capacity_raises_with_the_exact_ulimit_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    # Both soft and hard limits are too low, and setrlimit can't fix a
+    # hard-limited ceiling -- this must fail loudly, not silently proceed
+    # into a run that will crash hours in on file descriptor exhaustion.
+    monkeypatch.setattr(mod.resource, "getrlimit", lambda _which: (256, 256))
+    monkeypatch.setattr(mod.resource, "setrlimit", lambda _which, _limits: None)
+
+    with pytest.raises(RuntimeError, match=r"ulimit -n \d+"):
+        mod.preflight_shard_capacity(1_000_000, subjects_per_shard=1000)
 
 
 # --- sharding and the writer ---------------------------------------------

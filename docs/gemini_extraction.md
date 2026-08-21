@@ -209,16 +209,26 @@ vitals concepts, to close that section's remaining gap.
 
 `scripts/gemini/extract_meds.py` implements the resolved parts of the
 mapping above: admission-anchored `+-1y` timestamp guards (pharmacy,
-radiology), the deduplicated `lookup_lab_concept` lookup, and subject-hash
-sharding, streaming throughout (never loads a whole source table into
-memory). `code` values are GEMINI's own raw identifiers, namespaced
-(`LAB//<omop_id>`, `DIAGNOSIS//<icd10ca>`, ...) -- the OMOP -> LOINC bridge
-and value-binning unit-split entries are a separate, later stage (owned by
-the lead session, see the OMOP -> LOINC bridge note above), not yet run
-against real data. Real, aggregate-only run output (rounded row/subject/
-shard counts) lands in `scripts/gemini/out/extraction_summary.json` once
-run via `scripts/gemini/run.sh extract` -- the actual MEDS parquet shards
-never leave the enclave.
+radiology), the deduplicated `lookup_lab_concept` lookup, subject-hash
+sharding, and a preflight check (one `COUNT DISTINCT` on `admdad_subset` to
+size the shard count, then raising the process's open-file-descriptor limit
+if `MedsShardWriter`'s one-writer-per-shard design needs more than the
+default allows) -- all streaming throughout (never loads a whole source
+table into memory). `code` values are GEMINI's own raw identifiers,
+namespaced (`DIAGNOSIS//<icd10ca>`, `PROCEDURE//<cci>`, ...); labs and
+vitals additionally carry their literal, normalized unit as a third segment
+-- `LAB//<omop_id>//<unit>` / `VITALS//<omop_id>//<unit>`, the same shape
+MIMIC-IV's own `LAB//<itemid>//<unit>` codes use -- since GEMINI is
+multi-hospital and the same OMOP concept can carry a different unit at a
+different site (see [Units and canonical clinical ranges](#units-and-canonical-clinical-ranges)):
+the unit has to be part of the token identity so mixed-unit values never
+share a quantile bin. The OMOP -> LOINC bridge and value-binning
+per-unit-family clinical ranges are a separate, later stage (owned by the
+lead session, see the OMOP -> LOINC bridge note above), not yet run against
+real data. Real, aggregate-only run output (rounded row/subject/shard
+counts) lands in `scripts/gemini/out/extraction_summary.json` once run via
+`scripts/gemini/run.sh extract` -- the actual MEDS parquet shards never
+leave the enclave.
 
 Still open before a full real run: the actual training datacut (question 1,
 still `subdural_hematoma_v1_0_0` at time of writing), the pharmacy

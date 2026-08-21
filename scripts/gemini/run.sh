@@ -158,7 +158,21 @@ run_pending_stub() {
 
 run_extract() {
     echo "=== extract ==="
-    echo "Writing MEDS parquet shards to \${GEMINI_MEDS_OUTPUT_DIR:-\$HOME/gemini_meds_v1} (not committed) ..."
+    echo "This can take HOURS -- lab_subset/vitals_subset alone are hundreds"
+    echo "of millions of rows. Writes real patient data to"
+    echo "\${GEMINI_MEDS_OUTPUT_DIR:-\$HOME/gemini_meds_v1} (never committed)."
+    # run.sh does not, and will not, background itself: it commits and
+    # pushes the summary synchronously after the step finishes (see the
+    # bottom of this script), which a self-daemonizing step would break.
+    # If this doesn't look like a detached session, warn loudly rather
+    # than silently losing hours of work to a dropped SSH connection.
+    if [[ -z "${TMUX:-}" && -z "${STY:-}" ]]; then
+        echo "WARNING: this doesn't look like a tmux or screen session --" >&2
+        echo "if the SSH connection drops, the extraction dies with it." >&2
+        echo "Run it detached instead, e.g.:" >&2
+        echo "  tmux new -s extract 'scripts/gemini/run.sh extract'" >&2
+        echo "  # or: nohup scripts/gemini/run.sh extract > extract.log 2>&1 &" >&2
+    fi
     python scripts/gemini/extract_meds.py
 }
 

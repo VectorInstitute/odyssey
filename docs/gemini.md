@@ -160,9 +160,16 @@ scripts/gemini/run.sh              # default: probe, schema, extract-dry, in ord
 
 `env-gpu` and `extract` are left out of the default `all` run on purpose:
 `env-gpu` is a real, multi-minute, GPU-dependent build step, and `extract`
-is a real, long-running, patient-data-writing operation -- neither is a
-quick sanity check, so both only run when explicitly asked for. The
-not-yet-built `train`/`eval` steps aren't wired into `all` either -- `all`
+is a real, long-running (hours -- `lab_subset`/`vitals_subset` alone are
+hundreds of millions of rows), patient-data-writing operation -- neither is
+a quick sanity check, so both only run when explicitly asked for. `run.sh`
+does not, and will not, background itself for `extract`: it commits and
+pushes the summary synchronously after the step finishes, which a
+self-daemonizing step would break. It warns loudly (checking `$TMUX`/`$STY`)
+if it doesn't look like a detached session, but running `extract` under
+`tmux`/`screen`/`nohup` so a dropped SSH connection doesn't kill an
+hours-long run is on Amrit to do, not something `run.sh` can do for him.
+The not-yet-built `train`/`eval` steps aren't wired into `all` either -- `all`
 stays a fast, safe, no-surprises default.
 
 Safe to re-run: venv creation and package installs are idempotent, each step
