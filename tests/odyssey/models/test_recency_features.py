@@ -74,7 +74,9 @@ def test_recency_survives_chunking_and_padding() -> None:
 
 def _mk(model_cls, recency: bool, **kw):
     torch.manual_seed(0)
-    backbone = TinyGRUBackbone(vocab_size=12, hidden_size=8, num_layers=1, padding_idx=0)
+    backbone = TinyGRUBackbone(
+        vocab_size=12, hidden_size=8, num_layers=1, padding_idx=0
+    )
     return model_cls(
         backbone=backbone,
         vocab_size=12,
@@ -91,9 +93,7 @@ def test_head_widths_and_forward_shapes() -> None:
     base_on = _mk(BaselineSequenceModel, True)
     assert base_on.time_head.proj.in_features == 8 + RECENCY_DIM
     assert base_off.time_head.proj.in_features == 8
-    cb_on = _mk(
-        ConceptBottleneckSequenceModel, True, num_concepts=3, embedding_dim=4
-    )
+    cb_on = _mk(ConceptBottleneckSequenceModel, True, num_concepts=3, embedding_dim=4)
     assert cb_on.time_head.proj.in_features == cb_on.bottleneck.output_dim + RECENCY_DIM
     # forward_with_features returns augmented features that fit the heads
     events = _events()
