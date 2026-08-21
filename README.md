@@ -24,7 +24,8 @@ The discipline of the project is that this candidate must *earn* each capability
 
 - **Gradient-boosted trees**, tuned per task on a best-effort feature panel (`odyssey/inference/baseline_features.py`). The strongest bar on the shared alert slice, consistent with the tabular-ML literature (Grinsztajn et al. 2022; Shwartz-Ziv & Armon 2022), and currently ahead there: 12/12 event-horizon pairs at 30-shard scale, 10/12 at full MIMIC-IV scale, with the gap narrowing as training data grows.
 - **Tabular foundation models** ([TabICLv2](https://github.com/soda-inria/tabicl), `odyssey/inference/tabicl_baseline.py`): pretrained once, applied zero-shot via in-context learning; by the strict definition, the only model in this comparison that is a foundation model today, and in first eICU runs it wins exactly where our hazard head is weakest (AKI, death).
-- **Additive models** (NAM/GAM): structurally interpretable per-feature curves, no post-hoc explainer; implementation selected, not yet run (see the research journal comparator plan).
+- **Additive models** (EBM, the NAM/GAM family; `odyssey/inference/ebm_baseline.py`): structurally interpretable per-feature curves, no post-hoc explainer. Run on eICU: loses to both the GBM and the hazard head on every legitimate pair; its one apparent win traced to a shared age artifact on a degenerate readmission-like sub-task, so structural interpretability currently costs real performance here.
+- **Survival-native foundation models** ([SurvivalPFN](https://github.com/rgklab/SurvivalPFN), `odyssey/inference/survivalpfn_baseline.py`): pretrained on synthetic survival data, fit per event on `(time, censoring)` pairs. Run on eICU: behind the hazard head by 0.03-0.25 AUROC and the GBM by 0.12-0.30 on every fittable event-horizon pair.
 
 These references are bars to clear and *diagnostic probes*: where they win, they localize what the sequence model is missing. The stratified error analysis proved the probe value: the AKI gap tracks the staleness of the last creatinine monotonically (the GBM has `hours_since_last` as an explicit feature; the sequence model must infer it), and the in-ICU gap turns out to be a distinct readmission-like sub-task. Probe wins convert directly into input-design experiments.
 
@@ -44,7 +45,7 @@ The forecasting itself is framed as a marked temporal point process over same-ti
 
 **Sequencing.** Research questions first, deployment packaging after: (1) can the alert gap be closed with probe-derived inputs and scale; (2) what does a trustworthy lever cost, and can the cost be brought down; (3) does any of it transfer to a third hospital system unchanged.
 
-**Status: active research.** Full-scale runs complete on MIMIC-IV and eICU; independent-training lever verified on both; comparator suite (TabICL, NAM/GAM, SurvivalPFN) in progress; GEMINI groundwork done, awaiting scheduling. See [Roadmap](#roadmap).
+**Status: active research.** Full-scale runs complete on MIMIC-IV and eICU (second MIMIC epoch training); independent-training lever verified on both; comparator suite run on eICU (GBM strongest overall, TabICL wins targeted spots, EBM and SurvivalPFN not competitive; MEDS-Tab in progress); recency-input experiment confirmed the staleness probe (closes about a third of the AKI gap); GEMINI extraction pipeline built, first full extraction in progress. See [Roadmap](#roadmap).
 
 ## Architecture
 
@@ -80,6 +81,8 @@ uv sync --extra cuda --no-build-isolation
 Local (CPU/MPS) development uses a lightweight stand-in backbone so the concept-bottleneck logic can be built and tested without a GPU; see `tests/odyssey/models/test_concept_bottleneck.py`.
 
 ## Data pipeline
+
+**MEDS is the narrow waist of the whole system.** Each data source gets its own extractor, as source-specific as it needs to be (standard `meds-extract` tooling for MIMIC-IV, a declarative MESSY spec for eICU, a bespoke SQL-streaming extractor for GEMINI's Postgres-only access), but all three converge on the same conformant [MEDS](https://github.com/Medical-Event-Data-Standard/meds) event schema, and everything downstream (binning, tokenization, concepts, training, evaluation, baselines) is written once against that schema and never knows which hospital system produced the data. Conformance at the boundary is enforced mechanically (schema, `metadata/` layout, split directories), not by convention. Deployment readiness follows the same principle: when the best model is settled, a thin MEDS-to-FHIR translator at this boundary is what connects it to live hospital systems, with nothing upstream rearchitected (Track D).
 
 MIMIC-IV to MEDS extraction uses the standard [`meds-extract`](https://github.com/Medical-Event-Data-Standard/MIMIC_IV_MEDS) tooling (`hosp` + `icu` modules only; MIMIC-IV-ED is a separate dataset/DUA and is not yet wired in).
 
@@ -167,10 +170,10 @@ Organized by research track; the foundational plumbing that is finished lives in
 > **The concept lever is not yet causal.** Interventions on concept probabilities move forecasts in proportion to surprise, not truth (base-rate correlation 0.97); RandInt training cannot fix this because it never trains on counterfactual values. Independent training produces the first working lever at a quantified forecasting cost. Mapping and shrinking that cost is the core interpretability work. (Research journal entries 23, 25, 26.)
 
 **Track A: performance and probes**
-1. Recency/staleness inputs to the hazard heads (per-signal hours-since-last-observation), the direct answer to the stratified error analysis; A/B on the 30-shard subset
-2. Second epoch of full-scale MIMIC-IV training (learning curve still monotone after one)
-3. MEDS-Tab as the field-standard external baseline on our own MEDS data
-4. TabICLv2 three-way comparison (vs tuned GBM and hazard heads) on both datasets, after the branch scoring regression is fixed; NAM/GAM baseline per the comparator plan; SurvivalPFN as a zero-shot survival baseline
+1. Recency/staleness inputs to the hazard heads (done: improves 9/12 pairs on eICU, AKI@8h 0.681 to 0.697, about a third of the probe-localized gap, at a small set-forecast cost); next lever: curated-signal staleness and last-value channels (v10)
+2. Second epoch of full-scale MIMIC-IV training (running; learning curve still monotone after one)
+3. MEDS-Tab as the field-standard external baseline on our own MEDS data (pipeline glue merged, driver in progress)
+4. Comparator suite on eICU (done: tuned GBM strongest overall; TabICL wins AKI and two ICU pairs; EBM and SurvivalPFN not competitive; registry has full tables); MIMIC repeat under the v2 landmark protocol in the re-evaluation wave (`docs/reeval_wave_v2.md`)
 
 **Track B: interpretability and causality**
 5. The stage-B cost frontier: longer training, partial unfreezing, small stage-A task weight (M-series, running); acceptance test is the six-mode banded intervention suite
@@ -179,12 +182,12 @@ Organized by research track; the foundational plumbing that is finished lives in
 8. Population-level causal effect estimation (exploratory; CausalPFN line)
 
 **Track C: generalization**
-9. GEMINI: environment build on the H200, schema-driven MEDS extraction, then external validation of frozen models (groundwork complete: `docs/gemini.md`, `scripts/gemini/`)
+9. GEMINI: SQL-streaming MEDS extraction (built, first full extraction in progress), post-extraction MEDS conformance step (int64 subject ids, `metadata/`, deliberate split rule), then external validation of frozen models (`docs/gemini.md`, `scripts/gemini/`)
 10. EHRSHOT-style few-shot/transfer protocol, the pretrain-once test
 
 **Track D: platform and clinical interface**
-11. Reproducibility: environment fingerprints and numeric canaries recorded with every run (done); eval-protocol pinning (scores comparable only at matched lane/chunk settings)
-12. Report generator fixes (baseline-model description bug) and shared how-to page (done in journal)
+11. Reproducibility: environment fingerprints and per-checkpoint numeric canaries recorded with every run (done); landmark protocol versioning on all alert evaluations (done: `LANDMARK_PROTOCOL_VERSION`, re-evaluation wave planned in `docs/reeval_wave_v2.md`)
+12. MEDS conformance validator as a gate on every extraction output; thin MEDS-to-FHIR translator once the best model is settled (deployment readiness as an adapter at the MEDS boundary, not a rearchitecture)
 13. Phase 2: an LLM agent (e.g. MedGemma) reading the concept-annotated forecast, with retrospective clinician validation on GEMINI; gated on Tracks B and C
 
 <details>
