@@ -30,6 +30,29 @@ odyssey has two git remotes:
   mirrored to `main` on this remote after GitHub CI is green; GEMINI's git
   server has no CI of its own.
 
+**Step 0 of every GitHub -> GEMINI mirror, no exceptions: fetch `gemini`
+and copy forward anything newer there first.** This happened for real and
+cost real output: a mirror force-pushed over an operator's freshly-pushed
+`scripts/gemini/out/` files before they were copied back to GitHub, because
+the earlier version of this rule ("mirror only after the output commit is
+copied") relied on remembering to check, and that failed. The fix is
+mechanical, not a reminder -- run this *before* building the filtered
+mirror clone, every time, with no judgment call about whether it's
+"probably fine":
+
+```bash
+git fetch gemini main --quiet
+git diff --stat main gemini/main -- scripts/gemini/out/ docs/gemini.md
+```
+
+If that shows anything, it hasn't been copied back yet -- go do the
+fetch-and-copy-files step (below, "Run-there / commit-back workflow") for
+every file it lists, commit, and push to `origin main` *before* touching
+the mirror at all. Only once that diff is empty does step 1 (below) start.
+Also: **never mirror while an operator has a step in flight** (see the
+coordination rule after the mirroring steps) -- check with whoever
+assigned the step, don't guess from git state alone that it's safe.
+
 **The GEMINI remote enforces a 1 MiB cap per push** (a GitLab pre-receive
 hook rejects any incoming pack over that size — this is a *pack* size limit,
 not a per-file limit, so even a small file's diff can be rejected if it lands
@@ -92,13 +115,18 @@ touched by any of the above -- only `refs/heads/main` (via
 
 **Coordination rule: never mirror while Amrit has a step in flight.** A
 mirror landing between his `sync_with_mirror()` and his own output push
-races his push into a rejection (this happened for real: his `extract-dry`
-push got rejected non-fast-forward because a mirror landed mid-run --
-`run.sh`'s push step now retries with rebase for exactly this case, see
-`scripts/gemini/run.sh`, but the race is still better avoided than
-recovered from). Only mirror GitHub -> GEMINI when the channel is
-confirmed idle -- explicitly told so, or after seeing his output commit
-actually land on `gemini main` -- never speculatively or "just in case."
+races his push into a rejection (`run.sh`'s push step retries with rebase
+for exactly this case, see `scripts/gemini/run.sh`, but the race is still
+better avoided than recovered from). Only mirror GitHub -> GEMINI when the
+channel is confirmed idle -- explicitly told so, or after seeing his
+output commit actually land on `gemini main` -- never speculatively or
+"just in case." **This rule has already failed once because it relied on
+remembering**: a mirror force-pushed straight over an operator's freshly-landed
+`extract-dry` output before it had been copied back to GitHub, discarding
+`gemini main`'s only copy of it (recovered by having him re-push from his
+local clone, which the sync guard had correctly refused to reset over).
+Step 0 above exists specifically so this can't happen from forgetting --
+run it, don't just remember the rule.
 
 ## Environment (H200 node)
 
