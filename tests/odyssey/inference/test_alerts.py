@@ -178,6 +178,65 @@ def test_harness_end_to_end_with_planted_signal() -> None:
     assert gbm.n_censored > 0
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Real, confirmed divergence (review finding 8; repro from 6e on "
+        "eICU: collect_model_scores over-counts landmark rows by ~23%). "
+        "Root cause isolated here: _landmark_mask is called fresh per "
+        "streaming chunk with no bucket state carried across chunk "
+        "boundaries (prev_bucket always resets to -1 at each chunk's first "
+        "position), so a patient whose sequence spans more than one chunk "
+        "gets a spurious extra landmark at the boundary even when still "
+        "inside the same landmark_hours bucket as the chunk before it -- "
+        "confirmed by re-running this exact test with chunk_size large "
+        "enough that no patient's sequence spans two chunks, where the two "
+        "paths match exactly. Authorized scope for this finding was a "
+        "regression test only (no fix); remove this xfail once "
+        "_landmark_mask carries bucket state across chunk boundaries."
+    ),
+)
+def test_collect_model_scores_and_index_rows_from_events_agree_on_landmark_times() -> (
+    None
+):
+    """Per-(subject, visit) landmark time-sets must match between the two paths.
+
+    chunk_size=16 is deliberately small enough that a subject's ~25-26-
+    event sequence spans more than one streaming chunk -- the condition
+    that reproduces the divergence (see the xfail reason above).
+    """
+    events = _events(24)
+    binned = add_value_tokens(events)
+    vocab = _vocab(binned)
+    concepts = concepts_for_source("mimic_iv")
+    model = _model(len(vocab), len(concepts))
+
+    model_rows = collect_model_scores(
+        model,
+        binned,
+        vocab,
+        [c.name for c in concepts],
+        ALERT_EVENTS,
+        visit_start=_visit_starts(events),
+        landmark_hours=4.0,
+        num_lanes=2,
+        chunk_size=16,
+        device="cpu",
+    )
+    event_rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+
+    for alert in ALERT_EVENTS:
+        model_times = {
+            (r.subject_id, r.visit_id, round(r.time_hours, 6))
+            for r in model_rows[alert.name]
+        }
+        event_times = {
+            (r.subject_id, r.visit_id, round(r.time_hours, 6))
+            for r in event_rows[alert.name]
+        }
+        assert model_times == event_times, alert.name
+
+
 def test_baseline_features_shape_and_content() -> None:
     events = _events(4)
     binned = add_value_tokens(events)
