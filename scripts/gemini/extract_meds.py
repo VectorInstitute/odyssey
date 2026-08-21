@@ -161,6 +161,33 @@ correctness-preserving speedup kept regardless), and
 :func:`run_extraction` now logs a per-batch parse/transform/write timing
 line so a real run's phase split is measured directly, not inferred.
 
+Real-run hardening (2026-08-21, fourth incident): the relaunch under the
+throughput fix above died in :meth:`_CopyChunkSink._parse_and_enqueue`
+with a ``polars.ComputeError`` casting ``'103@POST'`` to ``f64`` in
+``lab_subset.result_value``. Root cause: ``pl.read_csv`` infers each
+column's dtype from a sample *of that chunk* -- early ``lab_subset``
+chunks were all-numeric ``result_value`` values, locking ``Float64`` for
+that chunk, until the stream reached a free-text result region within the
+same chunk. Fixed at the actual source, not with a per-column patch:
+``_parse_and_enqueue`` now reads every column as ``Utf8``
+(``infer_schema_length=0``) -- all typed parsing already happens
+downstream, in each ``extract_<table>``'s own explicit ``.cast()`` calls,
+so this class was never supposed to be inferring types at all. That also
+retired the implicit type safety net a numeric-looking chunk used to
+provide for two other hard casts (``lab_subset.test_type_mapped_omop``,
+``vitals_subset.measurement_mapped_omop``) -- both now lenient
+(``strict=False``) with :func:`_warn_on_unparsable_int_cast` logging any
+non-null value that fails to parse, the same principle as
+:func:`_filter_valid_genc_id`. Confirming ``result_value`` is genuine free
+text also retired :class:`_CopyChunkSink`'s former "no selected column can
+contain a newline, by construction" assumption -- see that class's updated
+docstring and :func:`_select_expr_sql` for the server-side fix (every
+``text``/``character varying`` column is newline-stripped and length-capped
+in the ``SELECT`` itself now, auditing all 9 tables by Postgres column
+type rather than by inspection). :data:`_SINK_BUFFER_BYTE_CAP` adds a
+byte-size flush trigger alongside the row-count one as further insurance
+against any future large region this module hasn't already bounded.
+
 Run on the GEMINI node (writes real patient data to ``OUTPUT_DIR`` -- not a
 dry run):
 
@@ -216,6 +243,11 @@ FD_HEADROOM = 64
 #: Rows per chunk yielded by :func:`_stream_table_copy` -- see the module
 #: docstring's "Fetch strategy" section.
 CHUNK_ROWS = 500_000
+
+#: Byte-size insurance ceiling on :class:`_CopyChunkSink`'s buffer -- see
+#: its ``_drain`` for how this bounds memory even if row *count* stays
+#: below :data:`CHUNK_ROWS` but per-row byte size is unexpectedly large.
+_SINK_BUFFER_BYTE_CAP = 256 * 1024 * 1024  # 256 MiB
 
 #: Rows per chunk (psycopg2 cursor ``itersize``, via ``chunksize``) for the
 #: :func:`_stream_table_cursor` fallback -- kept smaller than
@@ -324,6 +356,71 @@ def _quote_ident(name: str) -> str:
         ``name``, double-quoted and safe to interpolate directly into SQL.
     """
     return '"' + name.replace('"', '""') + '"'
+
+
+#: Columns selected anywhere in this module whose Postgres column type is
+#: ``integer``/``boolean`` (confirmed against ``scripts/gemini/out/schema.md``)
+#: -- these can never contain an embedded newline by construction and are
+#: selected as bare identifiers. Every other selected column across all 9
+#: source tables is ``text``/``character varying`` -- including every
+#: datetime column and every ``character varying(64)`` hashed-id column,
+#: since a length bound doesn't exclude newline *content* -- and gets
+#: :func:`_select_expr_sql`'s newline-stripping, length-capping wrap by
+#: default. Keep this set in sync if a future extractor selects a new
+#: genuinely numeric/boolean column; anything not listed here is wrapped,
+#: which is harmless (a no-op) for a column that happens to be safe anyway.
+_NEWLINE_SAFE_COLUMNS = frozenset(
+    {"genc_id", "test_type_mapped_omop", "measurement_mapped_omop", "icu_flag"}
+)
+
+#: Max characters kept per text/varchar column after
+#: :func:`_select_expr_sql`'s newline-stripping -- generous for any
+#: numeric+unit reading, medical code, hashed identifier, or datetime
+#: string actually used downstream (see docs/gemini_extraction.md's
+#: truncation note); none of those are remotely close to this length in
+#: practice.
+_SELECTED_COLUMN_MAX_CHARS = 128
+
+
+def _select_expr_sql(column: str) -> str:
+    """Build SQL for one selected column, closing the newline-in-CSV-field hazard.
+
+    Real incident this closes: every ``text``/``character varying`` column
+    GEMINI exposes can contain a literal newline regardless of its declared
+    length bound, and :class:`_CopyChunkSink` finds row boundaries by
+    counting raw ``\\n`` bytes, not by CSV-aware parsing -- a literal
+    newline inside a quoted CSV field would silently corrupt row alignment.
+    This module's earlier assumption that no selected column could contain
+    one "by construction" was wrong -- ``lab_subset.result_value`` is a
+    real, demonstrated counterexample (see the module docstring's third
+    real-run-hardening entry). Every ``text``/``character varying`` column
+    is rewritten server-side to strip embedded newlines/carriage returns
+    and cap length -- both a correctness fix and a transfer-volume win,
+    since a free-text region no longer needs to cross the wire in full.
+    Columns confirmed ``integer``/``boolean``
+    (:data:`_NEWLINE_SAFE_COLUMNS`) can never contain a newline by
+    construction and are selected bare, unchanged from their real value.
+
+    Parameters
+    ----------
+    column : str
+        Column name, from this module's own hardcoded per-function calls
+        (never external input).
+
+    Returns
+    -------
+    str
+        A ``SELECT``-list entry, aliased back to ``column``'s own quoted
+        name so downstream code never has to know which columns were
+        wrapped.
+    """
+    quoted = _quote_ident(column)
+    if column in _NEWLINE_SAFE_COLUMNS:
+        return quoted
+    return (
+        f"left(regexp_replace({quoted}, E'[\\n\\r]+', ' ', 'g'), "
+        f"{_SELECTED_COLUMN_MAX_CHARS}) AS {quoted}"
+    )
 
 
 def _suppressed(n: int) -> str:
@@ -537,21 +634,25 @@ class _CopyChunkSink:
     such call is quadratic in chunk size and was slow enough in practice
     (~200 rows/s on a 500k-row first chunk) to look identical to a hang.
 
-    **Column constraint, not currently violated but not enforced either:**
-    row boundaries are found by counting raw ``\\n`` bytes
+    **Column constraint, closed server-side, not by CSV-aware parsing
+    here:** row boundaries are found by counting raw ``\\n`` bytes
     (:meth:`_drain`), not by CSV-aware parsing. A column value containing a
     literal newline inside a CSV-quoted field (Postgres ``COPY`` quotes a
     field containing the delimiter, quote character, or a newline) would
     make this miscount row boundaries and split a single logical row across
-    two chunks, silently corrupting both. Every column every
-    ``extract_<table>`` function currently selects (ids, codes, units,
-    hashed identifiers, datetimes) is free of this risk by construction --
-    genuine free-text fields (e.g. ``radiology_subset.imaging_result``) are
-    deliberately never selected (see the module docstring's MEDS mapping
-    table / ``docs/gemini_extraction.md``). If a future change ever selects
-    a free-text column through :func:`_stream_table_copy`, verify first
-    that it can't contain a literal newline, or add real CSV-aware
-    chunking here instead of the newline-count shortcut.
+    two chunks, silently corrupting both. This module's earlier assumption
+    that no selected column could contain one "by construction" was wrong
+    -- ``lab_subset.result_value`` is free text and a real, demonstrated
+    counterexample (see the module docstring's third real-run-hardening
+    entry), so ``_stream_table_copy``/``_stream_table_cursor`` now wrap
+    every ``text``/``character varying`` selected column server-side via
+    :func:`_select_expr_sql` to strip embedded newlines/carriage returns
+    before the value ever reaches this class -- the constraint is enforced
+    at the source, not merely documented as currently-unviolated. If a
+    future change selects a column through either fetch path, no action is
+    needed here specifically: :func:`_select_expr_sql` wraps it by default
+    unless it's added to :data:`_NEWLINE_SAFE_COLUMNS` (confirmed
+    integer/boolean).
 
     Parameters
     ----------
@@ -604,18 +705,44 @@ class _CopyChunkSink:
                 del self._buffer[: idx + 1]
                 self._pending_newlines -= 1
                 continue
-            if self._pending_newlines < self._chunk_rows:
+            rows_ready = self._pending_newlines >= self._chunk_rows
+            # Byte-size insurance: even with _select_expr_sql's server-side
+            # newline-stripping/length-capping, flush whatever complete
+            # rows are already buffered once the buffer itself crosses
+            # _SINK_BUFFER_BYTE_CAP, rather than waiting for a full
+            # _chunk_rows -- defense in depth against an unexpectedly large
+            # region this module didn't already bound, not the primary fix.
+            bytes_ready = (
+                not rows_ready
+                and self._pending_newlines > 0
+                and len(self._buffer) >= _SINK_BUFFER_BYTE_CAP
+            )
+            if not (rows_ready or bytes_ready):
                 return
+            n_rows = self._chunk_rows if rows_ready else self._pending_newlines
             pos = -1
-            for _ in range(self._chunk_rows):
+            for _ in range(n_rows):
                 pos = self._buffer.index(b"\n", pos + 1)
             self._parse_and_enqueue(bytes(self._buffer[: pos + 1]))
             del self._buffer[: pos + 1]
-            self._pending_newlines -= self._chunk_rows
+            self._pending_newlines -= n_rows
 
     def _parse_and_enqueue(self, body: bytes) -> None:
         assert self._header is not None
-        frame = pl.read_csv(io.BytesIO(self._header + body), null_values=["\\N"])
+        # infer_schema_length=0: never infer a dtype from a sample of this
+        # chunk -- every column comes back Utf8, full stop. Real incident:
+        # inference is per-chunk, so a column that happens to be all-numeric
+        # in early chunks (lab_subset.result_value, before the free-text
+        # result region) locks in Float64 for that chunk, then a later
+        # non-numeric value in the SAME chunk raises ComputeError. All typed
+        # parsing already happens downstream, in each extract_<table>'s own
+        # explicit .cast() calls -- this class's job is CSV chunking, not
+        # type inference, and it should never have been doing any.
+        frame = pl.read_csv(
+            io.BytesIO(self._header + body),
+            null_values=["\\N"],
+            infer_schema_length=0,
+        )
         self._queue.put(frame)
 
     def close(self) -> None:
@@ -678,7 +805,7 @@ def _stream_table_copy(
     polars.DataFrame
         One chunk at a time, in whatever order the server returns rows.
     """
-    cols_sql = ", ".join(_quote_ident(c) for c in dict.fromkeys(select_cols))
+    cols_sql = ", ".join(_select_expr_sql(c) for c in dict.fromkeys(select_cols))
     table_sql = _quote_ident(table)
     copy_sql = (
         f"COPY (SELECT {cols_sql} FROM {table_sql}) "
@@ -758,7 +885,7 @@ def _stream_table_cursor(
     polars.DataFrame
         One chunk at a time, in whatever order the server returns rows.
     """
-    cols_sql = ", ".join(_quote_ident(c) for c in dict.fromkeys(select_cols))
+    cols_sql = ", ".join(_select_expr_sql(c) for c in dict.fromkeys(select_cols))
     table_sql = _quote_ident(table)
     sql = f"SELECT {cols_sql} FROM {table_sql}"
     for chunk in db.stream_query(sql, chunksize=chunk_rows):
@@ -852,6 +979,45 @@ def _filter_valid_genc_id(chunk: pl.DataFrame, table: str) -> pl.DataFrame:
             bad_values,
         )
     return chunk.with_columns(cast).filter(pl.col("genc_id").is_not_null())
+
+
+def _warn_on_unparsable_int_cast(
+    original: pl.Series, cast: pl.Series, column: str, table: str
+) -> None:
+    """Log loudly for non-null values a lenient ``Int64`` cast turned to ``null``.
+
+    Doesn't do the cast or drop anything itself -- callers of this already
+    treat a null concept-id column as "no mapped concept" via their own
+    existing filter (``is_in``/``is_not_null``), so a garbage value and a
+    genuine ``NULL`` end up handled identically either way. This only makes
+    the garbage case *visible* instead of silently indistinguishable from a
+    real null -- the same "log loudly, never let a bad value hide" principle
+    as :func:`_filter_valid_genc_id`, applied here because ``test_type_mapped_omop``/
+    ``measurement_mapped_omop`` used a hard (non-lenient) cast until the
+    all-Utf8 CSV read (see the module docstring's third real-run-hardening
+    entry) removed the implicit type safety net a numeric-looking chunk
+    used to provide.
+
+    Parameters
+    ----------
+    original : polars.Series
+        The column before casting.
+    cast : polars.Series
+        The same column after a ``strict=False`` cast to ``Int64``.
+    column, table : str
+        For the warning log only.
+    """
+    unparsable_mask = original.is_not_null() & cast.is_null()
+    if unparsable_mask.any():
+        bad_values = original.filter(unparsable_mask).head(5).to_list()
+        logger.warning(
+            "%s: %d rows had a non-null %s that failed to parse as an "
+            "integer, treating as unmapped (sample raw values: %s)",
+            table,
+            int(unparsable_mask.sum()),
+            column,
+            bad_values,
+        )
 
 
 #: Case-insensitive, stripped membership map for :func:`_coerce_boolean_flag`.
@@ -1238,10 +1404,14 @@ def extract_labs(
             "collection_date_time",
         ],
     ):
-        frame = (
-            _filter_valid_genc_id(chunk, "lab_subset")
-            .with_columns(pl.col("test_type_mapped_omop").cast(pl.Int64))
-            .filter(pl.col("test_type_mapped_omop").is_in(list(lab_concepts)))
+        frame = _filter_valid_genc_id(chunk, "lab_subset")
+        concept_raw = frame["test_type_mapped_omop"]
+        concept_cast = concept_raw.cast(pl.Int64, strict=False)
+        _warn_on_unparsable_int_cast(
+            concept_raw, concept_cast, "test_type_mapped_omop", "lab_subset"
+        )
+        frame = frame.with_columns(concept_cast).filter(
+            pl.col("test_type_mapped_omop").is_in(list(lab_concepts))
         )
         genc = frame["genc_id"]
         concept = frame["test_type_mapped_omop"]
@@ -1297,10 +1467,14 @@ def extract_vitals(subject_by_genc: dict[int, str]) -> Iterator[ExtractedBatch]:
             "measure_date_time",
         ],
     ):
-        frame = (
-            _filter_valid_genc_id(chunk, "vitals_subset")
-            .with_columns(pl.col("measurement_mapped_omop").cast(pl.Int64))
-            .filter(pl.col("measurement_mapped_omop").is_not_null())
+        frame = _filter_valid_genc_id(chunk, "vitals_subset")
+        concept_raw = frame["measurement_mapped_omop"]
+        concept_cast = concept_raw.cast(pl.Int64, strict=False)
+        _warn_on_unparsable_int_cast(
+            concept_raw, concept_cast, "measurement_mapped_omop", "vitals_subset"
+        )
+        frame = frame.with_columns(concept_cast).filter(
+            pl.col("measurement_mapped_omop").is_not_null()
         )
         genc = frame["genc_id"]
         meds = pl.DataFrame(
