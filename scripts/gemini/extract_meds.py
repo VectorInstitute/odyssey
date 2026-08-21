@@ -118,12 +118,12 @@ the discharge-time index inside :func:`extract_diagnoses`) streamed
 line and completion -- now wrapped in :func:`_log_table_progress`, same as
 every primary table, so a long pass is never silent. Second, every
 ``genc_id`` column was cast with a hard ``pl.col("genc_id").cast(pl.Int64)``
-that raises on any row with an unparseable value -- that alone would just
+that raises on any row with an unparsable value -- that alone would just
 be a crash, but combined with the (separately fixed) producer-thread
 deadlock in :func:`_stream_table_copy`, an exception raised mid-chunk could
 leave the whole extraction hung with no traceback ever printed, rather than
 failing loudly. :func:`_filter_valid_genc_id` replaces every such cast: a
-row with an unparseable (not just missing) ``genc_id`` is dropped and
+row with an unparsable (not just missing) ``genc_id`` is dropped and
 logged, not allowed to crash the batch -- the same "one bad row must not
 kill the whole run" principle already applied to every other messy field in
 this module.
@@ -713,7 +713,7 @@ def _stream_table(table: str, select_cols: list[str]) -> Iterator[pl.DataFrame]:
 
 
 def _filter_valid_genc_id(chunk: pl.DataFrame, table: str) -> pl.DataFrame:
-    """Cast ``genc_id`` to ``Int64`` leniently, dropping (and logging) unparseable rows.
+    """Cast ``genc_id`` to ``Int64`` leniently, dropping (and logging) unparsable rows.
 
     A hard ``.cast(pl.Int64)`` (this function's predecessor, used
     everywhere in this module until a real hang traced back to it) raises
@@ -723,7 +723,7 @@ def _filter_valid_genc_id(chunk: pl.DataFrame, table: str) -> pl.DataFrame:
     producer thread blocked on a full, undrained queue, and the *original*
     exception's traceback never got printed until that deadlock was fixed
     separately (see the module docstring's "Fetch strategy"). Dropping an
-    unparseable row instead is the same "one bad row must not kill the
+    unparsable row instead is the same "one bad row must not kill the
     batch" principle already applied to every other messy field in this
     module (unmapped lab concepts, blank diagnosis codes, ...) --
     ``genc_id`` is the join key for everything downstream, so a row that
@@ -739,19 +739,19 @@ def _filter_valid_genc_id(chunk: pl.DataFrame, table: str) -> pl.DataFrame:
     Returns
     -------
     polars.DataFrame
-        ``chunk`` with ``genc_id`` cast to ``Int64``, unparseable rows
+        ``chunk`` with ``genc_id`` cast to ``Int64``, unparsable rows
         dropped.
     """
     original = chunk["genc_id"]
     cast = original.cast(pl.Int64, strict=False)
-    unparseable_mask = original.is_not_null() & cast.is_null()
-    if unparseable_mask.any():
-        bad_values = original.filter(unparseable_mask).head(5).to_list()
+    unparsable_mask = original.is_not_null() & cast.is_null()
+    if unparsable_mask.any():
+        bad_values = original.filter(unparsable_mask).head(5).to_list()
         logger.warning(
             "%s: %d rows had a non-null genc_id that failed to parse as an "
             "integer, dropping (sample raw values: %s)",
             table,
-            int(unparseable_mask.sum()),
+            int(unparsable_mask.sum()),
             bad_values,
         )
     return chunk.with_columns(cast).filter(pl.col("genc_id").is_not_null())
