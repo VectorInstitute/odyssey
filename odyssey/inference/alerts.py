@@ -99,6 +99,25 @@ from odyssey.training.train import _move_chunk_to_device
 
 logger = logging.getLogger(__name__)
 
+#: Version of the landmark-selection protocol used to build the model-scored
+#: IndexRow sets :func:`collect_model_scores` produces (and, downstream,
+#: whatever gets dumped/reported from them). Bump this and extend the
+#: comment below whenever landmark selection itself changes -- not for
+#: unrelated changes to scoring, features, or baselines.
+#:
+#: v1 (every dump/results.json written before 2026-08-21): _landmark_mask
+#: was called fresh per streaming chunk with no state carried across chunk
+#: boundaries -- a patient whose sequence spanned more than one chunk got a
+#: spurious extra landmark row at the boundary (confirmed ~23% over-count
+#: at eICU scale; review findings 8/19).
+#: v2 (current): LandmarkState is threaded across chunks, fixing that.
+#:
+#: _index_rows_from_events (the model-free path used for baseline fitting)
+#: was never affected -- it has no chunking at all -- so this version only
+#: describes collect_model_scores' output, and only that output carries
+#: the tag (see _stamp_landmark_protocol_version, load_index_row_table).
+LANDMARK_PROTOCOL_VERSION = 2
+
 HORIZONS_HOURS: Tuple[float, ...] = (8.0, 24.0, 72.0)
 
 
@@ -139,23 +158,106 @@ def outcome_at_horizon(
     return 0
 
 
+@dataclass
+class LandmarkState:
+    """Per-lane last-real-position state, threaded across streaming chunks.
+
+    ``bucket``/``subject_id``/``visit_id`` are each ``(lanes,)``: the
+    landmark bucket, subject, and visit of the last *real* (non-padding)
+    position :func:`_landmark_mask` saw in that lane, across every call so
+    far -- the same role the backbone's own recurrent state plays for
+    model weights, carried by the caller from one chunk to the next
+    (see :func:`collect_model_scores`).
+    """
+
+    bucket: torch.Tensor
+    subject_id: torch.Tensor
+    visit_id: torch.Tensor
+
+
 def _landmark_mask(
     time_hours: torch.Tensor,
     subject_ids: torch.Tensor,
     visit_ids: torch.Tensor,
     landmark_hours: float,
     visit_start_hours: torch.Tensor,
-) -> torch.Tensor:
-    """First real position of each visit's ``landmark_hours`` bucket, per lane."""
+    *,
+    state: Optional[LandmarkState] = None,
+) -> Tuple[torch.Tensor, LandmarkState]:
+    """First real position of each visit's ``landmark_hours`` bucket, across chunks.
+
+    Real bug this fixes: an earlier version had no ``state`` parameter at
+    all -- called fresh per chunk, the first position of every chunk was
+    unconditionally treated as a new landmark (nothing to compare it
+    against), so any patient whose sequence spans more than one streaming
+    chunk got a spurious extra landmark row at every chunk boundary, even
+    when that position was still inside the same bucket as the position
+    before it. Confirmed via
+    ``tests/odyssey/inference/test_alerts.py``'s regression test: at
+    eICU scale this over-counted landmark rows by ~23%.
+
+    ``state`` (``None`` on the first call) carries the previous call's
+    last real position per lane forward; without it, position 0 of every
+    lane falls back to "nothing before it" (matching the original,
+    single-chunk-only behavior) rather than crashing.
+
+    Returns
+    -------
+    tuple[torch.Tensor, LandmarkState]
+        The boolean landmark mask, and the updated state to pass into the
+        next call.
+    """
+    lanes, chunk_len = time_hours.shape
     bucket = torch.floor((time_hours - visit_start_hours) / landmark_hours)
+
     prev_bucket = torch.full_like(bucket, -1.0)
     prev_bucket[:, 1:] = bucket[:, :-1]
-    same_visit = torch.zeros_like(subject_ids, dtype=torch.bool)
-    same_visit[:, 1:] = (subject_ids[:, 1:] == subject_ids[:, :-1]) & (
-        visit_ids[:, 1:] == visit_ids[:, :-1]
-    )
+    prev_subject = torch.full_like(subject_ids, NO_SUBJECT)
+    prev_subject[:, 1:] = subject_ids[:, :-1]
+    prev_visit = torch.full_like(visit_ids, -1)
+    prev_visit[:, 1:] = visit_ids[:, :-1]
+    if state is not None:
+        prev_bucket[:, 0] = state.bucket
+        prev_subject[:, 0] = state.subject_id
+        prev_visit[:, 0] = state.visit_id
+
+    same_visit = (subject_ids == prev_subject) & (visit_ids == prev_visit)
     new_bucket = (bucket != prev_bucket) | ~same_visit
-    return new_bucket & (subject_ids != NO_SUBJECT) & (visit_ids >= 0)
+    mask = new_bucket & (subject_ids != NO_SUBJECT) & (visit_ids >= 0)
+
+    # Carry forward each lane's LAST real (non-padding) position for the
+    # next call -- if a lane has no real position in this chunk at all
+    # (a fully-padded chunk for that lane), keep whatever state it already
+    # had rather than resetting to "nothing before it".
+    real = subject_ids != NO_SUBJECT
+    positions = torch.arange(chunk_len, device=time_hours.device).unsqueeze(0)
+    real_positions = torch.where(real, positions, torch.full_like(positions, -1))
+    last_idx = real_positions.max(dim=1).values
+    has_real = last_idx >= 0
+    gather_idx = last_idx.clamp(min=0).unsqueeze(1)
+    chunk_last_bucket = bucket.gather(1, gather_idx).squeeze(1)
+    chunk_last_subject = subject_ids.gather(1, gather_idx).squeeze(1)
+    chunk_last_visit = visit_ids.gather(1, gather_idx).squeeze(1)
+    if state is None:
+        prev_state_bucket = torch.full(
+            (lanes,), -1.0, dtype=bucket.dtype, device=time_hours.device
+        )
+        prev_state_subject = torch.full(
+            (lanes,), NO_SUBJECT, dtype=subject_ids.dtype, device=time_hours.device
+        )
+        prev_state_visit = torch.full(
+            (lanes,), -1, dtype=visit_ids.dtype, device=time_hours.device
+        )
+    else:
+        prev_state_bucket = state.bucket
+        prev_state_subject = state.subject_id
+        prev_state_visit = state.visit_id
+    new_state = LandmarkState(
+        bucket=torch.where(has_real, chunk_last_bucket, prev_state_bucket),
+        subject_id=torch.where(has_real, chunk_last_subject, prev_state_subject),
+        visit_id=torch.where(has_real, chunk_last_visit, prev_state_visit),
+    )
+    return mask, new_state
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +319,7 @@ def collect_model_scores(
     )
 
     state = None
+    landmark_state: Optional[LandmarkState] = None
     with torch.no_grad():
         for chunk in sampler:
             chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
@@ -245,19 +348,15 @@ def collect_model_scores(
             # visit_id=-1, not a real encounter -- _landmark_mask's own
             # `visit_ids >= 0` guard already excludes them from ever being
             # selected as a landmark row, so they don't corrupt this set on
-            # their own. A real, separate divergence from
-            # _index_rows_from_events *does* exist though: _landmark_mask is
-            # called fresh per chunk with no state carried across chunk
-            # boundaries (prev_bucket always resets to -1 at each chunk's
-            # first position), so a patient whose sequence spans more than
-            # one streaming chunk gets a spurious extra landmark at the
-            # chunk boundary even when that position is still inside the
-            # same landmark_hours bucket as the chunk before it --
-            # confirmed via a regression test comparing this function
-            # against _index_rows_from_events at a chunk_size small enough
-            # to split a real patient's sequence (see
-            # tests/odyssey/inference/test_alerts.py).
-            keep = _landmark_mask(times, sids, vids, landmark_hours, starts)
+            # their own; ruled out as a cause when tracking down the
+            # cross-chunk divergence _landmark_mask's own docstring
+            # describes. landmark_state is threaded across chunks the same
+            # way the model's own recurrent `state` is, immediately above --
+            # without it, a patient's sequence spanning more than one chunk
+            # would get a spurious extra landmark at the chunk boundary.
+            keep, landmark_state = _landmark_mask(
+                times, sids, vids, landmark_hours, starts, state=landmark_state
+            )
             if not keep.any():
                 continue
             probs = torch.softmax(logits[keep], dim=-1)
@@ -1070,6 +1169,61 @@ def index_row_table(
     return pl.concat(frames, how="diagonal")
 
 
+def _stamp_landmark_protocol_version(table: pl.DataFrame) -> pl.DataFrame:
+    """Attach the current :data:`LANDMARK_PROTOCOL_VERSION` as a constant column.
+
+    Only meaningful for a table built from :func:`collect_model_scores`'
+    rows (the only path :data:`LANDMARK_PROTOCOL_VERSION` describes) --
+    see :func:`evaluate_alerts`'s dump-rows call site, the only caller.
+    """
+    return table.with_columns(
+        pl.lit(LANDMARK_PROTOCOL_VERSION).alias("landmark_protocol_version")
+    )
+
+
+def load_index_row_table(path: Union[str, Path]) -> pl.DataFrame:
+    """Read a dumped index-row table, always logging its protocol version.
+
+    ``landmark_protocol_version`` absent entirely means the dump predates
+    the column -- protocol v1 (see :data:`LANDMARK_PROTOCOL_VERSION`).
+    Always logs the version found; emits a loud ``WARNING`` (not an error)
+    when it differs from the code's current
+    :data:`LANDMARK_PROTOCOL_VERSION` -- a v1 dump is still a perfectly
+    valid, internally consistent comparison set for anything scored
+    against it (e.g. a baseline fitted and evaluated entirely against v1
+    rows), it just isn't comparable row-for-row against a fresh run under
+    a different protocol version without knowing that. Callers that need
+    to block on a mismatch (rather than just warn) should check the
+    returned column themselves.
+    """
+    table = pl.read_parquet(path)
+    if "landmark_protocol_version" in table.columns:
+        versions = table["landmark_protocol_version"].unique().to_list()
+        version = versions[0] if len(versions) == 1 else None
+        if version is None:
+            logger.warning(
+                "[alerts] %s has mixed landmark_protocol_version values %s -- "
+                "was this concatenated from runs on different protocol versions?",
+                path,
+                versions,
+            )
+    else:
+        version = 1
+    logger.info("[alerts] %s: landmark_protocol_version=%s", path, version)
+    if version != LANDMARK_PROTOCOL_VERSION:
+        logger.warning(
+            "[alerts] %s was written with landmark_protocol_version=%s, but this "
+            "code is on version %s -- scores from this dump remain a valid, "
+            "internally consistent comparison set among themselves, but are NOT "
+            "directly comparable row-for-row against a fresh run under the "
+            "current protocol.",
+            path,
+            version,
+            LANDMARK_PROTOCOL_VERSION,
+        )
+    return table
+
+
 # Context columns dumped with the per-row table (names from
 # odyssey.inference.baseline_features.feature_names when the strong set is used).
 ROW_DUMP_CONTEXT: Tuple[str, ...] = (
@@ -1280,6 +1434,7 @@ def evaluate_alerts(
             context_columns=context_cols,
             context_names=context_names,
         )
+        table = _stamp_landmark_protocol_version(table)
         Path(dump_rows_path).parent.mkdir(parents=True, exist_ok=True)
         table.write_parquet(dump_rows_path)
         logger.info("[alerts] wrote %d index rows to %s", table.height, dump_rows_path)
@@ -1351,7 +1506,14 @@ def _main() -> None:
     )
     out = Path(args.output_json)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps([asdict(r) for r in results], indent=2))
+    # Per-record field, not a top-level wrapper: build_alert_finding (and
+    # anything else reading this file) expects a bare list of records --
+    # keep it dumb, don't change the top-level shape.
+    records = [
+        {**asdict(r), "landmark_protocol_version": LANDMARK_PROTOCOL_VERSION}
+        for r in results
+    ]
+    out.write_text(json.dumps(records, indent=2))
     for r in results:
         logger.info(
             "[alerts] %-22s %5.0fh %-12s auroc=%.3f brier=%s n=%d pos=%d cens=%d",
