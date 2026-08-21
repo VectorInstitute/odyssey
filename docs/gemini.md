@@ -264,11 +264,20 @@ it stays inside.
    different hashes -- `git pull`'s merge sees that as two unrelated
    histories and refuses, the exact divergence Amrit hit once. Reset is safe
    here specifically *because* it's guarded: if the working tree is dirty,
-   or there are local commits `origin/main` doesn't have, `run.sh` prints
-   exactly what's blocking and stops rather than resetting over it -- push
-   those first (`run.sh`'s own commit-and-push step at the end of a run
-   does this automatically for step output; anything committed some other
-   way needs a manual `git push` first).
+   `run.sh` stops and prints the diff. If there are local commits
+   `origin/main` doesn't have *by hash*, `run.sh` doesn't refuse on
+   ancestry alone -- a mirror rewrite orphans a commit's hash even when its
+   content already reached `origin/main` via the fetch-and-copy-files
+   mirror-back direction below (this happened to Amrit: his real
+   `extract-dry` output was already upstream, just under a different
+   commit). It diffs the actual paths those commits touched against
+   `origin/main`'s current content for those exact paths; if every one
+   matches exactly, it prints "outputs preserved upstream, resetting" and
+   proceeds. It only refuses, printing exactly which paths would lose real
+   content, when something genuinely isn't upstream yet -- push that first
+   (`run.sh`'s own commit-and-push step at the end of a run does this
+   automatically for step output; anything committed some other way needs
+   a manual `git push` first).
 3. The step writes only what is allowed to leave (see Governance above) to
    `scripts/gemini/out/`.
 4. `run.sh` commits and pushes that output back to `gemini main` directly

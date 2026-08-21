@@ -78,13 +78,48 @@ sync_with_mirror() {
     local unpushed
     unpushed=$(git log --oneline origin/main..HEAD)
     if [[ -n "$unpushed" ]]; then
-        echo "REFUSING to sync: local commits not on origin/main:" >&2
-        echo "$unpushed" >&2
-        echo "These outputs must be pushed before resetting over them -- if" >&2
-        echo "run.sh's own commit-and-push step made them, re-run this step" >&2
-        echo "to retry the push; if you committed some other way, push it" >&2
-        echo "first." >&2
-        exit 1
+        # This can be a false positive, not real divergence: every mirror
+        # rewrites history (see the mirroring section above), so a commit
+        # this node made can be byte-identical to what already reached
+        # origin/main via the fetch-and-copy-files mirror-back direction,
+        # just under a completely unrelated hash -- ancestry alone can't
+        # tell "content-preserved" from "genuinely local-only". Diff the
+        # actual paths the unpushed commits touched (not the whole tree,
+        # which differs constantly for unrelated reasons as origin/main
+        # keeps moving) against origin/main's current content for those
+        # exact paths.
+        local touched_paths
+        touched_paths=$(
+            git rev-list origin/main..HEAD |
+                xargs -I{} git diff-tree --no-commit-id --name-only -r {} |
+                sort -u
+        )
+
+        local lost_paths=""
+        local path
+        while IFS= read -r path; do
+            [[ -z "$path" ]] && continue
+            if ! git diff --quiet origin/main HEAD -- "$path"; then
+                lost_paths+="$path"$'\n'
+            fi
+        done <<<"$touched_paths"
+
+        if [[ -n "$lost_paths" ]]; then
+            echo "REFUSING to sync: local commits not on origin/main, and" >&2
+            echo "these paths differ from origin/main's current content" >&2
+            echo "(real content that would be lost by resetting):" >&2
+            echo "$lost_paths" >&2
+            echo "$unpushed" >&2
+            echo "These must be pushed before resetting over them -- if" >&2
+            echo "run.sh's own commit-and-push step made them, re-run this step" >&2
+            echo "to retry the push; if you committed some other way, push it" >&2
+            echo "first." >&2
+            exit 1
+        fi
+
+        echo "Local commits not on origin/main by hash, but every path they"
+        echo "touched matches origin/main's current content exactly --"
+        echo "outputs preserved upstream, resetting."
     fi
 
     git reset --hard origin/main
