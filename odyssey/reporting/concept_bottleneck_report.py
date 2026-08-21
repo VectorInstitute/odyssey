@@ -400,8 +400,24 @@ def build_findings(
     total_n = sum(v["n_predictions"] for v in by_type.values())
     lab = by_type.get("lab")
     big = {k: v for k, v in by_type.items() if v["n_predictions"] >= 50_000}
-    best = max(big, key=lambda k: big[k]["top1_accuracy"])
-    worst = min(big, key=lambda k: big[k]["top1_accuracy"])
+    if big:
+        best = max(big, key=lambda k: big[k]["top1_accuracy"])
+        worst = min(big, key=lambda k: big[k]["top1_accuracy"])
+        by_type_note = (
+            f" Across the major families, {best} is the most predictable "
+            f"(top-1 {big[best]['top1_accuracy']:.1%}) and {worst} the least "
+            f"(top-1 {big[worst]['top1_accuracy']:.1%}, perplexity "
+            f"{big[worst]['perplexity']:.0f})."
+        )
+    else:
+        # No code-type bucket reached the threshold (e.g. a small/subset
+        # run) -- degrade gracefully instead of max()/min() on an empty
+        # dict, which used to crash report generation entirely.
+        by_type_note = (
+            " No code-type bucket reached the 50,000-prediction threshold "
+            "needed for a reliable best/worst-by-type comparison on this "
+            "run -- see the by-type table above for the raw per-type numbers."
+        )
     task = (
         f"<b>Read the headline through the by-type table.</b> The aggregate "
         f"{tm['top1_accuracy']:.1%} top-1 / {tm['top5_accuracy']:.1%} top-5 is "
@@ -413,10 +429,8 @@ def build_findings(
             if lab
             else ""
         )
-        + f". Across the major families, {best} is the most predictable "
-        f"(top-1 {big[best]['top1_accuracy']:.1%}) and {worst} the least "
-        f"(top-1 {big[worst]['top1_accuracy']:.1%}, perplexity "
-        f"{big[worst]['perplexity']:.0f})."
+        + "."
+        + by_type_note
     )
 
     cm = [c for c in inference["concept_metrics"] if c.get("auroc") is not None]
