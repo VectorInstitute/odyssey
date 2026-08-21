@@ -50,3 +50,63 @@ def test_baseline_plan_skips_bottleneck_only_stages(tmp_path: Path) -> None:
     for stage in ("eval", "alerts", "report"):
         assert f"=== STAGE {stage} EXIT 0 (dry) ===" in plan, stage
     assert "--interventions" not in plan
+
+
+def test_missing_config_json_fails_loudly_instead_of_silently_skipping_stages(
+    tmp_path: Path,
+) -> None:
+    # Real bug this guards against: MODEL_KIND used to be parsed via a
+    # command substitution whose failure (missing/malformed config.json)
+    # was never checked -- MODEL_KIND silently became "", and every
+    # `[ "$MODEL_KIND" = "bottleneck" ]` check then evaluated false,
+    # silently skipping interventions/cases for what may actually be a
+    # bottleneck run, with no error surfaced at all.
+    run_dir = tmp_path / "run_no_config"
+    run_dir.mkdir()  # no config.json written
+    data = tmp_path / "data"
+    (data / "held_out").mkdir(parents=True)
+    (data / "train").mkdir()
+    env = dict(os.environ, DRY_RUN="1", PYTHON="python3")
+
+    out = subprocess.run(
+        ["bash", str(SCRIPT), str(run_dir), str(data)],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert out.returncode != 0
+    assert "could not read model_kind" in out.stderr
+    assert "STAGE" not in out.stdout  # never got far enough to plan any stage
+
+
+def test_odyssey_repo_override_is_used_for_the_logged_commit(tmp_path: Path) -> None:
+    # ODYSSEY_REPO must actually be honored, not just the PYTHON venv
+    # default -- it's also what the logged `commit=` hash is read from.
+    run_dir = tmp_path / "run_bottleneck"
+    run_dir.mkdir()
+    (run_dir / "config.json").write_text(json.dumps({"model_kind": "bottleneck"}))
+    data = tmp_path / "data"
+    (data / "held_out").mkdir(parents=True)
+    (data / "train").mkdir()
+    fake_repo = tmp_path / "not_home_odyssey"
+    fake_repo.mkdir()
+    env = dict(
+        os.environ,
+        DRY_RUN="1",
+        PYTHON="python3",
+        ODYSSEY_REPO=str(fake_repo),
+    )
+
+    out = subprocess.run(
+        ["bash", str(SCRIPT), str(run_dir), str(data)],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    )
+
+    # fake_repo isn't a git repo, so the commit lookup correctly falls
+    # back to "unknown" -- the point is it tried ODYSSEY_REPO, not $HOME/odyssey.
+    assert "commit=unknown" in out.stdout

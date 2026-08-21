@@ -3,6 +3,10 @@ permissions:
   contents: read
   pull-requests: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 on:
   push:
     branches:
@@ -11,6 +15,7 @@ on:
       - .pre-commit-config.yaml
       - .github/workflows/code_checks.yml
       - '**.py'
+      - '**.sh'
       - uv.lock
       - pyproject.toml
       - '**.ipynb'
@@ -21,6 +26,7 @@ on:
       - .pre-commit-config.yaml
       - .github/workflows/code_checks.yml
       - '**.py'
+      - '**.sh'
       - uv.lock
       - pyproject.toml
       - '**.ipynb'
@@ -28,6 +34,7 @@ on:
 jobs:
   run-code-check:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7.0.1
 

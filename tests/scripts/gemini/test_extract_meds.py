@@ -7,6 +7,7 @@ monkeypatched, matching every other ``tests/scripts/gemini/test_*.py``.
 
 import importlib.util
 import queue
+import threading
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, Iterator
@@ -209,7 +210,9 @@ def test_normalize_unit_series_collapses_the_cv_family() -> None:
 def test_copy_chunk_sink_chunks_and_flushes_the_remainder() -> None:
     mod = _load_module()
     out_queue: "queue.Queue[pl.DataFrame]" = queue.Queue()
-    sink = mod._CopyChunkSink(chunk_rows=2, out_queue=out_queue)
+    sink = mod._CopyChunkSink(
+        chunk_rows=2, out_queue=out_queue, stop_requested=threading.Event()
+    )
     csv_text = "a,b\n1,x\n2,y\n3,z\n4,\\N\n5,w\n"
     data = csv_text.encode()
     # Feed it in small, arbitrary byte boundaries, including mid-line --
@@ -233,11 +236,25 @@ def test_copy_chunk_sink_chunks_and_flushes_the_remainder() -> None:
 def test_copy_chunk_sink_distinguishes_null_marker_from_empty_string() -> None:
     mod = _load_module()
     out_queue: "queue.Queue[pl.DataFrame]" = queue.Queue()
-    sink = mod._CopyChunkSink(chunk_rows=10, out_queue=out_queue)
+    sink = mod._CopyChunkSink(
+        chunk_rows=10, out_queue=out_queue, stop_requested=threading.Event()
+    )
     sink.write(b'a,b\n1,\\N\n2,""\n')
     sink.close()
     result = out_queue.get()
     assert result["b"].to_list() == [None, ""]
+
+
+def test_copy_chunk_sink_write_raises_once_stop_is_requested() -> None:
+    mod = _load_module()
+    out_queue: "queue.Queue[pl.DataFrame]" = queue.Queue()
+    stop_requested = threading.Event()
+    sink = mod._CopyChunkSink(
+        chunk_rows=10, out_queue=out_queue, stop_requested=stop_requested
+    )
+    stop_requested.set()
+    with pytest.raises(mod._StreamAbandonedError):
+        sink.write(b"a,b\n1,x\n")
 
 
 def test_stream_table_copy_streams_all_rows_via_fake_copy_to_sink(
@@ -333,6 +350,44 @@ def test_stream_table_copy_raises_after_yielding_a_real_chunk_on_a_later_failure
     assert first["genc_id"].to_list() == [1]
     with pytest.raises(RuntimeError, match="connection dropped"):
         next(gen)
+
+
+def test_stream_table_copy_closing_early_does_not_deadlock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real incident this guards against: if a caller elsewhere abandons a
+    # _stream_table_copy generator before it's exhausted (e.g. run_extraction
+    # raises for an unrelated reason mid-table), the old code's unconditional
+    # `producer.join()` in the generator's `finally` could hang forever --
+    # the producer thread ends up blocked on a full out_queue.put() with no
+    # consumer left to drain it. Write enough rows to guarantee the producer
+    # blocks on a full queue (_STREAM_QUEUE_MAXSIZE=4, one row per chunk),
+    # consume exactly one chunk, then close the generator early and assert
+    # that completes promptly instead of hanging.
+    mod = _load_module()
+
+    def fake_copy_to_sink(sql: str, sink: Any) -> None:
+        for i in range(1, 21):  # far more rows than the queue can hold
+            sink.write(f"genc_id\n{i}\n".encode() if i == 1 else f"{i}\n".encode())
+
+    monkeypatch.setattr(mod.db, "copy_to_sink", fake_copy_to_sink)
+
+    gen = mod._stream_table_copy("admdad_subset", ["genc_id"], chunk_rows=1)
+    first = next(gen)
+    assert first["genc_id"].to_list() == [1]
+
+    result: list[str] = []
+
+    def _close_it() -> None:
+        gen.close()
+        result.append("closed")
+
+    closer = threading.Thread(target=_close_it, daemon=True)
+    closer.start()
+    closer.join(timeout=10)
+    assert result == ["closed"], (
+        "gen.close() did not return -- producer/consumer deadlocked"
+    )
 
 
 def test_stream_table_does_not_fall_back_once_copy_has_yielded_real_rows(
