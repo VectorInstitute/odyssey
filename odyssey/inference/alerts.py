@@ -70,6 +70,7 @@ from odyssey.data.alert_events import (
 from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.concepts import concepts_for_source
 from odyssey.data.history_recap import maybe_history_recap
+from odyssey.data.packed_context import PackedContextSampler
 from odyssey.data.sequences import BIRTH_CODE
 from odyssey.data.streaming import NO_SUBJECT, PackedLaneSampler
 from odyssey.data.value_binning import (
@@ -135,6 +136,12 @@ class IndexRow:
     time_hours: float
     scores: Dict[str, float] = field(default_factory=dict)
     """scorer name -> risk score for the event under evaluation."""
+    is_tail: bool = False
+    """True if this subject's history was truncated to fit max_context
+    (backbone="transformer" only; see PackedContextSampler.truncated_
+    subject_ids). Lets score_alerts report a separate slice for
+    truncated patients instead of pooling them into the headline
+    numbers -- see the module's tail-slice reporting."""
 
 
 def outcome_at_horizon(
@@ -294,6 +301,8 @@ def collect_model_scores(
     chunk_size: int = 256,
     device: str = "cuda",
     horizons: Sequence[float] = HORIZONS_HOURS,
+    backbone: str = "hybrid",
+    max_context: int = 4096,
 ) -> Dict[str, List[IndexRow]]:
     """One streaming pass; per alert, index rows with model risk scores.
 
@@ -302,6 +311,27 @@ def collect_model_scores(
     when the model has per-event hazard heads covering the alert,
     ``hazard@{h}h`` for each horizon in ``horizons``: the head's
     ``P(event within h)``, a calibrated probability.
+
+    ``backbone="transformer"`` streams through
+    :class:`~odyssey.data.packed_context.PackedContextSampler` instead of
+    the TBTT :class:`~odyssey.data.streaming.PackedLaneSampler`.
+    Landmark selection (:func:`_landmark_mask`) is reset fresh every
+    chunk in that case (``landmark_state`` never carried across calls):
+    ``PackedLaneSampler``'s lanes are persistent streams where the same
+    lane index continues the same patient across chunks, so
+    ``landmark_state`` has to carry that patient's last position forward
+    (see :data:`LANDMARK_PROTOCOL_VERSION`'s v1->v2 fix). A
+    ``PackedContextSampler`` row is a self-contained, complete (or
+    head-truncated) set of whole patients with no continuation into the
+    next chunk at all -- carrying state across such a boundary would
+    incorrectly compare one chunk's last row to an unrelated next row.
+    Every row already contains each of its patients' *whole* visible
+    history in one pass, so resetting per chunk still sees every
+    landmark within it; this is what makes the packed path's own
+    landmark set provably equal to :func:`_index_rows_from_events`'
+    model-free selection (see ``tests/odyssey/inference/test_alerts.py``).
+    Rows belonging to a subject the sampler truncated are marked
+    ``IndexRow.is_tail=True``.
     """
     model.eval()
     concept_index = {name: i for i, name in enumerate(concept_names)}
@@ -314,8 +344,13 @@ def collect_model_scores(
     )
     rows: Dict[str, List[IndexRow]] = {a.name: [] for a in alerts}
     patients = iter_patient_sequences(events_binned, vocab)
-    sampler = PackedLaneSampler(
-        patients, num_lanes=num_lanes, chunk_size=chunk_size, reset_prob=0.0
+    packed = backbone == "transformer"
+    sampler: Union[PackedLaneSampler, PackedContextSampler] = (
+        PackedContextSampler(patients, batch_size=num_lanes, max_context=max_context)
+        if packed
+        else PackedLaneSampler(
+            patients, num_lanes=num_lanes, chunk_size=chunk_size, reset_prob=0.0
+        )
     )
 
     state = None
@@ -323,6 +358,8 @@ def collect_model_scores(
     with torch.no_grad():
         for chunk in sampler:
             chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
+            if packed:
+                landmark_state = None  # see the docstring: never carried
             fwd = model.forward_with_features(
                 chunk.batch, state=state, reset_mask=chunk.reset_mask
             )
@@ -350,10 +387,14 @@ def collect_model_scores(
             # selected as a landmark row, so they don't corrupt this set on
             # their own; ruled out as a cause when tracking down the
             # cross-chunk divergence _landmark_mask's own docstring
-            # describes. landmark_state is threaded across chunks the same
-            # way the model's own recurrent `state` is, immediately above --
-            # without it, a patient's sequence spanning more than one chunk
-            # would get a spurious extra landmark at the chunk boundary.
+            # describes. For the lane path, landmark_state is threaded
+            # across chunks the same way the model's own recurrent `state`
+            # is, immediately above -- without it, a patient's sequence
+            # spanning more than one chunk would get a spurious extra
+            # landmark at the chunk boundary. For the packed path it was
+            # just reset to None above instead (see this function's
+            # docstring for why that is the correct choice there, not a
+            # gap).
             keep, landmark_state = _landmark_mask(
                 times, sids, vids, landmark_hours, starts, state=landmark_state
             )
@@ -366,6 +407,11 @@ def collect_model_scores(
             kept_sids = sids[keep].tolist()
             kept_vids = vids[keep].tolist()
             kept_times = times[keep].tolist()
+            truncated_ids = (
+                set(sampler.truncated_subject_ids)
+                if packed and isinstance(sampler, PackedContextSampler)
+                else set()
+            )
             for alert in alerts:
                 mass = probs[:, token_masks[alert.name]].sum(dim=-1).tolist()
                 concept_p = (
@@ -392,7 +438,11 @@ def collect_model_scores(
                         scores["concept"] = float(concept_p[k])
                     for label, values in within.items():
                         scores[label] = float(values[k])
-                    rows[alert.name].append(IndexRow(int(s), int(v), float(t), scores))
+                    rows[alert.name].append(
+                        IndexRow(
+                            int(s), int(v), float(t), scores, is_tail=s in truncated_ids
+                        )
+                    )
     return rows
 
 
@@ -1332,6 +1382,63 @@ def _index_rows_from_events(
     return {a.name: list(rows) for a in alerts}
 
 
+def _landmark_key_set(rows: Sequence[IndexRow]) -> set[Tuple[int, int, float]]:
+    """(subject, visit, time rounded to microseconds) for set comparison.
+
+    Rounding guards against float noise between two independently
+    computed time bases that should agree exactly (both "hours since
+    this subject's first timed non-birth event" -- see
+    :func:`collect_model_scores`'s docstring) but arrive at that value
+    through different code paths (tokenization vs. a polars expression).
+    """
+    return {(row.subject_id, row.visit_id, round(row.time_hours, 6)) for row in rows}
+
+
+def verify_packed_landmark_rows(
+    model_rows: Dict[str, List[IndexRow]],
+    events_binned: pl.DataFrame,
+    alerts: Sequence[AlertEvent],
+    *,
+    landmark_hours: float,
+) -> List[str]:
+    """Compare backbone="transformer"'s landmark set against the model-free truth.
+
+    Two independent implementations of "which (subject, visit, time)
+    triples are landmarks" (:func:`collect_model_scores`'s packed path
+    and :func:`_index_rows_from_events`) only get to coexist once they
+    are shown to agree, not assumed to -- this is that proof, run for
+    real every time backbone="transformer" scores a run
+    (:func:`evaluate_alerts`), not only in tests. Returns human-readable
+    mismatch descriptions (empty = agrees exactly); logs a warning for
+    any it finds rather than raising, matching
+    :func:`~odyssey.utils.env_fingerprint.check_canary`'s house style for
+    a real-time self-check that must not abort a running evaluation.
+    """
+    ground_truth = _index_rows_from_events(
+        events_binned, alerts, landmark_hours=landmark_hours
+    )
+    problems = []
+    for alert in alerts:
+        got = _landmark_key_set(model_rows.get(alert.name, []))
+        want = _landmark_key_set(ground_truth.get(alert.name, []))
+        if got != want:
+            missing = len(want - got)
+            extra = len(got - want)
+            problems.append(
+                f"{alert.name}: packed landmark set disagrees with "
+                f"_index_rows_from_events (missing {missing}, extra {extra})"
+            )
+    for p in problems:
+        logger.warning(
+            "[alerts] landmark row-set mismatch, backbone='transformer': %s -- "
+            "the packed-path selection and the model-free ground truth should "
+            "be provably identical (see collect_model_scores' docstring); "
+            "treat these scores as suspect until this is understood",
+            p,
+        )
+    return problems
+
+
 def evaluate_alerts(
     run_dir: Union[str, Path],
     held_out_shard_dir: Union[str, Path],
@@ -1378,6 +1485,7 @@ def evaluate_alerts(
     binned = add_value_tokens(raw, binner, source=source)
     del raw
 
+    backbone = getattr(config, "backbone", "hybrid")
     logger.info("[alerts] collecting model scores at %.0fh landmarks", landmark_hours)
     rows = collect_model_scores(
         model,
@@ -1391,7 +1499,11 @@ def evaluate_alerts(
         chunk_size=chunk_size,
         device=device,
         horizons=horizons,
+        backbone=backbone,
+        max_context=getattr(config, "max_context", 4096),
     )
+    if backbone == "transformer":
+        verify_packed_landmark_rows(rows, binned, alerts, landmark_hours=landmark_hours)
 
     baselines = None
     features_by_event = None
