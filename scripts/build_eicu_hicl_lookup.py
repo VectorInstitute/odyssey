@@ -35,8 +35,15 @@ TABLES = ("medication.csv.gz", "admissionDrug.csv.gz")
 
 
 def _ingredient(name: str) -> str:
-    """Ingredient of one raw drug string, via the pipeline's normalizer."""
-    return normalize_medication_code(f"MEDICATION//STARTED//{name}").split("//")[-1]
+    """Ingredient of one raw drug string, via the pipeline's normalizer.
+
+    A raw name containing a literal ``//`` would split into extra code
+    segments and the last-segment read below would return the name's tail
+    fragment instead of the normalized drug segment, so ``//`` is collapsed
+    to ``/`` before embedding the name in a code.
+    """
+    code = f"MEDICATION//STARTED//{name.replace('//', '/')}"
+    return normalize_medication_code(code).split("//")[-1]
 
 
 def build_lookup(eicu_dir: Path) -> pl.DataFrame:
