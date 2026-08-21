@@ -36,7 +36,7 @@ T0 = datetime(2024, 1, 1)
 
 
 def _events(n_subjects: int) -> pl.DataFrame:
-    """Same planted-signal shape as test_tabicl_baseline.py's fixture."""
+    """Build the same planted-signal shape as test_tabicl_baseline.py's fixture."""
     rows: List[Tuple[int, str, datetime, Optional[float], int]] = []
     for sid in range(1, n_subjects + 1):
         hadm = 1000 + sid
@@ -220,9 +220,11 @@ def test_fit_ebm_baselines_below_the_cap_fits_every_row(
 
 
 def test_grouped_subsample_never_splits_a_subject() -> None:
-    """Unit test of the grouping primitive directly: a capped subsample's
-    row count for every included subject exactly matches that subject's
-    full row count in the input, never a partial slice of it.
+    """Unit test of the grouping primitive directly.
+
+    A capped subsample's row count for every included subject exactly
+    matches that subject's full row count in the input, never a partial
+    slice of it.
     """
     rng = np.random.default_rng(0)
     groups = np.repeat(np.arange(20), 5)  # 20 subjects, 5 rows each, 100 total
