@@ -64,6 +64,20 @@ def position_running_labels(
     # default here would be silent until a real CUDA run.
     unique_labels = torch.zeros(unique_keys.shape[0], num_concepts, device=sid.device)
     unique_observed = torch.zeros(unique_keys.shape[0], num_concepts, device=sid.device)
+    # -inf, not +inf: deliberately the OPPOSITE sentinel from
+    # odyssey.training.data.NEVER_TRIGGERED (+inf, "this concept never
+    # triggered in this visit/stay"). Here it means "no first-trigger
+    # information was supplied for this key at all" (concept_first_times
+    # is None, or the key is simply missing from it) -- with `now >=
+    # first_times` below, -inf makes that comparison trivially true for
+    # every position, so the retrospective label passes through unchanged
+    # (see this function's docstring: "only valid for concepts that are
+    # constant across the sequence"). +inf here would instead make the
+    # label false everywhere, silently discarding real, valid
+    # retrospective labels for every caller that doesn't happen to pass
+    # concept_first_times -- do not "fix" this to match NEVER_TRIGGERED;
+    # the two are answering different questions ("never triggered" vs.
+    # "no running-label info supplied") and need opposite defaults.
     unique_first = torch.full(
         (unique_keys.shape[0], num_concepts), float("-inf"), device=sid.device
     )
