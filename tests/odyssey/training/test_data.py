@@ -10,10 +10,13 @@ import pytest
 import torch
 
 from odyssey.data.concepts import ConceptDefinition, ConceptRule
+from odyssey.data.sequences import BIRTH_CODE
 from odyssey.data.vocabulary import PAD_ID, UNK_ID
 from odyssey.training.data import (
     _shuffle_buffered,
+    build_concept_first_times,
     build_concept_label_dicts,
+    build_visit_concept_first_times,
     build_visit_concept_label_dicts,
     build_vocabulary,
     count_subjects,
@@ -310,6 +313,60 @@ def test_build_visit_concept_label_dicts_keys_and_shapes() -> None:
     assert labels[(2, 20)].tolist() == [1.0]
     assert masks[(1, 10)].tolist() == [1.0]
     assert labels[(1, 10)].shape == (len(concepts),)
+
+
+def test_build_visit_concept_first_times_skips_subjects_with_no_origin() -> None:
+    # Real bug this guards against: a subject whose only events are
+    # null-timed/BIRTH_CODE has no entry in origins (_first_event_hours
+    # deliberately excludes those -- it's the sequence time origin, and a
+    # birth event isn't a real clinical event to anchor on), but a labeled
+    # visit row for that subject's encounter can still exist. The old code
+    # did an unguarded origins[subject_id] and crashed corpus prep for the
+    # whole run over this one edge-case subject; build_concept_first_times
+    # (the stay-scoped counterpart) already handled the identical case
+    # silently via origins.get(...) + skip-if-None -- this mirrors that.
+    concepts = [
+        ConceptDefinition(
+            "tachycardia", [ConceptRule("LAB//220045//", 100.0, "above")], "HR > 100"
+        )
+    ]
+    events = pl.DataFrame(
+        {
+            "subject_id": [1, 2],
+            "time": [datetime(2020, 1, 1), datetime(2020, 1, 1)],
+            "code": [BIRTH_CODE, "LAB//220045//bpm"],
+            "numeric_value": [None, 130.0],
+            "hadm_id": [10, 20],
+        }
+    )
+
+    first_times = build_visit_concept_first_times(events, concepts)
+
+    assert set(first_times.keys()) == {(2, 20)}  # subject 1 skipped, not a crash
+
+
+def test_build_concept_first_times_skips_subjects_with_no_origin() -> None:
+    # Same edge case as test_build_visit_concept_first_times_skips_subjects_
+    # with_no_origin, pinning the stay-scoped function's existing (already
+    # correct) behavior so the two can't silently diverge again.
+    concepts = [
+        ConceptDefinition(
+            "tachycardia", [ConceptRule("LAB//220045//", 100.0, "above")], "HR > 100"
+        )
+    ]
+    events = pl.DataFrame(
+        {
+            "subject_id": [1, 2],
+            "time": [datetime(2020, 1, 1), datetime(2020, 1, 1)],
+            "code": [BIRTH_CODE, "LAB//220045//bpm"],
+            "numeric_value": [None, 130.0],
+            "hadm_id": [10, 20],
+        }
+    )
+
+    first_times = build_concept_first_times(events, concepts)
+
+    assert set(first_times.keys()) == {2}  # subject 1 skipped, not a crash
 
 
 def test_family_loss_weights_follow_family_shares() -> None:

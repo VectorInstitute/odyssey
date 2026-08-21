@@ -265,7 +265,9 @@ def build_visit_concept_first_times(
 
     out: Dict[Tuple[int, int], torch.Tensor] = {}
     for i, (subject_id, visit_id) in enumerate(zip(subject_ids, visit_ids)):
-        origin = origins[subject_id]
+        origin = origins.get(subject_id)
+        if origin is None:
+            continue
         hours = [
             NEVER_TRIGGERED
             if col[i] is None
