@@ -104,6 +104,84 @@ def test_build_report_skips_null_fraction_check_for_large_tables(
     assert table["columns"] is None
 
 
+def test_quote_ident_double_quotes_and_escapes_embedded_quotes() -> None:
+    mod = _load_module()
+    assert mod._quote_ident("Pop2021") == '"Pop2021"'
+    assert mod._quote_ident('weird"name') == '"weird""name"'
+
+
+def test_null_fraction_quotes_a_mixed_case_column(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The real bug: Postgres lowercases unquoted identifiers, so an
+    # unquoted mixed-case column like GEMINI's real `Pop2021`
+    # (lookup_statcan_v2021) resolves to a different, usually nonexistent,
+    # all-lowercase name and raises UndefinedColumn.
+    mod = _load_module()
+    captured_sql = {}
+
+    def fake_query(sql: str, params: object = None) -> pd.DataFrame:
+        captured_sql["sql"] = sql
+        return pd.DataFrame({"n_null": [0]})
+
+    monkeypatch.setattr(mod.db, "query", fake_query)
+
+    mod.null_fraction("lookup_statcan_v2021", "Pop2021")
+
+    assert '"Pop2021"' in captured_sql["sql"]
+    assert '"lookup_statcan_v2021"' in captured_sql["sql"]
+    # unquoted would silently pass through mypy/tests but fail against a
+    # real mixed-case-sensitive database:
+    assert "COUNT(Pop2021)" not in captured_sql["sql"]
+
+
+def test_null_fraction_or_error_recovers_from_a_failing_column(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # One pathological column must not kill the whole extract-dry run --
+    # Amrit cannot iterate interactively on the GEMINI node.
+    mod = _load_module()
+
+    def fake_query(sql: str, params: object = None) -> pd.DataFrame:
+        raise RuntimeError('column "Pop2021" does not exist')
+
+    monkeypatch.setattr(mod.db, "query", fake_query)
+
+    result = mod._null_fraction_or_error("lookup_statcan_v2021", "Pop2021")
+    assert result.startswith("error:")
+    assert "Pop2021" in result
+
+
+def test_build_report_records_a_column_error_instead_of_crashing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+
+    def fake_query(sql: str, params: object = None) -> pd.DataFrame:
+        if "COUNT(*) - COUNT(" in sql:
+            raise RuntimeError("boom")
+        return pd.DataFrame({"n": [10]})
+
+    monkeypatch.setattr(mod.db, "query", fake_query)
+
+    schema = {
+        "datacut": "some_cut",
+        "objects": [
+            {
+                "kind": "matview",
+                "name": "lookup_statcan_v2021",
+                "row_count": "1000",
+                "columns": [{"name": "Pop2021", "type": "double precision"}],
+            }
+        ],
+    }
+    report = mod.build_report(schema)
+
+    columns = report["tables"][0]["columns"]
+    assert columns[0]["name"] == "Pop2021"
+    assert columns[0]["n_null"].startswith("error:")
+
+
 def test_concept_frequencies_returns_code_desc_and_suppressed_count(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
