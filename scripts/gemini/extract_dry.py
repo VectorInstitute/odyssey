@@ -36,12 +36,16 @@ Run on the GEMINI node, after ``schema``:
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
 from odyssey.data.gemini import db
+
+
+logger = logging.getLogger(__name__)
 
 
 OUT_DIR = Path(__file__).resolve().parent / "out"
@@ -110,6 +114,30 @@ ORDER BY year
 """
 
 
+def _quote_ident(name: str) -> str:
+    """Double-quote a SQL identifier, escaping any embedded double quotes.
+
+    Postgres lowercases unquoted identifiers, so an unquoted mixed-case
+    column (real ones exist in GEMINI's schema, e.g. ``Pop2021``,
+    ``households_dwellings_DA21`` on ``lookup_statcan_v2021``) resolves to
+    a different, usually nonexistent, all-lowercase name and raises
+    ``UndefinedColumn`` -- every table/column name this module interpolates
+    into SQL (all sourced from ``schema.json``, i.e. the database's own
+    catalog, never external input) goes through this first.
+
+    Parameters
+    ----------
+    name : str
+        A table or column name.
+
+    Returns
+    -------
+    str
+        ``name``, double-quoted and safe to interpolate directly into SQL.
+    """
+    return '"' + name.replace('"', '""') + '"'
+
+
 def _suppressed(n: int) -> str:
     """Round ``n`` to the nearest 1000, or mask small counts.
 
@@ -149,7 +177,9 @@ def null_fraction(table: str, column: str) -> str:
     str
         A suppressed count (see :func:`_suppressed`).
     """
-    result = db.query(_NULL_COUNT_SQL.format(column=column, table=table))
+    result = db.query(
+        _NULL_COUNT_SQL.format(column=_quote_ident(column), table=_quote_ident(table))
+    )
     return _suppressed(int(result["n_null"].iloc[0]))
 
 
@@ -169,8 +199,35 @@ def fresh_row_count(table: str) -> str:
     str
         A suppressed count (see :func:`_suppressed`).
     """
-    result = db.query(_ROW_COUNT_SQL.format(table=table))
+    result = db.query(_ROW_COUNT_SQL.format(table=_quote_ident(table)))
     return _suppressed(int(result["n"].iloc[0]))
+
+
+def _null_fraction_or_error(table: str, column: str) -> str:
+    """Suppressed null count for one column, or an error marker if the query fails.
+
+    One pathological column (a type Postgres can't ``COUNT`` cleanly, an
+    unexpected encoding, ...) must not kill the whole run -- Amrit cannot
+    iterate interactively on the GEMINI node (see ``docs/gemini.md``), so a
+    single bad column becomes a note in the report instead of a crash.
+
+    Parameters
+    ----------
+    table : str
+        Table name.
+    column : str
+        Column name.
+
+    Returns
+    -------
+    str
+        A suppressed count (see :func:`_suppressed`), or ``"error: ..."``.
+    """
+    try:
+        return null_fraction(table, column)
+    except Exception as exc:
+        logger.warning("null_fraction(%s, %s) failed: %s", table, column, exc)
+        return f"error: {exc}"
 
 
 def build_report(schema: dict[str, Any]) -> dict[str, Any]:
@@ -210,7 +267,10 @@ def build_report(schema: dict[str, Any]) -> dict[str, Any]:
                 "name": name,
                 "row_count": fresh_row_count(name),
                 "columns": [
-                    {"name": col["name"], "n_null": null_fraction(name, col["name"])}
+                    {
+                        "name": col["name"],
+                        "n_null": _null_fraction_or_error(name, col["name"]),
+                    }
                     for col in obj["columns"]
                 ],
             }
@@ -240,7 +300,11 @@ def concept_frequencies(table: str, code_col: str, lookup: str) -> list[dict[str
         ``[{"code", "concept_desc", "n"}, ...]``, ``n`` suppressed.
     """
     result = db.query(
-        _CONCEPT_FREQUENCY_SQL.format(table=table, code_col=code_col, lookup=lookup)
+        _CONCEPT_FREQUENCY_SQL.format(
+            table=_quote_ident(table),
+            code_col=_quote_ident(code_col),
+            lookup=_quote_ident(lookup),
+        )
     )
     return [
         {
@@ -266,7 +330,11 @@ def table_date_ranges() -> dict[str, dict[str, Any]]:
     for table, columns in DATE_COLUMNS_BY_TABLE.items():
         ranges[table] = {}
         for column in columns:
-            result = db.query(_YEAR_RANGE_SQL.format(column=column, table=table))
+            result = db.query(
+                _YEAR_RANGE_SQL.format(
+                    column=_quote_ident(column), table=_quote_ident(table)
+                )
+            )
             row = result.iloc[0]
             ranges[table][column] = {
                 "min_year": (
@@ -290,7 +358,7 @@ def hospital_coverage() -> list[dict[str, Any]]:
         aggregate lookup table (~1000 rounded rows in the schema report),
         not raw patient rows, so not suppressed further.
     """
-    result = db.query("SELECT * FROM lookup_data_coverage")
+    result = db.query(f"SELECT * FROM {_quote_ident('lookup_data_coverage')}")
     return [
         {k: (None if pd.isna(v) else str(v)) for k, v in row.items()}
         for _, row in result.iterrows()
@@ -306,7 +374,10 @@ def encounters_per_year() -> dict[str, str]:
         ``{year_or_"unknown": suppressed_count}``.
     """
     result = db.query(
-        _YEAR_COUNT_SQL.format(column="admission_date_time", table="admdad_subset")
+        _YEAR_COUNT_SQL.format(
+            column=_quote_ident("admission_date_time"),
+            table=_quote_ident("admdad_subset"),
+        )
     )
     out = {}
     for _, row in result.iterrows():
@@ -331,7 +402,7 @@ def lookup_emptiness() -> dict[str, bool]:
     """
     out = {}
     for table in SUSPECT_EMPTY_LOOKUPS:
-        result = db.query(_EXISTS_SQL.format(table=table))
+        result = db.query(_EXISTS_SQL.format(table=_quote_ident(table)))
         out[table] = not bool(result["any_rows"].iloc[0])
     return out
 
