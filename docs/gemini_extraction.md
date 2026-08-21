@@ -6,9 +6,32 @@ Draft mapping from GEMINI's real schema and its first `extract-dry` run
 exploration, **not** the general internal-medicine population odyssey's own
 training cut will use, see [Open questions](#open-questions)) to the MEDS
 event-stream shape the rest of the pipeline already consumes for MIMIC-IV and
-eICU. Everything below is checked against real query results now, not a
-guess from column names/types alone -- but still not a spec to implement
-blind: extraction code has not started (see [Status](#status)).
+eICU. Everything below is checked against real query results, not a guess
+from column names/types alone. `scripts/gemini/extract_meds.py` implements
+this mapping and is the actual extraction spec in force -- see
+[Status](#status).
+
+## Why no MESSY spec
+
+MIMIC-IV and eICU are both extracted through a declarative MESSY (MEDS-Extract
+Specification Syntax) YAML spec (`specs/eICU.yaml`, run via `meds-extract-run`)
+against **files**: a downloaded or already-local directory of CSVs/parquet.
+GEMINI has no equivalent file distribution at all -- the only access is a live
+SQL connection to Amrit's node, and `meds-extract-run`'s whole design assumes
+a file-based `input_dir`, not a remote database. Making GEMINI fit that model
+would mean dumping its tables to files first, which this project deliberately
+doesn't do: it would roughly **double** the enclave's storage footprint (the
+same data living twice -- once in Postgres, once as flat-file dumps) for no
+functional benefit, and it would require validating the entire
+`meds-extract-run`/MESSY toolchain actually runs correctly *inside* the
+closed enclave (nobody has done this, and it's a real, untested risk, not a
+given). SQL-based extraction avoids both costs: `extract_meds.py` queries
+GEMINI directly and writes MEDS parquet shards straight out, no intermediate
+file dump ever exists. **The output is standard MEDS parquet either way** --
+downstream (tokenization, concept labeling, training) is source-agnostic and
+doesn't know or care whether a shard came from a MESSY YAML spec or a
+hand-written SQL extractor. See `specs/GEMINI.md` for the one-line pointer
+anyone browsing `specs/` will find instead of a `GEMINI.yaml`.
 
 **The single most important finding from `extract-dry`: GEMINI's labs are
 SI units, not the US-conventional units this project's canonical clinical
