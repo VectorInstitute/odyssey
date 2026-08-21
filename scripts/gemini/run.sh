@@ -155,14 +155,21 @@ source "$VENV/bin/activate"
 
 # odyssey itself, without its heavy required deps (torch, MIMIC_IV_MEDS,
 # ...) -- none of the steps below need them yet. `--no-deps` also means the
-# `gemini` extra's packages have to be installed explicitly.
+# `gemini` extra's packages have to be installed explicitly, since
+# `--no-deps` skips extras resolution too, not just the base dependency
+# list -- there's no single pip/uv flag for "install only this extra's own
+# packages, skip everything else". The list below MUST be kept in sync
+# with pyproject.toml's `gemini` extra by hand -- real incident: polars
+# was added there for extract_meds.py's vectorized transforms but not
+# here, and Amrit's extract crashed on ModuleNotFoundError before
+# touching the database, because this list still didn't have it.
 echo "Installing odyssey (editable, no deps) + gemini extras..."
 if command -v uv >/dev/null 2>&1; then
     uv pip install -q -e . --no-deps
-    uv pip install -q "sqlalchemy>=2.0.0" "psycopg2-binary>=2.9.0" "pandas>=2.2.0" "pyarrow>=15.0.0"
+    uv pip install -q "sqlalchemy>=2.0.0" "psycopg2-binary>=2.9.0" "pandas>=2.2.0" "pyarrow>=15.0.0" "polars>=1.30.0"
 else
     pip install -q -e . --no-deps
-    pip install -q "sqlalchemy>=2.0.0" "psycopg2-binary>=2.9.0" "pandas>=2.2.0" "pyarrow>=15.0.0"
+    pip install -q "sqlalchemy>=2.0.0" "psycopg2-binary>=2.9.0" "pandas>=2.2.0" "pyarrow>=15.0.0" "polars>=1.30.0"
 fi
 
 # --- steps ---------------------------------------------------------------
