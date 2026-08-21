@@ -143,6 +143,16 @@ survivalpfn = [
     "omegaconf>=2.3.0",
 ]
 
+# MEDS-Tab (odyssey/inference/meds_tab_baseline.py), a fifth comparator: the
+# field-standard tabularization-plus-XGBoost protocol for generic MEDS
+# datasets, run via its own CLI (a separate driver script, not this
+# project's training/inference path) rather than reimplemented. On PyPI,
+# no direct-reference/hatchling wrinkle the way the survivalpfn extra
+# needed.
+meds_tab = [
+    "meds-tab>=0.2.0",
+]
+
 # NOTE: transformers/lightning/etc. are intentionally omitted until the
 # concept-bottleneck architecture actually needs them — add alongside the
 # code that uses them, not speculatively.
