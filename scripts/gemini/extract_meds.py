@@ -66,6 +66,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import resource
 from collections.abc import Iterable, Iterator
 from pathlib import Path
@@ -123,6 +124,50 @@ MEDS_ARROW_SCHEMA = pa.schema(
 #: question 7: real outliers found span 1840-9999, data-entry artifacts,
 #: not real events centuries away.
 GUARD_WINDOW = pd.Timedelta(days=366)
+
+#: Sentinel strings meaning "no unit recorded" -- checked after casefold,
+#: so this set only needs the lowercase form. See :func:`_normalize_unit`.
+_UNIT_SENTINELS = {"", "none", "(null)", "null", "nan"}
+
+#: Explicit unit-string canonicalization, applied (after casefold + internal
+#: whitespace collapse) before falling back to the collapsed string as-is.
+#: Keys are already casefold+whitespace-collapsed. Sourced directly from
+#: the real value counts in ``scripts/gemini/out/extract_dry.md``'s "Lab
+#: unit samples"/"Vitals unit samples" sections (fetched from
+#: ``gemini/main`` 2026-08-21) -- GEMINI's raw unit strings are extremely
+#: inconsistent (case, spacing, punctuation, real typos) for what's the
+#: same actual unit, and left uncanonicalized would silently fragment one
+#: quantile bin into a dozen near-empty ones. Add new variants here as
+#: one-line entries when a fresh extract-dry unit-sample run finds more --
+#: e.g. the x10^12/L family (erythrocyte counts) shows the identical
+#: fragmentation pattern in the same report and isn't covered yet.
+UNIT_CANONICALIZATION_MAP: dict[str, str] = {
+    # x10^9/L (WBC differentials, platelets, ...): a genuine single unit
+    # fragmented across a dozen spacing/notation variants in the raw data.
+    "x10 9/l": "x10e9/l",
+    "x 10 9/l": "x10e9/l",
+    "x 10^9/l": "x10e9/l",
+    "x10^9/l": "x10e9/l",
+    "x10*9/l": "x10e9/l",
+    "10*9/l": "x10e9/l",
+    "10e9/l": "x10e9/l",
+    "e9/l": "x10e9/l",
+    # x10^6/L: a different magnitude from x10^9/L -- never merged with it.
+    "x 10^6/l": "x10e6/l",
+    "x10 6/l": "x10e6/l",
+    # mmHg -- a real typo in the raw data ("mmHd", ~3.5M vitals rows).
+    "mmhd": "mmhg",
+    # /100 WBC (differential counts as a fraction of 100 leukocytes).
+    "/100 lkc": "/100wbc",
+    "/100lkc": "/100wbc",
+    "/100 wbc": "/100wbc",
+    "/100(wbcs)": "/100wbc",
+    "/100 wbc's": "/100wbc",
+    "/100 wbcs": "/100wbc",
+    # %CV (coefficient of variation, e.g. RDW-CV).
+    "cv": "%cv",
+    "% cv": "%cv",
+}
 
 
 def _quote_ident(name: str) -> str:
@@ -250,12 +295,21 @@ def _parse_numeric(raw: object) -> Optional[float]:
 def _normalize_unit(raw: object) -> str:
     """Normalize a raw unit string for inclusion in a MEDS ``code``.
 
-    Stripped and lowercased, ``"UNK"`` for missing/blank -- GEMINI is
-    multi-hospital and the same OMOP concept can carry different units per
-    site (see docs/gemini_extraction.md's Units section), so the unit must
-    ride in the code itself, the same ``LAB//<id>//<unit>`` shape MIMIC-IV
-    already uses, rather than being dropped or assumed constant. Mixed
-    units under one code must never share a quantile bin.
+    Casefolded and whitespace-collapsed, sentinel strings (``"none"``,
+    ``"null"``, ``"(null)"``, ``"nan"``, blank -- :data:`_UNIT_SENTINELS`)
+    mapped to ``"UNK"``, then a handful of known real-data variant clusters
+    (:data:`UNIT_CANONICALIZATION_MAP`) collapsed onto one canonical token
+    each -- otherwise the collapsed string itself. GEMINI is multi-hospital
+    and the same OMOP concept can carry different units per site (see
+    docs/gemini_extraction.md's Units section), so the unit must ride in
+    the code itself, the same ``LAB//<id>//<unit>`` shape MIMIC-IV already
+    uses, rather than being dropped or assumed constant -- and GEMINI's raw
+    unit strings for what's genuinely the *same* unit are themselves wildly
+    inconsistent (case, spacing, punctuation, typos), so left as raw text
+    they'd fragment one quantile bin into a dozen near-empty ones just as
+    badly as a truly different unit would. Mixed units under one code must
+    never share a bin; the *same* unit spelled five ways must never scatter
+    across five.
 
     Parameters
     ----------
@@ -265,12 +319,14 @@ def _normalize_unit(raw: object) -> str:
     Returns
     -------
     str
-        The normalized unit, or ``"UNK"``.
+        The canonicalized unit, or ``"UNK"``.
     """
     if raw is None or (isinstance(raw, float) and pd.isna(raw)):
         return "UNK"
-    normalized = str(raw).strip().lower()
-    return normalized if normalized else "UNK"
+    collapsed = re.sub(r"\s+", " ", str(raw).strip().casefold())
+    if collapsed in _UNIT_SENTINELS:
+        return "UNK"
+    return UNIT_CANONICALIZATION_MAP.get(collapsed, collapsed)
 
 
 def _paginate_rows(

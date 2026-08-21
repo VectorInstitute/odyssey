@@ -316,5 +316,36 @@ fi
 
 git add "${TO_ADD[@]}"
 git commit -m "scripts/gemini/run.sh $STEP: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-git push origin main
-echo "Pushed."
+
+# origin/main can move between sync_with_mirror() at the top of this run
+# and this push at the end -- a mirror landing mid-run, or (someday)
+# another operator's own output commit. A plain push then gets rejected
+# non-fast-forward. Retry with rebase rather than failing outright: our
+# own commits only ever touch scripts/gemini/out/ (enforced above), so a
+# rebase onto whatever's new on origin/main is always a clean, disjoint
+# apply in the ordinary case. If it's ever not clean (a real conflict),
+# stop and show the state rather than guessing how to resolve it.
+PUSH_ATTEMPTS=3
+attempt=1
+while true; do
+    if git push origin main; then
+        echo "Pushed."
+        break
+    fi
+    if ((attempt >= PUSH_ATTEMPTS)); then
+        echo "REFUSING: push rejected after $PUSH_ATTEMPTS attempts. Current state:" >&2
+        git status >&2
+        git log --oneline -5 >&2
+        exit 1
+    fi
+    echo "Push rejected (attempt $attempt/$PUSH_ATTEMPTS) -- origin/main moved;" \
+        "pulling and rebasing our output commit onto it..."
+    if ! git pull --rebase origin main; then
+        echo "REFUSING: rebase did not apply cleanly -- a real conflict, not" >&2
+        echo "just the ordinary disjoint scripts/gemini/out/ case. Current state" >&2
+        echo "(resolve manually, then 'git rebase --continue' and re-run):" >&2
+        git status >&2
+        exit 1
+    fi
+    attempt=$((attempt + 1))
+done

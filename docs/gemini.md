@@ -90,6 +90,16 @@ history from before this project's current mirroring approach) are never
 touched by any of the above -- only `refs/heads/main` (via
 `_mirror-staging`) is ever written.
 
+**Coordination rule: never mirror while Amrit has a step in flight.** A
+mirror landing between his `sync_with_mirror()` and his own output push
+races his push into a rejection (this happened for real: his `extract-dry`
+push got rejected non-fast-forward because a mirror landed mid-run --
+`run.sh`'s push step now retries with rebase for exactly this case, see
+`scripts/gemini/run.sh`, but the race is still better avoided than
+recovered from). Only mirror GitHub -> GEMINI when the channel is
+confirmed idle -- explicitly told so, or after seeing his output commit
+actually land on `gemini main` -- never speculatively or "just in case."
+
 ## Environment (H200 node)
 
 From `scripts/gemini/out/env_probe.txt` (run 2026-08-18):
