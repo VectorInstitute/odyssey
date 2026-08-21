@@ -51,6 +51,22 @@ def test_canary_is_deterministic_and_detects_weight_changes() -> None:
     assert check_canary(a, c) != []
 
 
+def test_numeric_canary_does_not_consume_global_rng_state() -> None:
+    # Protects a property confirmed by inspection (numeric_canary uses its
+    # own local torch.Generator, not torch's global RNG) against a future
+    # edit silently reintroducing global RNG use -- which would make the
+    # canary's "identical env => identical values" guarantee depend on
+    # unrelated global RNG consumption elsewhere in the same process,
+    # breaking write_run_provenance/verify_run_provenance's reproducibility
+    # check in a way no existing test would catch.
+    model = _model()
+    torch.manual_seed(1234)
+    before = torch.get_rng_state()
+    numeric_canary(model, 32)
+    after = torch.get_rng_state()
+    assert torch.equal(before, after)
+
+
 def test_provenance_roundtrip_and_legacy_runs(tmp_path: Path) -> None:
     model = _model()
     # fingerprint-only call writes no canary (a random model's canary is meaningless)

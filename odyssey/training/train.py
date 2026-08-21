@@ -1222,6 +1222,13 @@ def _run_training(  # noqa: PLR0912, PLR0915
                     },
                     output_dir / f"checkpoint_{global_step}.pt",
                 )
+                write_run_provenance(
+                    output_dir,
+                    model,
+                    len(vocab),
+                    device=device,
+                    checkpoint_name=f"checkpoint_{global_step}.pt",
+                )
 
         if stop_early:
             break
@@ -1241,6 +1248,13 @@ def _run_training(  # noqa: PLR0912, PLR0915
                 "config": asdict(config),
             },
             output_dir / f"checkpoint_epoch_{epoch}.pt",
+        )
+        write_run_provenance(
+            output_dir,
+            model,
+            len(vocab),
+            device=device,
+            checkpoint_name=f"checkpoint_epoch_{epoch}.pt",
         )
 
     _atomic_torch_save(
