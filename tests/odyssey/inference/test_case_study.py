@@ -12,15 +12,18 @@ import polars as pl
 import pytest
 import torch
 
+import odyssey.inference.case_study as case_study_module
 from odyssey.data.sequences import PatientSequence
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.case_study import (
     _parse_args,
+    build_case_studies,
     extract_patient_case,
     select_diverse_cases,
 )
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
 from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
+from odyssey.training.train import TrainingConfig
 
 
 T0 = datetime(2024, 1, 1, 0, 0)
@@ -111,6 +114,41 @@ def test_select_diverse_cases_is_deterministic_given_a_seed() -> None:
 def test_select_diverse_cases_empty_when_nobody_meets_min_events() -> None:
     events = _events(_patient_events(1, 3))
     assert select_diverse_cases(events, {}, n_cases=15, min_events=10) == []
+
+
+# ---------------------------------------------------------------------------
+# build_case_studies: backbone="transformer" gate
+# ---------------------------------------------------------------------------
+
+
+def test_build_case_studies_rejects_transformer_backbone_before_touching_shards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_model = ConceptBottleneckSequenceModel(
+        TinyGRUBackbone(vocab_size=10, hidden_size=4),
+        vocab_size=10,
+        num_concepts=2,
+        embedding_dim=4,
+    )
+    fake_config = TrainingConfig(
+        train_shard_dir="/train",
+        tuning_shard_dir="/tuning",
+        output_dir="/out",
+        backbone="transformer",
+    )
+    monkeypatch.setattr(
+        case_study_module,
+        "load_run",
+        lambda *a, **k: (fake_model, object(), object(), fake_config),
+    )
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("must not read shards before the backbone gate fires")
+
+    monkeypatch.setattr(case_study_module, "load_meds_shards", _boom)
+
+    with pytest.raises(NotImplementedError, match="backbone='transformer'"):
+        build_case_studies("/runs/x", "/data/held_out")
 
 
 # ---------------------------------------------------------------------------
