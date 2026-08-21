@@ -71,6 +71,30 @@ def test_parse_datetime_series_handles_valid_missing_and_garbage() -> None:
     assert parsed.to_list() == [pd.Timestamp("2020-01-15 08:30:00"), None, None]
 
 
+def test_parse_datetime_series_fast_path_matches_pandas_mixed_exactly() -> None:
+    # The fast path (polars-native, tried first) must never disagree with
+    # the pandas format="mixed" fallback it's meant to shortcut -- both ISO
+    # separators, with and without fractional seconds, plus a residue mix
+    # (a genuinely different format, garbage, null, empty) that must still
+    # fall through to the slow path unchanged.
+    mod = _load_module()
+    raw = pl.Series(
+        [
+            "2020-01-15 08:30:00",
+            "2020-01-15 08:30:00.123456",
+            "2020-01-15T08:30:00",
+            "2020-01-15T08:30:00.5",
+            None,
+            "",
+            "not a date at all",
+            "01/15/2020 5:30 PM",  # genuinely different format -> residue
+        ]
+    )
+    expected = pd.to_datetime(raw.to_pandas(), errors="coerce", format="mixed")
+    parsed = mod._parse_datetime_series(raw)
+    assert parsed.to_list() == pl.Series(expected).cast(pl.Datetime("us")).to_list()
+
+
 def test_within_admission_guard_mask_rejects_the_real_9022_outlier() -> None:
     # The actual outlier docs/gemini_extraction.md documents: a real
     # pharmacy_subset.med_start_date_time year of 9022 next to a real
@@ -526,6 +550,61 @@ def test_filter_valid_genc_id_drops_null_genc_id_without_warning(
     assert caplog.records == []
 
 
+# --- _coerce_boolean_flag -------------------------------------------------
+
+
+def test_coerce_boolean_flag_maps_postgres_copy_style_and_common_spellings() -> None:
+    # Real crash this guards against: ipscu_subset.icu_flag arrived as
+    # 't'/'f' strings (Postgres COPY's own boolean encoding), which
+    # polars' .cast(pl.Boolean) rejects unconditionally -- there is no
+    # supported Utf8 -> Boolean cast at all, strict or not.
+    mod = _load_module()
+    chunk = pl.DataFrame(
+        {
+            "genc_id": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            "flag": ["t", "f", "T", "F", "true", "FALSE", "1", "0", " Yes ", "no"],
+        }
+    )
+    result = mod._coerce_boolean_flag(chunk, "flag", "some_table")
+    assert result["flag"].to_list() == [
+        True,
+        False,
+        True,
+        False,
+        True,
+        False,
+        True,
+        False,
+        True,
+        False,
+    ]
+
+
+def test_coerce_boolean_flag_drops_and_logs_unresolved_values(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    mod = _load_module()
+    chunk = pl.DataFrame({"genc_id": [1, 2, 3], "flag": [None, "garbage", "t"]})
+
+    with caplog.at_level("WARNING"):
+        result = mod._coerce_boolean_flag(chunk, "flag", "ipscu_subset")
+
+    assert result["flag"].to_list() == [None, None, True]
+    assert any("2 rows had a flag value" in r.message for r in caplog.records)
+    assert any("ipscu_subset" in r.message for r in caplog.records)
+
+
+def test_coerce_boolean_flag_filter_excludes_null_alongside_false() -> None:
+    # A caller gating a filter on the coerced column (extract_icu) gets
+    # unresolved values excluded automatically, same as a real False --
+    # DataFrame.filter already drops null predicates.
+    mod = _load_module()
+    chunk = pl.DataFrame({"genc_id": [1, 2, 3], "flag": ["t", "f", "unrecognized"]})
+    result = mod._coerce_boolean_flag(chunk, "flag", "ipscu_subset")
+    kept = result.filter(pl.col("flag"))
+    assert kept["genc_id"].to_list() == [1]
+
+
 # --- fetch_admission_index / fetch_lab_concept_lookup -------------------
 
 
@@ -660,6 +739,34 @@ def test_extract_icu_only_extracts_icu_flagged_rows(
             "scu_admit_date_time": ["2020-01-01", "2020-01-01"],
             "scu_discharge_date_time": ["2020-01-05", "2020-01-05"],
             "icu_flag": [True, False],
+        }
+    )
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"ipscu_subset": [chunk]})
+    )
+
+    rows = pd.concat(
+        [b.frame for b in mod.extract_icu(subject_by_genc)], ignore_index=True
+    )
+
+    assert set(rows["code"]) == {"ICU_ADMISSION", "ICU_DISCHARGE"}
+    assert (rows["subject_id"] == "pA").all()
+
+
+def test_extract_icu_handles_postgres_copy_style_boolean_strings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real crash: ipscu_subset.icu_flag arrives as 't'/'f' text, not the
+    # native pl.Boolean this test's sibling above uses -- that shape used
+    # to crash extract_icu outright (see _coerce_boolean_flag's docstring).
+    mod = _load_module()
+    subject_by_genc = {1: "pA", 2: "pB", 3: "pC"}
+    chunk = pl.DataFrame(
+        {
+            "genc_id": [1, 2, 3],
+            "scu_admit_date_time": ["2020-01-01", "2020-01-01", "2020-01-01"],
+            "scu_discharge_date_time": ["2020-01-05", "2020-01-05", "2020-01-05"],
+            "icu_flag": ["t", "f", None],
         }
     )
     monkeypatch.setattr(
@@ -1060,6 +1167,203 @@ def test_meds_shard_writer_drops_and_counts_unshardable_rows(tmp_path: Path) -> 
 
     assert counts == {0: 1}
     assert writer.rows_dropped_unshardable == 1
+
+
+def test_meds_shard_writer_buffers_below_threshold_and_flushes_at_close(
+    tmp_path: Path,
+) -> None:
+    mod = _load_module()
+    writer = mod.MedsShardWriter(tmp_path, {"pA": 0})
+    batch = pd.DataFrame(
+        {
+            "subject_id": ["pA"],
+            "time": [pd.Timestamp("2020-01-01")],
+            "code": ["ADMISSION"],
+            "numeric_value": [None],
+            "hadm_id": [1],
+        }
+    )
+
+    writer.write_batch("admdad_subset", batch)
+    # Below SHARD_FLUSH_ROW_THRESHOLD -- nothing on disk yet, still buffered.
+    assert not (tmp_path / "shard_0000.parquet").exists()
+
+    counts = writer.close()
+    assert counts == {0: 1}
+    assert (tmp_path / "shard_0000.parquet").exists()
+
+
+def test_meds_shard_writer_flushes_once_a_shard_crosses_the_threshold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = _load_module()
+    monkeypatch.setattr(mod, "SHARD_FLUSH_ROW_THRESHOLD", 3)
+    writer = mod.MedsShardWriter(tmp_path, {"pA": 0})
+    batch = pd.DataFrame(
+        {
+            "subject_id": ["pA"] * 3,
+            "time": [pd.Timestamp("2020-01-01")] * 3,
+            "code": ["ADMISSION"] * 3,
+            "numeric_value": [None] * 3,
+            "hadm_id": [1, 2, 3],
+        }
+    )
+
+    writer.write_batch("admdad_subset", batch)
+    # At the threshold -- flushed mid-batch, buffer cleared before close()
+    # is ever called (the file isn't readable yet -- ParquetWriter only
+    # writes a valid footer at close() -- so check internal buffer state
+    # rather than reading the file here).
+    assert writer._buffer_row_counts.get(0, 0) == 0
+    assert writer._shard_row_counts.get(0, 0) == 3
+
+    counts = writer.close()
+    assert counts == {0: 3}
+    assert pd.read_parquet(tmp_path / "shard_0000.parquet").shape[0] == 3
+
+
+# --- MedsShardWriter part-file resumability -------------------------------
+
+
+def test_next_shard_write_path_uses_the_base_name_when_nothing_exists_yet(
+    tmp_path: Path,
+) -> None:
+    mod = _load_module()
+    assert mod._next_shard_write_path(tmp_path, 7) == tmp_path / "shard_0007.parquet"
+
+
+def test_next_shard_write_path_picks_the_next_free_part_when_base_exists(
+    tmp_path: Path,
+) -> None:
+    mod = _load_module()
+    (tmp_path / "shard_0007.parquet").touch()
+    assert (
+        mod._next_shard_write_path(tmp_path, 7) == tmp_path / "shard_0007_part1.parquet"
+    )
+    (tmp_path / "shard_0007_part1.parquet").touch()
+    assert (
+        mod._next_shard_write_path(tmp_path, 7) == tmp_path / "shard_0007_part2.parquet"
+    )
+
+
+def test_logical_shard_row_counts_sums_base_and_part_files(tmp_path: Path) -> None:
+    mod = _load_module()
+    writer1 = mod.MedsShardWriter(tmp_path, {"pA": 0})
+    writer1.write_batch(
+        "admdad_subset",
+        pd.DataFrame(
+            {
+                "subject_id": ["pA"],
+                "time": [pd.Timestamp("2020-01-01")],
+                "code": ["ADMISSION"],
+                "numeric_value": [None],
+                "hadm_id": [1],
+            }
+        ),
+    )
+    writer1.close()
+
+    # A second writer instance touching the same shard must never reopen
+    # the first writer's file -- it gets a _part1 file instead.
+    writer2 = mod.MedsShardWriter(tmp_path, {"pA": 0})
+    writer2.write_batch(
+        "lab_subset",
+        pd.DataFrame(
+            {
+                "subject_id": ["pA"],
+                "time": [pd.Timestamp("2020-01-02")],
+                "code": ["LAB//1//UNK"],
+                "numeric_value": [1.0],
+                "hadm_id": [1],
+            }
+        ),
+    )
+    writer2.close()
+
+    assert (tmp_path / "shard_0000.parquet").exists()
+    assert (tmp_path / "shard_0000_part1.parquet").exists()
+    assert mod._logical_shard_row_counts(tmp_path) == {0: 2}
+
+
+def test_run_extraction_resumed_run_never_truncates_a_completed_tables_shard(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Real near-miss this guards against.
+
+    A resumed run's MedsShardWriter is a brand-new instance every process
+    invocation; the old (pre-fix) _writer_for unconditionally reopened
+    shard_{i:04d}.parquet, silently truncating whatever a *different*,
+    already-completed table had written there in a prior run. Reproduces
+    the exact shape of the relaunch this was caught before: run 1 writes
+    admdad_subset only (table A), run 2 skips A (manifest already marks it
+    complete) and writes lab_subset (table B) into the same, overlapping
+    shard -- table A's rows must all survive.
+    """
+    mod = _load_module()
+    monkeypatch.setattr(mod, "count_distinct_subjects", lambda: 1)
+    monkeypatch.setattr(
+        mod.db,
+        "query",
+        lambda sql, params=None: pd.DataFrame(
+            {"concept_id": [3020564], "concept_desc": ["Creatinine"]}
+        ),
+    )
+
+    admdad_fixture = {
+        "admdad_subset": [
+            pl.DataFrame(
+                {
+                    "genc_id": [1],
+                    "patient_id_hashed": ["pA"],
+                    "admission_date_time": ["2020-01-01"],
+                    "discharge_date_time": ["2020-01-05"],
+                }
+            )
+        ]
+    }
+    monkeypatch.setattr(mod, "_stream_table", _fake_stream_table(admdad_fixture))
+    mod.run_extraction(output_dir=tmp_path)
+
+    admdad_rows_after_run1 = mod._logical_shard_row_counts(tmp_path)[0]
+    assert admdad_rows_after_run1 == 2  # ADMISSION + DISCHARGE
+
+    # run_extraction marks every table generator "complete" once drained --
+    # including the other 8 tables, which produced zero rows this run
+    # since the fake _stream_table has no fixture for them. Reset
+    # lab_subset's entry to simulate it genuinely not having completed yet
+    # (e.g. the process was killed before it ran) -- the real shape of a
+    # partial-completion resume, which admdad_subset's own "complete" entry
+    # must survive untouched.
+    manifest = mod._load_manifest(tmp_path)
+    assert manifest.get("admdad_subset") == "complete"
+    manifest.pop("lab_subset", None)
+    mod._save_manifest(tmp_path, manifest)
+
+    # Run 2: admdad_subset is already "complete" in the manifest and will
+    # be skipped; only lab_subset (same subject, same shard) actually runs.
+    both_fixture = {
+        "admdad_subset": admdad_fixture["admdad_subset"],
+        "lab_subset": [
+            pl.DataFrame(
+                {
+                    "genc_id": [1],
+                    "test_type_mapped_omop": [3020564],
+                    "result_value": ["1.2"],
+                    "result_unit": ["umol/L"],
+                    "collection_date_time": ["2020-01-02 08:00:00"],
+                }
+            )
+        ],
+    }
+    monkeypatch.setattr(mod, "_stream_table", _fake_stream_table(both_fixture))
+    mod.run_extraction(output_dir=tmp_path)
+
+    logical_counts = mod._logical_shard_row_counts(tmp_path)
+    assert logical_counts[0] == 3  # 2 admdad rows survive + 1 new lab row
+    all_rows = pd.concat(
+        pd.read_parquet(p) for p in tmp_path.glob("shard_0000*.parquet")
+    )
+    assert set(all_rows["code"]) == {"ADMISSION", "DISCHARGE", "LAB//3020564//umol/l"}
 
 
 # --- resume manifest / run_extraction -------------------------------------
