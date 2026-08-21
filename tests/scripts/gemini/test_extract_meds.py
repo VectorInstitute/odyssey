@@ -278,6 +278,75 @@ def test_normalize_unit_strips_lowercases_and_falls_back_to_unk() -> None:
     assert mod._normalize_unit("   ") == "UNK"
 
 
+def test_normalize_unit_maps_every_sentinel_string_case_insensitively() -> None:
+    # Real strings from scripts/gemini/out/extract_dry.md's unit samples --
+    # each is a real, high-frequency "no unit recorded" value, not a guess.
+    mod = _load_module()
+    for raw in ["None", "NULL", "null", "(null)", "nan", "NaN", "", "   "]:
+        assert mod._normalize_unit(raw) == "UNK", raw
+
+
+def test_normalize_unit_collapses_the_x10e9_family() -> None:
+    # Every one of these is a real result_unit value observed for the
+    # same underlying x10^9/L concept (WBC differentials, platelets).
+    mod = _load_module()
+    variants = [
+        "X10 9/L",
+        "X10  9/L",  # double space
+        "X 10 9/L",
+        "x 10^9/L",
+        "X 10^9/L",
+        "x10^9/L",
+        "X10^9/L",
+        "x10*9/L",
+        "10*9/L",
+        "10e9/L",
+        "10E9/L",
+        "x10e9/L",
+        "x10E9/L",
+        "E9/L",
+    ]
+    for raw in variants:
+        assert mod._normalize_unit(raw) == "x10e9/l", raw
+
+
+def test_normalize_unit_collapses_the_x10e6_family_separately_from_x10e9() -> None:
+    mod = _load_module()
+    for raw in ["x10E6/L", "X 10^6/L", "x 10^6/L", "x10 6/L"]:
+        assert mod._normalize_unit(raw) == "x10e6/l", raw
+    # A different magnitude -- must never collide with the x10^9/L token.
+    assert mod._normalize_unit("x10^9/L") != mod._normalize_unit("x10E6/L")
+
+
+def test_normalize_unit_fixes_the_real_mmhd_typo() -> None:
+    # ~3.5M vitals rows carry this exact typo for systolic BP.
+    mod = _load_module()
+    assert mod._normalize_unit("mmHd") == "mmhg"
+    assert mod._normalize_unit("mmHg") == "mmhg"
+
+
+def test_normalize_unit_collapses_the_100wbc_family() -> None:
+    mod = _load_module()
+    variants = [
+        "/100 LKC",
+        "/100LKC",
+        "/100 WBC",
+        "/100(WBCs)",
+        "/100WBC",
+        "/100 WBC's",
+        "/100 WBCs",
+    ]
+    for raw in variants:
+        assert mod._normalize_unit(raw) == "/100wbc", raw
+
+
+def test_normalize_unit_collapses_the_cv_family() -> None:
+    mod = _load_module()
+    assert mod._normalize_unit("%CV") == "%cv"
+    assert mod._normalize_unit("CV") == "%cv"
+    assert mod._normalize_unit("% cv") == "%cv"
+
+
 def test_extract_pharmacy_applies_the_admission_guard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
