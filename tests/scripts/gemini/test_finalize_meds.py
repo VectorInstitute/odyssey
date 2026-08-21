@@ -12,10 +12,7 @@ import json
 from pathlib import Path
 from types import ModuleType
 
-import pandas as pd
 import pytest
-
-from odyssey.data.meds_validation import validate_meds_dataset
 
 
 _SKIP_REASON = "gemini extra not installed (uv sync --extra gemini)"
@@ -24,7 +21,10 @@ pytest.importorskip("pandas", reason=_SKIP_REASON)
 pytest.importorskip("pyarrow", reason=_SKIP_REASON)
 pytest.importorskip("polars", reason=_SKIP_REASON)
 
+import pandas as pd  # noqa: E402
 import polars as pl  # noqa: E402
+
+from odyssey.data.meds_validation import validate_meds_dataset  # noqa: E402
 
 
 def _load_module(name: str) -> ModuleType:
