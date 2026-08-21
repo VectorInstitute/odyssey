@@ -10,6 +10,9 @@ ehr = "ehr"
 # NAM = Neural Additive Model (Agarwal et al.), a model family in the README.
 NAM = "NAM"
 NAMs = "NAMs"
+# MCH = Mean Corpuscular Hemoglobin, a standard CBC lab concept name in
+# scripts/gemini/extract_dry.py's TOP_LAB_CONCEPTS, not a typo for "MUCH".
+MCH = "MCH"
 
 [files]
 # scripts/gemini/out/ holds verbatim reports of GEMINI's own database

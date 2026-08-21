@@ -18,13 +18,17 @@
 #                extract_dry.{json,md}. Needs schema.json (run `schema`
 #                first); prints "pending schema report" and does nothing
 #                otherwise.
-#   extract      not built yet -- extraction spec isn't written until the
-#                schema report has actually been read. Prints "pending
-#                schema report" and exits.
-#   train        not built yet, same reason.
-#   eval         not built yet, same reason.
+#   extract      scripts/gemini/extract_meds.py -> streams real MEDS parquet
+#                shards to GEMINI_MEDS_OUTPUT_DIR (default ~/gemini_meds_v1,
+#                outside the repo -- never committed, see docs/gemini.md's
+#                governance rules), and commits only a small, suppressed
+#                scripts/gemini/out/extraction_summary.json. A real,
+#                long-running, patient-data-writing operation, not a quick
+#                check -- see docs/gemini_extraction.md for the design.
+#   train        not built yet.
+#   eval         not built yet.
 #   all          probe, schema, extract-dry, in order (default; deliberately
-#                excludes env-gpu and the not-yet-built steps -- see below)
+#                excludes env-gpu and extract -- see below)
 #
 # Self-syncing: every invocation starts with `git fetch origin && git reset
 # --hard origin/main` (never `git pull` -- every mirror rewrites history, so
@@ -119,10 +123,10 @@ source "$VENV/bin/activate"
 echo "Installing odyssey (editable, no deps) + gemini extras..."
 if command -v uv >/dev/null 2>&1; then
     uv pip install -q -e . --no-deps
-    uv pip install -q "sqlalchemy>=2.0.0" "psycopg2-binary>=2.9.0" "pandas>=2.2.0"
+    uv pip install -q "sqlalchemy>=2.0.0" "psycopg2-binary>=2.9.0" "pandas>=2.2.0" "pyarrow>=15.0.0"
 else
     pip install -q -e . --no-deps
-    pip install -q "sqlalchemy>=2.0.0" "psycopg2-binary>=2.9.0" "pandas>=2.2.0"
+    pip install -q "sqlalchemy>=2.0.0" "psycopg2-binary>=2.9.0" "pandas>=2.2.0" "pyarrow>=15.0.0"
 fi
 
 # --- steps ---------------------------------------------------------------
@@ -143,13 +147,19 @@ run_extract_dry() {
 }
 
 run_pending_stub() {
-    # extract / train / eval: real work belongs here once the schema
-    # report has actually been read and there's a MEDS extraction spec to
-    # run against it. Until then this is intentionally a no-op that always
-    # succeeds, so wiring these into an operator's routine `all` run (once
-    # they're added there) never fails on a step that isn't built yet.
+    # train / eval: real work belongs here once extract has actually run
+    # and there's a real MEDS shard directory to train/eval against. Until
+    # then this is intentionally a no-op that always succeeds, so wiring
+    # these into an operator's routine `all` run (once they're added
+    # there) never fails on a step that isn't built yet.
     echo "=== $1 ==="
-    echo "pending schema report -- $1 is not built yet, see docs/gemini.md"
+    echo "pending real extraction -- $1 is not built yet, see docs/gemini.md"
+}
+
+run_extract() {
+    echo "=== extract ==="
+    echo "Writing MEDS parquet shards to \${GEMINI_MEDS_OUTPUT_DIR:-\$HOME/gemini_meds_v1} (not committed) ..."
+    python scripts/gemini/extract_meds.py
 }
 
 run_env_gpu() {
@@ -212,7 +222,7 @@ case "$STEP" in
     schema) run_schema ;;
     env-gpu) run_env_gpu ;;
     extract-dry) run_extract_dry ;;
-    extract) run_pending_stub extract ;;
+    extract) run_extract ;;
     train) run_pending_stub train ;;
     eval) run_pending_stub eval ;;
     all) run_probe; run_schema; run_extract_dry ;;

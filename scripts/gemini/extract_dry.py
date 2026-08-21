@@ -113,6 +113,77 @@ GROUP BY year
 ORDER BY year
 """
 
+#: Top ~30 lab concepts by frequency (this project's first real
+#: extract-dry run against lab_subset.test_type_mapped_omop), plus every
+#: lab concept already in odyssey/data/value_binning.py's
+#: CANONICAL_CLINICAL_RANGES that wasn't already in that top 30 (lactate's
+#: three concept ids ranked far lower by raw frequency but matter just as
+#: much for the units question -- see docs/gemini_extraction.md's Units
+#: section). Hand-curated from real report data, not a guess.
+TOP_LAB_CONCEPTS = [
+    3019550,  # Sodium
+    3023103,  # Potassium
+    3014576,  # Chloride
+    3002385,  # Erythrocyte distribution width
+    3000963,  # Hemoglobin
+    3010813,  # Leukocytes
+    3040151,  # Glucose (capillary)
+    3009542,  # Hematocrit
+    3007461,  # Platelets
+    3020564,  # Creatinine -- existing canonical range assumes mg/dL, GEMINI is SI
+    3024731,  # MCV
+    3026361,  # Erythrocytes
+    3045716,  # Anion gap
+    3016293,  # Bicarbonate
+    3019198,  # Lymphocytes
+    3017732,  # Neutrophils
+    3003338,  # MCHC
+    3001604,  # Monocytes
+    3006315,  # Basophils
+    3035941,  # MCH
+    3013115,  # Eosinophils
+    3001123,  # Platelet mean volume
+    3040168,  # Immature granulocytes
+    40771922,  # eGFR
+    3001490,  # Nucleated erythrocytes
+    3013826,  # Glucose (serum/plasma)
+    3024641,  # Urea nitrogen
+    3032080,  # INR
+    3006140,  # Bilirubin.total
+    # Not in the top 30 by frequency, but already in
+    # CANONICAL_CLINICAL_RANGES -- unit confirmation matters regardless of
+    # frequency rank.
+    3018405,  # Lactate (arterial)
+    3008037,  # Lactate (venous)
+    3020138,  # Lactate (ambiguous Moles/Mass join, see docs/gemini_extraction.md's open question 4)
+]
+
+#: All 13 vitals concepts observed in vitals_subset.measurement_mapped_omop
+#: -- no "top N" cut needed, this is the entire vocabulary seen so far.
+TOP_VITALS_CONCEPTS = [
+    3013502,  # Oxygen saturation in Blood
+    3027018,  # Heart rate
+    3024171,  # Respiratory rate
+    3020891,  # Body temperature
+    36203185,  # Blood pressure panel with all children optional
+    3004249,  # Systolic blood pressure
+    3012888,  # Diastolic blood pressure
+    3034263,  # Pain severity - Reported
+    3014080,  # Oxygen gas flow Oxygen delivery system
+    3005629,  # Inhaled oxygen flow rate
+    3020716,  # Inhaled oxygen concentration
+    3025315,  # Body weight
+    4326744,  # Blood pressure
+]
+
+_UNIT_SAMPLE_SQL = """
+SELECT {code_col} AS code, {unit_col} AS unit, COUNT(*) AS n
+FROM {table}
+WHERE {code_col} IN {codes}
+GROUP BY {code_col}, {unit_col}
+ORDER BY {code_col}, n DESC
+"""
+
 
 def _quote_ident(name: str) -> str:
     """Double-quote a SQL identifier, escaping any embedded double quotes.
@@ -136,6 +207,27 @@ def _quote_ident(name: str) -> str:
         ``name``, double-quoted and safe to interpolate directly into SQL.
     """
     return '"' + name.replace('"', '""') + '"'
+
+
+def _int_list_sql(values: list[int]) -> str:
+    """Render a list of ints as a safe SQL literal list, e.g. ``"(1, 2, 3)"``.
+
+    Only ever called with this module's own hardcoded concept-id constants
+    (:data:`TOP_LAB_CONCEPTS`/:data:`TOP_VITALS_CONCEPTS`, never external
+    input) -- the ``int()`` call is defensive, not a security boundary in
+    itself.
+
+    Parameters
+    ----------
+    values : list[int]
+        Concept ids.
+
+    Returns
+    -------
+    str
+        ``"(v1, v2, ...)"``, safe to interpolate directly into SQL.
+    """
+    return "(" + ", ".join(str(int(v)) for v in values) + ")"
 
 
 def _suppressed(n: int) -> str:
@@ -407,29 +499,131 @@ def lookup_emptiness() -> dict[str, bool]:
     return out
 
 
+def unit_samples(
+    table: str, code_col: str, unit_col: str, codes: list[int]
+) -> dict[str, list[dict[str, Any]]]:
+    """Suppressed value counts of the raw unit string, per concept code.
+
+    Answers docs/gemini_extraction.md's Units section's open gap: concept
+    descriptions distinguish Mass/volume from Moles/volume but not the
+    literal unit (``umol/L`` vs ``mmol/L``, etc.) -- this samples
+    ``result_unit``/``measurement_unit`` directly for exactly the concepts
+    that matter (every LOINC already in
+    ``odyssey/data/value_binning.py``'s canonical clinical ranges, plus
+    every observed vitals concept).
+
+    Parameters
+    ----------
+    table : str
+        ``lab_subset`` or ``vitals_subset``.
+    code_col : str
+        The OMOP-mapped code column.
+    unit_col : str
+        The raw unit column (``result_unit``/``measurement_unit``).
+    codes : list[int]
+        Concept ids to check -- this module's own hardcoded
+        :data:`TOP_LAB_CONCEPTS`/:data:`TOP_VITALS_CONCEPTS`.
+
+    Returns
+    -------
+    dict[str, list[dict[str, Any]]]
+        ``{str(code): [{"unit", "n"}, ...]}``, ``n`` suppressed.
+    """
+    result = db.query(
+        _UNIT_SAMPLE_SQL.format(
+            code_col=_quote_ident(code_col),
+            unit_col=_quote_ident(unit_col),
+            table=_quote_ident(table),
+            codes=_int_list_sql(codes),
+        )
+    )
+    out: dict[str, list[dict[str, Any]]] = {}
+    for _, row in result.iterrows():
+        key = str(int(row["code"]))
+        out.setdefault(key, []).append(
+            {
+                "unit": None if pd.isna(row["unit"]) else str(row["unit"]),
+                "n": _suppressed(int(row["n"])),
+            }
+        )
+    return out
+
+
+def _safe_query(name: str, fn: Any) -> Any:
+    """Run one design-critical query, or record why it failed.
+
+    One query failing (a column that doesn't exist the way expected, an
+    unexpected type, ...) must not cost the whole `extract-dry` round trip
+    -- Amrit cannot iterate interactively on the GEMINI node. Mirrors
+    :func:`_null_fraction_or_error`'s per-column recovery, generalized to
+    every design query.
+
+    Parameters
+    ----------
+    name : str
+        Query name, for the warning log only.
+    fn : Callable[[], Any]
+        The query to run, with no arguments (a ``functools.partial`` or
+        lambda).
+
+    Returns
+    -------
+    Any
+        The query's result, or ``{"error": "..."}`` if it raised.
+    """
+    try:
+        return fn()
+    except Exception as exc:
+        logger.warning("design query %s failed: %s", name, exc)
+        return {"error": str(exc)}
+
+
 def design_queries() -> dict[str, Any]:
     """Run every design-critical query needed before writing the MEDS extraction spec.
 
-    See ``docs/gemini_extraction.md`` for what each answer decides.
+    See ``docs/gemini_extraction.md`` for what each answer decides. Each
+    query is independently recovered from a failure (:func:`_safe_query`)
+    so one bad query doesn't cost the whole report.
 
     Returns
     -------
     dict[str, Any]
         ``{"lab_concept_frequencies", "vitals_concept_frequencies",
         "table_date_ranges", "hospital_coverage", "encounters_per_year",
-        "lookup_emptiness"}``.
+        "lookup_emptiness", "lab_unit_samples", "vitals_unit_samples"}``.
     """
     return {
-        "lab_concept_frequencies": concept_frequencies(
-            "lab_subset", "test_type_mapped_omop", "lookup_lab_concept"
+        "lab_concept_frequencies": _safe_query(
+            "lab_concept_frequencies",
+            lambda: concept_frequencies(
+                "lab_subset", "test_type_mapped_omop", "lookup_lab_concept"
+            ),
         ),
-        "vitals_concept_frequencies": concept_frequencies(
-            "vitals_subset", "measurement_mapped_omop", "lookup_vitals_concept"
+        "vitals_concept_frequencies": _safe_query(
+            "vitals_concept_frequencies",
+            lambda: concept_frequencies(
+                "vitals_subset", "measurement_mapped_omop", "lookup_vitals_concept"
+            ),
         ),
-        "table_date_ranges": table_date_ranges(),
-        "hospital_coverage": hospital_coverage(),
-        "encounters_per_year": encounters_per_year(),
-        "lookup_emptiness": lookup_emptiness(),
+        "table_date_ranges": _safe_query("table_date_ranges", table_date_ranges),
+        "hospital_coverage": _safe_query("hospital_coverage", hospital_coverage),
+        "encounters_per_year": _safe_query("encounters_per_year", encounters_per_year),
+        "lookup_emptiness": _safe_query("lookup_emptiness", lookup_emptiness),
+        "lab_unit_samples": _safe_query(
+            "lab_unit_samples",
+            lambda: unit_samples(
+                "lab_subset", "test_type_mapped_omop", "result_unit", TOP_LAB_CONCEPTS
+            ),
+        ),
+        "vitals_unit_samples": _safe_query(
+            "vitals_unit_samples",
+            lambda: unit_samples(
+                "vitals_subset",
+                "measurement_mapped_omop",
+                "measurement_unit",
+                TOP_VITALS_CONCEPTS,
+            ),
+        ),
     }
 
 
@@ -464,15 +658,42 @@ def _render_tables_section(tables: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
-def _render_concept_frequency_table(
-    heading: str, rows: list[dict[str, Any]]
-) -> list[str]:
-    """Render one code/concept_desc/n Markdown table under ``heading``.
+def _render_section_or_error(heading: str, value: Any, render_fn: Any) -> list[str]:
+    """Render one design-query result, or a short error note if it failed.
+
+    :func:`_safe_query` substitutes ``{"error": "..."}`` for a query that
+    raised -- rendered here as a visible note rather than crashing the
+    whole markdown render on a shape ``render_fn`` doesn't expect.
 
     Parameters
     ----------
     heading : str
         Markdown ``###`` heading text.
+    value : Any
+        The design query's result (or an error dict).
+    render_fn : Callable[[Any], list[str]]
+        Renders the successful-result shape into markdown lines (heading
+        and trailing blank line not included).
+
+    Returns
+    -------
+    list[str]
+        Markdown lines, heading included.
+    """
+    lines = [f"### {heading}", ""]
+    if isinstance(value, dict) and "error" in value:
+        lines.append(f"*Query failed: {value['error']}*")
+    else:
+        lines += render_fn(value)
+    lines.append("")
+    return lines
+
+
+def _render_concept_frequency_table(rows: list[dict[str, Any]]) -> list[str]:
+    """Render one code/concept_desc/n Markdown table.
+
+    Parameters
+    ----------
     rows : list[dict[str, Any]]
         Rows from :func:`concept_frequencies`.
 
@@ -481,10 +702,29 @@ def _render_concept_frequency_table(
     list[str]
         Markdown lines.
     """
-    lines = [f"### {heading}", "", "| code | concept_desc | n |", "| --- | --- | --- |"]
+    lines = ["| code | concept_desc | n |", "| --- | --- | --- |"]
     for row in rows:
         lines.append(f"| {row['code']} | {row['concept_desc']} | {row['n']} |")
-    lines.append("")
+    return lines
+
+
+def _render_unit_samples_table(samples: dict[str, list[dict[str, Any]]]) -> list[str]:
+    """Render one code/unit/n Markdown table from :func:`unit_samples`.
+
+    Parameters
+    ----------
+    samples : dict[str, list[dict[str, Any]]]
+        ``{code: [{"unit", "n"}, ...]}`` from :func:`unit_samples`.
+
+    Returns
+    -------
+    list[str]
+        Markdown lines.
+    """
+    lines = ["| code | unit | n |", "| --- | --- | --- |"]
+    for code, rows in samples.items():
+        for row in rows:
+            lines.append(f"| {code} | {row['unit']} | {row['n']} |")
     return lines
 
 
@@ -502,60 +742,87 @@ def _render_design_queries_section(dq: dict[str, Any]) -> list[str]:
         Markdown lines.
     """
     lines = ["## Design-critical queries", ""]
-    lines += _render_concept_frequency_table(
+    lines += _render_section_or_error(
         "Lab concept frequencies (`lab_subset.test_type_mapped_omop`)",
         dq["lab_concept_frequencies"],
+        _render_concept_frequency_table,
     )
-    lines += _render_concept_frequency_table(
+    lines += _render_section_or_error(
         "Vitals concept frequencies (`vitals_subset.measurement_mapped_omop`)",
         dq["vitals_concept_frequencies"],
+        _render_concept_frequency_table,
     )
+    lines += _render_section_or_error(
+        "Lab unit samples, top ~30 concepts (`lab_subset.result_unit`)",
+        dq.get("lab_unit_samples", {}),
+        _render_unit_samples_table,
+    )
+    lines += _render_section_or_error(
+        "Vitals unit samples, all 13 concepts (`vitals_subset.measurement_unit`)",
+        dq.get("vitals_unit_samples", {}),
+        _render_unit_samples_table,
+    )
+    lines += _render_section_or_error(
+        "Table date ranges (year only)",
+        dq["table_date_ranges"],
+        _render_date_ranges_table,
+    )
+    lines += _render_section_or_error(
+        "Per-hospital data coverage (`lookup_data_coverage`)",
+        dq["hospital_coverage"],
+        _render_hospital_coverage_table,
+    )
+    lines += _render_section_or_error(
+        "Encounters per year (`admdad_subset`)",
+        dq["encounters_per_year"],
+        _render_encounters_per_year_table,
+    )
+    lines += _render_section_or_error(
+        "Lookup tables confirmed genuinely empty (real EXISTS check)",
+        dq["lookup_emptiness"],
+        _render_lookup_emptiness_table,
+    )
+    return lines
 
-    lines += [
-        "### Table date ranges (year only)",
-        "",
-        "| table | column | min year | max year |",
-        "| --- | --- | --- | --- |",
-    ]
-    for table, columns in dq["table_date_ranges"].items():
+
+def _render_date_ranges_table(ranges: dict[str, dict[str, Any]]) -> list[str]:
+    """Render :func:`table_date_ranges`'s result as a Markdown table."""
+    lines = ["| table | column | min year | max year |", "| --- | --- | --- | --- |"]
+    for table, columns in ranges.items():
         for column, rng in columns.items():
             lines.append(
                 f"| {table} | {column} | {rng['min_year']} | {rng['max_year']} |"
             )
-    lines.append("")
+    return lines
 
-    lines += [
-        "### Per-hospital data coverage (`lookup_data_coverage`)",
-        "",
+
+def _render_hospital_coverage_table(rows: list[dict[str, Any]]) -> list[str]:
+    """Render :func:`hospital_coverage`'s result as a Markdown table."""
+    lines = [
         "| data | min_date | max_date | hospital_num | additional_info |",
         "| --- | --- | --- | --- | --- |",
     ]
-    for row in dq["hospital_coverage"]:
+    for row in rows:
         lines.append(
             f"| {row.get('data')} | {row.get('min_date')} | {row.get('max_date')} "
             f"| {row.get('hospital_num')} | {row.get('additional_info')} |"
         )
-    lines.append("")
+    return lines
 
-    lines += [
-        "### Encounters per year (`admdad_subset`)",
-        "",
-        "| year | count |",
-        "| --- | --- |",
-    ]
-    for year, n in dq["encounters_per_year"].items():
+
+def _render_encounters_per_year_table(counts: dict[str, str]) -> list[str]:
+    """Render :func:`encounters_per_year`'s result as a Markdown table."""
+    lines = ["| year | count |", "| --- | --- |"]
+    for year, n in counts.items():
         lines.append(f"| {year} | {n} |")
-    lines.append("")
+    return lines
 
-    lines += [
-        "### Lookup tables confirmed genuinely empty (real EXISTS check)",
-        "",
-        "| table | genuinely empty |",
-        "| --- | --- |",
-    ]
-    for table, is_empty in dq["lookup_emptiness"].items():
+
+def _render_lookup_emptiness_table(results: dict[str, bool]) -> list[str]:
+    """Render :func:`lookup_emptiness`'s result as a Markdown table."""
+    lines = ["| table | genuinely empty |", "| --- | --- |"]
+    for table, is_empty in results.items():
         lines.append(f"| {table} | {is_empty} |")
-    lines.append("")
     return lines
 
 

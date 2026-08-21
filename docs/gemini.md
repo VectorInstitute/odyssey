@@ -147,18 +147,23 @@ scripts/gemini/run.sh env-gpu      # builds the H200 training venv (torch + mamb
 scripts/gemini/run.sh extract-dry  # scripts/gemini/extract_dry.py -> extract_dry.{json,md};
                                     # needs schema.json first, else prints "pending
                                     # schema report" and does nothing
-scripts/gemini/run.sh extract      # not built yet -- same "pending schema report" stub
-scripts/gemini/run.sh train        # not built yet -- same stub
-scripts/gemini/run.sh eval         # not built yet -- same stub
+scripts/gemini/run.sh extract      # scripts/gemini/extract_meds.py -> streams real MEDS
+                                    # parquet shards to GEMINI_MEDS_OUTPUT_DIR (default
+                                    # ~/gemini_meds_v1, outside the repo, never committed --
+                                    # see docs/gemini_extraction.md); commits only a small,
+                                    # suppressed extraction_summary.json
+scripts/gemini/run.sh train        # not built yet
+scripts/gemini/run.sh eval         # not built yet
 scripts/gemini/run.sh              # default: probe, schema, extract-dry, in order
-                                    # (deliberately excludes env-gpu -- see below)
+                                    # (deliberately excludes env-gpu and extract -- see below)
 ```
 
-`env-gpu` is left out of the default `all` run on purpose: it's a real,
-multi-minute, GPU-dependent build step, not a quick sanity check, so it only
-runs when explicitly asked for (`scripts/gemini/run.sh env-gpu`), the same
-way the not-yet-built `extract`/`train`/`eval` steps aren't wired into `all`
-either -- `all` stays a fast, safe, no-surprises default.
+`env-gpu` and `extract` are left out of the default `all` run on purpose:
+`env-gpu` is a real, multi-minute, GPU-dependent build step, and `extract`
+is a real, long-running, patient-data-writing operation -- neither is a
+quick sanity check, so both only run when explicitly asked for. The
+not-yet-built `train`/`eval` steps aren't wired into `all` either -- `all`
+stays a fast, safe, no-surprises default.
 
 Safe to re-run: venv creation and package installs are idempotent, each step
 overwrites its own output deterministically, and if a step produces nothing

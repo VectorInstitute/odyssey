@@ -91,6 +91,10 @@ gemini = [
     "sqlalchemy>=2.0.0",
     "psycopg2-binary>=2.9.0",
     "pandas>=2.2.0",
+    # extract_meds.py streams MEDS rows straight to per-shard Parquet
+    # files (MedsShardWriter) -- pandas' own to_parquet needs an engine,
+    # and this module also uses pyarrow directly for streaming writes.
+    "pyarrow>=15.0.0",
 ]
 
 # TabICLv2 in-context-learning baseline (odyssey/inference/tabicl_baseline.py),

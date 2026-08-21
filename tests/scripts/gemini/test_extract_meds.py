@@ -1,0 +1,350 @@
+"""Tests for scripts/gemini/extract_meds.py.
+
+No real database or filesystem beyond ``tmp_path`` is used --
+``odyssey.data.gemini.db.query`` is monkeypatched, matching every other
+``tests/scripts/gemini/test_*.py``.
+"""
+
+import importlib.util
+from pathlib import Path
+from types import ModuleType
+from typing import Callable
+
+import pytest
+
+
+_SKIP_REASON = "gemini extra not installed (uv sync --extra gemini)"
+pytest.importorskip("sqlalchemy", reason=_SKIP_REASON)
+pytest.importorskip("pandas", reason=_SKIP_REASON)
+pytest.importorskip("pyarrow", reason=_SKIP_REASON)
+
+import pandas as pd  # noqa: E402
+
+
+def _load_module() -> ModuleType:
+    path = (
+        Path(__file__).resolve().parents[3] / "scripts" / "gemini" / "extract_meds.py"
+    )
+    spec = importlib.util.spec_from_file_location("extract_meds", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _sequenced_fake_query(
+    by_table: dict[str, list[pd.DataFrame]],
+) -> Callable[[str, object], pd.DataFrame]:
+    """Build a fake ``db.query`` that returns one fixture batch per call, per table.
+
+    Matches the source table name in the SQL text (the only thing this
+    module's queries reliably contain) and pops the next fixture batch for
+    it; once a table's list is exhausted, returns an empty frame with the
+    same columns as the last batch, so ``_paginate_rows`` terminates the
+    same way a real "no more rows" response would.
+    """
+    remaining = {table: list(batches) for table, batches in by_table.items()}
+    empty_cols: dict[str, list[str]] = {
+        table: list(batches[0].columns) if batches else []
+        for table, batches in by_table.items()
+    }
+
+    def fake_query(sql: str, params: object = None) -> pd.DataFrame:
+        for table, batches in remaining.items():
+            if f'"{table}"' in sql:
+                if batches:
+                    return batches.pop(0)
+                return pd.DataFrame(columns=empty_cols[table])
+        raise AssertionError(f"no fixture registered for query: {sql}")
+
+    return fake_query
+
+
+# --- small helpers -----------------------------------------------------
+
+
+def test_quote_ident_double_quotes_and_escapes() -> None:
+    mod = _load_module()
+    assert mod._quote_ident("Pop2021") == '"Pop2021"'
+    assert mod._quote_ident('a"b') == '"a""b"'
+
+
+def test_parse_gemini_datetime_handles_valid_missing_and_garbage() -> None:
+    mod = _load_module()
+    assert mod._parse_gemini_datetime("2020-01-15 08:30:00") == pd.Timestamp(
+        "2020-01-15 08:30:00"
+    )
+    assert mod._parse_gemini_datetime(None) is None
+    assert mod._parse_gemini_datetime(float("nan")) is None
+    assert mod._parse_gemini_datetime("not a date at all") is None
+
+
+def test_within_admission_guard_rejects_the_real_9022_outlier() -> None:
+    # The actual outlier docs/gemini_extraction.md documents: a real
+    # pharmacy_subset.med_start_date_time year of 9022 next to a real
+    # admission in 2020.
+    mod = _load_module()
+    admission = pd.Timestamp("2020-03-01")
+    within = pd.Timestamp("2020-03-05")
+    outlier = pd.Timestamp("9022-01-01")
+
+    assert mod._within_admission_guard(within, admission) is True
+    assert mod._within_admission_guard(outlier, admission) is False
+    assert mod._within_admission_guard(None, admission) is False
+    assert mod._within_admission_guard(within, None) is False
+
+
+def test_parse_numeric_handles_numeric_and_categorical_values() -> None:
+    mod = _load_module()
+    assert mod._parse_numeric("3.5") == 3.5
+    assert mod._parse_numeric("POSITIVE") is None
+    assert mod._parse_numeric(None) is None
+
+
+# --- fetch_admission_index / fetch_lab_concept_lookup -------------------
+
+
+def test_fetch_admission_index_paginates_across_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    batch1 = pd.DataFrame(
+        {
+            "genc_id": [1, 2],
+            "patient_id_hashed": ["pA", "pB"],
+            "admission_date_time": ["2020-01-01", "2020-02-01"],
+            "row_num": [1, 2],
+        }
+    )
+    batch2 = pd.DataFrame(
+        {
+            "genc_id": [3],
+            "patient_id_hashed": ["pC"],
+            "admission_date_time": ["2020-03-01"],
+            "row_num": [3],
+        }
+    )
+    monkeypatch.setattr(
+        mod.db, "query", _sequenced_fake_query({"admdad_subset": [batch1, batch2]})
+    )
+
+    subject_by_genc, admission_by_genc = mod.fetch_admission_index()
+
+    assert subject_by_genc == {1: "pA", 2: "pB", 3: "pC"}
+    assert admission_by_genc[1] == pd.Timestamp("2020-01-01")
+    assert admission_by_genc[3] == pd.Timestamp("2020-03-01")
+
+
+def test_fetch_lab_concept_lookup_uses_distinct_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The real bug from docs/gemini_extraction.md's open question 4:
+    # lookup_lab_concept has a duplicate row per concept_id, one with a
+    # real description, one NULL -- the query itself must filter/dedupe,
+    # not the caller.
+    mod = _load_module()
+    captured_sql = {}
+
+    def fake_query(sql: str, params: object = None) -> pd.DataFrame:
+        captured_sql["sql"] = sql
+        return pd.DataFrame({"concept_id": ["3019550"], "concept_desc": ["Sodium"]})
+
+    monkeypatch.setattr(mod.db, "query", fake_query)
+
+    lookup = mod.fetch_lab_concept_lookup()
+
+    assert lookup == {3019550: "Sodium"}
+    assert "DISTINCT ON" in captured_sql["sql"]
+    assert "IS NOT NULL" in captured_sql["sql"]
+
+
+# --- per-table extraction ------------------------------------------------
+
+
+def test_extract_admissions_yields_admission_and_discharge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    subject_by_genc = {1: "pA"}
+    admission_by_genc = {1: pd.Timestamp("2020-01-01")}
+    batch = pd.DataFrame(
+        {
+            "genc_id": [1],
+            "admission_date_time": ["2020-01-01"],
+            "discharge_date_time": ["2020-01-05"],
+            "row_num": [1],
+        }
+    )
+    monkeypatch.setattr(
+        mod.db, "query", _sequenced_fake_query({"admdad_subset": [batch]})
+    )
+
+    rows = pd.concat(
+        list(mod.extract_admissions(subject_by_genc, admission_by_genc)),
+        ignore_index=True,
+    )
+
+    assert set(rows["code"]) == {"ADMISSION", "DISCHARGE"}
+    assert (rows["subject_id"] == "pA").all()
+    assert (rows["hadm_id"] == 1).all()
+
+
+def test_extract_labs_drops_rows_with_no_mapped_concept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    subject_by_genc = {1: "pA"}
+    lab_concepts = {3020564: "Creatinine"}  # only this one is "real"
+    batch = pd.DataFrame(
+        {
+            "genc_id": [1, 1],
+            "test_type_mapped_omop": [3020564, 999999],  # second is unmapped
+            "result_value": ["1.2", "5.0"],
+            "collection_date_time": ["2020-01-02 08:00:00", "2020-01-02 09:00:00"],
+            "row_num": [1, 2],
+        }
+    )
+    monkeypatch.setattr(mod.db, "query", _sequenced_fake_query({"lab_subset": [batch]}))
+
+    rows = pd.concat(
+        list(mod.extract_labs(subject_by_genc, lab_concepts)), ignore_index=True
+    )
+
+    assert len(rows) == 1
+    assert rows.iloc[0]["code"] == "LAB//3020564"
+    assert rows.iloc[0]["numeric_value"] == 1.2
+
+
+def test_extract_pharmacy_applies_the_admission_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The real bug this exists for: pharmacy_subset.med_start_date_time
+    # has a real value of year 9022 (docs/gemini_extraction.md).
+    mod = _load_module()
+    subject_by_genc = {1: "pA", 2: "pB"}
+    admission_by_genc = {
+        1: pd.Timestamp("2020-01-01"),
+        2: pd.Timestamp("2020-06-01"),
+    }
+    batch = pd.DataFrame(
+        {
+            "genc_id": [1, 2],
+            "med_id_generic_name_raw": ["acetaminophen", "ibuprofen"],
+            "med_start_date_time": ["2020-01-02 08:00:00", "9022-01-01 00:00:00"],
+            "med_end_date_time": ["2020-01-03 08:00:00", "8186-01-01 00:00:00"],
+            "row_num": [1, 2],
+        }
+    )
+    monkeypatch.setattr(
+        mod.db, "query", _sequenced_fake_query({"pharmacy_subset": [batch]})
+    )
+
+    rows = pd.concat(
+        list(mod.extract_pharmacy(subject_by_genc, admission_by_genc)),
+        ignore_index=True,
+    )
+
+    # Only patient pA's real-year events survive; pB's insane years are
+    # dropped by the guard, not extracted as nonsense events.
+    assert set(rows["subject_id"]) == {"pA"}
+    assert set(rows["code"]) == {
+        "MEDICATION//acetaminophen//started",
+        "MEDICATION//acetaminophen//ended",
+    }
+
+
+def test_extract_radiology_applies_the_admission_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    subject_by_genc = {1: "pA", 2: "pB"}
+    admission_by_genc = {
+        1: pd.Timestamp("2021-05-01"),
+        2: pd.Timestamp("2021-05-01"),
+    }
+    batch = pd.DataFrame(
+        {
+            "genc_id": [1, 2],
+            "modality_mapped": ["CT", "XR"],
+            "body_part_mapped": ["Head", "Chest"],
+            "performed_date_time": ["2021-05-02 10:00:00", "9999-12-31 00:00:00"],
+            "row_num": [1, 2],
+        }
+    )
+    monkeypatch.setattr(
+        mod.db, "query", _sequenced_fake_query({"radiology_subset": [batch]})
+    )
+
+    rows = pd.concat(
+        list(mod.extract_radiology(subject_by_genc, admission_by_genc)),
+        ignore_index=True,
+    )
+
+    assert len(rows) == 1
+    assert rows.iloc[0]["code"] == "IMAGING//CT//Head"
+
+
+# --- sharding and the writer ---------------------------------------------
+
+
+def test_assign_shards_is_deterministic_and_covers_all_subjects() -> None:
+    mod = _load_module()
+    subjects = [f"patient-{i}" for i in range(2500)]
+
+    first = mod.assign_shards(subjects, subjects_per_shard=1000)
+    second = mod.assign_shards(subjects, subjects_per_shard=1000)
+
+    assert first == second  # deterministic, not Python's salted hash()
+    assert set(first) == set(subjects)
+    assert len(set(first.values())) == 3  # ceil(2500 / 1000)
+
+
+def test_assign_shards_at_least_one_shard_for_a_small_universe() -> None:
+    mod = _load_module()
+    shards = mod.assign_shards(["only-one"], subjects_per_shard=1000)
+    assert shards == {"only-one": 0}
+
+
+def test_meds_shard_writer_streams_batches_to_parquet(tmp_path: Path) -> None:
+    mod = _load_module()
+    shard_by_subject = {"pA": 0, "pB": 1}
+    writer = mod.MedsShardWriter(tmp_path, shard_by_subject)
+
+    batch = pd.DataFrame(
+        {
+            "subject_id": ["pA", "pB"],
+            "time": [pd.Timestamp("2020-01-01"), pd.Timestamp("2020-01-02")],
+            "code": ["ADMISSION", "ADMISSION"],
+            "numeric_value": [None, None],
+            "hadm_id": [1, 2],
+        }
+    )
+    writer.write_batch("admdad_subset", batch)
+    counts = writer.close()
+
+    assert counts == {0: 1, 1: 1}
+    assert (tmp_path / "shard_0000.parquet").exists()
+    assert (tmp_path / "shard_0001.parquet").exists()
+    written = pd.read_parquet(tmp_path / "shard_0000.parquet")
+    assert written["subject_id"].tolist() == ["pA"]
+    assert writer.rows_written_per_table == {"admdad_subset": 2}
+
+
+def test_meds_shard_writer_drops_and_counts_unshardable_rows(tmp_path: Path) -> None:
+    mod = _load_module()
+    writer = mod.MedsShardWriter(tmp_path, {"pA": 0})
+    batch = pd.DataFrame(
+        {
+            "subject_id": ["pA", "unknown-subject"],
+            "time": [pd.Timestamp("2020-01-01"), pd.Timestamp("2020-01-01")],
+            "code": ["ADMISSION", "ADMISSION"],
+            "numeric_value": [None, None],
+            "hadm_id": [1, 2],
+        }
+    )
+
+    writer.write_batch("admdad_subset", batch)
+    counts = writer.close()
+
+    assert counts == {0: 1}
+    assert writer.rows_dropped_unshardable == 1

@@ -200,12 +200,32 @@ every other GEMINI-facing script; its *output* stays on the node.
 
 ## Status
 
-No extraction code exists yet. `extract-dry` has run once for real
-(`scripts/gemini/out/extract_dry.{json,md}`, datacut
-`subdural_hematoma_v1_0_0`), resolving open questions 2 and 3 and sharpening
-4, 7, and the units section above from guesses into confirmed findings.
-Still open before `scripts/gemini/extract_meds.py` gets written: the actual
-training datacut (question 1), the pharmacy dual-mapping relationship
-(question 5), `diagnosis_prefix`'s exact derivation (question 8), the
-locality/StatCan scope decision (question 9), and the exact `result_unit`
-strings behind the units table above.
+`extract-dry` has run once for real (`scripts/gemini/out/extract_dry.{json,md}`,
+datacut `subdural_hematoma_v1_0_0`), resolving open questions 2 and 3 and
+sharpening 4 and 7 from guesses into confirmed findings; a follow-on
+`extract-dry` run now also samples raw `result_unit`/`measurement_unit`
+values for every LOINC-mapped concept in the units table above plus all 13
+vitals concepts, to close that section's remaining gap.
+
+`scripts/gemini/extract_meds.py` implements the resolved parts of the
+mapping above: admission-anchored `+-1y` timestamp guards (pharmacy,
+radiology), the deduplicated `lookup_lab_concept` lookup, and subject-hash
+sharding, streaming throughout (never loads a whole source table into
+memory). `code` values are GEMINI's own raw identifiers, namespaced
+(`LAB//<omop_id>`, `DIAGNOSIS//<icd10ca>`, ...) -- the OMOP -> LOINC bridge
+and value-binning unit-split entries are a separate, later stage (owned by
+the lead session, see the OMOP -> LOINC bridge note above), not yet run
+against real data. Real, aggregate-only run output (rounded row/subject/
+shard counts) lands in `scripts/gemini/out/extraction_summary.json` once
+run via `scripts/gemini/run.sh extract` -- the actual MEDS parquet shards
+never leave the enclave.
+
+Still open before a full real run: the actual training datacut (question 1,
+still `subdural_hematoma_v1_0_0` at time of writing), the pharmacy
+dual-mapping relationship (question 5, `rxnorm_cache` vs
+`lookup_pharmacy_mapping` -- `extract_meds.py` currently sidesteps this by
+using `med_id_generic_name_raw` as a raw fallback identity rather than
+picking one), `diagnosis_prefix`'s exact derivation (question 8, not yet
+used by the extractor), and the locality/StatCan scope decision (question
+9, not extracted at all currently -- treated as out of scope for the MEDS
+event stream per that question's reasoning).
