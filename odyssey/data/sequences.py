@@ -125,6 +125,13 @@ def _assign_visits(
             elif k == j - 1:
                 visit_segments[k] = 2
         i = j
+    # FROZEN, DO NOT CHANGE (review finding 14): when a visit has exactly
+    # one event, k == i and k == j - 1 are the same index, so only the
+    # `if k == i` branch above ever runs -- a single-event visit is always
+    # coded segment 0 ("first"), never 2 ("last"). Pinned as intentional:
+    # see test_events_without_hadm_id_each_get_their_own_visit. Changing
+    # this would alter tokenization for every source (MIMIC-IV, eICU,
+    # GEMINI) mid-program.
     return visit_orders, visit_segments
 
 
