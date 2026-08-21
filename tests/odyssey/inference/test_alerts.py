@@ -16,13 +16,17 @@ from odyssey.data.alert_events import (
     all_event_times,
 )
 from odyssey.data.concepts import concepts_for_source
+from odyssey.data.streaming import NO_SUBJECT
 from odyssey.data.value_binning import add_value_tokens
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference import alerts as alerts_module
 from odyssey.inference.alerts import (
     GBM_MIN_OBSERVED,
+    LANDMARK_PROTOCOL_VERSION,
     IndexRow,
     _index_rows_from_events,
+    _landmark_mask,
+    _stamp_landmark_protocol_version,
     _tune_gbm,
     _visit_starts,
     baseline_features,
@@ -31,6 +35,7 @@ from odyssey.inference.alerts import (
     fit_baselines,
     fit_baselines_streaming,
     index_row_table,
+    load_index_row_table,
     outcome_at_horizon,
     score_alerts,
     sparse_columns,
@@ -178,32 +183,124 @@ def test_harness_end_to_end_with_planted_signal() -> None:
     assert gbm.n_censored > 0
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Real, confirmed divergence (review finding 8; repro from 6e on "
-        "eICU: collect_model_scores over-counts landmark rows by ~23%). "
-        "Root cause isolated here: _landmark_mask is called fresh per "
-        "streaming chunk with no bucket state carried across chunk "
-        "boundaries (prev_bucket always resets to -1 at each chunk's first "
-        "position), so a patient whose sequence spans more than one chunk "
-        "gets a spurious extra landmark at the boundary even when still "
-        "inside the same landmark_hours bucket as the chunk before it -- "
-        "confirmed by re-running this exact test with chunk_size large "
-        "enough that no patient's sequence spans two chunks, where the two "
-        "paths match exactly. Authorized scope for this finding was a "
-        "regression test only (no fix); remove this xfail once "
-        "_landmark_mask carries bucket state across chunk boundaries."
-    ),
+def test_landmark_mask_state_prevents_a_spurious_landmark_at_a_chunk_boundary() -> None:
+    """Direct unit test of the LandmarkState mechanism, isolated from the sampler.
+
+    Lane 0: chunk 1 ends mid-bucket (hour 2, bucket 0); chunk 2 continues
+    the SAME subject/visit at hour 3, still bucket 0 -- must NOT be a new
+    landmark now that state carries across the boundary (the bug: it
+    always was, before). Chunk 2 then moves to hour 5 (bucket 1) -- must
+    be a landmark. Lane 1: a fully-padding chunk 2 must leave state
+    unchanged rather than resetting it (checked via a chunk 3 continuing
+    lane 1's real subject).
+    """
+    landmark_hours = 4.0
+    starts = torch.zeros(2, 2)
+
+    # Chunk 1: lane 0 subject 1 visit 10 at hours [0, 2] (both bucket 0);
+    # lane 1 subject 2 visit 20 at hours [0, 1] (both bucket 0).
+    mask1, state1 = _landmark_mask(
+        time_hours=torch.tensor([[0.0, 2.0], [0.0, 1.0]]),
+        subject_ids=torch.tensor([[1, 1], [2, 2]]),
+        visit_ids=torch.tensor([[10, 10], [20, 20]]),
+        landmark_hours=landmark_hours,
+        visit_start_hours=starts,
+    )
+    assert mask1.tolist() == [[True, False], [True, False]]
+
+    # Chunk 2: lane 0 continues subject 1/visit 10 at hours [3, 5] (bucket
+    # 0 then 1); lane 1 is fully padding (subject ended, nothing yet to
+    # replace it).
+    mask2, state2 = _landmark_mask(
+        time_hours=torch.tensor([[3.0, 5.0], [0.0, 0.0]]),
+        subject_ids=torch.tensor([[1, 1], [NO_SUBJECT, NO_SUBJECT]]),
+        visit_ids=torch.tensor([[10, 10], [-1, -1]]),
+        landmark_hours=landmark_hours,
+        visit_start_hours=starts,
+        state=state1,
+    )
+    # The real fix: hour 3 continues bucket 0 from chunk 1 -- NOT a new
+    # landmark. Hour 5 (bucket 1) is. Before this fix, position 0 of every
+    # chunk was unconditionally a landmark regardless of continuity.
+    assert mask2.tolist() == [[False, True], [False, False]]
+    # Lane 1's state must be UNCHANGED (still subject 2/visit 20/bucket 0)
+    # since chunk 2 had no real position in that lane.
+    assert state2.subject_id[1].item() == 2
+    assert state2.visit_id[1].item() == 20
+
+    # Chunk 3: lane 1's subject 2 resumes at hour 3 (still bucket 0, same
+    # visit) -- must NOT be a new landmark, proving the padding chunk in
+    # between didn't reset lane 1's carried state.
+    mask3, _ = _landmark_mask(
+        time_hours=torch.tensor([[0.0, 0.0], [3.0, 3.0]]),
+        subject_ids=torch.tensor([[NO_SUBJECT, NO_SUBJECT], [2, 2]]),
+        visit_ids=torch.tensor([[-1, -1], [20, 20]]),
+        landmark_hours=landmark_hours,
+        visit_start_hours=starts,
+        state=state2,
+    )
+    assert mask3[1, 0].item() is False
+
+
+def test_landmark_mask_first_call_with_no_state_matches_original_behavior() -> None:
+    """Without `state` (first call), position 0 falls back to "nothing before it"."""
+    mask, _ = _landmark_mask(
+        time_hours=torch.tensor([[0.0, 1.0]]),
+        subject_ids=torch.tensor([[1, 1]]),
+        visit_ids=torch.tensor([[10, 10]]),
+        landmark_hours=4.0,
+        visit_start_hours=torch.zeros(1, 2),
+    )
+    assert mask.tolist() == [[True, False]]
+
+
+def test_landmark_mask_a_new_subject_at_chunk_boundary_is_still_a_landmark() -> None:
+    """Same numeric bucket, but a different (subject, visit) -- must still land."""
+    landmark_hours = 4.0
+    _, state = _landmark_mask(
+        time_hours=torch.tensor([[2.0]]),
+        subject_ids=torch.tensor([[1]]),
+        visit_ids=torch.tensor([[10]]),
+        landmark_hours=landmark_hours,
+        visit_start_hours=torch.zeros(1, 1),
+    )
+    # Next patient in the same lane, same bucket value (0), different subject.
+    mask, _ = _landmark_mask(
+        time_hours=torch.tensor([[1.0]]),
+        subject_ids=torch.tensor([[2]]),
+        visit_ids=torch.tensor([[20]]),
+        landmark_hours=landmark_hours,
+        visit_start_hours=torch.zeros(1, 1),
+        state=state,
+    )
+    assert mask.item() is True
+
+
+@pytest.mark.parametrize(
+    "chunk_size",
+    [
+        pytest.param(16, id="multi_chunk"),  # spans >1 chunk per patient
+        pytest.param(200, id="single_chunk"),  # whole patient fits in one chunk
+    ],
 )
-def test_collect_model_scores_and_index_rows_from_events_agree_on_landmark_times() -> (
-    None
-):
+def test_collect_model_scores_and_index_rows_from_events_agree_on_landmark_times(
+    chunk_size: int,
+) -> None:
     """Per-(subject, visit) landmark time-sets must match between the two paths.
 
-    chunk_size=16 is deliberately small enough that a subject's ~25-26-
-    event sequence spans more than one streaming chunk -- the condition
-    that reproduces the divergence (see the xfail reason above).
+    Real, confirmed divergence this pins (review finding 8, repro from 6e
+    on eICU: collect_model_scores over-counted landmark rows by ~23%).
+    Root cause was _landmark_mask being called fresh per streaming chunk
+    with no bucket state carried across chunk boundaries -- a patient
+    whose sequence spanned more than one chunk got a spurious extra
+    landmark at the boundary even when still inside the same
+    landmark_hours bucket as the chunk before it. Fixed (review finding
+    19) by threading ``LandmarkState`` across chunks, the same way the
+    model's own recurrent state already is. Both regimes are pinned here:
+    chunk_size=16 (a subject's ~25-26-event sequence spans more than one
+    chunk -- the condition that reproduced the divergence) and
+    chunk_size=200 (a whole patient fits in one chunk -- always agreed,
+    even before the fix).
     """
     events = _events(24)
     binned = add_value_tokens(events)
@@ -220,7 +317,7 @@ def test_collect_model_scores_and_index_rows_from_events_agree_on_landmark_times
         visit_start=_visit_starts(events),
         landmark_hours=4.0,
         num_lanes=2,
-        chunk_size=16,
+        chunk_size=chunk_size,
         device="cpu",
     )
     event_rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
@@ -391,6 +488,60 @@ def test_index_row_table_has_scores_outcomes_and_gbm_columns() -> None:
     assert "ctx.hours_into_visit" in table.columns
     assert set(vaso["y@8h"].drop_nulls().unique().to_list()) <= {0.0, 1.0}
     assert vaso["y@8h"].null_count() > 0  # censored / not-at-risk rows are null
+
+
+def test_load_index_row_table_logs_current_version_when_present(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    table = _stamp_landmark_protocol_version(pl.DataFrame({"event": ["death"]}))
+    assert table["landmark_protocol_version"].to_list() == [LANDMARK_PROTOCOL_VERSION]
+    path = tmp_path / "rows.parquet"
+    table.write_parquet(path)
+
+    with caplog.at_level("WARNING"):
+        loaded = load_index_row_table(path)
+
+    assert loaded["landmark_protocol_version"].to_list() == [LANDMARK_PROTOCOL_VERSION]
+    assert not any(r.levelname == "WARNING" for r in caplog.records)
+
+
+def test_load_index_row_table_warns_on_a_pre_column_v1_dump(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A dump written before this column existed at all -- must be treated
+    # as protocol v1, and must warn (not raise) since it's still a
+    # perfectly valid, internally consistent comparison set on its own.
+    path = tmp_path / "rows.parquet"
+    pl.DataFrame({"event": ["death"]}).write_parquet(path)
+
+    with caplog.at_level("WARNING"):
+        loaded = load_index_row_table(path)
+
+    assert "landmark_protocol_version" not in loaded.columns
+    assert any(
+        "landmark_protocol_version=1" in r.message
+        and str(LANDMARK_PROTOCOL_VERSION) in r.message
+        for r in caplog.records
+        if r.levelname == "WARNING"
+    )
+
+
+def test_load_index_row_table_warns_on_mixed_versions(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    path = tmp_path / "rows.parquet"
+    pl.DataFrame(
+        {"event": ["death", "death"], "landmark_protocol_version": [1, 2]}
+    ).write_parquet(path)
+
+    with caplog.at_level("WARNING"):
+        load_index_row_table(path)
+
+    assert any(
+        "mixed landmark_protocol_version" in r.message
+        for r in caplog.records
+        if r.levelname == "WARNING"
+    )
 
 
 def test_tuning_survives_a_column_missing_only_inside_the_training_fold() -> None:
