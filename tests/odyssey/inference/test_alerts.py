@@ -40,9 +40,11 @@ from odyssey.inference.alerts import (
     outcome_at_horizon,
     score_alerts,
     sparse_columns,
+    verify_packed_landmark_rows,
 )
 from odyssey.inference.baseline_features import feature_names
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
+from odyssey.models.backbones.transformer import TransformerBackbone
 from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
 from odyssey.models.time_to_event import DEFAULT_TIME_BIN_EDGES_HOURS
 from odyssey.training.data import load_meds_shard, load_meds_shards
@@ -333,6 +335,312 @@ def test_collect_model_scores_and_index_rows_from_events_agree_on_landmark_times
             for r in event_rows[alert.name]
         }
         assert model_times == event_times, alert.name
+
+
+# ---------------------------------------------------------------------------
+# backbone="transformer": packed-path landmark selection
+# ---------------------------------------------------------------------------
+
+
+def _transformer_model(
+    vocab_size: int, num_concepts: int
+) -> ConceptBottleneckSequenceModel:
+    torch.manual_seed(0)
+    return ConceptBottleneckSequenceModel(
+        backbone=TransformerBackbone(
+            vocab_size=vocab_size,
+            hidden_size=16,
+            num_hidden_layers=2,
+            num_heads=4,
+            padding_idx=0,
+        ),
+        vocab_size=vocab_size,
+        num_concepts=num_concepts,
+        embedding_dim=4,
+        padding_idx=0,
+    )
+
+
+@pytest.mark.parametrize(
+    "num_lanes,max_context",
+    [(4, 200), (2, 30)],
+    ids=["one_call_several_patients_per_row", "many_calls_one_patient_per_row"],
+)
+def test_packed_landmark_rows_match_index_rows_from_events_exactly(
+    num_lanes: int, max_context: int
+) -> None:
+    """The load-bearing proof: two landmark selections must agree exactly.
+
+    (collect_model_scores' packed path, _index_rows_from_events'
+    model-free ground truth) only get to coexist once shown to agree, not
+    assumed to. Both parametrizations keep max_context above every
+    patient's own length (~25-26 events here), so nothing is truncated --
+    only truncation is allowed to shrink the landmark set below the
+    ground truth, tested separately below. ``num_lanes=2, max_context=30``
+    fits only one patient per row, forcing many next_chunk() calls for 24
+    subjects: landmark_state is reset every call in the packed path (see
+    collect_model_scores' docstring), so this is the case that would
+    reveal it if that reset were wrong, the packed-path analogue of the
+    lane-path test above's chunk_size=16 case.
+    """
+    events = _events(24)
+    binned = add_value_tokens(events)
+    vocab = _vocab(binned)
+    concepts = concepts_for_source("mimic_iv")
+    model = _transformer_model(len(vocab), len(concepts))
+
+    model_rows = collect_model_scores(
+        model,
+        binned,
+        vocab,
+        [c.name for c in concepts],
+        ALERT_EVENTS,
+        visit_start=_visit_starts(events),
+        landmark_hours=4.0,
+        num_lanes=num_lanes,
+        device="cpu",
+        backbone="transformer",
+        max_context=max_context,
+    )
+    event_rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+
+    for alert in ALERT_EVENTS:
+        model_times = {
+            (r.subject_id, r.visit_id, round(r.time_hours, 6))
+            for r in model_rows[alert.name]
+        }
+        event_times = {
+            (r.subject_id, r.visit_id, round(r.time_hours, 6))
+            for r in event_rows[alert.name]
+        }
+        assert model_times == event_times, alert.name
+
+
+def test_verify_packed_landmark_rows_passes_on_agreeing_rows() -> None:
+    events = _events(24)
+    binned = add_value_tokens(events)
+    vocab = _vocab(binned)
+    concepts = concepts_for_source("mimic_iv")
+    model = _transformer_model(len(vocab), len(concepts))
+
+    truncation_boundaries: Dict[int, float] = {}
+    model_rows = collect_model_scores(
+        model,
+        binned,
+        vocab,
+        [c.name for c in concepts],
+        ALERT_EVENTS,
+        visit_start=_visit_starts(events),
+        landmark_hours=4.0,
+        num_lanes=2,
+        device="cpu",
+        backbone="transformer",
+        max_context=200,
+        truncation_boundaries_out=truncation_boundaries,
+    )
+
+    problems = verify_packed_landmark_rows(
+        model_rows,
+        binned,
+        ALERT_EVENTS,
+        landmark_hours=4.0,
+        truncation_boundaries=truncation_boundaries,
+    )
+
+    assert problems == []
+
+
+def test_verify_packed_landmark_rows_catches_a_real_disagreement() -> None:
+    """Not a no-op check: feeding it a genuinely wrong row set must fail."""
+    events = _events(8)
+    binned = add_value_tokens(events)
+    wrong_rows = {alert.name: [IndexRow(9999, 9999, 1.0)] for alert in ALERT_EVENTS}
+
+    problems = verify_packed_landmark_rows(
+        wrong_rows,
+        binned,
+        ALERT_EVENTS,
+        landmark_hours=4.0,
+        truncation_boundaries={},
+    )
+
+    assert len(problems) == len(ALERT_EVENTS)
+    assert all("disagree" in p for p in problems)
+
+
+def test_verify_packed_landmark_rows_tail_aware_all_three_arms() -> None:
+    """The review's exact scenario: one truncated subject, one not, all three arms.
+
+    Subject 1: 40 hourly events (hours 0..39) -- truncated to the most
+    recent max_context=15 (hours 25..39) by PackedContextSampler.
+    Subject 2: 8 hourly events (hours 0..7) -- comfortably whole, never
+    truncated. A real run of collect_model_scores/verify_packed_
+    landmark_rows over this must find no problems (subject 2 exact,
+    subject 1 correctly shrunk); then two hand-corrupted variants of the
+    same row set must each be caught, and a third (legitimate
+    before-boundary shrinkage) must not be.
+    """
+    rows_raw: List[Tuple[int, str, datetime, Optional[float], int]] = []
+    for h in range(40):
+        rows_raw.append((1, "LAB//220045//bpm", T0 + timedelta(hours=h), 80.0, 1001))
+    for h in range(8):
+        rows_raw.append((2, "LAB//220045//bpm", T0 + timedelta(hours=h), 80.0, 1002))
+    events = pl.DataFrame(
+        rows_raw,
+        schema={
+            "subject_id": pl.Int64,
+            "code": pl.Utf8,
+            "time": pl.Datetime,
+            "numeric_value": pl.Float32,
+            "hadm_id": pl.Int64,
+        },
+        orient="row",
+    )
+    binned = add_value_tokens(events)
+    vocab = _vocab(binned)
+    concepts = concepts_for_source("mimic_iv")
+    model = _transformer_model(len(vocab), len(concepts))
+
+    truncation_boundaries: Dict[int, float] = {}
+    model_rows = collect_model_scores(
+        model,
+        binned,
+        vocab,
+        [c.name for c in concepts],
+        ALERT_EVENTS,
+        visit_start=_visit_starts(events),
+        landmark_hours=4.0,
+        num_lanes=2,
+        device="cpu",
+        backbone="transformer",
+        max_context=15,
+        truncation_boundaries_out=truncation_boundaries,
+    )
+
+    # Sanity: subject 1 truncated, subject 2 whole.
+    is_tail_by_subject = {
+        r.subject_id: r.is_tail for rs in model_rows.values() for r in rs
+    }
+    assert is_tail_by_subject[1] is True
+    assert is_tail_by_subject[2] is False
+
+    assert truncation_boundaries == {1: 25.0}  # captured from the sampler,
+    # independently of model_rows -- this is what each arm below must use,
+    # unchanged, even when model_rows is corrupted: re-deriving it from
+    # model_rows (as an earlier version of this fix did) let arm 2's own
+    # corruption shift the boundary along with the row it deleted, hiding
+    # the very bug the arm exists to catch.
+    boundary = truncation_boundaries[1]
+
+    # Arm 0: the real, uncorrupted output has no problems at all -- a
+    # correctly shrunk tail is not itself a disagreement.
+    assert (
+        verify_packed_landmark_rows(
+            model_rows,
+            binned,
+            ALERT_EVENTS,
+            landmark_hours=4.0,
+            truncation_boundaries=truncation_boundaries,
+        )
+        == []
+    )
+
+    # Arm 1 (tail, invented row): a landmark ground truth has no record of
+    # at all, not explained by truncation -- always a bug.
+    with_invented = {
+        name: [*rs, IndexRow(1, 1001, 999.0, is_tail=True)]
+        for name, rs in model_rows.items()
+    }
+    problems = verify_packed_landmark_rows(
+        with_invented,
+        binned,
+        ALERT_EVENTS,
+        landmark_hours=4.0,
+        truncation_boundaries=truncation_boundaries,
+    )
+    assert problems
+    assert any("no record" in p for p in problems)
+
+    # Arm 2 (tail, dropped a row at/after the boundary): should have been
+    # kept (it's inside the window PackedContextSampler actually kept),
+    # missing it is a real bug, not truncation working as intended. The
+    # boundary passed in is the one captured above, untouched by this
+    # corruption -- proving the check no longer explains the drop away.
+    missing_at_boundary = {
+        name: [r for r in rs if not (r.subject_id == 1 and r.time_hours == boundary)]
+        for name, rs in model_rows.items()
+    }
+    problems = verify_packed_landmark_rows(
+        missing_at_boundary,
+        binned,
+        ALERT_EVENTS,
+        landmark_hours=4.0,
+        truncation_boundaries=truncation_boundaries,
+    )
+    assert problems
+    assert any("missing entirely from the packed path" in p for p in problems)
+
+    # Arm 3 (tail, "missing" a row that was never in the kept window at
+    # all): legitimate truncation shrinkage, must NOT be flagged. Ground
+    # truth has a subject-1 landmark well before the boundary (e.g. hour
+    # 0); the real packed output never had it, and that is correct.
+    ground_truth = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+    assert any(
+        r.subject_id == 1 and r.time_hours < boundary
+        for r in ground_truth["vasopressor_start"]
+    )  # confirms the fixture actually exercises this arm, not vacuously
+
+
+def test_collect_model_scores_marks_truncated_subjects_is_tail() -> None:
+    """A patient longer than max_context is truncated and its rows flagged."""
+    events = _events(8)
+    binned = add_value_tokens(events)
+    vocab = _vocab(binned)
+    concepts = concepts_for_source("mimic_iv")
+    model = _transformer_model(len(vocab), len(concepts))
+
+    # Every subject has ~25-26 events; max_context=10 truncates all of them.
+    rows = collect_model_scores(
+        model,
+        binned,
+        vocab,
+        [c.name for c in concepts],
+        ALERT_EVENTS,
+        visit_start=_visit_starts(events),
+        landmark_hours=4.0,
+        num_lanes=2,
+        device="cpu",
+        backbone="transformer",
+        max_context=10,
+    )
+
+    assert any(r.is_tail for rs in rows.values() for r in rs)
+    # every row belongs to a truncated subject at this max_context, so
+    # none should be False.
+    assert all(r.is_tail for rs in rows.values() for r in rs)
+
+
+def test_collect_model_scores_hybrid_backbone_never_marks_is_tail() -> None:
+    events = _events(8)
+    binned = add_value_tokens(events)
+    vocab = _vocab(binned)
+    concepts = concepts_for_source("mimic_iv")
+    model = _model(len(vocab), len(concepts))
+
+    rows = collect_model_scores(
+        model,
+        binned,
+        vocab,
+        [c.name for c in concepts],
+        ALERT_EVENTS,
+        visit_start=_visit_starts(events),
+        landmark_hours=4.0,
+        num_lanes=2,
+        chunk_size=4,
+        device="cpu",
+    )
+
+    assert all(not r.is_tail for rs in rows.values() for r in rs)
 
 
 def test_baseline_features_shape_and_content() -> None:

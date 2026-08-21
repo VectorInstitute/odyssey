@@ -47,11 +47,17 @@ this sampler's lifetime (not reset per call) -- an eval harness reads it
 once a pass completes and reports those subjects' metrics as a distinct
 slice rather than pooling them into the headline number, since losing
 distant history is itself part of what this backbone control measures,
-not something to average away.
+not something to average away. ``truncation_boundaries`` accumulates
+alongside it: each truncated subject's kept-window start, in that
+subject's own original time frame (see
+:attr:`PackedContextSampler.truncation_boundaries`) -- needed by any
+caller that has to reconcile the packed path's rebased-to-0 timestamps
+against something computed in the original frame, notably
+``odyssey.inference.alerts``' landmark/outcome logic.
 """
 
 from dataclasses import dataclass, field
-from typing import Iterator, List, Optional
+from typing import Dict, Iterator, List, Optional
 
 import torch
 
@@ -248,6 +254,17 @@ class PackedContextSampler:
         self._held: Optional[PatientSequence] = None
         self._exhausted = False
         self.truncated_subject_ids: List[int] = []
+        self.truncation_boundaries: Dict[int, float] = {}
+        """subject_id -> the truncation boundary, in that subject's own
+        original time frame ("hours since this sequence's first event",
+        the same convention :func:`~odyssey.data.alert_events.origin_hours`
+        uses) -- the raw time of the first token this sampler kept, before
+        :func:`_truncate_head` rebases the kept window to start at 0. A
+        caller needing to compare this subject's packed-path timestamps
+        against anything computed in the original frame (e.g.
+        ``odyssey.inference.alerts``' landmark/outcome logic) adds this
+        back; nothing in this module needs to un-rebase, since the
+        backbone only ever needs relative deltas within one row."""
 
     def _next_patient(self) -> Optional[PatientSequence]:
         if self._held is not None:
@@ -263,6 +280,9 @@ class PackedContextSampler:
             return None
         if len(patient) > self.max_context:
             self.truncated_subject_ids.append(patient.subject_id)
+            self.truncation_boundaries[patient.subject_id] = patient.time_stamps[
+                -self.max_context
+            ]
             patient = _truncate_head(patient, self.max_context)
         return patient
 

@@ -23,7 +23,7 @@ import logging
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import Dict, Iterator, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 import polars as pl
 import torch
@@ -32,6 +32,8 @@ import torch.nn.functional as F  # noqa: N812
 from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.concepts import AnyConceptDefinition, concepts_for_source
 from odyssey.data.history_recap import maybe_history_recap
+from odyssey.data.packed_context import PackedContextSampler
+from odyssey.data.sequences import PatientSequence
 from odyssey.data.streaming import PackedLaneSampler, StreamingChunk
 from odyssey.data.value_binning import QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import Vocabulary, code_type
@@ -41,12 +43,14 @@ from odyssey.models.sequence_model import (
     BaselineSequenceModel,
     ConceptLabelDict,
     ConceptSupervision,
+    ForwardWithFeatures,
     SequenceModel,
     _gather_by_subject,
     _gather_by_visit,
     _pool_patient_ends,
 )
 from odyssey.models.time_to_event import (
+    TimeToEventHead,
     gap_survival_valid_mask,
     gap_to_bin,
     hazard_log_likelihood,
@@ -97,6 +101,14 @@ class InferenceResults:
     n_patient_ends_scored: int
     time_metrics: Optional[TimeMetrics] = None
     """Time-to-next-event scoring; None for models without a time head."""
+    tail_slice: Optional["InferenceResults"] = None
+    """Same breakdown, restricted to patients PackedContextSampler had to
+    truncate (backbone="transformer" only; None otherwise, or when
+    nothing was truncated this pass). Reported separately rather than
+    pooled into the fields above: whether losing distant history costs
+    this backbone accuracy is part of what the control measures, not
+    something to average away. Always has its own tail_slice=None (one
+    level deep, not recursive)."""
 
 
 # Horizons are bin edges of DEFAULT_TIME_BIN_EDGES_HOURS so P(within h) is exact.
@@ -630,6 +642,79 @@ class _PooledEnds:
         )
 
 
+class _StreamingAccumulators:
+    """One split's running accumulators (the overall pass, or the tail slice)."""
+
+    def __init__(
+        self, vocab: Vocabulary, *, device: str, time_head: Optional[TimeToEventHead]
+    ) -> None:
+        self.task_stats = _RunningTaskMetrics(vocab, device=device)
+        self.time_stats = (
+            _RunningTimeMetrics(time_head.edges) if time_head is not None else None
+        )
+        self.pooled = _PooledEnds()
+
+    def accumulate(
+        self,
+        chunk: StreamingChunk,
+        fwd: ForwardWithFeatures,
+        logits: torch.Tensor,
+        *,
+        time_head: Optional[TimeToEventHead],
+        supervision: ConceptSupervision,
+        restrict: Optional[torch.Tensor],
+    ) -> None:
+        """Fold in one chunk; ``restrict=None`` means every real position."""
+        real = chunk.real_mask if restrict is None else (chunk.real_mask & restrict)
+        if self.time_stats is not None and time_head is not None:
+            hazard_logits = time_head(fwd.features)
+            gap, gap_valid = gap_survival_valid_mask(chunk.batch.aux.time_stamps, real)
+            self.time_stats.update(hazard_logits, gap, gap_valid)
+        if real.any():
+            set_hits = self.task_stats.block_set_hits(
+                logits.argmax(dim=-1),
+                chunk.targets,
+                times=chunk.batch.aux.time_stamps,
+                subject_ids=chunk.subject_ids,
+                real_mask=real,
+            )
+            self.task_stats.update(
+                logits[real],
+                chunk.targets[real],
+                BlockSetHits(*(flag[real] for flag in set_hits)),
+            )
+
+        pool_mask = chunk.patient_end if supervision == "stay" else chunk.visit_end
+        if restrict is not None:
+            pool_mask = pool_mask & restrict
+        if fwd.bottleneck is not None and pool_mask.any():
+            self.pooled.append(chunk, fwd.bottleneck, pool_mask)
+
+
+def _build_sampler(
+    patients: Iterator[PatientSequence],
+    *,
+    backbone: str,
+    num_lanes: int,
+    chunk_size: int,
+    max_context: int,
+) -> Union[PackedLaneSampler, PackedContextSampler]:
+    """Dispatch on ``backbone``, matching :func:`odyssey.training.train.build_model`.
+
+    A stateless backbone needs whole-patient context, not TBTT chunking
+    -- see :mod:`odyssey.data.packed_context`. Picked from the run's own
+    saved config, never a caller-supplied flag: there is no correct
+    choice a caller could get wrong instead.
+    """
+    if backbone == "transformer":
+        return PackedContextSampler(
+            patients, batch_size=num_lanes, max_context=max_context
+        )
+    return PackedLaneSampler(
+        patients, num_lanes=num_lanes, chunk_size=chunk_size, reset_prob=0.0
+    )
+
+
 def run_streaming_inference(
     model: SequenceModel,
     events_binned: pl.DataFrame,
@@ -643,6 +728,8 @@ def run_streaming_inference(
     max_seq_len: Optional[int] = None,
     supervision: ConceptSupervision = "stay",
     concepts: Optional[Sequence[AnyConceptDefinition]] = None,
+    backbone: str = "hybrid",
+    max_context: int = 4096,
 ) -> InferenceResults:
     """Stream held-out patients through ``model`` and score every eval question.
 
@@ -653,19 +740,34 @@ def run_streaming_inference(
     ``concepts`` must be the same definitions those labels were built
     from (defaults to the MIMIC-IV expansion of the canonical registry,
     matching the training default).
+
+    ``backbone="transformer"`` streams through
+    :class:`~odyssey.data.packed_context.PackedContextSampler` instead of
+    the TBTT :class:`~odyssey.data.streaming.PackedLaneSampler` (see
+    :func:`_build_sampler`); patients that sampler had to truncate get a
+    second, separately reported breakdown (``InferenceResults.tail_slice``)
+    rather than being silently pooled into the headline numbers -- see
+    that sampler's ``truncated_subject_ids``.
     """
     if concepts is None:
         concepts = concepts_for_source("mimic_iv")
     model.eval()
     patients = iter_patient_sequences(events_binned, vocab, max_seq_len=max_seq_len)
-    sampler = PackedLaneSampler(
-        patients, num_lanes=num_lanes, chunk_size=chunk_size, reset_prob=0.0
+    sampler = _build_sampler(
+        patients,
+        backbone=backbone,
+        num_lanes=num_lanes,
+        chunk_size=chunk_size,
+        max_context=max_context,
     )
 
-    task_stats = _RunningTaskMetrics(vocab, device=device)
     time_head = getattr(model, "time_head", None)
-    time_stats = _RunningTimeMetrics(time_head.edges) if time_head is not None else None
-    pooled = _PooledEnds()
+    overall = _StreamingAccumulators(vocab, device=device, time_head=time_head)
+    tail = (
+        _StreamingAccumulators(vocab, device=device, time_head=time_head)
+        if isinstance(sampler, PackedContextSampler)
+        else None
+    )
 
     state = None
     with torch.no_grad():
@@ -676,30 +778,81 @@ def run_streaming_inference(
             )
             logits, state = fwd.logits, fwd.state
 
-            real = chunk.real_mask
-            if time_stats is not None and time_head is not None:
-                hazard_logits = time_head(fwd.features)
-                gap, gap_valid = gap_survival_valid_mask(
-                    chunk.batch.aux.time_stamps, real
-                )
-                time_stats.update(hazard_logits, gap, gap_valid)
-            if real.any():
-                set_hits = task_stats.block_set_hits(
-                    logits.argmax(dim=-1),
-                    chunk.targets,
-                    times=chunk.batch.aux.time_stamps,
-                    subject_ids=chunk.subject_ids,
-                    real_mask=real,
-                )
-                task_stats.update(
-                    logits[real],
-                    chunk.targets[real],
-                    BlockSetHits(*(flag[real] for flag in set_hits)),
-                )
+            overall.accumulate(
+                chunk,
+                fwd,
+                logits,
+                time_head=time_head,
+                supervision=supervision,
+                restrict=None,
+            )
+            if tail is not None and isinstance(sampler, PackedContextSampler):
+                truncated = sampler.truncated_subject_ids
+                if truncated:
+                    truncated_t = torch.tensor(
+                        truncated, dtype=chunk.subject_ids.dtype, device=device
+                    )
+                    is_tail = torch.isin(chunk.subject_ids, truncated_t)
+                    tail.accumulate(
+                        chunk,
+                        fwd,
+                        logits,
+                        time_head=time_head,
+                        supervision=supervision,
+                        restrict=is_tail,
+                    )
 
-            pool_mask = chunk.patient_end if supervision == "stay" else chunk.visit_end
-            if fwd.bottleneck is not None and pool_mask.any():
-                pooled.append(chunk, fwd.bottleneck, pool_mask)
+    task_stats, time_stats, pooled = (
+        overall.task_stats,
+        overall.time_stats,
+        overall.pooled,
+    )
+    # tail is a real _StreamingAccumulators instance whenever the sampler
+    # *can* truncate (backbone="transformer"), but nothing may actually
+    # have been truncated this pass -- only finalize it when something
+    # was really accumulated, or _RunningTaskMetrics.finalize() raises on
+    # the empty bucket (no predictions to compute metrics over).
+    tail_slice = (
+        _finalize_inference_results(
+            tail.task_stats,
+            tail.time_stats,
+            tail.pooled,
+            model=model,
+            supervision=supervision,
+            concept_labels=concept_labels,
+            concept_mask=concept_mask,
+            concepts=concepts,
+        )
+        if tail is not None
+        and isinstance(sampler, PackedContextSampler)
+        and sampler.truncated_subject_ids
+        else None
+    )
+    return _finalize_inference_results(
+        task_stats,
+        time_stats,
+        pooled,
+        model=model,
+        supervision=supervision,
+        concept_labels=concept_labels,
+        concept_mask=concept_mask,
+        concepts=concepts,
+        tail_slice=tail_slice,
+    )
+
+
+def _finalize_inference_results(
+    task_stats: "_RunningTaskMetrics",
+    time_stats: Optional["_RunningTimeMetrics"],
+    pooled: "_PooledEnds",
+    *,
+    model: SequenceModel,
+    supervision: ConceptSupervision,
+    concept_labels: ConceptLabelDict,
+    concept_mask: ConceptLabelDict,
+    concepts: Sequence[AnyConceptDefinition],
+    tail_slice: Optional[InferenceResults] = None,
+) -> InferenceResults:
 
     task_metrics, task_metrics_by_code_type = task_stats.finalize()
 
@@ -727,6 +880,7 @@ def run_streaming_inference(
             orthogonality=float("nan"),
             n_patient_ends_scored=0,
             time_metrics=time_stats.finalize() if time_stats is not None else None,
+            tail_slice=tail_slice,
         )
 
     subject_ids = torch.cat(pooled.subject_ids)
@@ -761,6 +915,7 @@ def run_streaming_inference(
         orthogonality=orthogonality,
         n_patient_ends_scored=int(subject_ids.shape[0]),
         time_metrics=time_stats.finalize() if time_stats is not None else None,
+        tail_slice=tail_slice,
     )
 
 
@@ -820,6 +975,8 @@ def evaluate_run(
         device=device,
         supervision=supervision,  # type: ignore[arg-type]
         concepts=concepts,
+        backbone=getattr(config, "backbone", "hybrid"),
+        max_context=getattr(config, "max_context", 4096),
     )
 
 
