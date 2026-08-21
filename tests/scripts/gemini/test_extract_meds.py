@@ -551,11 +551,48 @@ def test_fetch_admission_index_reads_every_chunk(
         mod, "_stream_table", _fake_stream_table({"admdad_subset": [chunk1, chunk2]})
     )
 
-    subject_by_genc, admission_by_genc = mod.fetch_admission_index()
+    subject_by_genc, admission_by_genc, n_dropped_null_subject = (
+        mod.fetch_admission_index()
+    )
 
     assert subject_by_genc == {1: "pA", 2: "pB", 3: "pC"}
     assert admission_by_genc[1] == pd.Timestamp("2020-01-01")
     assert admission_by_genc[3] == pd.Timestamp("2020-03-01")
+    assert n_dropped_null_subject == 0
+
+
+def test_fetch_admission_index_drops_null_and_empty_patient_id_hashed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real incident: a null patient_id_hashed crashed assign_shards.
+
+    It reached assign_shards's sorted(set(...)), which crashed comparing
+    None against str -- the encounter is unattributable to any subject and
+    must never enter subject_by_genc in the first place.
+    """
+    mod = _load_module()
+    chunk = pl.DataFrame(
+        {
+            "genc_id": [1, 2, 3],
+            "patient_id_hashed": ["pA", None, ""],
+            "admission_date_time": ["2020-01-01", "2020-02-01", "2020-03-01"],
+        }
+    )
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"admdad_subset": [chunk]})
+    )
+
+    subject_by_genc, _admission_by_genc, n_dropped_null_subject = (
+        mod.fetch_admission_index()
+    )
+
+    assert subject_by_genc == {1: "pA"}
+    assert None not in subject_by_genc.values()
+    assert n_dropped_null_subject == 2
+
+    # The real failure mode: assign_shards must never see the dropped Nones.
+    shard_by_subject = mod.assign_shards(subject_by_genc.values())
+    assert set(shard_by_subject) == {"pA"}
 
 
 def test_fetch_lab_concept_lookup_uses_distinct_on(
@@ -966,6 +1003,18 @@ def test_assign_shards_at_least_one_shard_for_a_small_universe() -> None:
     mod = _load_module()
     shards = mod.assign_shards(["only-one"], subjects_per_shard=1000)
     assert shards == {"only-one": 0}
+
+
+def test_assign_shards_skips_none_defensively() -> None:
+    """Defensive guard, independent of fetch_admission_index's own filtering.
+
+    Real incident: a null patient_id_hashed reached here as a bare None and
+    sorted(set(...)) crashed comparing None against str. Covered here in
+    case a future index source reintroduces one.
+    """
+    mod = _load_module()
+    shards = mod.assign_shards(["pA", None, "pB", None], subjects_per_shard=1000)
+    assert shards == {"pA": 0, "pB": 0}
 
 
 def test_meds_shard_writer_streams_batches_to_parquet(tmp_path: Path) -> None:
