@@ -224,6 +224,23 @@ must never cross that boundary). The extraction script itself (schema and
 logic) is what gets pushed/pulled through the git-only channel, same as
 every other GEMINI-facing script; its *output* stays on the node.
 
+**Text/varchar columns are truncated to 128 characters and newline/carriage-return
+stripped server-side, in the `COPY`/`SELECT` itself** (`extract_meds.py`'s
+`_select_expr_sql`). Real incident this closes: `_CopyChunkSink` finds row
+boundaries by counting raw `\n` bytes, not by CSV-aware parsing, so a
+literal newline embedded in a quoted CSV field (Postgres quotes any field
+containing one) would silently corrupt row alignment -- confirmed live via
+`lab_subset.result_value`, which is genuine free text (`'103@POST'` and
+similar), not the numeric-only reading the column name suggests. Every
+column confirmed `integer`/`boolean` in `scripts/gemini/out/schema.md`
+(`genc_id`, `test_type_mapped_omop`, `measurement_mapped_omop`,
+`icu_flag`) is exempt -- those can never contain a newline by
+construction. Every other selected column, across all 9 source tables
+(datetime columns, medical codes, hashed physician/patient identifiers,
+drug names, lab/vitals values and units), is `text` or `character
+varying` and gets the wrap; 128 characters is generous for all of them in
+practice.
+
 ## Status
 
 `extract-dry` has run once for real (`scripts/gemini/out/extract_dry.{json,md}`,

@@ -64,6 +64,68 @@ def test_quote_ident_double_quotes_and_escapes() -> None:
     assert mod._quote_ident('a"b') == '"a""b"'
 
 
+def test_select_expr_sql_wraps_text_columns_with_newline_strip_and_cap() -> None:
+    mod = _load_module()
+    sql = mod._select_expr_sql("result_value")
+    assert sql == (
+        "left(regexp_replace(\"result_value\", E'[\\n\\r]+', ' ', 'g'), 128) "
+        'AS "result_value"'
+    )
+
+
+def test_select_expr_sql_leaves_confirmed_integer_boolean_columns_bare() -> None:
+    # Real crash this guards against being reintroduced: genc_id is
+    # integer, and every extract_<table> function's join logic (and every
+    # test fixture) assumes it comes back unwrapped.
+    mod = _load_module()
+    for column in [
+        "genc_id",
+        "test_type_mapped_omop",
+        "measurement_mapped_omop",
+        "icu_flag",
+    ]:
+        assert mod._select_expr_sql(column) == mod._quote_ident(column)
+
+
+def test_select_expr_sql_covers_every_column_selected_by_the_extractors() -> None:
+    # Real incident this guards against: the module used to assume no
+    # selected column could contain a newline "by construction" -- wrong,
+    # since every one of these is Postgres text/character varying (see
+    # scripts/gemini/out/schema.md), which can embed a literal newline
+    # regardless of declared length. Every one of them must be wrapped
+    # unless it's confirmed integer/boolean.
+    mod = _load_module()
+    free_text_columns = [
+        "patient_id_hashed",
+        "admission_date_time",
+        "discharge_date_time",
+        "scu_admit_date_time",
+        "scu_discharge_date_time",
+        "result_value",
+        "result_unit",
+        "collection_date_time",
+        "measurement_value",
+        "measurement_unit",
+        "measure_date_time",
+        "med_id_generic_name_raw",
+        "med_start_date_time",
+        "med_end_date_time",
+        "diagnosis_code",
+        "intervention_code",
+        "intervention_episode_start_date_time",
+        "modality_mapped",
+        "body_part_mapped",
+        "performed_date_time",
+        "mrp_cpso_hashed",
+        "adm_phy_cpso_hashed",
+        "dis_phy_cpso_hashed",
+    ]
+    for column in free_text_columns:
+        sql = mod._select_expr_sql(column)
+        assert "regexp_replace" in sql
+        assert f'AS "{column}"' in sql
+
+
 def test_parse_datetime_series_handles_valid_missing_and_garbage() -> None:
     mod = _load_module()
     raw = pl.Series(["2020-01-15 08:30:00", None, "not a date at all"])
@@ -252,7 +314,9 @@ def test_copy_chunk_sink_chunks_and_flushes_the_remainder() -> None:
 
     assert len(frames) == 3  # two full 2-row chunks + one 1-row remainder
     result = pl.concat(frames)
-    assert result["a"].to_list() == [1, 2, 3, 4, 5]
+    # infer_schema_length=0 -- every column comes back Utf8, never
+    # auto-inferred; typed parsing is each extract_<table>'s own job.
+    assert result["a"].to_list() == ["1", "2", "3", "4", "5"]
     # NULL '\N' marker, not the CSV-default empty-field convention -- a
     # real empty string must never be conflated with a real NULL.
     assert result["b"][3] is None
@@ -270,6 +334,44 @@ def test_copy_chunk_sink_distinguishes_null_marker_from_empty_string() -> None:
     assert result["b"].to_list() == [None, ""]
 
 
+def test_copy_chunk_sink_never_infers_a_dtype_even_within_one_chunk() -> None:
+    """Real crash this guards against.
+
+    pl.read_csv infers each column's dtype from a sample -- a column that's
+    all-numeric for the first rows of a chunk locked Float64 for that whole
+    chunk, then a genuinely free-text value later in the SAME chunk
+    (lab_subset.result_value's real shape: a numeric reading region
+    followed by a free-text region, e.g. "103@POST") raised
+    polars.ComputeError mid-parse. infer_schema_length=0 means every
+    column always comes back Utf8 regardless of what came before it in the
+    chunk -- typed parsing is each extract_<table>'s own job downstream.
+    """
+    mod = _load_module()
+    out_queue: "queue.Queue[pl.DataFrame]" = queue.Queue()
+    sink = mod._CopyChunkSink(
+        chunk_rows=10, out_queue=out_queue, stop_requested=threading.Event()
+    )
+    # All-numeric first, then a free-text value -- all one chunk (chunk_rows
+    # not reached until close()), exactly the real failure shape.
+    csv_rows = "\n".join([f"{i},{i}.5" for i in range(1, 6)] + ["6,103@POST"])
+    sink.write(f"genc_id,result_value\n{csv_rows}\n".encode())
+    sink.close()
+
+    result = out_queue.get()
+    assert result["result_value"].to_list() == [
+        "1.5",
+        "2.5",
+        "3.5",
+        "4.5",
+        "5.5",
+        "103@POST",
+    ]
+    # The whole point: strict=False downstream must be able to parse the
+    # numeric residue and null the free-text row, not crash.
+    numeric = result["result_value"].cast(pl.Float64, strict=False)
+    assert numeric.to_list() == [1.5, 2.5, 3.5, 4.5, 5.5, None]
+
+
 def test_copy_chunk_sink_write_raises_once_stop_is_requested() -> None:
     mod = _load_module()
     out_queue: "queue.Queue[pl.DataFrame]" = queue.Queue()
@@ -280,6 +382,31 @@ def test_copy_chunk_sink_write_raises_once_stop_is_requested() -> None:
     stop_requested.set()
     with pytest.raises(mod._StreamAbandonedError):
         sink.write(b"a,b\n1,x\n")
+
+
+def test_copy_chunk_sink_flushes_on_byte_cap_before_chunk_rows_is_reached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Byte-size insurance: a huge chunk_rows target (never reached in this
+    # test) must not stop a flush from happening once the buffer itself
+    # crosses the byte cap -- defense in depth against an unexpectedly
+    # large region this module hasn't already bounded server-side.
+    mod = _load_module()
+    monkeypatch.setattr(mod, "_SINK_BUFFER_BYTE_CAP", 100)
+    out_queue: "queue.Queue[pl.DataFrame]" = queue.Queue()
+    sink = mod._CopyChunkSink(
+        chunk_rows=1_000_000, out_queue=out_queue, stop_requested=threading.Event()
+    )
+    sink.write(b"a,b\n")
+    for i in range(20):
+        sink.write(f"{i},{'x' * 20}\n".encode())
+
+    assert not out_queue.empty()  # flushed well before chunk_rows
+    frames = []
+    while not out_queue.empty():
+        frames.append(out_queue.get())
+    result = pl.concat(frames)
+    assert result["a"].to_list() == [str(i) for i in range(20)]
 
 
 def test_copy_chunk_sink_handles_one_write_call_per_row() -> None:
@@ -309,7 +436,7 @@ def test_copy_chunk_sink_handles_one_write_call_per_row() -> None:
         frames.append(out_queue.get())
 
     result = pl.concat(frames)
-    assert result["a"].to_list() == list(range(chunk_rows))
+    assert result["a"].to_list() == [str(i) for i in range(chunk_rows)]
 
 
 def test_copy_chunk_sink_drain_does_not_scale_quadratically_with_chunk_size() -> None:
@@ -361,7 +488,7 @@ def test_stream_table_copy_streams_all_rows_via_fake_copy_to_sink(
 
     chunks = list(mod._stream_table_copy("lab_subset", ["genc_id", "x"], chunk_rows=2))
     total = pl.concat(chunks)
-    assert sorted(total["genc_id"].to_list()) == [1, 2, 3]
+    assert sorted(total["genc_id"].to_list()) == ["1", "2", "3"]
 
 
 def test_stream_table_copy_propagates_a_producer_exception(
@@ -435,7 +562,7 @@ def test_stream_table_copy_raises_after_yielding_a_real_chunk_on_a_later_failure
 
     gen = mod._stream_table_copy("admdad_subset", ["genc_id"], chunk_rows=1)
     first = next(gen)
-    assert first["genc_id"].to_list() == [1]
+    assert first["genc_id"].to_list() == ["1"]
     with pytest.raises(RuntimeError, match="connection dropped"):
         next(gen)
 
@@ -462,7 +589,7 @@ def test_stream_table_copy_closing_early_does_not_deadlock(
 
     gen = mod._stream_table_copy("admdad_subset", ["genc_id"], chunk_rows=1)
     first = next(gen)
-    assert first["genc_id"].to_list() == [1]
+    assert first["genc_id"].to_list() == ["1"]
 
     result: list[str] = []
 
@@ -810,6 +937,41 @@ def test_extract_labs_drops_rows_with_no_mapped_concept(
     assert rows.iloc[0]["numeric_value"] == 1.2
 
 
+def test_extract_labs_handles_a_garbage_test_type_mapped_omop_without_crashing(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # test_type_mapped_omop used a hard (non-lenient) Int64 cast until the
+    # all-Utf8 CSV read removed the implicit per-chunk numeric-inference
+    # safety net that used to mask this -- a non-null, unparsable value
+    # must be dropped (treated as unmapped) and logged, not crash the batch.
+    mod = _load_module()
+    subject_by_genc = {1: "pA", 2: "pB"}
+    lab_concepts = {3020564: "Creatinine"}
+    chunk = pl.DataFrame(
+        {
+            "genc_id": [1, 2],
+            "test_type_mapped_omop": ["3020564", "not-a-concept-id"],
+            "result_value": ["1.2", "5.0"],
+            "result_unit": ["umol/L", "mg/dL"],
+            "collection_date_time": ["2020-01-02 08:00:00", "2020-01-02 09:00:00"],
+        }
+    )
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"lab_subset": [chunk]})
+    )
+
+    with caplog.at_level("WARNING"):
+        rows = pd.concat(
+            [b.frame for b in mod.extract_labs(subject_by_genc, lab_concepts)],
+            ignore_index=True,
+        )
+
+    assert len(rows) == 1
+    assert rows.iloc[0]["code"] == "LAB//3020564//umol/l"
+    assert any("not-a-concept-id" in r.message for r in caplog.records)
+    assert any("test_type_mapped_omop" in r.message for r in caplog.records)
+
+
 def test_extract_labs_carries_the_literal_unit_and_normalizes_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -864,6 +1026,35 @@ def test_extract_vitals_carries_the_literal_unit(
     )
 
     assert rows.iloc[0]["code"] == "VITALS//3027018//bpm"
+
+
+def test_extract_vitals_handles_a_garbage_measurement_mapped_omop_without_crashing(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    mod = _load_module()
+    subject_by_genc = {1: "pA", 2: "pB"}
+    chunk = pl.DataFrame(
+        {
+            "genc_id": [1, 2],
+            "measurement_mapped_omop": ["3027018", "not-a-concept-id"],
+            "measurement_value": ["88", "99"],
+            "measurement_unit": ["bpm", "bpm"],
+            "measure_date_time": ["2020-01-02 08:00:00", "2020-01-02 09:00:00"],
+        }
+    )
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"vitals_subset": [chunk]})
+    )
+
+    with caplog.at_level("WARNING"):
+        rows = pd.concat(
+            [b.frame for b in mod.extract_vitals(subject_by_genc)], ignore_index=True
+        )
+
+    assert len(rows) == 1
+    assert rows.iloc[0]["code"] == "VITALS//3027018//bpm"
+    assert any("not-a-concept-id" in r.message for r in caplog.records)
+    assert any("measurement_mapped_omop" in r.message for r in caplog.records)
 
 
 def test_extract_pharmacy_applies_the_admission_guard(
