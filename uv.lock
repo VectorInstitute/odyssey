@@ -869,6 +869,21 @@ wheels = [
 ]
 
 [[package]]
+name = "interpret-core"
+version = "0.7.8"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "joblib" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "scikit-learn" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/72/85/a89ccbd5c6a318ba2a0de49febc956a49959ff668e68a407f0943e52ab0c/interpret_core-0.7.8.tar.gz", hash = "sha256:39512a4a3971d47c92f50c97f434aa603ab1449aad6d94f09a1d1c072a78dda5", size = 1347723, upload-time = "2026-03-17T21:54:29.282Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1b/ba/3075daaf19b8873f207a94e524f52f9a236836729828a64ee0281c723e00/interpret_core-0.7.8-py3-none-any.whl", hash = "sha256:6644f1498b8d247c5004fe691a9815ff0efc74af243f249f295a5e9f3202b483", size = 15596047, upload-time = "2026-03-17T21:54:26.42Z" },
+]
+
+[[package]]
 name = "ipython"
 version = "9.16.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1927,6 +1942,9 @@ dependencies = [
 cuda = [
     { name = "mamba-ssm" },
 ]
+ebm = [
+    { name = "interpret-core" },
+]
 gemini = [
     { name = "pandas" },
     { name = "psycopg2-binary" },
@@ -1960,6 +1978,7 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "idna", specifier = ">=3.15" },
+    { name = "interpret-core", marker = "extra == 'ebm'", specifier = ">=0.6.0" },
     { name = "mamba-ssm", marker = "extra == 'cuda'", specifier = "==2.3.0" },
     { name = "mimic-iv-meds" },
     { name = "pandas", marker = "extra == 'gemini'", specifier = ">=2.2.0" },
@@ -1972,7 +1991,7 @@ requires-dist = [
     { name = "torch", marker = "sys_platform == 'linux'", specifier = "==2.6.0", index = "https://download.pytorch.org/whl/cu124" },
     { name = "urllib3", specifier = ">=2.7.0" },
 ]
-provides-extras = ["cuda", "gemini", "tabicl"]
+provides-extras = ["cuda", "gemini", "tabicl", "ebm"]
 
 [package.metadata.requires-dev]
 dev = [
