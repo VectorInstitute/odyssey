@@ -4,13 +4,16 @@ from datetime import datetime, timedelta
 from typing import Dict, Tuple
 
 import polars as pl
+import pytest
 import torch
 
+import odyssey.inference.interventions as interventions_module
 from odyssey.data.concepts import concepts_for_source
 from odyssey.data.streaming import PackedLaneSampler
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.interventions import (
     INTERVENTION_MODES,
+    evaluate_interventions,
     run_streaming_intervention,
 )
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
@@ -20,6 +23,7 @@ from odyssey.training.data import (
     iter_patient_sequences,
 )
 from odyssey.training.running_labels import position_running_labels
+from odyssey.training.train import TrainingConfig
 
 
 T0 = datetime(2024, 1, 1)
@@ -238,3 +242,38 @@ def test_uncertain_band_limits_replacement_and_reports_displacement() -> None:
     # Inside a +/-0.05 band around 0.5 no displacement can exceed 0.55.
     if banded.mean_abs_displacement is not None:
         assert banded.mean_abs_displacement <= 0.55
+
+
+# ---------------------------------------------------------------------------
+# evaluate_interventions: backbone="transformer" gate
+# ---------------------------------------------------------------------------
+
+
+def test_evaluate_interventions_rejects_transformer_backbone_before_touching_shards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_model = ConceptBottleneckSequenceModel(
+        TinyGRUBackbone(vocab_size=10, hidden_size=4),
+        vocab_size=10,
+        num_concepts=2,
+        embedding_dim=4,
+    )
+    fake_config = TrainingConfig(
+        train_shard_dir="/train",
+        tuning_shard_dir="/tuning",
+        output_dir="/out",
+        backbone="transformer",
+    )
+    monkeypatch.setattr(
+        interventions_module,
+        "load_run",
+        lambda *a, **k: (fake_model, object(), object(), fake_config),
+    )
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("must not read shards before the backbone gate fires")
+
+    monkeypatch.setattr(interventions_module, "load_meds_shards", _boom)
+
+    with pytest.raises(NotImplementedError, match="backbone='transformer'"):
+        evaluate_interventions("/runs/x", "/data/held_out")

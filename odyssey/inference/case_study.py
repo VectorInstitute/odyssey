@@ -315,6 +315,14 @@ def build_case_studies(
             "this evaluation needs a concept bottleneck; the run's model_kind is "
             f"{getattr(config, 'model_kind', 'bottleneck')!r}"
         )
+    if getattr(config, "backbone", "hybrid") == "transformer":
+        raise NotImplementedError(
+            "case_study is not yet wired for backbone='transformer': this is "
+            "concept-bottleneck-lever tooling, not needed for the backbone "
+            "control's own subset-scale comparison (unlike run_inference and "
+            "alerts, which are). Extend it only if the transformer backbone "
+            "earns longer-term status."
+        )
 
     logger.info("[case_study] loading held-out shards from %s", held_out_shard_dir)
     raw_events = load_meds_shards(held_out_shard_dir, max_shards=max_shards)

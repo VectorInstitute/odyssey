@@ -13,6 +13,8 @@ import pytest
 import torch
 
 import odyssey.inference.run_inference as ri
+from odyssey.data.packed_context import PackedContextSampler
+from odyssey.data.streaming import PackedLaneSampler
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.run_inference import (
     InferenceResults,
@@ -25,6 +27,7 @@ from odyssey.inference.run_inference import (
     run_streaming_inference,
 )
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
+from odyssey.models.backbones.transformer import TransformerBackbone
 from odyssey.models.concept_bottleneck import ConceptBottleneck
 from odyssey.models.sequence_model import BaselineSequenceModel
 from odyssey.models.time_to_event import DEFAULT_TIME_BIN_EDGES_HOURS
@@ -385,6 +388,135 @@ def test_streaming_inference_scores_a_baseline_model() -> None:
     assert results.task_metrics.n_predictions == 2 * 11
     assert results.concept_metrics == []
     assert results.time_metrics is not None and results.time_metrics.n_positions > 0
+
+
+# ---------------------------------------------------------------------------
+# backbone="transformer": PackedContextSampler dispatch and tail-slice reporting
+# ---------------------------------------------------------------------------
+
+
+def _events_for_subjects(
+    subject_lengths: dict, codes: list
+) -> pl.DataFrame:
+    rows = []
+    for sid, n in subject_lengths.items():
+        for i in range(n):
+            rows.append(
+                (
+                    sid,
+                    codes[i % len(codes)],
+                    datetime(2024, 1, 1) + timedelta(hours=i),
+                    None,
+                    100 + sid,
+                )
+            )
+    return pl.DataFrame(
+        rows,
+        schema={
+            "subject_id": pl.Int64,
+            "code": pl.Utf8,
+            "time": pl.Datetime,
+            "numeric_value": pl.Float32,
+            "hadm_id": pl.Int64,
+        },
+        orient="row",
+    )
+
+
+def test_build_sampler_dispatches_on_backbone() -> None:
+    patients_a = iter([])
+    patients_b = iter([])
+
+    hybrid = ri._build_sampler(
+        patients_a, backbone="hybrid", num_lanes=2, chunk_size=8, max_context=16
+    )
+    transformer = ri._build_sampler(
+        patients_b, backbone="transformer", num_lanes=2, chunk_size=8, max_context=16
+    )
+
+    assert isinstance(hybrid, PackedLaneSampler)
+    assert isinstance(transformer, PackedContextSampler)
+
+
+def _transformer_model(vocab: Vocabulary) -> BaselineSequenceModel:
+    torch.manual_seed(0)
+    return BaselineSequenceModel(
+        backbone=TransformerBackbone(
+            vocab_size=len(vocab),
+            hidden_size=16,
+            num_hidden_layers=2,
+            num_heads=4,
+            padding_idx=0,
+        ),
+        vocab_size=len(vocab),
+        padding_idx=0,
+        time_bin_edges=DEFAULT_TIME_BIN_EDGES_HOURS,
+    )
+
+
+def test_streaming_inference_backbone_transformer_no_truncation_has_no_tail_slice() -> (
+    None
+):
+    vocab = _vocab()
+    model = _transformer_model(vocab)
+    codes = ["DIAGNOSIS//A", "MEDICATION//B", "LAB//220045//bpm", "PROCEDURE//C"]
+    events = _events_for_subjects({1: 8, 2: 8}, codes)
+
+    results = run_streaming_inference(
+        model,
+        events,
+        vocab,
+        {},
+        {},
+        device="cpu",
+        backbone="transformer",
+        num_lanes=2,
+        max_context=64,
+    )
+
+    assert results.task_metrics.n_predictions > 0
+    assert results.tail_slice is None
+
+
+def test_streaming_inference_backbone_transformer_reports_tail_slice_separately() -> (
+    None
+):
+    """A patient longer than max_context is truncated -- and scored twice.
+
+    Once pooled into the headline numbers as usual (with only its kept
+    tail visible), and again alone in ``tail_slice``, so the cost of
+    losing the rest of that patient's history is visible rather than
+    averaged away.
+    """
+    vocab = _vocab()
+    model = _transformer_model(vocab)
+    codes = ["DIAGNOSIS//A", "MEDICATION//B", "LAB//220045//bpm", "PROCEDURE//C"]
+    # subject 1: 40 events, will be truncated at max_context=10;
+    # subject 2: 6 events, comfortably fits, never truncated.
+    events = _events_for_subjects({1: 40, 2: 6}, codes)
+
+    results = run_streaming_inference(
+        model,
+        events,
+        vocab,
+        {},
+        {},
+        device="cpu",
+        backbone="transformer",
+        num_lanes=2,
+        max_context=10,
+    )
+
+    assert results.tail_slice is not None
+    # every real target the tail slice scores belongs to the truncated
+    # subject alone, so it can never see more positions than the overall
+    # pass scored in total.
+    assert results.tail_slice.task_metrics.n_predictions > 0
+    assert (
+        results.tail_slice.task_metrics.n_predictions
+        <= results.task_metrics.n_predictions
+    )
+    assert results.tail_slice.tail_slice is None
 
 
 def test_results_to_dict_renders_nan_as_null() -> None:
