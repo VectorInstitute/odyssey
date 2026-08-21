@@ -4,7 +4,7 @@
 # nobody but Amrit can log into the node, so this is what he actually runs.
 #
 # Usage (on the GEMINI node, from the repo root):
-#   scripts/gemini/run.sh [probe|schema|env-gpu|extract-dry|extract|train|eval|all]
+#   scripts/gemini/run.sh [probe|schema|env-gpu|extract-dry|extract|finalize|train|eval|all]
 #
 # Steps:
 #   probe        scripts/gemini/probe_env.sh -> scripts/gemini/out/env_probe.txt
@@ -26,10 +26,18 @@
 #                scripts/gemini/out/extraction_summary.json. A real,
 #                long-running, patient-data-writing operation, not a quick
 #                check -- see docs/gemini_extraction.md for the design.
+#   finalize     scripts/gemini/finalize_meds.py -> rewrites `extract`'s flat
+#                output into the MEDS-conformant data/<split>/ + metadata/
+#                layout odyssey/data/meds_validation.py checks, in place
+#                under the same GEMINI_MEDS_OUTPUT_DIR. Only runs once
+#                `extract`'s manifest shows every table complete (checked,
+#                not assumed) -- do not run this until told to; see
+#                scripts/gemini/finalize_meds.py's own docstring for the
+#                design and crash semantics.
 #   train        not built yet.
 #   eval         not built yet.
 #   all          probe, schema, extract-dry, in order (default; deliberately
-#                excludes env-gpu and extract -- see below)
+#                excludes env-gpu, extract, and finalize -- see below)
 #
 # Self-syncing: every invocation starts with `git fetch origin && git reset
 # --hard origin/main` (never `git pull` -- every mirror rewrites history, so
@@ -219,6 +227,21 @@ run_extract() {
     python scripts/gemini/extract_meds.py
 }
 
+run_finalize() {
+    echo "=== finalize ==="
+    echo "Rewrites GEMINI_MEDS_OUTPUT_DIR's flat extract output into the"
+    echo "MEDS-conformant data/<split>/ + metadata/ layout, in place. Refuses"
+    echo "to run unless extract's manifest shows every table complete."
+    if [[ -z "${TMUX:-}" && -z "${STY:-}" ]]; then
+        echo "WARNING: this doesn't look like a tmux or screen session --" >&2
+        echo "if the SSH connection drops, finalize dies with it." >&2
+        echo "Run it detached instead, e.g.:" >&2
+        echo "  tmux new -s finalize 'scripts/gemini/run.sh finalize'" >&2
+        echo "  # or: nohup scripts/gemini/run.sh finalize > finalize.log 2>&1 &" >&2
+    fi
+    python scripts/gemini/finalize_meds.py
+}
+
 run_env_gpu() {
     echo "=== env-gpu ==="
     GPU_VENV="${GEMINI_GPU_VENV:-$HOME/.venvs/odyssey-gemini-gpu}"
@@ -280,11 +303,12 @@ case "$STEP" in
     env-gpu) run_env_gpu ;;
     extract-dry) run_extract_dry ;;
     extract) run_extract ;;
+    finalize) run_finalize ;;
     train) run_pending_stub train ;;
     eval) run_pending_stub eval ;;
     all) run_probe; run_schema; run_extract_dry ;;
     *)
-        echo "unknown step: $STEP (expected probe, schema, env-gpu, extract-dry, extract, train, eval, or all)" >&2
+        echo "unknown step: $STEP (expected probe, schema, env-gpu, extract-dry, extract, finalize, train, eval, or all)" >&2
         exit 1
         ;;
 esac

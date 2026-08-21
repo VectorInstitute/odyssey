@@ -273,6 +273,27 @@ counts) lands in `scripts/gemini/out/extraction_summary.json` once run via
 `scripts/gemini/run.sh extract` -- the actual MEDS parquet shards never
 leave the enclave.
 
+`scripts/gemini/finalize_meds.py` (`run.sh finalize`, run only once
+`extract`'s manifest shows every table complete) rewrites `extract`'s flat
+output into the MEDS-conformant layout
+`odyssey/data/meds_validation.py`'s `validate_meds_dataset` checks --
+`subject_id` remapped from the raw hashed patient string to a stable,
+deterministic `Int64` (`subject_id_mapping.parquet`, kept server-side only
+like everything else here, never under `metadata/`), a seeded
+subject-random 80/10/10 train/tuning/held_out split (`MEDS_extract`'s own
+default `split_fracs_dict`, not a GEMINI-specific choice) baked into
+`metadata/subject_splits.parquet`, and shards resharded under
+`data/<split>/` -- compacting the multi-part resumability layout away in
+the same pass. Two stronger, GEMINI-specific evaluation protocols are
+deliberately left derivable at eval time rather than baked into the split:
+hospital-held-out, via a small `metadata/hadm_id_hospital.parquet` sidecar
+(`admdad_subset.hospital_num`, joined on the `hadm_id` every MEDS row
+already carries), and temporal validation, directly against the real event
+timestamps already in the output. Ends by running
+`validate_meds_dataset(root, deep=True)` itself and refusing to declare
+success on anything but zero errors -- see that module's own docstring for
+the full design, memory shape, and crash semantics.
+
 Real run, real incident, real fix (2026-08-21): Amrit's first live run of
 `extract_meds.py` measured ~400 rows/s on the small tables and, on
 `lab_subset`, zero output growth over 5 minutes -- these matviews carry no
