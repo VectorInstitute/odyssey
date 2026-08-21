@@ -193,6 +193,37 @@ def test_streaming_trace_covers_every_position_exactly_once() -> None:
     assert all(rank is not None for rank in trace.true_next_rank[:-1])
 
 
+def test_trace_works_with_recency_features_and_event_heads() -> None:
+    """Event heads read the augmented feature vector, not the raw bottleneck.
+
+    Under ``recency_features=True`` the hazard heads take base+RECENCY_DIM
+    inputs; calling them on the raw bottleneck output crashes with a shape
+    mismatch (the v9-MIMIC case-study failure). The trace must route head
+    inputs through the same feature assembly every other inference
+    consumer uses.
+    """
+    torch.manual_seed(0)
+    model = ConceptBottleneckSequenceModel(
+        backbone=TinyGRUBackbone(
+            vocab_size=VOCAB_SIZE, hidden_size=8, num_layers=1, padding_idx=0
+        ),
+        vocab_size=VOCAB_SIZE,
+        num_concepts=NUM_CONCEPTS,
+        embedding_dim=4,
+        padding_idx=0,
+        time_bin_edges=[24.0, 72.0],
+        event_names=["death", "icu_admission"],
+        recency_features=True,
+    )
+    n = 12
+    trace = extract_patient_case(
+        model, _sequence(n), _vocab(), ["a", "b", "c"], device="cpu", chunk_size=5
+    )
+    assert trace.event_risk_names == ["death", "icu_admission"]
+    assert len(trace.event_risk_24h) == n
+    assert all(len(risks) == 2 for risks in trace.event_risk_24h)
+
+
 def test_chunked_trace_equals_unchunked_for_an_exact_recurrence() -> None:
     """Chunk stitching is seamless whatever the chunk size.
 
