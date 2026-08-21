@@ -12,7 +12,12 @@ import torch
 
 from odyssey.data.types import AuxiliaryInputs, ClinicalSequenceBatch
 from odyssey.models.backbones.base import TimeAwareState
+from odyssey.models.backbones.transformer import TransformerBackbone
 from odyssey.models.concept_bottleneck import ConceptBottleneckLossWeights
+from odyssey.models.sequence_model import (
+    BaselineSequenceModel,
+    ConceptBottleneckSequenceModel,
+)
 from odyssey.training.train import (
     LossLogger,
     TrainingConfig,
@@ -20,6 +25,8 @@ from odyssey.training.train import (
     _combined_val_loss,
     _detach_state,
     _move_chunk_to_device,
+    _run_training,
+    build_model,
 )
 
 
@@ -208,6 +215,14 @@ def test_training_config_requires_only_the_three_paths() -> None:
     assert config.max_train_shards is None
 
 
+def test_training_config_backbone_defaults_to_hybrid() -> None:
+    config = TrainingConfig(
+        train_shard_dir="/train", tuning_shard_dir="/tuning", output_dir="/out"
+    )
+    assert config.backbone == "hybrid"
+    assert config.max_context == 4096
+
+
 def test_training_config_rejects_checkpoint_every_below_one() -> None:
     # Real bug this guards against: checkpoint_every=0 used to raise
     # ZeroDivisionError from `global_step % config.checkpoint_every` the
@@ -220,3 +235,109 @@ def test_training_config_rejects_checkpoint_every_below_one() -> None:
             output_dir="/out",
             checkpoint_every=0,
         )
+
+
+# ---------------------------------------------------------------------------
+# build_model: backbone="transformer" (backbone="hybrid" needs CUDA/mamba-ssm,
+# see test_train_gpu.py)
+# ---------------------------------------------------------------------------
+
+
+def test_build_model_transformer_backbone_bottleneck() -> None:
+    config = TrainingConfig(
+        train_shard_dir="/train",
+        tuning_shard_dir="/tuning",
+        output_dir="/out",
+        backbone="transformer",
+        hidden_size=32,
+        num_hidden_layers=2,
+        attn_num_heads=4,
+    )
+
+    model = build_model(config, vocab_size=50, num_concepts=5)
+
+    assert isinstance(model, ConceptBottleneckSequenceModel)
+    backbone = model.backbone
+    assert isinstance(backbone, TransformerBackbone)
+    assert backbone.hidden_size == 32
+    assert len(backbone.layers) == 2
+
+
+def test_build_model_transformer_backbone_baseline() -> None:
+    config = TrainingConfig(
+        train_shard_dir="/train",
+        tuning_shard_dir="/tuning",
+        output_dir="/out",
+        backbone="transformer",
+        model_kind="baseline",
+        hidden_size=16,
+        num_hidden_layers=1,
+        attn_num_heads=4,
+    )
+
+    model = build_model(config, vocab_size=50, num_concepts=5)
+
+    assert isinstance(model, BaselineSequenceModel)
+    assert isinstance(model.backbone, TransformerBackbone)
+
+
+def test_build_model_unknown_backbone_raises() -> None:
+    config = TrainingConfig(
+        train_shard_dir="/train",
+        tuning_shard_dir="/tuning",
+        output_dir="/out",
+        backbone="not-a-real-backbone",
+    )
+
+    with pytest.raises(ValueError, match="backbone"):
+        build_model(config, vocab_size=50, num_concepts=5)
+
+
+def test_build_model_hybrid_and_transformer_are_directly_comparable_by_param_count() -> (
+    None
+):
+    """Config plumbing's whole point: pick depth/width to match the hybrid's budget.
+
+    Only the transformer side is buildable on this CPU-only host (the
+    hybrid needs CUDA/mamba-ssm, see test_train_gpu.py), but build_model's
+    signature and return type are identical either way, so the comparison
+    this is meant to enable is just calling build_model twice and diffing
+    parameter counts -- asserted here for the transformer side alone as a
+    regression check that this path keeps producing a countable model.
+    """
+    config = TrainingConfig(
+        train_shard_dir="/train",
+        tuning_shard_dir="/tuning",
+        output_dir="/out",
+        backbone="transformer",
+        hidden_size=32,
+        num_hidden_layers=2,
+        attn_num_heads=4,
+    )
+
+    model = build_model(config, vocab_size=50, num_concepts=5)
+    n_params = sum(p.numel() for p in model.backbone.parameters())
+
+    assert n_params > 0
+
+
+# ---------------------------------------------------------------------------
+# _run_training: backbone="transformer" is not yet wired into this loop
+# ---------------------------------------------------------------------------
+
+
+def test_run_training_rejects_transformer_backbone_before_touching_the_corpus() -> None:
+    """Confirm the guard fires before touching any other (invalid) argument.
+
+    That is the whole point of raising as the very first statement in
+    _run_training, not deep inside the loop.
+    """
+    config = TrainingConfig(
+        train_shard_dir="/train",
+        tuning_shard_dir="/tuning",
+        output_dir="/out",
+        backbone="transformer",
+    )
+
+    with pytest.raises(NotImplementedError, match="PackedContextSampler"):
+        _run_training(config, output_dir=None, device=None, corpus=None)  # type: ignore[arg-type]
