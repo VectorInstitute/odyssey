@@ -93,6 +93,46 @@ def test_code_type_eicu_prefixes() -> None:
     assert code_type("ICU_ADMISSION//UNK//admit") == VISIT_TYPE
 
 
+# Every code prefix scripts/gemini/extract_meds.py's extract_<table>
+# functions actually emit (as of the 2026-08-21 provider-table addition;
+# see extract_admissions/extract_icu/extract_labs/extract_vitals/
+# extract_pharmacy/extract_diagnoses/extract_procedures/extract_radiology/
+# extract_providers). Kept here, not derived from that file dynamically,
+# since extract_meds.py is a standalone script loaded via importlib in its
+# own tests, not an importable package module -- update this list by hand
+# alongside any new GEMINI code prefix.
+_GEMINI_PREFIXES = [
+    "ADMISSION",
+    "DISCHARGE",
+    "ICU_ADMISSION",
+    "ICU_DISCHARGE",
+    "LAB",
+    "VITALS",
+    "MEDICATION",
+    "DIAGNOSIS",
+    "PROCEDURE",
+    "IMAGING",
+    "PROVIDER",
+]
+
+
+def test_code_type_every_gemini_prefix_has_an_intentional_mapping() -> None:
+    # Real risk this guards against: a new GEMINI code prefix silently
+    # falls through to OTHER_TYPE via code_type's dict.get(prefix,
+    # OTHER_TYPE) default, weakening the "a lab is a lab regardless of
+    # institution" cross-source type-token consistency this taxonomy
+    # exists for -- with no test failure to flag that it happened. Every
+    # prefix GEMINI actually emits must have its own _PREFIX_TO_TYPE
+    # entry, even if that entry deliberately maps to OTHER_TYPE (PROVIDER
+    # does, on purpose -- see vocabulary.py's comment) -- an *explicit*
+    # OTHER_TYPE is fine; an *implicit* one (missing from the dict
+    # entirely) is what this test catches.
+    from odyssey.data.vocabulary import _PREFIX_TO_TYPE  # noqa: PLC0415
+
+    missing = [p for p in _GEMINI_PREFIXES if p not in _PREFIX_TO_TYPE]
+    assert missing == [], f"GEMINI prefixes with no _PREFIX_TO_TYPE entry: {missing}"
+
+
 def test_code_type_unknown_prefix_falls_back_to_other() -> None:
     assert code_type("Blood Pressure Standing") == OTHER_TYPE
 
