@@ -174,21 +174,22 @@ Organized by research track; the foundational plumbing that is finished lives in
 2. Second epoch of full-scale MIMIC-IV training (running; learning curve still monotone after one)
 3. MEDS-Tab as the field-standard external baseline on our own MEDS data (pipeline glue merged, driver in progress)
 4. Comparator suite on eICU (done: tuned GBM strongest overall; TabICL wins AKI and two ICU pairs; EBM and SurvivalPFN not competitive; registry has full tables); MIMIC repeat under the v2 landmark protocol in the re-evaluation wave (`docs/reeval_wave_v2.md`)
+5. Backbone control: a modern-vanilla decoder-only transformer (RoPE, pre-norm, SwiGLU; no LLM pre/post-training extras) swapped in behind the same tokenization, losses, heads, and matched parameter and compute budget -- prices the hybrid Mamba-2 + attention choice the way the no-bottleneck variant prices the bottleneck. Subset scale first; full scale only if the subset result is interesting in either direction. If it matches the hybrid, simplicity wins and we switch; if it loses, the architecture choice finally has a measured receipt.
 
 **Track B: interpretability and causality**
-5. The stage-B cost frontier: longer training, partial unfreezing, small stage-A task weight (M-series, running); acceptance test is the six-mode banded intervention suite
-6. Concept-set widening (the completeness axis: richer concept vocabulary from structured data), plus leakage metrics (CTL/ICL) reported per run
-7. Input-level counterfactual rollouts as the near-term clinician what-if
-8. Population-level causal effect estimation (exploratory; CausalPFN line)
+6. The stage-B cost frontier: longer training, partial unfreezing, small stage-A task weight (M-series, running); acceptance test is the six-mode banded intervention suite
+7. Concept-set widening (the completeness axis: richer concept vocabulary from structured data), plus leakage metrics (CTL/ICL) reported per run
+8. Input-level counterfactual rollouts as the near-term clinician what-if
+9. Population-level causal effect estimation (exploratory; CausalPFN line)
 
 **Track C: generalization**
-9. GEMINI: SQL-streaming MEDS extraction (built, first full extraction in progress), post-extraction MEDS conformance step (int64 subject ids, `metadata/`, deliberate split rule), then external validation of frozen models (`docs/gemini.md`, `scripts/gemini/`)
-10. EHRSHOT-style few-shot/transfer protocol, the pretrain-once test
+10. GEMINI: SQL-streaming MEDS extraction (built, first full extraction in progress), post-extraction MEDS conformance step (int64 subject ids, `metadata/`, deliberate split rule), then external validation of frozen models (`docs/gemini.md`, `scripts/gemini/`)
+11. EHRSHOT-style few-shot/transfer protocol, the pretrain-once test
 
 **Track D: platform and clinical interface**
-11. Reproducibility: environment fingerprints and per-checkpoint numeric canaries recorded with every run (done); landmark protocol versioning on all alert evaluations (done: `LANDMARK_PROTOCOL_VERSION`, re-evaluation wave planned in `docs/reeval_wave_v2.md`)
-12. MEDS conformance validator as a gate on every extraction output; thin MEDS-to-FHIR translator once the best model is settled (deployment readiness as an adapter at the MEDS boundary, not a rearchitecture)
-13. Phase 2: an LLM agent (e.g. MedGemma) reading the concept-annotated forecast, with retrospective clinician validation on GEMINI; gated on Tracks B and C
+12. Reproducibility: environment fingerprints and per-checkpoint numeric canaries recorded with every run (done); landmark protocol versioning on all alert evaluations (done: `LANDMARK_PROTOCOL_VERSION`, re-evaluation wave planned in `docs/reeval_wave_v2.md`)
+13. MEDS conformance validator as a gate on every extraction output; thin MEDS-to-FHIR translator once the best model is settled (deployment readiness as an adapter at the MEDS boundary, not a rearchitecture)
+14. Phase 2: an LLM agent (e.g. MedGemma) reading the concept-annotated forecast, with retrospective clinician validation on GEMINI; gated on Tracks B and C
 
 <details>
 <summary>Foundational work, complete (items 1-8, 10, 12, 13, 16, 17 of the original list)</summary>
