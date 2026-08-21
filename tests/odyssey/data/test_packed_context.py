@@ -188,6 +188,32 @@ def test_untruncated_patients_are_not_recorded() -> None:
     assert sampler.truncated_subject_ids == []
 
 
+def test_truncation_boundaries_records_the_original_frame_kept_start() -> None:
+    """The boundary is in the patient's OWN original time (pre-rebase), not 0.
+
+    _seq(1, 10) has time_stamps 0..9; keeping the most recent 4 (indices
+    6..9) means the kept window starts at original time 6.0 -- not the
+    0.0 the row's own (rebased) time_stamps show it as.
+    """
+    sampler = PackedContextSampler(
+        _patients([_seq(1, 10)]), batch_size=1, max_context=4
+    )
+
+    sampler.next_chunk()
+
+    assert sampler.truncation_boundaries == {1: 6.0}
+
+
+def test_truncation_boundaries_empty_when_nothing_truncated() -> None:
+    sampler = PackedContextSampler(
+        _patients([_seq(1, 3), _seq(2, 4)]), batch_size=2, max_context=16
+    )
+
+    sampler.next_chunk()
+
+    assert sampler.truncation_boundaries == {}
+
+
 def test_truncated_subject_ids_accumulates_across_multiple_calls() -> None:
     sampler = PackedContextSampler(
         _patients([_seq(1, 10), _seq(2, 12)]), batch_size=1, max_context=4

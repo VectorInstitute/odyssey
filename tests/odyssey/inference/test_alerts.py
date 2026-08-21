@@ -423,6 +423,7 @@ def test_verify_packed_landmark_rows_passes_on_agreeing_rows() -> None:
     concepts = concepts_for_source("mimic_iv")
     model = _transformer_model(len(vocab), len(concepts))
 
+    truncation_boundaries: Dict[int, float] = {}
     model_rows = collect_model_scores(
         model,
         binned,
@@ -435,10 +436,15 @@ def test_verify_packed_landmark_rows_passes_on_agreeing_rows() -> None:
         device="cpu",
         backbone="transformer",
         max_context=200,
+        truncation_boundaries_out=truncation_boundaries,
     )
 
     problems = verify_packed_landmark_rows(
-        model_rows, binned, ALERT_EVENTS, landmark_hours=4.0
+        model_rows,
+        binned,
+        ALERT_EVENTS,
+        landmark_hours=4.0,
+        truncation_boundaries=truncation_boundaries,
     )
 
     assert problems == []
@@ -451,11 +457,138 @@ def test_verify_packed_landmark_rows_catches_a_real_disagreement() -> None:
     wrong_rows = {alert.name: [IndexRow(9999, 9999, 1.0)] for alert in ALERT_EVENTS}
 
     problems = verify_packed_landmark_rows(
-        wrong_rows, binned, ALERT_EVENTS, landmark_hours=4.0
+        wrong_rows,
+        binned,
+        ALERT_EVENTS,
+        landmark_hours=4.0,
+        truncation_boundaries={},
     )
 
     assert len(problems) == len(ALERT_EVENTS)
-    assert all("disagrees" in p for p in problems)
+    assert all("disagree" in p for p in problems)
+
+
+def test_verify_packed_landmark_rows_tail_aware_all_three_arms() -> None:
+    """The review's exact scenario: one truncated subject, one not, all three arms.
+
+    Subject 1: 40 hourly events (hours 0..39) -- truncated to the most
+    recent max_context=15 (hours 25..39) by PackedContextSampler.
+    Subject 2: 8 hourly events (hours 0..7) -- comfortably whole, never
+    truncated. A real run of collect_model_scores/verify_packed_
+    landmark_rows over this must find no problems (subject 2 exact,
+    subject 1 correctly shrunk); then two hand-corrupted variants of the
+    same row set must each be caught, and a third (legitimate
+    before-boundary shrinkage) must not be.
+    """
+    rows_raw: List[Tuple[int, str, datetime, Optional[float], int]] = []
+    for h in range(40):
+        rows_raw.append((1, "LAB//220045//bpm", T0 + timedelta(hours=h), 80.0, 1001))
+    for h in range(8):
+        rows_raw.append((2, "LAB//220045//bpm", T0 + timedelta(hours=h), 80.0, 1002))
+    events = pl.DataFrame(
+        rows_raw,
+        schema={
+            "subject_id": pl.Int64,
+            "code": pl.Utf8,
+            "time": pl.Datetime,
+            "numeric_value": pl.Float32,
+            "hadm_id": pl.Int64,
+        },
+        orient="row",
+    )
+    binned = add_value_tokens(events)
+    vocab = _vocab(binned)
+    concepts = concepts_for_source("mimic_iv")
+    model = _transformer_model(len(vocab), len(concepts))
+
+    truncation_boundaries: Dict[int, float] = {}
+    model_rows = collect_model_scores(
+        model,
+        binned,
+        vocab,
+        [c.name for c in concepts],
+        ALERT_EVENTS,
+        visit_start=_visit_starts(events),
+        landmark_hours=4.0,
+        num_lanes=2,
+        device="cpu",
+        backbone="transformer",
+        max_context=15,
+        truncation_boundaries_out=truncation_boundaries,
+    )
+
+    # Sanity: subject 1 truncated, subject 2 whole.
+    is_tail_by_subject = {
+        r.subject_id: r.is_tail for rs in model_rows.values() for r in rs
+    }
+    assert is_tail_by_subject[1] is True
+    assert is_tail_by_subject[2] is False
+
+    assert truncation_boundaries == {1: 25.0}  # captured from the sampler,
+    # independently of model_rows -- this is what each arm below must use,
+    # unchanged, even when model_rows is corrupted: re-deriving it from
+    # model_rows (as an earlier version of this fix did) let arm 2's own
+    # corruption shift the boundary along with the row it deleted, hiding
+    # the very bug the arm exists to catch.
+    boundary = truncation_boundaries[1]
+
+    # Arm 0: the real, uncorrupted output has no problems at all -- a
+    # correctly shrunk tail is not itself a disagreement.
+    assert (
+        verify_packed_landmark_rows(
+            model_rows,
+            binned,
+            ALERT_EVENTS,
+            landmark_hours=4.0,
+            truncation_boundaries=truncation_boundaries,
+        )
+        == []
+    )
+
+    # Arm 1 (tail, invented row): a landmark ground truth has no record of
+    # at all, not explained by truncation -- always a bug.
+    with_invented = {
+        name: [*rs, IndexRow(1, 1001, 999.0, is_tail=True)]
+        for name, rs in model_rows.items()
+    }
+    problems = verify_packed_landmark_rows(
+        with_invented,
+        binned,
+        ALERT_EVENTS,
+        landmark_hours=4.0,
+        truncation_boundaries=truncation_boundaries,
+    )
+    assert problems
+    assert any("no record" in p for p in problems)
+
+    # Arm 2 (tail, dropped a row at/after the boundary): should have been
+    # kept (it's inside the window PackedContextSampler actually kept),
+    # missing it is a real bug, not truncation working as intended. The
+    # boundary passed in is the one captured above, untouched by this
+    # corruption -- proving the check no longer explains the drop away.
+    missing_at_boundary = {
+        name: [r for r in rs if not (r.subject_id == 1 and r.time_hours == boundary)]
+        for name, rs in model_rows.items()
+    }
+    problems = verify_packed_landmark_rows(
+        missing_at_boundary,
+        binned,
+        ALERT_EVENTS,
+        landmark_hours=4.0,
+        truncation_boundaries=truncation_boundaries,
+    )
+    assert problems
+    assert any("missing entirely from the packed path" in p for p in problems)
+
+    # Arm 3 (tail, "missing" a row that was never in the kept window at
+    # all): legitimate truncation shrinkage, must NOT be flagged. Ground
+    # truth has a subject-1 landmark well before the boundary (e.g. hour
+    # 0); the real packed output never had it, and that is correct.
+    ground_truth = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+    assert any(
+        r.subject_id == 1 and r.time_hours < boundary
+        for r in ground_truth["vasopressor_start"]
+    )  # confirms the fixture actually exercises this arm, not vacuously
 
 
 def test_collect_model_scores_marks_truncated_subjects_is_tail() -> None:
