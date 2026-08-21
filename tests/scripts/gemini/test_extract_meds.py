@@ -702,6 +702,46 @@ def test_extract_radiology_falls_back_to_unknown_for_missing_modality_or_body_pa
     assert rows.iloc[0]["code"] == "IMAGING//UNKNOWN//UNKNOWN"
 
 
+def test_extract_providers_skips_nulls_and_namespaces_by_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    subject_by_genc = {1: "pA", 2: "pB"}
+    admission_by_genc = {1: pd.Timestamp("2020-01-01"), 2: pd.Timestamp("2020-02-01")}
+    chunk = pl.DataFrame(
+        {
+            "genc_id": [1, 2],
+            "mrp_cpso_hashed": ["hashA", None],
+            "adm_phy_cpso_hashed": ["hashB", "hashC"],
+            "dis_phy_cpso_hashed": [None, "hashD"],
+        }
+    )
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"physicians_subset": [chunk]})
+    )
+
+    rows = pd.concat(
+        [b.frame for b in mod.extract_providers(subject_by_genc, admission_by_genc)],
+        ignore_index=True,
+    )
+
+    # 2 rows x 3 roles, minus the 2 null hashes -- nulls are dropped, not
+    # extracted as empty/placeholder events.
+    assert len(rows) == 4
+    codes = sorted(rows["code"])
+    assert codes == [
+        "PROVIDER//ADMITTING//hashB",
+        "PROVIDER//ADMITTING//hashC",
+        "PROVIDER//DISCHARGING//hashD",
+        "PROVIDER//MRP//hashA",
+    ]
+    # No event-level timestamp on physicians_subset -- attributed to the
+    # encounter's admission time, same convention as extract_diagnoses's
+    # discharge-time attribution.
+    subject_a_rows = rows[rows["subject_id"] == "pA"]
+    assert (subject_a_rows["time"] == pd.Timestamp("2020-01-01")).all()
+
+
 # --- preflight -------------------------------------------------------
 
 

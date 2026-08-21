@@ -1237,6 +1237,76 @@ def extract_radiology(
         yield ExtractedBatch(_finalize_meds_batch(meds), chunk.height)
 
 
+def extract_providers(
+    subject_by_genc: dict[int, str],
+    admission_by_genc: dict[int, Optional[pd.Timestamp]],
+) -> Iterator[ExtractedBatch]:
+    """Extract provider (physician) events from ``physicians_subset``.
+
+    Not consumed by any current stage -- extracted anyway to keep a
+    tabled, not abandoned, physician-preference IV study option-preserving
+    at near-zero cost (one more unordered ~2.27M-row table scan while this
+    module is already being touched) rather than needing a whole separate
+    extraction pass through GEMINI later if that study is ever picked back
+    up. See docs/gemini_extraction.md's "Why provider ids are preserved".
+
+    Event shape: one row can produce up to three MEDS rows, one per
+    non-null hashed physician id -- ``PROVIDER//MRP//<hash>``
+    (``mrp_cpso_hashed``, most responsible physician),
+    ``PROVIDER//ADMITTING//<hash>`` (``adm_phy_cpso_hashed``), and
+    ``PROVIDER//DISCHARGING//<hash>`` (``dis_phy_cpso_hashed``) -- all at
+    the encounter's admission time (no event-level timestamp of its own,
+    same convention as :func:`extract_diagnoses`'s discharge-time
+    attribution), ``hadm_id = genc_id``. Ids are already hashed upstream
+    (``character varying(64)``, GEMINI's own de-identification) -- passed
+    through as-is, same as every other raw-identifier code in this module.
+    Null hashed ids (real: 1-11% of rows per role, see
+    docs/gemini_extraction.md's MEDS mapping table) are skipped, not
+    extracted as empty/placeholder events.
+
+    Parameters
+    ----------
+    subject_by_genc, admission_by_genc : dict
+        From :func:`fetch_admission_index`.
+
+    Yields
+    ------
+    ExtractedBatch
+    """
+    for chunk in _stream_table(
+        "physicians_subset",
+        ["genc_id", "mrp_cpso_hashed", "adm_phy_cpso_hashed", "dis_phy_cpso_hashed"],
+    ):
+        frame = chunk.with_columns(pl.col("genc_id").cast(pl.Int64))
+        genc = frame["genc_id"]
+        subject = genc.replace_strict(
+            subject_by_genc, default=None, return_dtype=pl.Utf8
+        )
+        time = genc.replace_strict(
+            admission_by_genc, default=None, return_dtype=pl.Datetime("us")
+        )
+        roles = [
+            ("MRP", "mrp_cpso_hashed"),
+            ("ADMITTING", "adm_phy_cpso_hashed"),
+            ("DISCHARGING", "dis_phy_cpso_hashed"),
+        ]
+        meds = pl.concat(
+            [
+                pl.DataFrame(
+                    {
+                        "subject_id": subject,
+                        "time": time,
+                        "code": f"PROVIDER//{role}//" + frame[column].cast(pl.Utf8),
+                        "numeric_value": None,
+                        "hadm_id": genc,
+                    }
+                )
+                for role, column in roles
+            ]
+        )
+        yield ExtractedBatch(_finalize_meds_batch(meds), chunk.height)
+
+
 _SUBJECT_COUNT_SQL = "SELECT COUNT(DISTINCT {column}) AS n FROM {table}"
 
 
@@ -1593,6 +1663,7 @@ def run_extraction(output_dir: Optional[Path] = None) -> dict[str, Any]:
         ("ipdiagnosis_subset", extract_diagnoses(subject_by_genc)),
         ("ipintervention_subset", extract_procedures(subject_by_genc)),
         ("radiology_subset", extract_radiology(subject_by_genc, admission_by_genc)),
+        ("physicians_subset", extract_providers(subject_by_genc, admission_by_genc)),
     ]
     for table_name, generator in table_generators:
         if manifest.get(table_name) == "complete":
