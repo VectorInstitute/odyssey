@@ -101,7 +101,9 @@ def _check_shard_schema(shard: Path) -> List[Finding]:
         )
     if "code" in schema and schema["code"] not in (pl.Utf8, pl.String):
         findings.append(
-            _err("code-dtype", f"code must be a string type, got {schema['code']}", shard)
+            _err(
+                "code-dtype", f"code must be a string type, got {schema['code']}", shard
+            )
         )
     if "numeric_value" in schema and schema["numeric_value"] not in (
         pl.Float32,
@@ -139,13 +141,19 @@ def _check_metadata(root: Path) -> List[Finding]:
         ]
     dataset_json = metadata / "dataset.json"
     if not dataset_json.is_file():
-        findings.append(_err("missing-dataset-json", "dataset.json absent", dataset_json))
+        findings.append(
+            _err("missing-dataset-json", "dataset.json absent", dataset_json)
+        )
     else:
         try:
             json.loads(dataset_json.read_text())
         except json.JSONDecodeError as exc:
             findings.append(
-                _err("invalid-dataset-json", f"dataset.json unparsable: {exc}", dataset_json)
+                _err(
+                    "invalid-dataset-json",
+                    f"dataset.json unparsable: {exc}",
+                    dataset_json,
+                )
             )
     codes = metadata / "codes.parquet"
     if not codes.is_file():
@@ -154,7 +162,9 @@ def _check_metadata(root: Path) -> List[Finding]:
         schema = pl.read_parquet_schema(codes)
         if "code" not in schema:
             findings.append(
-                _err("codes-parquet-shape", "codes.parquet lacks a 'code' column", codes)
+                _err(
+                    "codes-parquet-shape", "codes.parquet lacks a 'code' column", codes
+                )
             )
     splits = metadata / "subject_splits.parquet"
     if not splits.is_file():
