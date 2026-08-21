@@ -116,6 +116,25 @@ class TrainingConfig:
     settings to price the bottleneck: the README's "costs little" claim
     is measured, not assumed."""
 
+    backbone: str = "hybrid"
+    """``"hybrid"`` (EHRHybridBackbone, Mamba-2 + attention, this project's
+    own architecture) or ``"transformer"``
+    (odyssey.models.backbones.transformer.TransformerBackbone, the
+    modern-vanilla decoder-only control -- roadmap Track A item 5). Both
+    share every downstream head/loss; this prices the backbone choice the
+    way model_kind prices the bottleneck. The transformer backbone is
+    stateless and needs whole-patient-context batches
+    (odyssey.data.packed_context.PackedContextSampler), not the TBTT
+    PackedLaneSampler chunking this loop drives -- build_model supports
+    constructing it (for param-count comparisons against the hybrid at a
+    matched budget), but _run_training does not yet wire the packed
+    sampler in, and raises NotImplementedError rather than silently
+    training it wrong if asked to."""
+
+    max_context: int = 4096
+    """Token budget per packed row for backbone="transformer" (see
+    PackedContextSampler). Unused by the hybrid backbone."""
+
     # Backbone (EHRHybridBackbone). Defaults are modest, not the paper-scale
     # numbers -- see the training run's own README note on why.
     hidden_size: int = 256
@@ -422,22 +441,42 @@ def build_model(
     config: TrainingConfig, *, vocab_size: int, num_concepts: int
 ) -> SequenceModel:
     """Construct the real backbone + heads from ``config`` (see ``model_kind``)."""
+    from odyssey.models.backbones.base import SequenceBackbone  # noqa: PLC0415
     from odyssey.models.backbones.hybrid import EHRHybridBackbone  # noqa: PLC0415
+    from odyssey.models.backbones.transformer import (  # noqa: PLC0415
+        TransformerBackbone,
+    )
 
     kind = getattr(config, "model_kind", "bottleneck")
     if kind not in ("bottleneck", "baseline"):
         raise ValueError(f"model_kind must be 'bottleneck' or 'baseline', got {kind!r}")
-    backbone = EHRHybridBackbone(
-        vocab_size=vocab_size,
-        hidden_size=config.hidden_size,
-        padding_idx=PAD_ID,
-        num_hidden_layers=config.num_hidden_layers,
-        mamba_state_size=config.mamba_state_size,
-        mamba_headdim=config.mamba_headdim,
-        mamba_chunk_size=config.mamba_chunk_size,
-        attn_num_heads=config.attn_num_heads,
-        use_values=bool(getattr(config, "value_embeddings", False)),
-    )
+    backbone_kind = getattr(config, "backbone", "hybrid")
+    backbone: SequenceBackbone
+    if backbone_kind == "hybrid":
+        backbone = EHRHybridBackbone(
+            vocab_size=vocab_size,
+            hidden_size=config.hidden_size,
+            padding_idx=PAD_ID,
+            num_hidden_layers=config.num_hidden_layers,
+            mamba_state_size=config.mamba_state_size,
+            mamba_headdim=config.mamba_headdim,
+            mamba_chunk_size=config.mamba_chunk_size,
+            attn_num_heads=config.attn_num_heads,
+            use_values=bool(getattr(config, "value_embeddings", False)),
+        )
+    elif backbone_kind == "transformer":
+        backbone = TransformerBackbone(
+            vocab_size=vocab_size,
+            hidden_size=config.hidden_size,
+            padding_idx=PAD_ID,
+            num_hidden_layers=config.num_hidden_layers,
+            num_heads=config.attn_num_heads,
+            use_values=bool(getattr(config, "value_embeddings", False)),
+        )
+    else:
+        raise ValueError(
+            f"backbone must be 'hybrid' or 'transformer', got {backbone_kind!r}"
+        )
     time_bin_edges = (
         DEFAULT_TIME_BIN_EDGES_HOURS
         if getattr(config, "time_to_event", False)
@@ -889,6 +928,17 @@ def _run_training(  # noqa: PLR0912, PLR0915
     config: TrainingConfig, output_dir: Path, device: str, corpus: PreparedCorpus
 ) -> Path:
     """Run the training loop proper over a :class:`PreparedCorpus`."""
+    if getattr(config, "backbone", "hybrid") == "transformer":
+        raise NotImplementedError(
+            "backbone='transformer' is not yet wired into this training loop: "
+            "this loop drives PackedLaneSampler (TBTT chunks, carried "
+            "recurrent state), and TransformerBackbone is stateless, needing "
+            "odyssey.data.packed_context.PackedContextSampler instead. "
+            "build_model() supports constructing the transformer backbone "
+            "for standalone use and param-count comparisons; training it end "
+            "to end needs this loop's sampler wired to PackedContextSampler, "
+            "not yet done."
+        )
     vocab = corpus.vocab
     concepts = corpus.concepts
     objective = corpus.objective
