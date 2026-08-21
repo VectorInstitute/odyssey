@@ -139,8 +139,8 @@ _UNIT_SENTINELS = {"", "none", "(null)", "null", "nan"}
 #: same actual unit, and left uncanonicalized would silently fragment one
 #: quantile bin into a dozen near-empty ones. Add new variants here as
 #: one-line entries when a fresh extract-dry unit-sample run finds more --
-#: e.g. the x10^12/L family (erythrocyte counts) shows the identical
-#: fragmentation pattern in the same report and isn't covered yet.
+#: when this map exists at all, the intent is to cover every family the
+#: report shows fragmenting, not just the ones first noticed.
 UNIT_CANONICALIZATION_MAP: dict[str, str] = {
     # x10^9/L (WBC differentials, platelets, ...): a genuine single unit
     # fragmented across a dozen spacing/notation variants in the raw data.
@@ -155,6 +155,16 @@ UNIT_CANONICALIZATION_MAP: dict[str, str] = {
     # x10^6/L: a different magnitude from x10^9/L -- never merged with it.
     "x 10^6/l": "x10e6/l",
     "x10 6/l": "x10e6/l",
+    # x10^12/L (erythrocyte counts): same fragmentation pattern, a third
+    # distinct magnitude -- never merged with x10^9/L or x10^6/L.
+    "x10^12/l": "x10e12/l",
+    "x10 12/l": "x10e12/l",
+    "x 10^12/l": "x10e12/l",
+    "x10*12/l": "x10e12/l",
+    "10*12/l": "x10e12/l",
+    "10e12/l": "x10e12/l",
+    "e12/l": "x10e12/l",
+    "x e12/l": "x10e12/l",
     # mmHg -- a real typo in the raw data ("mmHd", ~3.5M vitals rows).
     "mmhd": "mmhg",
     # /100 WBC (differential counts as a fraction of 100 leukocytes).
