@@ -110,6 +110,24 @@ resume was originally meant to avoid. Index-building passes
 only in memory for the run that builds them and are cheap to rebuild from
 scratch on every restart.
 
+Real-run hardening (2026-08-21, second incident): a real run hung silently
+for ~48 minutes on "building admission index...", root-caused to two
+compounding issues, both fixed. First, :func:`fetch_admission_index` (and
+the discharge-time index inside :func:`extract_diagnoses`) streamed
+``admdad_subset`` with no progress output at all between the initial log
+line and completion -- now wrapped in :func:`_log_table_progress`, same as
+every primary table, so a long pass is never silent. Second, every
+``genc_id`` column was cast with a hard ``pl.col("genc_id").cast(pl.Int64)``
+that raises on any row with an unparseable value -- that alone would just
+be a crash, but combined with the (separately fixed) producer-thread
+deadlock in :func:`_stream_table_copy`, an exception raised mid-chunk could
+leave the whole extraction hung with no traceback ever printed, rather than
+failing loudly. :func:`_filter_valid_genc_id` replaces every such cast: a
+row with an unparseable (not just missing) ``genc_id`` is dropped and
+logged, not allowed to crash the batch -- the same "one bad row must not
+kill the whole run" principle already applied to every other messy field in
+this module.
+
 Run on the GEMINI node (writes real patient data to ``OUTPUT_DIR`` -- not a
 dry run):
 
@@ -694,6 +712,51 @@ def _stream_table(table: str, select_cols: list[str]) -> Iterator[pl.DataFrame]:
     yield from copy_gen
 
 
+def _filter_valid_genc_id(chunk: pl.DataFrame, table: str) -> pl.DataFrame:
+    """Cast ``genc_id`` to ``Int64`` leniently, dropping (and logging) unparseable rows.
+
+    A hard ``.cast(pl.Int64)`` (this function's predecessor, used
+    everywhere in this module until a real hang traced back to it) raises
+    on any row whose ``genc_id`` isn't cleanly integer-parseable -- crashing
+    the whole chunk, and worse, silently: a crash mid-chunk during
+    :func:`_stream_table_copy`'s producer/consumer handoff could leave the
+    producer thread blocked on a full, undrained queue, and the *original*
+    exception's traceback never got printed until that deadlock was fixed
+    separately (see the module docstring's "Fetch strategy"). Dropping an
+    unparseable row instead is the same "one bad row must not kill the
+    batch" principle already applied to every other messy field in this
+    module (unmapped lab concepts, blank diagnosis codes, ...) --
+    ``genc_id`` is the join key for everything downstream, so a row that
+    fails to parse here can't usably join against anything either way.
+
+    Parameters
+    ----------
+    chunk : polars.DataFrame
+        Must carry a ``genc_id`` column.
+    table : str
+        Source table name, for the warning log only.
+
+    Returns
+    -------
+    polars.DataFrame
+        ``chunk`` with ``genc_id`` cast to ``Int64``, unparseable rows
+        dropped.
+    """
+    original = chunk["genc_id"]
+    cast = original.cast(pl.Int64, strict=False)
+    unparseable_mask = original.is_not_null() & cast.is_null()
+    if unparseable_mask.any():
+        bad_values = original.filter(unparseable_mask).head(5).to_list()
+        logger.warning(
+            "%s: %d rows had a non-null genc_id that failed to parse as an "
+            "integer, dropping (sample raw values: %s)",
+            table,
+            int(unparseable_mask.sum()),
+            bad_values,
+        )
+    return chunk.with_columns(cast).filter(pl.col("genc_id").is_not_null())
+
+
 def fetch_admission_index() -> tuple[dict[int, str], dict[int, Optional[pd.Timestamp]]]:
     """One pass over ``admdad_subset``: ``genc_id -> (subject, admission time)``.
 
@@ -713,12 +776,13 @@ def fetch_admission_index() -> tuple[dict[int, str], dict[int, Optional[pd.Times
     """
     subject_by_genc: dict[int, str] = {}
     admission_by_genc: dict[int, Optional[pd.Timestamp]] = {}
+    report_progress = _log_table_progress("admdad_subset (admission index)")
     for chunk in _stream_table(
         "admdad_subset", ["genc_id", "patient_id_hashed", "admission_date_time"]
     ):
-        frame = chunk.with_columns(
-            pl.col("genc_id").cast(pl.Int64),
-            _parse_datetime_series(chunk["admission_date_time"]).alias(
+        frame = _filter_valid_genc_id(chunk, "admdad_subset")
+        frame = frame.with_columns(
+            _parse_datetime_series(frame["admission_date_time"]).alias(
                 "admission_date_time"
             ),
         )
@@ -736,6 +800,7 @@ def fetch_admission_index() -> tuple[dict[int, str], dict[int, Optional[pd.Times
                 strict=True,
             )
         )
+        report_progress(chunk.height)
     return subject_by_genc, admission_by_genc
 
 
@@ -853,7 +918,7 @@ def extract_admissions(
     for chunk in _stream_table(
         "admdad_subset", ["genc_id", "admission_date_time", "discharge_date_time"]
     ):
-        frame = chunk.with_columns(pl.col("genc_id").cast(pl.Int64))
+        frame = _filter_valid_genc_id(chunk, "admdad_subset")
         genc = frame["genc_id"]
         subject = genc.replace_strict(
             subject_by_genc, default=None, return_dtype=pl.Utf8
@@ -907,8 +972,8 @@ def extract_icu(subject_by_genc: dict[int, str]) -> Iterator[ExtractedBatch]:
         "ipscu_subset",
         ["genc_id", "scu_admit_date_time", "scu_discharge_date_time", "icu_flag"],
     ):
-        frame = chunk.filter(pl.col("icu_flag").cast(pl.Boolean)).with_columns(
-            pl.col("genc_id").cast(pl.Int64)
+        frame = _filter_valid_genc_id(
+            chunk.filter(pl.col("icu_flag").cast(pl.Boolean)), "ipscu_subset"
         )
         genc = frame["genc_id"]
         subject = genc.replace_strict(
@@ -982,10 +1047,11 @@ def extract_labs(
             "collection_date_time",
         ],
     ):
-        frame = chunk.with_columns(
-            pl.col("genc_id").cast(pl.Int64),
-            pl.col("test_type_mapped_omop").cast(pl.Int64),
-        ).filter(pl.col("test_type_mapped_omop").is_in(list(lab_concepts)))
+        frame = (
+            _filter_valid_genc_id(chunk, "lab_subset")
+            .with_columns(pl.col("test_type_mapped_omop").cast(pl.Int64))
+            .filter(pl.col("test_type_mapped_omop").is_in(list(lab_concepts)))
+        )
         genc = frame["genc_id"]
         concept = frame["test_type_mapped_omop"]
         meds = pl.DataFrame(
@@ -1040,10 +1106,11 @@ def extract_vitals(subject_by_genc: dict[int, str]) -> Iterator[ExtractedBatch]:
             "measure_date_time",
         ],
     ):
-        frame = chunk.with_columns(
-            pl.col("genc_id").cast(pl.Int64),
-            pl.col("measurement_mapped_omop").cast(pl.Int64),
-        ).filter(pl.col("measurement_mapped_omop").is_not_null())
+        frame = (
+            _filter_valid_genc_id(chunk, "vitals_subset")
+            .with_columns(pl.col("measurement_mapped_omop").cast(pl.Int64))
+            .filter(pl.col("measurement_mapped_omop").is_not_null())
+        )
         genc = frame["genc_id"]
         meds = pl.DataFrame(
             {
@@ -1102,7 +1169,7 @@ def extract_pharmacy(
             "med_end_date_time",
         ],
     ):
-        frame = chunk.with_columns(pl.col("genc_id").cast(pl.Int64)).filter(
+        frame = _filter_valid_genc_id(chunk, "pharmacy_subset").filter(
             pl.col("med_id_generic_name_raw").is_not_null()
             & (pl.col("med_id_generic_name_raw").cast(pl.Utf8).str.strip_chars() != "")
         )
@@ -1164,10 +1231,11 @@ def extract_diagnoses(subject_by_genc: dict[int, str]) -> Iterator[ExtractedBatc
     ExtractedBatch
     """
     discharge_by_genc: dict[int, Optional[pd.Timestamp]] = {}
+    report_progress = _log_table_progress("admdad_subset (discharge index)")
     for chunk in _stream_table("admdad_subset", ["genc_id", "discharge_date_time"]):
-        frame = chunk.with_columns(
-            pl.col("genc_id").cast(pl.Int64),
-            _parse_datetime_series(chunk["discharge_date_time"]).alias(
+        frame = _filter_valid_genc_id(chunk, "admdad_subset")
+        frame = frame.with_columns(
+            _parse_datetime_series(frame["discharge_date_time"]).alias(
                 "discharge_date_time"
             ),
         )
@@ -1181,9 +1249,10 @@ def extract_diagnoses(subject_by_genc: dict[int, str]) -> Iterator[ExtractedBatc
                 strict=True,
             )
         )
+        report_progress(chunk.height)
 
     for chunk in _stream_table("ipdiagnosis_subset", ["genc_id", "diagnosis_code"]):
-        frame = chunk.with_columns(pl.col("genc_id").cast(pl.Int64)).filter(
+        frame = _filter_valid_genc_id(chunk, "ipdiagnosis_subset").filter(
             pl.col("diagnosis_code").is_not_null()
             & (pl.col("diagnosis_code").cast(pl.Utf8).str.strip_chars() != "")
         )
@@ -1226,7 +1295,7 @@ def extract_procedures(subject_by_genc: dict[int, str]) -> Iterator[ExtractedBat
         "ipintervention_subset",
         ["genc_id", "intervention_code", "intervention_episode_start_date_time"],
     ):
-        frame = chunk.with_columns(pl.col("genc_id").cast(pl.Int64)).filter(
+        frame = _filter_valid_genc_id(chunk, "ipintervention_subset").filter(
             pl.col("intervention_code").is_not_null()
             & (pl.col("intervention_code").cast(pl.Utf8).str.strip_chars() != "")
         )
@@ -1278,7 +1347,7 @@ def extract_radiology(
         "radiology_subset",
         ["genc_id", "modality_mapped", "body_part_mapped", "performed_date_time"],
     ):
-        frame = chunk.with_columns(pl.col("genc_id").cast(pl.Int64))
+        frame = _filter_valid_genc_id(chunk, "radiology_subset")
         genc = frame["genc_id"]
         admission = genc.replace_strict(
             admission_by_genc, default=None, return_dtype=pl.Datetime("us")
@@ -1340,7 +1409,7 @@ def extract_providers(
         "physicians_subset",
         ["genc_id", "mrp_cpso_hashed", "adm_phy_cpso_hashed", "dis_phy_cpso_hashed"],
     ):
-        frame = chunk.with_columns(pl.col("genc_id").cast(pl.Int64))
+        frame = _filter_valid_genc_id(chunk, "physicians_subset")
         genc = frame["genc_id"]
         subject = genc.replace_strict(
             subject_by_genc, default=None, return_dtype=pl.Utf8
