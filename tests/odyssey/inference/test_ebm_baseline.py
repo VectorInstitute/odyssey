@@ -26,7 +26,6 @@ from odyssey.data.value_binning import add_value_tokens
 from odyssey.inference import ebm_baseline as ebm_module
 from odyssey.inference.alerts import _index_rows_from_events
 from odyssey.inference.ebm_baseline import (
-    EBM_MIN_ROWS,
     EBMBaselineModel,
     _load_ebm_classifier,
     fit_ebm_baselines,
@@ -159,7 +158,9 @@ def test_fit_ebm_baselines_fits_one_model_per_event_and_horizon(
     times = all_event_times(binned, ALERT_EVENTS, "mimic_iv")
     rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
 
-    models = fit_ebm_baselines(binned, rows, times, horizons=(8.0,), feature_set="basic")
+    models = fit_ebm_baselines(
+        binned, rows, times, horizons=(8.0,), feature_set="basic"
+    )
     assert ("vasopressor_start", 8.0) in models
     model = models[("vasopressor_start", 8.0)]
     assert isinstance(model, EBMBaselineModel)
@@ -189,7 +190,9 @@ def test_fit_one_ebm_skips_a_horizon_below_min_rows(
     times = all_event_times(binned, ALERT_EVENTS, "mimic_iv")
     rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
 
-    models = fit_ebm_baselines(binned, rows, times, horizons=(8.0,), feature_set="basic")
+    models = fit_ebm_baselines(
+        binned, rows, times, horizons=(8.0,), feature_set="basic"
+    )
     assert models == {}
     assert not _RecordingFakeClassifier.instances
 
@@ -219,7 +222,8 @@ def test_fit_ebm_baselines_below_the_cap_fits_every_row(
 def test_grouped_subsample_never_splits_a_subject() -> None:
     """Unit test of the grouping primitive directly: a capped subsample's
     row count for every included subject exactly matches that subject's
-    full row count in the input, never a partial slice of it."""
+    full row count in the input, never a partial slice of it.
+    """
     rng = np.random.default_rng(0)
     groups = np.repeat(np.arange(20), 5)  # 20 subjects, 5 rows each, 100 total
     keep = np.arange(100)
@@ -242,7 +246,9 @@ def test_fit_one_ebm_caps_rows_and_records_it(monkeypatch: pytest.MonkeyPatch) -
     rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
     assert len(rows["vasopressor_start"]) > 50  # more rows than the lowered cap
 
-    models = fit_ebm_baselines(binned, rows, times, horizons=(8.0,), feature_set="basic")
+    models = fit_ebm_baselines(
+        binned, rows, times, horizons=(8.0,), feature_set="basic"
+    )
     model = models[("vasopressor_start", 8.0)]
     assert model.params["row_capped"] == 1.0
 

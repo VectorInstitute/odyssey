@@ -243,7 +243,20 @@ it stays inside.
    `scripts/gemini/run.sh`) against a mocked connection, push it to both
    `origin` and `gemini` (`origin` first; mirror to `gemini` once GitHub CI
    is green).
-2. Amrit pulls on the GEMINI node, runs `scripts/gemini/run.sh <step>`.
+2. Amrit runs `scripts/gemini/run.sh <step>` directly on the GEMINI node --
+   no separate `git pull` first. **Fetch + reset, never pull**: `run.sh`
+   opens with `git fetch origin && git reset --hard origin/main` on every
+   invocation, not `git pull`. Every mirror rewrites `gemini`'s history (see
+   the mirroring section above), so a commit made on this node and its
+   mirrored equivalent from GitHub can be the exact same content under two
+   different hashes -- `git pull`'s merge sees that as two unrelated
+   histories and refuses, the exact divergence Amrit hit once. Reset is safe
+   here specifically *because* it's guarded: if the working tree is dirty,
+   or there are local commits `origin/main` doesn't have, `run.sh` prints
+   exactly what's blocking and stops rather than resetting over it -- push
+   those first (`run.sh`'s own commit-and-push step at the end of a run
+   does this automatically for step output; anything committed some other
+   way needs a manual `git push` first).
 3. The step writes only what is allowed to leave (see Governance above) to
    `scripts/gemini/out/`.
 4. `run.sh` commits and pushes that output back to `gemini main` directly
