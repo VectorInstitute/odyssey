@@ -8,6 +8,7 @@ monkeypatched, matching every other ``tests/scripts/gemini/test_*.py``.
 import importlib.util
 import queue
 import threading
+import time
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, Iterator
@@ -255,6 +256,69 @@ def test_copy_chunk_sink_write_raises_once_stop_is_requested() -> None:
     stop_requested.set()
     with pytest.raises(mod._StreamAbandonedError):
         sink.write(b"a,b\n1,x\n")
+
+
+def test_copy_chunk_sink_handles_one_write_call_per_row() -> None:
+    """Real libpq delivers ``COPY TO`` rows one at a time, not in blocks.
+
+    ``PQgetCopyData`` returns exactly one row per call, so psycopg2 invokes
+    ``sink.write()`` once per ~60-byte row -- not once per network-buffer's
+    worth of bytes. Regression coverage for the quadratic ``_drain`` bug: a
+    full-buffer ``self._buffer.count(b"\\n")`` on every such call made a
+    500k-row chunk take hours; this pins correctness under that exact
+    per-row delivery pattern, and the scaling-guard test below pins that it
+    stays fast.
+    """
+    mod = _load_module()
+    chunk_rows = 200
+    out_queue: "queue.Queue[pl.DataFrame]" = queue.Queue()
+    sink = mod._CopyChunkSink(
+        chunk_rows=chunk_rows, out_queue=out_queue, stop_requested=threading.Event()
+    )
+    sink.write(b"a,b\n")
+    for i in range(chunk_rows):
+        sink.write(f"{i},x\n".encode())
+    sink.close()
+
+    frames = []
+    while not out_queue.empty():
+        frames.append(out_queue.get())
+
+    result = pl.concat(frames)
+    assert result["a"].to_list() == list(range(chunk_rows))
+
+
+def test_copy_chunk_sink_drain_does_not_scale_quadratically_with_chunk_size() -> None:
+    """Scaling guard for the ``_drain`` quadratic-rescan bug.
+
+    Feeds one ``write()`` call per row (the real libpq delivery pattern) for
+    two chunk sizes and asserts the larger one doesn't take disproportionately
+    longer. A per-call full-buffer ``self._buffer.count(b"\\n")`` rescan is
+    quadratic in chunk size and would blow this ratio far past the generous
+    threshold below; the incremental-counter fix is linear.
+    """
+    mod = _load_module()
+
+    def _feed(n_rows: int) -> float:
+        out_queue: "queue.Queue[pl.DataFrame]" = queue.Queue()
+        sink = mod._CopyChunkSink(
+            chunk_rows=n_rows, out_queue=out_queue, stop_requested=threading.Event()
+        )
+        sink.write(b"a,b\n")
+        start = time.perf_counter()
+        for i in range(n_rows):
+            sink.write(f"{i},x\n".encode())
+        sink.close()
+        return time.perf_counter() - start
+
+    small_seconds = _feed(50_000)
+    large_seconds = _feed(100_000)
+
+    # Linear scaling: 2x the rows should cost roughly 2x the time. A
+    # generous 3x ceiling absorbs CI noise while still failing hard on the
+    # quadratic pattern (which would blow this ratio out to ~2x*(100k/50k),
+    # i.e. another ~2x on top, for a combined ~4x+ at this row count).
+    assert large_seconds < small_seconds * 3 + 0.05
 
 
 def test_stream_table_copy_streams_all_rows_via_fake_copy_to_sink(

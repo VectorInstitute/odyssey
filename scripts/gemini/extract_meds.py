@@ -447,6 +447,15 @@ class _CopyChunkSink:
     :func:`_stream_table_copy` for the producer-thread/consumer-generator
     wiring this exists for.
 
+    Row boundaries are tracked via an incremental newline counter
+    (:attr:`_pending_newlines`, updated by ``O(len(data))`` per ``write()``
+    call) rather than rescanning the whole buffer on every call --
+    libpq's ``COPY TO`` wire protocol delivers ``PQgetCopyData`` results
+    one row at a time, so ``copy_expert`` invokes ``write()`` once per
+    ~60-byte row; a full-buffer ``self._buffer.count(b"\\n")`` on every
+    such call is quadratic in chunk size and was slow enough in practice
+    (~200 rows/s on a 500k-row first chunk) to look identical to a hang.
+
     **Column constraint, not currently violated but not enforced either:**
     row boundaries are found by counting raw ``\\n`` bytes
     (:meth:`_drain`), not by CSV-aware parsing. A column value containing a
@@ -490,12 +499,17 @@ class _CopyChunkSink:
         self._queue = out_queue
         self._header: Optional[bytes] = None
         self._stop_requested = stop_requested
+        self._pending_newlines = 0
+        """Newlines currently sitting in ``self._buffer``, maintained
+        incrementally so ``_drain``'s threshold check never rescans the
+        whole buffer -- see the class docstring."""
 
     def write(self, data: bytes) -> int:
         """Accept one chunk of bytes from psycopg2 as the CSV output arrives."""
         if self._stop_requested.is_set():
             raise _StreamAbandonedError
         self._buffer.extend(data)
+        self._pending_newlines += data.count(b"\n")
         self._drain()
         return len(data)
 
@@ -507,14 +521,16 @@ class _CopyChunkSink:
                     return
                 self._header = bytes(self._buffer[: idx + 1])
                 del self._buffer[: idx + 1]
+                self._pending_newlines -= 1
                 continue
-            if self._buffer.count(b"\n") < self._chunk_rows:
+            if self._pending_newlines < self._chunk_rows:
                 return
             pos = -1
             for _ in range(self._chunk_rows):
                 pos = self._buffer.index(b"\n", pos + 1)
             self._parse_and_enqueue(bytes(self._buffer[: pos + 1]))
             del self._buffer[: pos + 1]
+            self._pending_newlines -= self._chunk_rows
 
     def _parse_and_enqueue(self, body: bytes) -> None:
         assert self._header is not None
