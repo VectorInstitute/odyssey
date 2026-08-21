@@ -46,3 +46,20 @@ From the journal's content-types and submission-guidelines pages (read 2026-08-1
 - No em dashes in prose (project style).
 - Build before committing: `make` must succeed; `main.pdf` is committed so
   the current draft is readable without a TeX install.
+
+## Framing gates (decided 2026-08-21)
+
+The paper's stance is: a rigorous head-to-head across model families and three
+real EHR systems, failure modes reported honestly. Landmark ("could transform
+AI for healthcare") framing is deliberately deferred until all three gates are
+met with measurements, not adjectives:
+
+1. Blind external or temporal validation on GEMINI with the pipeline unchanged.
+2. A win on a recognized external benchmark protocol (MEDS-DEV / EHRSHOT).
+3. Clinician-in-the-loop evidence that the interpretability changes decisions
+   (Phase 2, retrospective).
+
+The physician-preference IV study (provider variation as instrument on GEMINI)
+is tabled as its own future paper; its best use here is external validation of
+the concept lever once the lever passes its internal test. Provider identity is
+preserved in the GEMINI extraction so the option stays open.
