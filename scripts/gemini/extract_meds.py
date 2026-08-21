@@ -128,6 +128,39 @@ logged, not allowed to crash the batch -- the same "one bad row must not
 kill the whole run" principle already applied to every other messy field in
 this module.
 
+Real-run hardening (2026-08-21, third incident): the relaunch under the
+above two fixes surfaced three more real issues, all fixed together.
+First, ``ipscu_subset.icu_flag`` arrived as ``t``/``f`` text (Postgres
+``COPY``'s own boolean encoding) -- ``pl.col("icu_flag").cast(pl.Boolean)``
+crashed :func:`extract_icu` outright, since polars has no supported
+``Utf8 -> Boolean`` cast at all; :func:`_coerce_boolean_flag` replaces it
+with a lenient membership map. Second, a genuine correctness bug in
+resumability: :class:`MedsShardWriter` unconditionally reopened
+``shard_{i:04d}.parquet`` on first touch each run, and ``pq.ParquetWriter``
+silently truncates whatever file it opens -- since a resumed run
+constructs a brand-new writer instance and may skip an already-complete
+table's generator while re-running an incomplete one, any shard touched by
+both a completed and a re-run table would have the completed table's rows
+silently destroyed. :func:`_next_shard_write_path` now never reopens an
+existing file, writing a ``_partN`` file instead -- **a logical shard is
+the union of its base file and every ``_partN`` file** (see
+:func:`_logical_shard_row_counts`, which any accounting must use instead
+of assuming one file per shard). Third, throughput: a real run sustained
+only ~2,000 rows/s through the transform+write path (vs. ~280k rows/s for
+the pure ``COPY``+index-building pass over the same table), which would
+have made ``lab_subset``'s ~659M rows take days. Local benchmarking found
+the in-process parse/transform/write cost negligible against a local
+disk, isolating the real cost to :class:`MedsShardWriter` making one small
+``write_table()`` call per shard per chunk against GEMINI's NFS-mounted
+output directory -- fixed by buffering each shard's rows in memory and
+flushing only once :data:`SHARD_FLUSH_ROW_THRESHOLD` rows have
+accumulated, collapsing the write-call count by roughly that factor.
+:func:`_parse_datetime_series` also gained a vectorized ISO fast path
+(measured negligible for this bottleneck specifically, but a genuine,
+correctness-preserving speedup kept regardless), and
+:func:`run_extraction` now logs a per-batch parse/transform/write timing
+line so a real run's phase split is measured directly, not inferred.
+
 Run on the GEMINI node (writes real patient data to ``OUTPUT_DIR`` -- not a
 dry run):
 
@@ -142,6 +175,7 @@ import json
 import logging
 import os
 import queue
+import re
 import resource
 import threading
 import time
@@ -313,21 +347,42 @@ def _suppressed(n: int) -> str:
     return str(round(n / 1000) * 1000)
 
 
+#: Candidate fast-path formats tried, in order, before falling back to
+#: pandas' flexible parser (see :func:`_parse_datetime_series`). Both are
+#: ISO field order (year-month-day), so a match can never be a
+#: misinterpretation the flexible fallback would have read differently --
+#: unlike e.g. ``%m/%d/%Y`` vs ``%d/%m/%Y``, there is no ambiguity to get
+#: wrong here. ``%.f`` matches an optional fractional-seconds suffix.
+_DATETIME_FAST_PATH_FORMATS = (
+    "%Y-%m-%d %H:%M:%S%.f",
+    "%Y-%m-%dT%H:%M:%S%.f",
+)
+
+#: Cumulative wall-clock time spent inside :func:`_parse_datetime_series`,
+#: reset once per batch by :func:`run_extraction`'s phase-timing
+#: instrumentation so a "parse" number can be isolated from the rest of
+#: each extractor's per-chunk transform work, which otherwise all happens
+#: inside the same generator call. Module-level, not thread-local: only
+#: :func:`_stream_table_copy`'s producer thread runs concurrently with the
+#: consumer-side extractor code that calls this function, and that thread
+#: never calls it.
+_datetime_parse_seconds = 0.0
+
+
 def _parse_datetime_series(raw: pl.Series) -> pl.Series:
     """Vectorized best-effort parse of one of GEMINI's text datetime columns.
 
-    Real format for valid rows isn't confirmed yet (see
-    docs/gemini_extraction.md's open question 7), so this keeps pandas'
-    flexible, per-element ``format="mixed"`` inference (the same semantics
-    the original scalar ``pd.to_datetime(raw, errors="coerce")`` used)
-    rather than switching to polars' native ``str.to_datetime``, which
-    infers one format from a sample of the column and applies it to every
-    row -- a real risk against a column whose format consistency is an
-    open question. This is still whole-column vectorized: one
-    ``pandas.to_datetime`` call per chunk (a fast, C-level operation on the
-    whole column), not a Python function call per row -- the round trip
-    through pandas is the deliberate, safe choice here, not a leftover of
-    a scalar implementation.
+    Tries :data:`_DATETIME_FAST_PATH_FORMATS` first via polars' native,
+    vectorized ``str.to_datetime`` (fast, but only matches rows in exactly
+    that shape); whatever's left null after every fast-path attempt --
+    genuinely different formats, garbage, real nulls -- falls back to
+    pandas' flexible, per-element ``format="mixed"`` inference (the same
+    semantics the original all-rows-through-pandas implementation used),
+    applied only to that residue. A real run measured this residue as a
+    small minority of rows, so this keeps the flexible fallback's exact
+    correctness (nothing here assumes GEMINI's format is fully uniform --
+    see docs/gemini_extraction.md's open question 7) while avoiding paying
+    its cost for the common case.
 
     Parameters
     ----------
@@ -339,8 +394,34 @@ def _parse_datetime_series(raw: pl.Series) -> pl.Series:
     polars.Series
         ``Datetime("us")``, with unparsable/missing entries as ``null``.
     """
-    parsed = pd.to_datetime(raw.to_pandas(), errors="coerce", format="mixed")
-    return pl.Series(parsed).cast(pl.Datetime("us"))
+    global _datetime_parse_seconds  # noqa: PLW0603
+    t0 = time.time()
+    try:
+        stripped = raw.cast(pl.Utf8).str.strip_chars()
+        fast = stripped.to_frame("raw").select(
+            pl.coalesce(
+                [
+                    pl.col("raw").str.to_datetime(
+                        format=fmt, strict=False, time_unit="us"
+                    )
+                    for fmt in _DATETIME_FAST_PATH_FORMATS
+                ]
+            ).alias("parsed")
+        )["parsed"]
+        residue_mask = stripped.is_not_null() & fast.is_null()
+        residue_idx = residue_mask.arg_true()
+        if len(residue_idx) > 0:
+            residue_values = pd.to_datetime(
+                stripped.gather(residue_idx).to_pandas(),
+                errors="coerce",
+                format="mixed",
+            )
+            fast = fast.scatter(
+                residue_idx, pl.Series(residue_values).cast(pl.Datetime("us"))
+            )
+        return fast
+    finally:
+        _datetime_parse_seconds += time.time() - t0
 
 
 def _normalize_unit_series(raw: pl.Series) -> pl.Series:
@@ -773,6 +854,70 @@ def _filter_valid_genc_id(chunk: pl.DataFrame, table: str) -> pl.DataFrame:
     return chunk.with_columns(cast).filter(pl.col("genc_id").is_not_null())
 
 
+#: Case-insensitive, stripped membership map for :func:`_coerce_boolean_flag`.
+#: Postgres COPY renders a real ``boolean`` column as bare ``t``/``f``, not
+#: ``true``/``false`` -- the other spellings here are defensive, for any
+#: GEMINI flag column that turns out to encode booleans differently.
+_TRUE_FLAG_VALUES = frozenset({"t", "true", "1", "y", "yes"})
+_FALSE_FLAG_VALUES = frozenset({"f", "false", "0", "n", "no"})
+
+
+def _coerce_boolean_flag(chunk: pl.DataFrame, column: str, table: str) -> pl.DataFrame:
+    """Leniently coerce a string flag column to ``Boolean`` via a membership map.
+
+    polars has no supported ``Utf8 -> Boolean`` cast at all -- ``.cast(pl.Boolean)``
+    on *any* string content raises ``InvalidOperationError`` unconditionally,
+    strict or not (confirmed directly; this isn't a strictness setting to
+    flip). That was this function's predecessor, used for ``icu_flag`` until
+    a real crash on GEMINI hit it -- ``ipscu_subset`` came back over the wire
+    as ``t``/``f`` (Postgres ``COPY``'s own boolean encoding), a value the
+    cast would reject even if it accepted strings at all.
+
+    A value that doesn't map to either set -- including a genuine SQL
+    ``NULL`` -- becomes ``null`` in the returned column and is counted and
+    logged once per chunk; this is a semantic flag, not a join key, so
+    ``null`` here means "can't confirm true," not "malformed data to
+    salvage" -- callers that gate a filter on the column (e.g. ``icu_flag``)
+    get the conservative behavior for free, since ``DataFrame.filter``
+    already excludes ``null`` alongside ``False``.
+
+    Parameters
+    ----------
+    chunk : polars.DataFrame
+        Must carry ``column``.
+    column : str
+        Name of the string flag column to coerce in place.
+    table : str
+        Source table name, for the warning log only.
+
+    Returns
+    -------
+    polars.DataFrame
+        ``chunk`` with ``column`` cast to ``Boolean``.
+    """
+    normalized = pl.col(column).cast(pl.Utf8).str.strip_chars().str.to_lowercase()
+    coerced = chunk.select(
+        pl.when(normalized.is_in(_TRUE_FLAG_VALUES))
+        .then(True)
+        .when(normalized.is_in(_FALSE_FLAG_VALUES))
+        .then(False)
+        .otherwise(None)
+        .alias(column)
+    )[column]
+    unresolved_mask = coerced.is_null()
+    if unresolved_mask.any():
+        bad_values = chunk[column].filter(unresolved_mask).head(5).to_list()
+        logger.warning(
+            "%s: %d rows had a %s value that didn't resolve to true/false, "
+            "treating as not-true (sample raw values: %s)",
+            table,
+            int(unresolved_mask.sum()),
+            column,
+            bad_values,
+        )
+    return chunk.with_columns(coerced)
+
+
 def fetch_admission_index() -> tuple[
     dict[int, str], dict[int, Optional[pd.Timestamp]], int
 ]:
@@ -1016,7 +1161,10 @@ def extract_icu(subject_by_genc: dict[int, str]) -> Iterator[ExtractedBatch]:
         ["genc_id", "scu_admit_date_time", "scu_discharge_date_time", "icu_flag"],
     ):
         frame = _filter_valid_genc_id(
-            chunk.filter(pl.col("icu_flag").cast(pl.Boolean)), "ipscu_subset"
+            _coerce_boolean_flag(chunk, "icu_flag", "ipscu_subset").filter(
+                pl.col("icu_flag")
+            ),
+            "ipscu_subset",
         )
         genc = frame["genc_id"]
         subject = genc.replace_strict(
@@ -1613,25 +1761,120 @@ def assign_shards(
     }
 
 
+#: Rows buffered in memory per shard before :class:`MedsShardWriter` actually
+#: calls ``write_table()``. The real fix for a measured real-run bottleneck:
+#: at ``CHUNK_ROWS`` = 500,000 scattered across ~1,118 shards, the
+#: un-buffered writer made one small ``write_table()`` call per shard per
+#: chunk (a few hundred rows each); on GEMINI's NFS-mounted ``output_dir``
+#: the per-call round-trip cost of that many small writes -- not CPU
+#: parse/transform time, both measured negligible locally against a local
+#: disk -- is what dominated wall-clock: ``admdad_subset``'s 2.27M rows
+#: (~5 chunks * ~1,118 shards ~= 5,590 writes) took ~21 minutes, which
+#: projects out to ~4 days for ``lab_subset``'s 659M rows (~1,318 chunks *
+#: ~1,118 shards ~= 1.47M writes) at the same per-write cost. Buffering
+#: collapses that call count by roughly (this threshold / average rows
+#: landing in a shard per chunk), independent of table size -- for a table
+#: whose total per-shard row count never reaches this threshold, every
+#: batch stays buffered until :meth:`MedsShardWriter.close`, i.e. one write
+#: per shard for the whole table instead of one per chunk.
+SHARD_FLUSH_ROW_THRESHOLD = 250_000
+
+_SHARD_FILE_RE = re.compile(r"^shard_(\d{4})(?:_part(\d+))?\.parquet$")
+
+
+def _shard_glob(output_dir: Path, shard: int) -> list[Path]:
+    """Every on-disk file belonging to one logical shard, base file first."""
+    prefix = f"shard_{shard:04d}"
+    matches = [
+        p for p in output_dir.glob(f"{prefix}*.parquet") if _SHARD_FILE_RE.match(p.name)
+    ]
+    return sorted(
+        matches,
+        key=lambda p: (
+            int(m.group(2) or 0) if (m := _SHARD_FILE_RE.match(p.name)) else 0
+        ),
+    )
+
+
+def _next_shard_write_path(output_dir: Path, shard: int) -> Path:
+    """Pick a path for a *new* ``pq.ParquetWriter`` on this shard.
+
+    Guaranteed not to already exist -- ``pq.ParquetWriter`` silently
+    truncates whatever file it opens, and a resumed run constructs a brand
+    new :class:`MedsShardWriter` (with an empty ``self._writers``) every
+    process invocation, so reopening the base filename unconditionally
+    would destroy any rows a *different*, already-completed table wrote
+    into this same shard in a prior run. The base ``shard_{i:04d}.parquet``
+    name is used if nothing is there yet; otherwise the next free
+    ``shard_{i:04d}_part{N}.parquet`` -- a logical shard is the union of
+    its base file plus every ``_partN`` file, never just one of them (see
+    the class docstring and :func:`_logical_shard_row_counts`).
+    """
+    base = output_dir / f"shard_{shard:04d}.parquet"
+    if not base.exists():
+        return base
+    existing = _shard_glob(output_dir, shard)
+    part_numbers = [
+        int(m.group(2))
+        for p in existing
+        if (m := _SHARD_FILE_RE.match(p.name)) and m.group(2)
+    ]
+    return (
+        output_dir / f"shard_{shard:04d}_part{max(part_numbers, default=0) + 1}.parquet"
+    )
+
+
+def _logical_shard_row_counts(output_dir: Path) -> dict[int, int]:
+    """On-disk row count per logical shard, summed across all its part files.
+
+    Reads only each file's Parquet footer metadata (``num_rows``), never
+    the actual row data -- cheap even at real scale. The authoritative
+    source for the extraction summary's ``shard_row_counts``, since a
+    resumed run's :class:`MedsShardWriter` only tracks rows *it* wrote,
+    not what a prior run already committed to a shard's base file.
+    """
+    counts: dict[int, int] = {}
+    for path in output_dir.glob("shard_*.parquet"):
+        match = _SHARD_FILE_RE.match(path.name)
+        if match is None:
+            continue
+        shard = int(match.group(1))
+        counts[shard] = counts.get(shard, 0) + pq.ParquetFile(path).metadata.num_rows
+    return counts
+
+
 class MedsShardWriter:
     """Streaming per-shard MEDS Parquet writer.
 
-    Memory use is bounded by one incoming batch plus one open Parquet
-    writer per shard -- nothing accumulates across the whole run, which
-    matters at ``lab_subset``'s/``vitals_subset``'s real scale (hundreds of
-    millions of rows). One open file handle per shard for the whole
-    extraction is a real, deliberate tradeoff: with thousands of subjects
-    per :data:`SUBJECTS_PER_SHARD`\\ =1000 shard, a large subject universe
-    could need `ulimit -n` raised above a typical default (1024) -- flagged
-    here rather than solved by a multi-pass design, which would need
-    re-scanning every source table once per shard group at real scale, a
-    far worse tradeoff.
+    A **logical shard is the union of its ``shard_{i:04d}.parquet`` base
+    file and every ``shard_{i:04d}_partN.parquet`` file** -- see
+    :func:`_next_shard_write_path` for why a resumed run may add part
+    files rather than writing into the base file directly, and
+    :func:`_logical_shard_row_counts` for the aggregation any accounting
+    surface must use instead of this class's own (this-run-only)
+    :attr:`rows_dropped_unshardable`-style counters. Downstream readers of
+    this output must glob and concatenate every file sharing a shard
+    prefix, not assume one file per shard.
+
+    Each shard's rows are buffered in memory
+    (:data:`SHARD_FLUSH_ROW_THRESHOLD`) and only written once that many
+    rows have accumulated for it (or at :meth:`close`) -- collapsing many
+    small per-chunk ``write_table()`` calls into far fewer, larger ones;
+    see :data:`SHARD_FLUSH_ROW_THRESHOLD`'s docstring for the real-run
+    measurement this fixes. Memory use is bounded by at most
+    ``SHARD_FLUSH_ROW_THRESHOLD`` buffered rows per shard plus one open
+    Parquet writer per shard actually touched -- with thousands of
+    subjects per :data:`SUBJECTS_PER_SHARD`\\ =1000 shard, a large subject
+    universe could need `ulimit -n` raised above a typical default (1024),
+    flagged here rather than solved by a multi-pass design, which would
+    need re-scanning every source table once per shard group at real
+    scale, a far worse tradeoff.
 
     Parameters
     ----------
     output_dir : pathlib.Path
-        Directory to write ``shard_{i:04d}.parquet`` files into (created if
-        missing). Never a git-tracked path -- see the module docstring.
+        Directory to write shard files into (created if missing). Never a
+        git-tracked path -- see the module docstring.
     shard_by_subject : dict[str, int]
         From :func:`assign_shards`.
     """
@@ -1642,18 +1885,36 @@ class MedsShardWriter:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._writers: dict[int, pq.ParquetWriter] = {}
         self._shard_row_counts: dict[int, int] = {}
+        self._buffers: dict[int, list[pd.DataFrame]] = {}
+        self._buffer_row_counts: dict[int, int] = {}
         self.rows_written_per_table: dict[str, int] = {}
         self.rows_dropped_unshardable = 0
 
     def _writer_for(self, shard: int) -> pq.ParquetWriter:
         if shard not in self._writers:
-            path = self.output_dir / f"shard_{shard:04d}.parquet"
+            path = _next_shard_write_path(self.output_dir, shard)
             self._writers[shard] = pq.ParquetWriter(str(path), MEDS_ARROW_SCHEMA)
             self._shard_row_counts[shard] = 0
         return self._writers[shard]
 
+    def _flush_shard(self, shard: int) -> None:
+        frames = self._buffers.pop(shard, None)
+        self._buffer_row_counts[shard] = 0
+        if not frames:
+            return
+        combined = (
+            frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
+        )
+        arrow_table = pa.Table.from_pandas(
+            combined[MEDS_COLUMNS], schema=MEDS_ARROW_SCHEMA, preserve_index=False
+        )
+        self._writer_for(shard).write_table(arrow_table)
+        self._shard_row_counts[shard] = self._shard_row_counts.get(shard, 0) + len(
+            combined
+        )
+
     def write_batch(self, table: str, batch: pd.DataFrame) -> None:
-        """Split one MEDS-shaped batch by shard and stream it to disk.
+        """Split one MEDS-shaped batch by shard and buffer it for writing.
 
         Parameters
         ----------
@@ -1682,26 +1943,32 @@ class MedsShardWriter:
         self.rows_written_per_table[table] = self.rows_written_per_table.get(
             table, 0
         ) + len(batch)
-        for shard, group in batch.groupby(shard_ids.astype(int)):
-            arrow_table = pa.Table.from_pandas(
-                group[MEDS_COLUMNS], schema=MEDS_ARROW_SCHEMA, preserve_index=False
-            )
-            self._writer_for(int(shard)).write_table(arrow_table)
-            self._shard_row_counts[int(shard)] = self._shard_row_counts.get(
-                int(shard), 0
+        for raw_shard, group in batch.groupby(shard_ids.astype(int)):
+            shard = int(raw_shard)
+            self._buffers.setdefault(shard, []).append(group)
+            self._buffer_row_counts[shard] = self._buffer_row_counts.get(
+                shard, 0
             ) + len(group)
+            if self._buffer_row_counts[shard] >= SHARD_FLUSH_ROW_THRESHOLD:
+                self._flush_shard(shard)
 
     def close(self) -> dict[int, int]:
-        """Close every open shard writer and return per-shard row counts.
+        """Flush every buffered shard, close every writer, return logical row counts.
 
         Returns
         -------
         dict[int, int]
-            ``{shard_index: row_count}``.
+            ``{shard_index: row_count}``, aggregated across every part file
+            on disk (see :func:`_logical_shard_row_counts`) -- not just
+            what this instance itself wrote, since a resumed run's rows for
+            an already-completed table live in a file this instance never
+            touched.
         """
+        for shard in list(self._buffers):
+            self._flush_shard(shard)
         for writer in self._writers.values():
             writer.close()
-        return dict(self._shard_row_counts)
+        return _logical_shard_row_counts(self.output_dir)
 
 
 def _manifest_path(output_dir: Path) -> Path:
@@ -1853,8 +2120,30 @@ def run_extraction(output_dir: Optional[Path] = None) -> dict[str, Any]:
             continue
         logger.info("[extract_meds] extracting %s...", table_name)
         report_progress = _log_table_progress(table_name)
-        for batch, source_rows in generator:
+        gen_iter = iter(generator)
+        global _datetime_parse_seconds  # noqa: PLW0603
+        while True:
+            _datetime_parse_seconds = 0.0
+            t_generate_start = time.time()
+            try:
+                batch, source_rows = next(gen_iter)
+            except StopIteration:
+                break
+            t_generate = time.time() - t_generate_start
+            t_parse = _datetime_parse_seconds
+            t_transform = max(t_generate - t_parse, 0.0)
+            t_write_start = time.time()
             writer.write_batch(table_name, batch)
+            t_write = time.time() - t_write_start
+            logger.info(
+                "[extract_meds] %s: batch phase timing (%d rows) "
+                "parse=%.1fms transform=%.1fms write=%.1fms",
+                table_name,
+                source_rows,
+                t_parse * 1000,
+                t_transform * 1000,
+                t_write * 1000,
+            )
             report_progress(source_rows)
         manifest[table_name] = "complete"
         _save_manifest(target_dir, manifest)
