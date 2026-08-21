@@ -37,6 +37,7 @@ from odyssey.data.value_binning import QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import Vocabulary, code_type
 from odyssey.models.concept_bottleneck import ConceptBottleneckOutput
 from odyssey.models.sequence_model import (
+    RECENCY_DIM,
     BaselineSequenceModel,
     ConceptLabelDict,
     ConceptSupervision,
@@ -259,6 +260,18 @@ def load_run(
             if "bottleneck.unknown_prob_weight" not in state:
                 n_known -= 1  # shared (num_slots, 2d) weight includes the unknown row
             config.unknown_dim = (rows - n_known * 2 * emb) // 2
+    # Recency features widen the head inputs by RECENCY_DIM; infer from the
+    # time head's weight shape against the bottleneck/backbone width.
+    time_w = checkpoint["model"].get("time_head.proj.weight")
+    if time_w is not None:
+        n_c = len(concepts_for_source(getattr(config, "source", "mimic_iv")))
+        if getattr(config, "model_kind", "bottleneck") == "baseline":
+            base = config.hidden_size
+        else:
+            base = n_c * config.embedding_dim + (
+                getattr(config, "unknown_dim", None) or config.embedding_dim
+            )
+        config.recency_features = int(time_w.shape[1]) == base + RECENCY_DIM
     # MLP readout (event_heads.proj.0/2.*) vs the linear one (event_heads.proj.*)
     first_layer = checkpoint["model"].get("event_heads.proj.0.weight")
     config.event_head_hidden = (

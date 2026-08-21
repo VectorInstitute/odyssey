@@ -20,6 +20,8 @@ from odyssey.data.vocabulary import PAD_ID, Vocabulary, code_type
 
 BIRTH_CODE = "MEDS_BIRTH"
 HOURS_PER_YEAR = 24.0 * 365.25
+# Code families carried in the recency channel (vocabulary ids 1..8).
+N_RECENCY_FAMILIES = 8
 
 # Sentinel visit id for events without a real hadm_id (solo/outpatient
 # events); such positions never carry visit-scoped concept supervision.
@@ -67,6 +69,14 @@ class PatientSequence:
     False)."""
 
     values: List[float] = field(default_factory=list)
+    family_recency: List[List[float]] = field(default_factory=list)
+    """Per token: hours since the previous event of each code family
+    (``nan`` if that family has not occurred yet), aligned with
+    :data:`~odyssey.data.vocabulary` family ids 1..8 (index 0 = family 1).
+    Computed per patient, so it is exact regardless of chunking. Empty on
+    sequences built before this field existed. Consumed only by models
+    with ``recency_features`` on (timing metadata for the time/event
+    heads; never routed through the concept bottleneck)."""
     """Standardized numeric value per token (the ``numeric_z`` column of
     :func:`~odyssey.data.value_binning.add_value_tokens`), ``nan`` where
     the event carries none; empty on sequences built without that column
@@ -116,6 +126,21 @@ def _assign_visits(
                 visit_segments[k] = 2
         i = j
     return visit_orders, visit_segments
+
+
+def _family_recency(type_ids: List[int], time_stamps: List[float]) -> List[List[float]]:
+    """Hours since the previous event of each code family, per position.
+
+    ``nan`` until a family first occurs. Family ids 1..8 map to indices
+    0..7 (see :data:`N_RECENCY_FAMILIES`).
+    """
+    last_seen: List[float] = [float("nan")] * N_RECENCY_FAMILIES
+    out: List[List[float]] = []
+    for type_id, now in zip(type_ids, time_stamps):
+        out.append([now - ls for ls in last_seen])
+        if 1 <= type_id <= N_RECENCY_FAMILIES:
+            last_seen[type_id - 1] = now
+    return out
 
 
 def build_patient_sequence(
@@ -226,8 +251,11 @@ def build_patient_sequence(
 
     static_mask = [i < n_static for i in range(len(concept_ids))]
 
+    family_recency = _family_recency(type_ids, time_stamps)
+
     if max_seq_len is not None and len(concept_ids) > max_seq_len:
         static_mask = static_mask[-max_seq_len:]
+        family_recency = family_recency[-max_seq_len:]
         concept_ids = concept_ids[-max_seq_len:]
         type_ids = type_ids[-max_seq_len:]
         time_stamps = time_stamps[-max_seq_len:]
@@ -250,6 +278,7 @@ def build_patient_sequence(
         visit_ends=visit_ends,
         static_mask=static_mask,
         values=values,
+        family_recency=family_recency,
     )
 
 

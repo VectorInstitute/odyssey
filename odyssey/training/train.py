@@ -130,6 +130,10 @@ class TrainingConfig:
     of loading it whole: required at full-extraction scale (292 MIMIC-IV
     shards OOM-killed an 83 GB host in concept labeling). Tuning shards
     stay in memory. See :mod:`odyssey.training.shard_stream`."""
+    recency_features: bool = False
+    """Feed per-family hours-since-last-event (log1p, capped, plus a seen
+    flag) to the time/event heads, concatenated after the bottleneck so
+    timing metadata never routes through the concepts. Opt-in A/B."""
     concept_global_pairs: bool = False
     """Leakage control: input-independent (w+, w-) per known concept, so a
     concept slot carries only its probability (see ConceptBottleneck)."""
@@ -440,6 +444,7 @@ def build_model(
             time_bin_edges=time_bin_edges,
             event_names=event_names,
             event_head_hidden=event_head_hidden,
+            recency_features=bool(getattr(config, "recency_features", False)),
         )
     return ConceptBottleneckSequenceModel(
         backbone=backbone,
@@ -452,6 +457,7 @@ def build_model(
         event_head_hidden=event_head_hidden,
         concept_global_pairs=bool(getattr(config, "concept_global_pairs", False)),
         unknown_dim=getattr(config, "unknown_dim", None),
+        recency_features=bool(getattr(config, "recency_features", False)),
     )
 
 
