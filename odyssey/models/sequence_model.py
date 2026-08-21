@@ -43,8 +43,9 @@ import torch
 import torch.nn.functional as F  # noqa: N812
 from torch import nn
 
+from odyssey.data.sequences import N_RECENCY_FAMILIES
 from odyssey.data.streaming import StreamingChunk
-from odyssey.data.types import ClinicalSequenceBatch
+from odyssey.data.types import AuxiliaryInputs, ClinicalSequenceBatch
 from odyssey.models.backbones.base import SequenceBackbone, TimeAwareState
 from odyssey.models.concept_bottleneck import (
     BottleneckIntervention,
@@ -106,6 +107,12 @@ class ForecastObjective:
     token_types: Optional[torch.Tensor] = None
     time_weight: float = 0.0
     event_hazard_weight: float = 0.0
+
+
+# Recency block appended to head features when recency_features is on:
+# per code family (8), log1p(capped hours since last) + seen flag.
+RECENCY_DIM = 2 * N_RECENCY_FAMILIES
+RECENCY_CAP_HOURS = 24.0 * 30.0
 
 
 class ForwardWithFeatures(NamedTuple):
@@ -387,6 +394,30 @@ class _SequenceModelBase(nn.Module):
             weights = weights * objective.family_weights[families].to(weights.dtype)
         return (per_position * weights).sum() / weights.sum()
 
+    def _augment_head_features(
+        self, features: torch.Tensor, aux: "AuxiliaryInputs"
+    ) -> torch.Tensor:
+        """Append the recency block to head features when the model uses it.
+
+        Timing metadata for the time/event heads (log1p of hours since the
+        previous event of each code family, capped at 30 days, plus a seen
+        flag), concatenated AFTER the bottleneck output so it never routes
+        through the concepts: the explicit staleness signal the stratified
+        alert error analysis showed the tuned GBM wins with. Missing
+        channel (older sequences) contributes zeros.
+        """
+        if not getattr(self, "use_recency_features", False):
+            return features
+        rec = aux.family_recency
+        if rec is None:
+            block = features.new_zeros(*features.shape[:-1], RECENCY_DIM)
+        else:
+            rec = rec.to(features.dtype)
+            seen = ~torch.isnan(rec)
+            hours = torch.nan_to_num(rec, nan=0.0).clamp(0.0, RECENCY_CAP_HOURS)
+            block = torch.cat([torch.log1p(hours), seen.to(features.dtype)], dim=-1)
+        return torch.cat([features, block], dim=-1)
+
     def _streaming_event_loss(
         self,
         event_heads: Optional[EventHazardHeads],
@@ -433,6 +464,7 @@ class BaselineSequenceModel(_SequenceModelBase):
         time_bin_edges: Optional[Sequence[float]] = None,
         event_names: Optional[Sequence[str]] = None,
         event_head_hidden: int = 0,
+        recency_features: bool = False,
     ) -> None:
         """Initialize the baseline sequence model.
 
@@ -442,14 +474,16 @@ class BaselineSequenceModel(_SequenceModelBase):
         """
         super().__init__(backbone, padding_idx=padding_idx)
         self.lm_head = nn.Linear(backbone.hidden_size, vocab_size)
+        self.use_recency_features = bool(recency_features)
+        head_in = backbone.hidden_size + (RECENCY_DIM if recency_features else 0)
         self.time_head: Optional[TimeToEventHead] = (
-            TimeToEventHead(backbone.hidden_size, time_bin_edges)
+            TimeToEventHead(head_in, time_bin_edges)
             if time_bin_edges is not None
             else None
         )
         self.event_heads: Optional[EventHazardHeads] = (
             EventHazardHeads(
-                backbone.hidden_size,
+                head_in,
                 event_names,
                 time_bin_edges if time_bin_edges is not None else (),
                 hidden_size=event_head_hidden,
@@ -493,7 +527,9 @@ class BaselineSequenceModel(_SequenceModelBase):
         logits, hidden, new_state = self.forward_features(
             batch, state=state, reset_mask=reset_mask
         )
-        return ForwardWithFeatures(logits, hidden, None, new_state)
+        return ForwardWithFeatures(
+            logits, self._augment_head_features(hidden, batch.aux), None, new_state
+        )
 
     def compute_loss(
         self, batch: ClinicalSequenceBatch, labels: Optional[torch.Tensor] = None
@@ -517,8 +553,11 @@ class BaselineSequenceModel(_SequenceModelBase):
             chunk.batch, state=state, reset_mask=chunk.reset_mask
         )
         task_loss = self._streaming_task_loss(logits, chunk, objective)
-        time_loss, _ = self._streaming_time_loss(self.time_head, hidden, chunk)
-        event_loss = self._streaming_event_loss(self.event_heads, hidden, event_targets)
+        head_feats = self._augment_head_features(hidden, chunk.batch.aux)
+        time_loss, _ = self._streaming_time_loss(self.time_head, head_feats, chunk)
+        event_loss = self._streaming_event_loss(
+            self.event_heads, head_feats, event_targets
+        )
         total = (
             task_loss
             + objective.time_weight * time_loss
@@ -552,6 +591,7 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         event_head_hidden: int = 0,
         concept_global_pairs: bool = False,
         unknown_dim: Optional[int] = None,
+        recency_features: bool = False,
     ) -> None:
         """Initialize the concept-bottleneck sequence model.
 
@@ -571,14 +611,16 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         )
         bottleneck_dim = self.bottleneck.output_dim
         self.lm_head = nn.Linear(bottleneck_dim, vocab_size)
+        self.use_recency_features = bool(recency_features)
+        head_in = bottleneck_dim + (RECENCY_DIM if recency_features else 0)
         self.time_head: Optional[TimeToEventHead] = (
-            TimeToEventHead(bottleneck_dim, time_bin_edges)
+            TimeToEventHead(head_in, time_bin_edges)
             if time_bin_edges is not None
             else None
         )
         self.event_heads: Optional[EventHazardHeads] = (
             EventHazardHeads(
-                bottleneck_dim,
+                head_in,
                 event_names,
                 time_bin_edges if time_bin_edges is not None else (),
                 hidden_size=event_head_hidden,
@@ -616,7 +658,12 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
     ) -> ForwardWithFeatures:
         """Uniform forward (see :class:`ForwardWithFeatures`)."""
         logits, out, new_state = self(batch, state=state, reset_mask=reset_mask)
-        return ForwardWithFeatures(logits, out.bottleneck, out, new_state)
+        return ForwardWithFeatures(
+            logits,
+            self._augment_head_features(out.bottleneck, batch.aux),
+            out,
+            new_state,
+        )
 
     def compute_loss(
         self,
@@ -713,11 +760,12 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
             intervention=intervention,
         )
         next_token_loss = self._streaming_task_loss(logits, chunk, objective)
-        time_loss, _ = self._streaming_time_loss(
-            self.time_head, bottleneck_out.bottleneck, chunk
+        head_feats = self._augment_head_features(
+            bottleneck_out.bottleneck, chunk.batch.aux
         )
+        time_loss, _ = self._streaming_time_loss(self.time_head, head_feats, chunk)
         event_loss = self._streaming_event_loss(
-            self.event_heads, bottleneck_out.bottleneck, event_targets
+            self.event_heads, head_feats, event_targets
         )
         forecast_loss = (
             next_token_loss

@@ -66,7 +66,7 @@ from typing import Iterator, List, NamedTuple, Optional
 
 import torch
 
-from odyssey.data.sequences import NO_VISIT, PatientSequence
+from odyssey.data.sequences import N_RECENCY_FAMILIES, NO_VISIT, PatientSequence
 from odyssey.data.types import AuxiliaryInputs, ClinicalSequenceBatch
 from odyssey.data.vocabulary import PAD_ID
 
@@ -106,6 +106,7 @@ class _LaneBuffer:
     visit_end: List[bool] = field(default_factory=list)
     values: List[float] = field(default_factory=list)
     static: List[bool] = field(default_factory=list)
+    family_recency: List[List[float]] = field(default_factory=list)
 
     def __len__(self) -> int:
         """Return the number of unconsumed tokens in this lane."""
@@ -144,6 +145,11 @@ class _LaneBuffer:
         self.static.extend(
             seq.static_mask if len(seq.static_mask) == n else [False] * n
         )
+        self.family_recency.extend(
+            seq.family_recency
+            if len(seq.family_recency) == n
+            else [[_NAN] * N_RECENCY_FAMILIES] * n
+        )
 
         resets = [False] * n
         resets[0] = True
@@ -176,6 +182,7 @@ class _LaneBuffer:
         del self.visit_end[:n]
         del self.values[:n]
         del self.static[:n]
+        del self.family_recency[:n]
 
     def peek_padded(self, k: int) -> "_Window":
         """Return the first ``k`` tokens, padded if fewer than ``k`` remain."""
@@ -196,6 +203,8 @@ class _LaneBuffer:
             visit_end=self.visit_end[:n_real] + [False] * pad,
             values=self.values[:n_real] + [_NAN] * pad,
             static=self.static[:n_real] + [False] * pad,
+            family_recency=self.family_recency[:n_real]
+            + [[_NAN] * N_RECENCY_FAMILIES] * pad,
             n_real=n_real,
         )
 
@@ -223,6 +232,8 @@ def _repad(window: "_Window", real_len: int) -> "_Window":
         visit_end=window.visit_end[:real_len] + [False] * pad,
         values=window.values[:real_len] + [_NAN] * pad,
         static=window.static[:real_len] + [False] * pad,
+        family_recency=window.family_recency[:real_len]
+        + [[_NAN] * N_RECENCY_FAMILIES] * pad,
         n_real=real_len,
     )
 
@@ -244,6 +255,7 @@ class _Window:
     visit_end: List[bool]
     values: List[float]
     static: List[bool]
+    family_recency: List[List[float]]
     n_real: int
 
 
@@ -338,6 +350,7 @@ class PackedLaneSampler:
         visit_end_full = _stack("visit_end", torch.bool)
         values_full = _stack("values", torch.float)
         static_full = _stack("static", torch.bool)
+        family_recency_full = _stack("family_recency", torch.float)
 
         input_ids = concept_ids_full[:, :-1]
         # A target position that is itself a reset is the first token of a
@@ -372,6 +385,7 @@ class PackedLaneSampler:
                 visit_orders=visit_orders_full[:, :-1],
                 visit_segments=visit_segments_full[:, :-1],
                 values=values_full[:, :-1],
+                family_recency=family_recency_full[:, :-1],
             ),
         )
         return StreamingChunk(
