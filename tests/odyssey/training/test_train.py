@@ -25,7 +25,6 @@ from odyssey.training.train import (
     _combined_val_loss,
     _detach_state,
     _move_chunk_to_device,
-    _run_training,
     build_model,
 )
 
@@ -192,6 +191,22 @@ def test_detach_state_handles_tuple_of_tensors_backbones() -> None:
     assert torch.equal(detached.recurrent[0], h)
 
 
+def test_detach_state_handles_none_for_stateless_backbones() -> None:
+    # TransformerBackbone always returns TimeAwareState(recurrent=None, ...):
+    # nothing to detach but prev_time_stamps, itself unused by that
+    # backbone -- must not raise, so the training loop can call this
+    # unconditionally after every chunk regardless of which backbone
+    # config.backbone selected.
+    state = TimeAwareState(
+        recurrent=None, prev_time_stamps=torch.tensor([1.0], requires_grad=True)
+    )
+
+    detached = _detach_state(state)
+
+    assert detached.recurrent is None
+    assert not detached.prev_time_stamps.requires_grad
+
+
 def test_detach_state_rejects_unknown_state_shapes() -> None:
     state = TimeAwareState(recurrent=object(), prev_time_stamps=torch.tensor([0.0]))
     try:
@@ -319,25 +334,3 @@ def test_build_model_hybrid_and_transformer_are_directly_comparable_by_param_cou
     n_params = sum(p.numel() for p in model.backbone.parameters())
 
     assert n_params > 0
-
-
-# ---------------------------------------------------------------------------
-# _run_training: backbone="transformer" is not yet wired into this loop
-# ---------------------------------------------------------------------------
-
-
-def test_run_training_rejects_transformer_backbone_before_touching_the_corpus() -> None:
-    """Confirm the guard fires before touching any other (invalid) argument.
-
-    That is the whole point of raising as the very first statement in
-    _run_training, not deep inside the loop.
-    """
-    config = TrainingConfig(
-        train_shard_dir="/train",
-        tuning_shard_dir="/tuning",
-        output_dir="/out",
-        backbone="transformer",
-    )
-
-    with pytest.raises(NotImplementedError, match="PackedContextSampler"):
-        _run_training(config, output_dir=None, device=None, corpus=None)  # type: ignore[arg-type]
