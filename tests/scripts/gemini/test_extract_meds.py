@@ -421,6 +421,47 @@ def test_stream_table_does_not_fall_back_once_copy_has_yielded_real_rows(
     assert cursor_called == []
 
 
+# --- _filter_valid_genc_id -----------------------------------------------
+
+
+def test_filter_valid_genc_id_drops_unparseable_rows_not_the_whole_batch(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Real incident this guards against: a hard pl.col("genc_id").cast(pl.Int64)
+    # raises and crashes the whole chunk over one malformed join key -- and,
+    # combined with the (separately fixed) producer-thread deadlock, a crash
+    # deep in a chunk could hang the whole extraction silently instead of
+    # surfacing a traceback. genc_id must be handled the same way every
+    # other messy field in this module already is: drop the bad row, keep
+    # going, log loudly.
+    mod = _load_module()
+    chunk = pl.DataFrame({"genc_id": ["1", "not-a-genc-id", "3"], "x": [10, 20, 30]})
+
+    with caplog.at_level("WARNING"):
+        result = mod._filter_valid_genc_id(chunk, "admdad_subset")
+
+    assert result["genc_id"].to_list() == [1, 3]
+    assert result["x"].to_list() == [10, 30]
+    assert any("not-a-genc-id" in r.message for r in caplog.records)
+    assert any("admdad_subset" in r.message for r in caplog.records)
+
+
+def test_filter_valid_genc_id_drops_null_genc_id_without_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A genuinely null genc_id (not a parse failure) is dropped the same
+    # way -- it can't join against anything either -- but isn't itself
+    # evidence of a data-format problem worth a warning.
+    mod = _load_module()
+    chunk = pl.DataFrame({"genc_id": ["1", None, "3"], "x": [10, 20, 30]})
+
+    with caplog.at_level("WARNING"):
+        result = mod._filter_valid_genc_id(chunk, "admdad_subset")
+
+    assert result["genc_id"].to_list() == [1, 3]
+    assert caplog.records == []
+
+
 # --- fetch_admission_index / fetch_lab_concept_lookup -------------------
 
 
