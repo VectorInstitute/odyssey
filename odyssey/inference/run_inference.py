@@ -283,7 +283,9 @@ def load_run(
     model.load_state_dict(checkpoint["model"])
     model = model.to(device)
     model.eval()
-    verify_run_provenance(run_dir, model, len(vocab), device=device)
+    verify_run_provenance(
+        run_dir, model, len(vocab), device=device, checkpoint_name=checkpoint_path.name
+    )
     return model, vocab, binner, config
 
 

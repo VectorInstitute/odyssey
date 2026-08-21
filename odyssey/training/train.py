@@ -930,7 +930,9 @@ def _run_training(  # noqa: PLR0912, PLR0915
         )
     n_params = sum(p.numel() for p in model.parameters())
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    write_run_provenance(output_dir, model, len(vocab), device=device)
+    write_run_provenance(
+        output_dir, model, len(vocab), device=device
+    )  # fingerprint only
     logger.info(
         "[model] %.1fM parameters (%.1fM trainable) on %s",
         n_params / 1e6,
@@ -1170,6 +1172,13 @@ def _run_training(  # noqa: PLR0912, PLR0915
                         },
                         output_dir / "checkpoint_best.pt",
                     )
+                    write_run_provenance(
+                        output_dir,
+                        model,
+                        len(vocab),
+                        device=device,
+                        checkpoint_name="checkpoint_best.pt",
+                    )
                     logger.info(
                         "[best]  new best val_loss=%.4f at step=%d",
                         best_val_loss,
@@ -1237,6 +1246,13 @@ def _run_training(  # noqa: PLR0912, PLR0915
     _atomic_torch_save(
         {"model": model.state_dict(), "step": global_step, "config": asdict(config)},
         output_dir / "checkpoint_final.pt",
+    )
+    write_run_provenance(
+        output_dir,
+        model,
+        len(vocab),
+        device=device,
+        checkpoint_name="checkpoint_final.pt",
     )
     loss_logger.close()
     elapsed = time.time() - start_time
