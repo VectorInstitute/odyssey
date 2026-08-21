@@ -773,7 +773,9 @@ def _filter_valid_genc_id(chunk: pl.DataFrame, table: str) -> pl.DataFrame:
     return chunk.with_columns(cast).filter(pl.col("genc_id").is_not_null())
 
 
-def fetch_admission_index() -> tuple[dict[int, str], dict[int, Optional[pd.Timestamp]]]:
+def fetch_admission_index() -> tuple[
+    dict[int, str], dict[int, Optional[pd.Timestamp]], int
+]:
     """One pass over ``admdad_subset``: ``genc_id -> (subject, admission time)``.
 
     Built once and held in memory for the whole extraction: every other
@@ -785,13 +787,25 @@ def fetch_admission_index() -> tuple[dict[int, str], dict[int, Optional[pd.Times
     checkpointed -- see the module docstring's "Resumability" section;
     cheap to rebuild in full on every restart.
 
+    A row with a null or empty ``patient_id_hashed`` is unattributable to
+    any subject and is dropped here rather than added to
+    ``subject_by_genc`` -- the real incident this guards against is
+    :func:`assign_shards` crashing on ``sorted()`` comparing ``None`` against
+    ``str`` once such a value reaches it. Every other table's genc_id ->
+    subject lookup already treats a missing key as "no subject" and routes
+    the row to :attr:`MedsShardWriter.rows_dropped_unshardable`, so simply
+    never adding these gencs to the index is sufficient to make them flow
+    through that same existing path everywhere downstream, including
+    ``admdad_subset``'s own extraction.
+
     Returns
     -------
-    tuple[dict[int, str], dict[int, pandas.Timestamp | None]]
-        ``(subject_by_genc, admission_by_genc)``.
+    tuple[dict[int, str], dict[int, pandas.Timestamp | None], int]
+        ``(subject_by_genc, admission_by_genc, n_dropped_null_subject)``.
     """
     subject_by_genc: dict[int, str] = {}
     admission_by_genc: dict[int, Optional[pd.Timestamp]] = {}
+    n_dropped_null_subject = 0
     report_progress = _log_table_progress("admdad_subset (admission index)")
     for chunk in _stream_table(
         "admdad_subset", ["genc_id", "patient_id_hashed", "admission_date_time"]
@@ -801,10 +815,23 @@ def fetch_admission_index() -> tuple[dict[int, str], dict[int, Optional[pd.Times
             _parse_datetime_series(frame["admission_date_time"]).alias(
                 "admission_date_time"
             ),
+            frame["patient_id_hashed"].cast(pl.Utf8).alias("patient_id_hashed"),
         )
+        unattributable_mask = (pl.col("patient_id_hashed").is_null()) | (
+            pl.col("patient_id_hashed") == ""
+        )
+        unattributable_count = frame.select(unattributable_mask.sum()).item()
+        if unattributable_count:
+            n_dropped_null_subject += int(unattributable_count)
+            logger.warning(
+                "admdad_subset: %d rows had a null/empty patient_id_hashed, "
+                "dropping (encounter is unattributable to any subject)",
+                unattributable_count,
+            )
+            frame = frame.filter(~unattributable_mask)
         gencs = frame["genc_id"].to_list()
         subject_by_genc.update(
-            zip(gencs, frame["patient_id_hashed"].cast(pl.Utf8).to_list(), strict=True)
+            zip(gencs, frame["patient_id_hashed"].to_list(), strict=True)
         )
         admission_by_genc.update(
             zip(
@@ -817,7 +844,7 @@ def fetch_admission_index() -> tuple[dict[int, str], dict[int, Optional[pd.Times
             )
         )
         report_progress(chunk.height)
-    return subject_by_genc, admission_by_genc
+    return subject_by_genc, admission_by_genc, n_dropped_null_subject
 
 
 _LAB_CONCEPT_LOOKUP_SQL = """
@@ -1562,7 +1589,13 @@ def assign_shards(
     ----------
     subject_ids : Iterable[str]
         Every subject id the extraction will see (typically
-        ``fetch_admission_index``'s ``subject_by_genc`` values).
+        ``fetch_admission_index``'s ``subject_by_genc`` values). A ``None``
+        is silently skipped rather than raising -- defensive, since
+        :func:`fetch_admission_index` itself already excludes unattributable
+        (null/empty ``patient_id_hashed``) rows from ``subject_by_genc``, so
+        this should never actually see one; it's a second guard against
+        ``sorted()`` crashing on a ``None``-vs-``str`` comparison if a future
+        index source reintroduces one.
     subjects_per_shard : int
         Target subjects per shard; shard count is
         ``ceil(n_subjects / subjects_per_shard)``, at least 1.
@@ -1572,7 +1605,7 @@ def assign_shards(
     dict[str, int]
         ``{subject_id: shard_index}``.
     """
-    unique_subjects = sorted(set(subject_ids))
+    unique_subjects = sorted({s for s in subject_ids if s is not None})
     n_shards = _shard_count(len(unique_subjects), subjects_per_shard)
     return {
         subject_id: int(hashlib.sha256(subject_id.encode()).hexdigest(), 16) % n_shards
@@ -1789,7 +1822,7 @@ def run_extraction(output_dir: Optional[Path] = None) -> dict[str, Any]:
     preflight_shard_capacity(n_subjects_estimate)
 
     logger.info("[extract_meds] building admission index...")
-    subject_by_genc, admission_by_genc = fetch_admission_index()
+    subject_by_genc, admission_by_genc, n_dropped_null_subject = fetch_admission_index()
     logger.info("[extract_meds] %d encounters indexed", len(subject_by_genc))
 
     logger.info("[extract_meds] fetching deduplicated lab concept lookup...")
@@ -1802,6 +1835,7 @@ def run_extraction(output_dir: Optional[Path] = None) -> dict[str, Any]:
     )
 
     writer = MedsShardWriter(target_dir, shard_by_subject)
+    writer.rows_dropped_unshardable += n_dropped_null_subject
     table_generators: list[tuple[str, Iterator[ExtractedBatch]]] = [
         ("admdad_subset", extract_admissions(subject_by_genc, admission_by_genc)),
         ("ipscu_subset", extract_icu(subject_by_genc)),
