@@ -1461,7 +1461,7 @@ footer {
     rows.forEach((r) => {
       const [label, desc] = MODE_INFO[r.mode] || [r.mode, ""];
       const delta = r.top1_accuracy - base;
-      const deltaStr = r.mode === "none" ? "—" : (delta >= 0 ? "+" : "") + (delta * 100).toFixed(1) + "%";
+      const deltaStr = r.mode === "none" ? "n/a" : (delta >= 0 ? "+" : "") + (delta * 100).toFixed(1) + "%";
       const deltaColor = r.mode === "none" ? "var(--ink-faint)" : delta > 0.002 ? "var(--good)" : delta < -0.002 ? "var(--critical)" : "var(--ink-muted)";
       tbody.appendChild(el("tr", {}, [
         el("td", { style: "white-space:normal;" }, [
