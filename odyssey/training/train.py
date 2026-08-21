@@ -45,7 +45,7 @@ import logging
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterator, Optional, Sequence, TypeVar
+from typing import Callable, Dict, Iterator, Optional, Sequence, TypeVar, Union
 
 import polars as pl
 import torch
@@ -54,6 +54,7 @@ from odyssey.data.alert_events import ALERT_EVENTS, all_event_times
 from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.concepts import AnyConceptDefinition, concepts_for_source
 from odyssey.data.history_recap import maybe_history_recap
+from odyssey.data.packed_context import PackedContextSampler
 from odyssey.data.sequences import PatientSequence
 from odyssey.data.streaming import PackedLaneSampler
 from odyssey.data.value_binning import QuantileBinner, add_value_tokens
@@ -96,6 +97,14 @@ from odyssey.utils.env_fingerprint import write_run_provenance
 
 logger = logging.getLogger(__name__)
 
+StreamingSampler = Union[PackedLaneSampler, PackedContextSampler]
+"""Either sampler this loop can drive: PackedLaneSampler for the recurrent
+hybrid backbone (persistent lanes, carried state), PackedContextSampler for
+the stateless transformer backbone (whole/truncated patients packed per
+row, no carried state). Both yield StreamingChunk, so the training/eval
+loop bodies below are backbone-agnostic; only sampler *construction*
+differs, in make_train_sampler/make_tuning_sampler."""
+
 
 @dataclass
 class TrainingConfig:
@@ -123,13 +132,11 @@ class TrainingConfig:
     modern-vanilla decoder-only control -- roadmap Track A item 5). Both
     share every downstream head/loss; this prices the backbone choice the
     way model_kind prices the bottleneck. The transformer backbone is
-    stateless and needs whole-patient-context batches
-    (odyssey.data.packed_context.PackedContextSampler), not the TBTT
-    PackedLaneSampler chunking this loop drives -- build_model supports
-    constructing it (for param-count comparisons against the hybrid at a
-    matched budget), but _run_training does not yet wire the packed
-    sampler in, and raises NotImplementedError rather than silently
-    training it wrong if asked to."""
+    stateless, so this loop drives it with
+    odyssey.data.packed_context.PackedContextSampler (whole/truncated
+    patients packed per row, num_lanes rows per step, no carried state)
+    instead of PackedLaneSampler's TBTT chunking (which "hybrid" still
+    uses)."""
 
     max_context: int = 4096
     """Token budget per packed row for backbone="transformer" (see
@@ -405,17 +412,25 @@ def _detach_state(state: TimeAwareState) -> TimeAwareState:
 
     Backbone-agnostic so the streaming loops here don't require the
     hybrid backbone specifically: handles ``EHRHybridBackbone``'s
-    :class:`~odyssey.models.backbones.hybrid.HybridState` and the plain
+    :class:`~odyssey.models.backbones.hybrid.HybridState`, the plain
     tuple-of-tensors state lighter backbones (e.g. ``TinyGRUBackbone``)
-    return. A new backbone with a different state shape must be added
-    here explicitly -- silently not detaching would leak the autograd
-    graph across every chunk of an epoch.
+    return, and ``None`` for stateless backbones (``TransformerBackbone``:
+    ``state`` is always ignored, so there is nothing to detach but
+    ``prev_time_stamps``, itself unused since that backbone never carries
+    a delta across calls -- detaching it anyway costs nothing and keeps
+    this function's contract "safe to call unconditionally after every
+    chunk" true for every backbone, not just the recurrent ones). A new
+    backbone with a different state shape must be added here explicitly
+    -- silently not detaching would leak the autograd graph across every
+    chunk of an epoch.
     """
     from odyssey.models.backbones.hybrid import HybridState  # noqa: PLC0415
 
     recurrent = state.recurrent
     detached_recurrent: object
-    if isinstance(recurrent, HybridState):
+    if recurrent is None:
+        detached_recurrent = None
+    elif isinstance(recurrent, HybridState):
         detached_recurrent = HybridState(
             {
                 layer_idx: tuple(t.detach() for t in cached)
@@ -563,7 +578,7 @@ def build_objective(
 
 def evaluate_streaming(
     model: SequenceModel,
-    make_sampler: Callable[[], PackedLaneSampler],
+    make_sampler: Callable[[], StreamingSampler],
     labels: ConceptLabelDict,
     masks: ConceptLabelDict,
     *,
@@ -928,17 +943,6 @@ def _run_training(  # noqa: PLR0912, PLR0915
     config: TrainingConfig, output_dir: Path, device: str, corpus: PreparedCorpus
 ) -> Path:
     """Run the training loop proper over a :class:`PreparedCorpus`."""
-    if getattr(config, "backbone", "hybrid") == "transformer":
-        raise NotImplementedError(
-            "backbone='transformer' is not yet wired into this training loop: "
-            "this loop drives PackedLaneSampler (TBTT chunks, carried "
-            "recurrent state), and TransformerBackbone is stateless, needing "
-            "odyssey.data.packed_context.PackedContextSampler instead. "
-            "build_model() supports constructing the transformer backbone "
-            "for standalone use and param-count comparisons; training it end "
-            "to end needs this loop's sampler wired to PackedContextSampler, "
-            "not yet done."
-        )
     vocab = corpus.vocab
     concepts = corpus.concepts
     objective = corpus.objective
@@ -1055,9 +1059,11 @@ def _run_training(  # noqa: PLR0912, PLR0915
     # (learning_rate etc.), which don't affect the data stream.
     def _batch_config_fields(cfg: TrainingConfig) -> Dict[str, object]:
         return {
+            "backbone": cfg.backbone,
             "num_lanes": cfg.num_lanes,
             "chunk_size": cfg.chunk_size,
             "reset_prob": cfg.reset_prob,
+            "max_context": cfg.max_context,
             "seed": cfg.seed,
         }
 
@@ -1098,8 +1104,12 @@ def _run_training(  # noqa: PLR0912, PLR0915
             steps_into_epoch,
         )
 
-    def make_train_sampler(epoch: int) -> PackedLaneSampler:
+    def make_train_sampler(epoch: int) -> StreamingSampler:
         patients = corpus.make_train_patients(epoch)
+        if config.backbone == "transformer":
+            return PackedContextSampler(
+                patients, batch_size=config.num_lanes, max_context=config.max_context
+            )
         return PackedLaneSampler(
             patients,
             num_lanes=config.num_lanes,
@@ -1108,10 +1118,14 @@ def _run_training(  # noqa: PLR0912, PLR0915
             seed=config.seed + epoch,
         )
 
-    def make_tuning_sampler() -> PackedLaneSampler:
+    def make_tuning_sampler() -> StreamingSampler:
         patients = iter_patient_sequences(
             tuning_events_binned, vocab, max_seq_len=config.max_seq_len
         )
+        if config.backbone == "transformer":
+            return PackedContextSampler(
+                patients, batch_size=config.num_lanes, max_context=config.max_context
+            )
         return PackedLaneSampler(
             patients, num_lanes=config.num_lanes, chunk_size=config.chunk_size
         )
