@@ -127,7 +127,8 @@ def _grouped_subsample(
     n_subjects = min(n_subjects, len(subjects))
     selected = set(subjects[order[:n_subjects]].tolist())
     mask = np.array([g in selected for g in groups])
-    return keep[mask]
+    result: np.ndarray = keep[mask]
+    return result
 
 
 def _fit_one_ebm(
