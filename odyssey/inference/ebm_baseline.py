@@ -27,6 +27,7 @@ leaf/bin), verified against the current API reference rather than assumed
 """
 
 import logging
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -49,14 +50,30 @@ logger = logging.getLogger(__name__)
 # floor (50) for the GBM baseline, same reasoning.
 EBM_MIN_ROWS = 50
 
-# Row cap on the fit, same spirit as odyssey.inference.alerts.GBM_TUNE_MAX_ROWS
-# (200k) but larger, since EBM's own docs report fitting well past this scale
-# in practice. Subject-grouped (whole subjects are kept or dropped, never
+# Default row cap on the fit (overridable per call via fit_ebm_baselines'
+# max_rows). Subject-grouped (whole subjects are kept or dropped, never
 # split) unlike the GBM's final-fit cap, which subsamples individual rows --
 # a subject straddling the cap boundary would otherwise contribute some but
 # not all of their at-risk positions, a subtle, avoidable leakage-adjacent
 # inconsistency for a baseline meant to be directly comparable to the GBM.
-EBM_MAX_ROWS = 500_000
+#
+# 100k, not the 500k first tried: at full project scale (30 shards, 3
+# horizons), EBM's *default* quality settings (outer_bags=14, each bag
+# boosting many rounds) took over an hour on a single (event, horizon) fit
+# at the 500k cap and still hadn't finished, dramatically slower than EBM's
+# own stated large-scale numbers on this host's core count specifically --
+# entry 30's method note has the measured wall-clock. This default plus
+# DEFAULT_OUTER_BAGS is the speed-tuned configuration chosen to get a full
+# 12-cell table in minutes rather than hours; a slower, uncapped,
+# default-quality confirmation run is scheduled only if a speed-tuned
+# number turns out close enough to the GBM or the hazard head to matter.
+EBM_MAX_ROWS = 100_000
+
+# EBM's own default (14) trades wall-clock for a small ensemble-averaging
+# accuracy gain; halved here for the speed-tuned pass. Left as an explicit
+# parameter (not hardcoded) so the later uncapped confirmation run can pass
+# the real default back in without another code change.
+DEFAULT_OUTER_BAGS = 4
 
 
 def _load_ebm_classifier() -> Any:
@@ -141,17 +158,18 @@ def _fit_one_ebm(
     seed: int,
     event_name: str,
     n_jobs: int,
+    max_rows: int,
+    outer_bags: int,
 ) -> dict[float, EBMBaselineModel]:
     """Fit one EBM per horizon for a single event, given a feature matrix.
 
     Structurally mirrors :func:`odyssey.inference.alerts._fit_baseline_grid`
     (same row selection, same skip condition) so the GBM, TabICL, and EBM
     baselines are all trained on directly comparable data. Rows are capped
-    at :data:`EBM_MAX_ROWS`, subject-grouped (see :func:`_grouped_subsample`),
-    once fitting at full scale on this project's landmark tables turned out
-    to be far slower in practice than EBM's own stated large-scale numbers,
-    on this host's CPU core count specifically -- see entry 30's method
-    note for the measured wall-clock this cap was chosen against.
+    at ``max_rows``, subject-grouped (see :func:`_grouped_subsample`), and
+    ``outer_bags`` controls the ensemble size EBM's own default (14) would
+    otherwise use -- see :data:`EBM_MAX_ROWS` and :data:`DEFAULT_OUTER_BAGS`
+    for why the speed-tuned defaults differ from EBM's own.
     """
     ebm_classifier_cls = _load_ebm_classifier()
     groups_all = np.array([r.subject_id for r in rows])
@@ -165,27 +183,44 @@ def _fit_one_ebm(
         keep = np.flatnonzero([v is not None for v in y])
         if len(keep) < EBM_MIN_ROWS or len({int(y[i]) for i in keep}) < 2:
             continue
-        capped = len(keep) > EBM_MAX_ROWS
+        capped = len(keep) > max_rows
         if capped:
-            keep = _grouped_subsample(keep, groups_all[keep], EBM_MAX_ROWS, rng)
+            keep = _grouped_subsample(keep, groups_all[keep], max_rows, rng)
         x_fit = np.array(x_all[keep], dtype=np.float64, copy=True)
         y_fit = y[keep].astype(int)
 
-        clf = ebm_classifier_cls(random_state=seed, n_jobs=n_jobs)
-        clf.fit(x_fit, y_fit)
-        out[h] = EBMBaselineModel(
-            clf,
-            feature_set=feature_set,
-            n_features=int(x_all.shape[1]),
-            params={"n_rows": float(len(keep)), "row_capped": float(capped)},
-        )
         logger.info(
-            "[ebm] %s@%gh: %s features, %d rows%s",
+            "[ebm] %s@%gh: starting fit, %s features, %d rows%s, outer_bags=%d, n_jobs=%d",
             event_name,
             h,
             feature_set,
             len(keep),
             " (capped)" if capped else "",
+            outer_bags,
+            n_jobs,
+        )
+        t0 = time.time()
+        clf = ebm_classifier_cls(
+            random_state=seed, n_jobs=n_jobs, outer_bags=outer_bags
+        )
+        clf.fit(x_fit, y_fit)
+        elapsed = time.time() - t0
+        out[h] = EBMBaselineModel(
+            clf,
+            feature_set=feature_set,
+            n_features=int(x_all.shape[1]),
+            params={
+                "n_rows": float(len(keep)),
+                "row_capped": float(capped),
+                "outer_bags": float(outer_bags),
+                "fit_seconds": elapsed,
+            },
+        )
+        logger.info(
+            "[ebm] %s@%gh: done in %.1fs",
+            event_name,
+            h,
+            elapsed,
         )
     return out
 
@@ -200,6 +235,8 @@ def fit_ebm_baselines(
     seed: int = 0,
     feature_set: str = "strong",
     n_jobs: int = 12,
+    max_rows: int | None = None,
+    outer_bags: int | None = None,
 ) -> dict[tuple[str, float], EBMBaselineModel]:
     """One ``ExplainableBoostingClassifier`` per (event, horizon).
 
@@ -213,12 +250,18 @@ def fit_ebm_baselines(
     ``n_jobs`` is passed straight to ``ExplainableBoostingClassifier``
     (default matches this project's GPU VMs' 12 vCPUs); left unset, EBM's
     own default parallelizes past the actual core count, oversubscribing
-    and slowing every fit down rather than speeding it up.
+    and slowing every fit down rather than speeding it up. ``max_rows``
+    and ``outer_bags`` default to the speed-tuned values (see
+    :data:`EBM_MAX_ROWS`, :data:`DEFAULT_OUTER_BAGS`); pass EBM's own
+    defaults (an uncapped row count, ``outer_bags=14``) for a slower,
+    full-quality confirmation run.
 
     Requires the optional ``interpret`` package (see the module
     docstring); raises ``ImportError`` with install instructions if it is
     not installed, the first time a model would actually be fit.
     """
+    resolved_max_rows = EBM_MAX_ROWS if max_rows is None else max_rows
+    resolved_outer_bags = DEFAULT_OUTER_BAGS if outer_bags is None else outer_bags
     models: dict[tuple[str, float], EBMBaselineModel] = {}
     features = features_for_events(
         train_events_binned, train_rows, source=source, feature_set=feature_set
@@ -235,6 +278,8 @@ def fit_ebm_baselines(
             seed=seed,
             event_name=name,
             n_jobs=n_jobs,
+            max_rows=resolved_max_rows,
+            outer_bags=resolved_outer_bags,
         )
         for h, model in per_horizon.items():
             models[(name, h)] = model
@@ -242,6 +287,7 @@ def fit_ebm_baselines(
 
 
 __all__ = [
+    "DEFAULT_OUTER_BAGS",
     "EBM_MAX_ROWS",
     "EBM_MIN_ROWS",
     "EBMBaselineModel",
