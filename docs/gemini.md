@@ -187,7 +187,8 @@ scripts/gemini/run.sh extract-dry  # scripts/gemini/extract_dry.py -> extract_dr
                                     # schema report" and does nothing
 scripts/gemini/run.sh extract      # scripts/gemini/extract_meds.py -> streams real MEDS
                                     # parquet shards to GEMINI_MEDS_OUTPUT_DIR (default
-                                    # ~/gemini_meds_v1, outside the repo, never committed --
+                                    # /mnt/nfs/project/subdural_hematoma_endotypes/gemini_meds_v1,
+                                    # outside the repo, never committed --
                                     # see docs/gemini_extraction.md); commits only a small,
                                     # suppressed extraction_summary.json
 scripts/gemini/run.sh train        # not built yet
