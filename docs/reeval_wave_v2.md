@@ -35,6 +35,11 @@ against the corrected row set.
   regardless of outcome. If 6e's same-method run (already executing as of
   this draft) lands 0.908 first, this precondition is satisfied by that run
   -- mark it satisfied here with the date rather than repeating it.
+  **SATISFIED 2026-08-21**: 6e's pinned-commit run at `85dde80^` (`47c7925`)
+  on `eicu_subset_v8`'s `checkpoint_best.pt` reproduced `death@8h = 0.9078726583`
+  (0.908 exact) plus to-the-digit matches on `vasopressor_start@8h` 0.862,
+  `icu_admission@8h` 0.802, `AKI@8h` 0.681, on the rebuilt mamba-ssm +
+  restored transformers env. No drift.
 - **MEDS-Tab v1 run landed** (6e's pipeline glue, `47c7925`, is in; the
   actual run + registry entry is not yet done as of this draft) -- needed
   so the v2 wave scores against a MEDS-Tab baseline that already exists,
