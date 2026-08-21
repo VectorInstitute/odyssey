@@ -23,6 +23,15 @@ def _write(path: Path, rows: list) -> None:
             handle.write(f"1,{name},{hicl}\n")
 
 
+def test_ingredient_survives_literal_double_slash_in_name() -> None:
+    # A raw name containing "//" must not split into extra code segments;
+    # unsanitized, the last-segment read returned the name's raw tail
+    # (" KCL 20 MEQ SOLN") instead of the normalized drug segment.
+    mod = _load_module()
+    assert mod._ingredient("DEXTROSE 5% // KCL 20 MEQ SOLN") == "dextrose"
+    assert mod._ingredient("DEXTROSE 5% / KCL 20 MEQ SOLN") == "dextrose"
+
+
 def test_build_lookup_majority_and_support(tmp_path: Path) -> None:
     mod = _load_module()
     _write(
