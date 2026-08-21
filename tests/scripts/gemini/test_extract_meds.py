@@ -318,6 +318,35 @@ def test_normalize_unit_collapses_the_x10e6_family_separately_from_x10e9() -> No
     assert mod._normalize_unit("x10^9/L") != mod._normalize_unit("x10E6/L")
 
 
+def test_normalize_unit_collapses_the_x10e12_family_separately_from_others() -> None:
+    # Erythrocyte counts -- same fragmentation pattern as x10^9/L, a third
+    # distinct magnitude that must never collide with either other family.
+    mod = _load_module()
+    variants = [
+        "x10^12/L",
+        "X10^12/L",
+        "x10 12/L",
+        "X10 12/L",
+        "x 10^12/L",
+        "X 10^12/L",
+        "x10*12/L",
+        "10*12/L",
+        "10e12/L",
+        "x10e12/L",
+        "x10E12/L",
+        "E12/L",
+        "x E12/L",
+    ]
+    for raw in variants:
+        assert mod._normalize_unit(raw) == "x10e12/l", raw
+    tokens = {
+        mod._normalize_unit("x10^9/L"),
+        mod._normalize_unit("x10E6/L"),
+        mod._normalize_unit("x10^12/L"),
+    }
+    assert tokens == {"x10e9/l", "x10e6/l", "x10e12/l"}
+
+
 def test_normalize_unit_fixes_the_real_mmhd_typo() -> None:
     # ~3.5M vitals rows carry this exact typo for systolic BP.
     mod = _load_module()
