@@ -180,7 +180,15 @@ def test_events_without_hadm_id_each_get_their_own_visit() -> None:
     )
     seq = build_patient_sequence(events, VOCAB)
     assert seq.visit_orders == [0, 1]
-    assert seq.visit_segments == [0, 0]  # each is a single-event "visit"
+    # FROZEN, DO NOT CHANGE (review finding 14): a single-event visit is
+    # always coded segment 0 ("first"), never 2 ("last") -- _assign_visits'
+    # if/elif only ever takes the `if k == i` branch when the group has
+    # exactly one event, since k == i and k == j - 1 are the same index
+    # there. This is now pinned as intentional behavior, not a bug:
+    # changing it would alter tokenization for every source (MIMIC-IV,
+    # eICU, GEMINI) mid-program, which is a far bigger cost than the
+    # asymmetry itself.
+    assert seq.visit_segments == [0, 0]
 
 
 def test_distinct_hadm_ids_get_distinct_visit_orders() -> None:
