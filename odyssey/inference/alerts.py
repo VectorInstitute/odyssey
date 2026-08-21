@@ -240,6 +240,23 @@ def collect_model_scores(
                 device=times.device,
             )
             starts = unique_starts[inverse].view_as(times)
+            # Static/demographic tokens build_patient_sequence prepends
+            # (GENDER etc., stamped with the first real event's time) carry
+            # visit_id=-1, not a real encounter -- _landmark_mask's own
+            # `visit_ids >= 0` guard already excludes them from ever being
+            # selected as a landmark row, so they don't corrupt this set on
+            # their own. A real, separate divergence from
+            # _index_rows_from_events *does* exist though: _landmark_mask is
+            # called fresh per chunk with no state carried across chunk
+            # boundaries (prev_bucket always resets to -1 at each chunk's
+            # first position), so a patient whose sequence spans more than
+            # one streaming chunk gets a spurious extra landmark at the
+            # chunk boundary even when that position is still inside the
+            # same landmark_hours bucket as the chunk before it --
+            # confirmed via a regression test comparing this function
+            # against _index_rows_from_events at a chunk_size small enough
+            # to split a real patient's sequence (see
+            # tests/odyssey/inference/test_alerts.py).
             keep = _landmark_mask(times, sids, vids, landmark_hours, starts)
             if not keep.any():
                 continue
