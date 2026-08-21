@@ -1,6 +1,7 @@
 # Re-evaluation wave: landmark protocol v2
 
-**Status: DRAFT, not authorized to execute.** Covers the coordinated
+**Status: APPROVED, execution still gated on odyssey-db's explicit go.**
+Covers the coordinated
 re-evaluation of the alerts harness under `LANDMARK_PROTOCOL_VERSION=2`
 (`odyssey/inference/alerts.py`, commit `85dde80`), which fixed a real bug:
 `_landmark_mask` carried no state across streaming-chunk boundaries, so any
@@ -20,14 +21,20 @@ against the corrected row set.
 - **A100 back on VM2**, mamba-ssm rebuilt against it (`docs/gemini.md`'s
   documented recipe), confirmed importable
   (`from mamba_ssm.modules.mamba2 import Mamba2`).
-- **Reproducibility canary**: re-run `evaluate_alerts` for
-  `eicu_subset_v9`'s `checkpoint_best.pt` (or the latest eICU flagship
-  checkpoint at wave time) under the *current* v1-equivalent-for-training
-  code path and confirm `death@8h` hazard AUROC lands at **0.908 +/- 0.005**
-  -- this exact value has held flat across `eicu_subset_v7`, `v8`, and `v9`
-  in the registry (three different recipes), so any drift here means the
-  environment itself changed, not just the landmark fix, and the wave
-  should not proceed until that's resolved separately.
+- **Reproducibility canary (pinned-commit method)**: `git checkout 85dde80^`
+  (the parent of the landmark fix, i.e. the last commit still on the old
+  per-chunk-reset behavior), re-run `evaluate_alerts` against
+  `eicu_subset_v8`'s `checkpoint_best.pt`, and confirm `death@8h` hazard
+  AUROC reproduces at **exactly 0.908** -- not a tolerance band. Deterministic
+  eval means the same code, checkpoint, data, and environment must reproduce
+  the same number bit-for-bit-equivalent-in-effect; this value has held flat
+  across `eicu_subset_v7`, `v8`, and `v9` in the registry (three different
+  recipes), so any deviation here means the environment itself has drifted,
+  independent of the landmark fix, and the wave should not proceed until
+  that's resolved separately. `git checkout main` immediately after the run
+  regardless of outcome. If 6e's same-method run (already executing as of
+  this draft) lands 0.908 first, this precondition is satisfied by that run
+  -- mark it satisfied here with the date rather than repeating it.
 - **MEDS-Tab v1 run landed** (6e's pipeline glue, `47c7925`, is in; the
   actual run + registry entry is not yet done as of this draft) -- needed
   so the v2 wave scores against a MEDS-Tab baseline that already exists,
@@ -73,31 +80,23 @@ check is one line against both dumps' `.height`.
 
 | Baseline | Train rows source | Affected? | Action |
 |---|---|---|---|
-| GBM | `_index_rows_from_events` (no chunking) | No | **Open question below.** |
-| EBM | `_index_rows_from_events` (no chunking) | No | **Open question below.** |
+| GBM | `_index_rows_from_events` (no chunking) | No | **Rescore-only.** Trains exclusively via `_index_rows_from_events`, which has no chunking and was never touched by the landmark bug -- only the held-out scoring rows change under v2, so rescoring against the v2 dump is sufficient; no refit. |
+| EBM | `_index_rows_from_events` (no chunking) | No | **Rescore-only**, same reasoning as GBM. |
 | TabICL | zero-shot, no training | No | Rescore-only against v2 held-out rows/features. |
 | SurvivalPFN | fit per-event on `(T, delta)` from the scored row set | Yes | Refit on v2 rows (matches your plan). |
-| MEDS-Tab | own pipeline, label exports off the row set | Yes, if label export derives from it | Full pipeline rerun on v2 label exports (matches your plan); confirm with 6e whether the export reads `alerts_rows.parquet` or something else. |
+| MEDS-Tab | own pipeline, label exports off the row set | Yes | Definitively affected -- 6e confirmed the label export is built from `alerts_rows.parquet`'s own rows. Full pipeline rerun on v2 label exports required. |
 | Hazard/concept/next-token (model-native) | `collect_model_scores` directly | Yes -- this is the fix itself | Automatic once dumps regenerate (step 2). |
-
-**Open question on GBM/EBM**: both train exclusively via
-`_index_rows_from_events`, which has no chunking and was never affected by
-the bug -- mechanically, only *rescoring* on the new v2 held-out rows is
-needed, not a refit. Your assignment said "refit" -- if that's for a reason
-beyond correctness (a clean end-to-end registry rerun, or a real split that
-isn't purely `_index_rows_from_events` in production), please confirm;
-otherwise rescoring saves real compute for this wave.
 
 ## 4. Registry plan
 
 - v2 rows are **added alongside** existing v1 rows in `docs/experiments.md`,
-  never overwriting them -- same run name suffixed (e.g.
-  `eicu_subset_v9_v2eval`) or a new `Key results` line clearly marked, your
-  call on exact formatting.
+  never overwriting them -- run names stay unchanged (no `_v2eval` or
+  similar suffixes); a v2 result is a new row for the same run name, not a
+  renamed run.
 - Every registry row touched or added by this wave states its landmark
-  protocol version explicitly (a short prefix like `[protocol v1]` /
-  `[protocol v2]` in the `Key results` cell is enough -- no schema change
-  needed for a markdown table).
+  protocol version explicitly via a `[protocol v1]` / `[protocol v2]`
+  prefix in the `Key results` cell -- no schema change needed for a
+  markdown table.
 - One-line migration note at the top of `docs/experiments.md`, near the
   existing "Data versions" paragraph: what `LANDMARK_PROTOCOL_VERSION`
   means, and that rows predating a given date are v1 unless marked
