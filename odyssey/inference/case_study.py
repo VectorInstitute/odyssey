@@ -131,9 +131,10 @@ def extract_patient_case(
     with torch.no_grad():
         for chunk in sampler:
             chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
-            logits, bottleneck_out, state = model(
+            fwd = model.forward_with_features(
                 chunk.batch, state=state, reset_mask=chunk.reset_mask
             )
+            logits, bottleneck_out, state = fwd.logits, fwd.bottleneck, fwd.state
             # One lane, one patient, no resets: real input positions are a
             # contiguous prefix (padding only where the lane runs out).
             input_real = chunk.subject_ids[0] != NO_SUBJECT
@@ -169,7 +170,7 @@ def extract_patient_case(
                 bottleneck_out.observability_probs[0, :n_real].tolist()
             )
             if event_heads is not None:
-                hazards = event_heads(bottleneck_out.bottleneck[0, :n_real])
+                hazards = event_heads(fwd.features[0, :n_real])
                 event_risk.extend(
                     probability_within(hazards, event_heads.edges, 24.0).tolist()
                 )
