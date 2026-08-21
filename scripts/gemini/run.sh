@@ -19,7 +19,8 @@
 #                first); prints "pending schema report" and does nothing
 #                otherwise.
 #   extract      scripts/gemini/extract_meds.py -> streams real MEDS parquet
-#                shards to GEMINI_MEDS_OUTPUT_DIR (default ~/gemini_meds_v1,
+#                shards to GEMINI_MEDS_OUTPUT_DIR (default
+#                /mnt/nfs/project/subdural_hematoma_endotypes/gemini_meds_v1,
 #                outside the repo -- never committed, see docs/gemini.md's
 #                governance rules), and commits only a small, suppressed
 #                scripts/gemini/out/extraction_summary.json. A real,
@@ -195,7 +196,7 @@ run_extract() {
     echo "=== extract ==="
     echo "This can take HOURS -- lab_subset/vitals_subset alone are hundreds"
     echo "of millions of rows. Writes real patient data to"
-    echo "\${GEMINI_MEDS_OUTPUT_DIR:-\$HOME/gemini_meds_v1} (never committed)."
+    echo "\${GEMINI_MEDS_OUTPUT_DIR:-/mnt/nfs/project/subdural_hematoma_endotypes/gemini_meds_v1} (never committed)."
     # run.sh does not, and will not, background itself: it commits and
     # pushes the summary synchronously after the step finishes (see the
     # bottom of this script), which a self-daemonizing step would break.

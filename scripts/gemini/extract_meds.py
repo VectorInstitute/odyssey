@@ -11,7 +11,7 @@ ICD-10-CA codes, CCI codes, ...), namespaced but not yet translated to the
 canonical LOINC-keyed vocabulary the rest of the pipeline uses. That
 translation is a later, separate concept-labeling stage, same as MIMIC-IV
 and eICU. Lab/vitals codes carry their literal, normalized unit
-(:func:`_normalize_unit`) as a third ``//``-separated segment
+(:func:`_normalize_unit_series`) as a third ``//``-separated segment
 (``LAB//<omop_id>//<unit>``/``VITALS//<omop_id>//<unit>``, the same shape
 MIMIC-IV's own ``LAB//<itemid>//<unit>`` codes use) rather than assuming one
 unit per concept: GEMINI is multi-hospital, and the same OMOP concept can
@@ -41,18 +41,74 @@ Design, one function per source table, streaming throughout:
   whole run (every event table carries only ``genc_id``, and the
   pharmacy/radiology timestamp guard needs the encounter's admission time
   as its anchor).
-- One ``extract_<table>`` generator per source table, each a lazy,
-  ``row_num``-keyset-paginated (:func:`_paginate_rows`) iterator of
-  MEDS-shaped batches (:data:`MEDS_COLUMNS`) -- never loads a whole table
-  into memory, which matters at ``lab_subset``'s/``vitals_subset``'s real
-  scale (hundreds of millions of rows).
-- :class:`MedsShardWriter` -- the shared writer: hashes each subject to a
-  shard once (:func:`assign_shards`, deterministic, not Python's salted
-  ``hash()``), then streams each incoming batch straight to that shard's
-  open Parquet writer. Nothing accumulates across the whole run; memory use
-  is bounded by one batch plus one open file handle per shard.
-- :func:`run_extraction` -- orchestrates all of the above and writes the
-  suppressed summary.
+- One ``extract_<table>`` generator per source table, each a lazy iterator
+  of :class:`ExtractedBatch` (a MEDS-shaped batch plus its source row
+  count, the latter for progress logging only), reading its source table
+  via :func:`_stream_table` and transforming each chunk with vectorized
+  polars expressions -- never a Python ``for _, row in batch.iterrows()``
+  loop, and never a whole table in memory at once, both of which matter at
+  ``lab_subset``'s/``vitals_subset``'s real scale (hundreds of millions of
+  rows). See "Fetch strategy" below.
+- :func:`run_extraction` -- orchestrates all of the above, checkpointing
+  each table's completion to a resume manifest (see "Resumability" below)
+  and writing the suppressed summary at the end.
+
+Fetch strategy (2026-08-21 rewrite, second pass): the first pass of this
+rewrite kept row-ordered keyset pagination (``WHERE row_num > :cursor
+ORDER BY row_num``) but read it through one continuous server-side cursor
+instead of many small requeries. Amrit's real run of *that* immediately
+showed the actual root cause: these matviews have no index on ``row_num``,
+so ``ORDER BY row_num`` forces Postgres to fully scan and sort the table
+before returning even the first row of any page -- confirmed by zero byte
+growth over 5 minutes into ``lab_subset``. Ordering was never something
+this extraction actually needed (:class:`MedsShardWriter` hashes every row
+to a shard by subject, and any per-subject ordering downstream comes from
+``build_patient_sequence``'s own sort) -- it was carried over from the
+original per-page pattern without being questioned. This version drops
+``ORDER BY``/``row_num``-keyset pagination entirely: :func:`_stream_table`
+reads each source table exactly once, in whatever order Postgres returns
+it, via one of two fetch mechanisms:
+
+- :func:`_stream_table_copy` (preferred) -- ``COPY (SELECT ...) TO STDOUT
+  WITH (FORMAT CSV, HEADER, NULL '\\N')`` through
+  :func:`odyssey.data.gemini.db.copy_to_sink`, parsed incrementally by
+  :class:`_CopyChunkSink` into :data:`CHUNK_ROWS`-row polars DataFrames on
+  a background thread (see that class's docstring for why a thread is
+  needed at all). The standard fastest bulk-export mechanism Postgres has;
+  a full sequential scan with no sort node.
+- :func:`_stream_table_cursor` (fallback) -- an un-ordered, server-side
+  (named) cursor via :func:`odyssey.data.gemini.db.stream_query`, used only
+  if the ``COPY`` attempt fails before yielding anything (e.g. ``COPY``
+  isn't permitted for this connection/role).
+
+Neither of these has been run against the real GEMINI database -- there is
+no way to do that from outside the enclave -- but both are sequential
+scans with no server-side sort, which is what the real failure actually
+diagnosed. :func:`_normalize_unit_series`/:func:`_parse_datetime_series`/
+the polars-vectorized ``extract_<table>`` bodies are unaffected by any of
+this (they operate on whatever chunk arrives, regardless of source order)
+and remain the other half of the original performance request: a local
+synthetic benchmark (50,000 lab-shaped rows) measured the old
+``.iterrows()`` + scalar ``pd.to_datetime``/``pd.to_numeric`` transform
+path at ~7,424 rows/s versus ~889,349 rows/s vectorized (~120x), a real,
+measured win now folded into every extractor below.
+
+Resumability: **table granularity only.** A run's progress is checkpointed
+to ``<output_dir>/extract_manifest.json`` (:func:`_load_manifest`,
+:func:`_save_manifest`) as ``{table: "complete"}`` once a table's
+extractor generator is fully drained and its output fully written,
+skipped -- see :func:`run_extraction`. A killed run restarts any
+not-yet-complete table from scratch (there is no more "resume from
+row X" -- there is no more ordering to resume a position *in*). This is a
+deliberate simplification from the first pass's row-level checkpointing,
+matching the fetch strategy above: with no ``ORDER BY``/sort cost, each
+table is now a single fast pass, so re-running one from zero after a kill
+is a bounded, acceptable cost -- not the multi-hour re-scan a sorted
+resume was originally meant to avoid. Index-building passes
+(:func:`fetch_admission_index`, and the discharge-time index inside
+:func:`extract_diagnoses`) are never checkpointed either -- they are held
+only in memory for the run that builds them and are cheap to rebuild from
+scratch on every restart.
 
 Run on the GEMINI node (writes real patient data to ``OUTPUT_DIR`` -- not a
 dry run):
@@ -63,16 +119,20 @@ dry run):
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
 import os
-import re
+import queue
 import resource
+import threading
+import time
 from collections.abc import Iterable, Iterator
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 import pandas as pd
+import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -85,7 +145,10 @@ logger = logging.getLogger(__name__)
 #: Overridable via GEMINI_MEDS_OUTPUT_DIR; see docs/gemini_extraction.md's
 #: Sharding and output section.
 OUTPUT_DIR = Path(
-    os.environ.get("GEMINI_MEDS_OUTPUT_DIR", str(Path.home() / "gemini_meds_v1"))
+    os.environ.get(
+        "GEMINI_MEDS_OUTPUT_DIR",
+        "/mnt/nfs/project/subdural_hematoma_endotypes/gemini_meds_v1",
+    )
 )
 
 SUMMARY_PATH = Path(__file__).resolve().parent / "out" / "extraction_summary.json"
@@ -98,8 +161,19 @@ SUBJECTS_PER_SHARD = 1000
 #: :func:`preflight_shard_capacity`.
 FD_HEADROOM = 64
 
-#: Rows per keyset-paginated batch read from Postgres.
-BATCH_ROWS = 50_000
+#: Rows per chunk yielded by :func:`_stream_table_copy` -- see the module
+#: docstring's "Fetch strategy" section.
+CHUNK_ROWS = 500_000
+
+#: Rows per chunk (psycopg2 cursor ``itersize``, via ``chunksize``) for the
+#: :func:`_stream_table_cursor` fallback -- kept smaller than
+#: :data:`CHUNK_ROWS` because a named cursor keeps its whole ``itersize``
+#: buffer server-side per fetch, unlike ``COPY``'s pure streaming.
+CURSOR_FALLBACK_CHUNK_ROWS = 100_000
+
+#: How often (in seconds) :func:`run_extraction` logs cumulative
+#: rows-done/rows-per-second/ETA for the table currently being extracted.
+PROGRESS_LOG_INTERVAL_SECONDS = 30.0
 
 #: The only columns anything downstream reads -- see
 #: odyssey/training/data.py's ``_MEDS_EVENT_COLUMNS``, kept in sync
@@ -126,7 +200,8 @@ MEDS_ARROW_SCHEMA = pa.schema(
 GUARD_WINDOW = pd.Timedelta(days=366)
 
 #: Sentinel strings meaning "no unit recorded" -- checked after casefold,
-#: so this set only needs the lowercase form. See :func:`_normalize_unit`.
+#: so this set only needs the lowercase form. See
+#: :func:`_normalize_unit_series`.
 _UNIT_SENTINELS = {"", "none", "(null)", "null", "nan"}
 
 #: Explicit unit-string canonicalization, applied (after casefold + internal
@@ -220,90 +295,38 @@ def _suppressed(n: int) -> str:
     return str(round(n / 1000) * 1000)
 
 
-def _parse_gemini_datetime(raw: object) -> Optional[pd.Timestamp]:
-    """Best-effort parse of one of GEMINI's text datetime columns.
+def _parse_datetime_series(raw: pl.Series) -> pl.Series:
+    """Vectorized best-effort parse of one of GEMINI's text datetime columns.
 
     Real format for valid rows isn't confirmed yet (see
-    docs/gemini_extraction.md's open question 7) -- uses pandas' flexible
-    parser rather than a hardcoded format string. Returns ``None`` for
-    anything missing or unparsable rather than raising: one malformed
-    timestamp must not stop the whole extraction, the same principle
-    ``extract_dry.py``'s per-column error recovery already established.
+    docs/gemini_extraction.md's open question 7), so this keeps pandas'
+    flexible, per-element ``format="mixed"`` inference (the same semantics
+    the original scalar ``pd.to_datetime(raw, errors="coerce")`` used)
+    rather than switching to polars' native ``str.to_datetime``, which
+    infers one format from a sample of the column and applies it to every
+    row -- a real risk against a column whose format consistency is an
+    open question. This is still whole-column vectorized: one
+    ``pandas.to_datetime`` call per chunk (a fast, C-level operation on the
+    whole column), not a Python function call per row -- the round trip
+    through pandas is the deliberate, safe choice here, not a leftover of
+    a scalar implementation.
 
     Parameters
     ----------
-    raw : object
-        A single cell's raw value (``str``, ``None``, or ``NaN``).
+    raw : polars.Series
+        One text datetime column, one chunk at a time.
 
     Returns
     -------
-    pandas.Timestamp, optional
-        The parsed timestamp, or ``None``.
+    polars.Series
+        ``Datetime("us")``, with unparsable/missing entries as ``null``.
     """
-    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
-        return None
-    ts = pd.to_datetime(raw, errors="coerce")
-    if pd.isna(ts):
-        return None
-    return ts
+    parsed = pd.to_datetime(raw.to_pandas(), errors="coerce", format="mixed")
+    return pl.Series(parsed).cast(pl.Datetime("us"))
 
 
-def _within_admission_guard(
-    ts: Optional[pd.Timestamp], admission: Optional[pd.Timestamp]
-) -> bool:
-    """Whether ``ts`` is within :data:`GUARD_WINDOW` of ``admission``.
-
-    Both missing/unparsable fails the guard (``False``) -- there is
-    nothing to anchor to. See the module docstring and
-    docs/gemini_extraction.md's open question 7 for why this exists:
-    pharmacy/radiology timestamps include real, physically impossible
-    years, data-entry artifacts rather than genuine far-future/far-past
-    events.
-
-    Parameters
-    ----------
-    ts : pandas.Timestamp, optional
-        The timestamp being checked.
-    admission : pandas.Timestamp, optional
-        The owning encounter's admission time, from
-        :func:`fetch_admission_index`.
-
-    Returns
-    -------
-    bool
-        ``True`` if ``ts`` should be trusted.
-    """
-    if ts is None or admission is None:
-        return False
-    return bool(abs(ts - admission) <= GUARD_WINDOW)
-
-
-def _parse_numeric(raw: object) -> Optional[float]:
-    """Parse a text lab/vitals value as a float, or ``None`` if it isn't one.
-
-    Same numeric-parse-with-categorical-fallback shape already used for
-    MIMIC-IV/eICU labs: a non-numeric result (e.g. a qualitative flag)
-    still produces a MEDS row (the event and its ``code`` are real), just
-    with a null ``numeric_value``.
-
-    Parameters
-    ----------
-    raw : object
-        A single cell's raw value.
-
-    Returns
-    -------
-    float, optional
-        The parsed value, or ``None``.
-    """
-    value = pd.to_numeric(raw, errors="coerce")
-    if pd.isna(value):
-        return None
-    return float(value)
-
-
-def _normalize_unit(raw: object) -> str:
-    """Normalize a raw unit string for inclusion in a MEDS ``code``.
+def _normalize_unit_series(raw: pl.Series) -> pl.Series:
+    """Vectorized normalization of a raw unit column for inclusion in a MEDS ``code``.
 
     Casefolded and whitespace-collapsed, sentinel strings (``"none"``,
     ``"null"``, ``"(null)"``, ``"nan"``, blank -- :data:`_UNIT_SENTINELS`)
@@ -323,33 +346,164 @@ def _normalize_unit(raw: object) -> str:
 
     Parameters
     ----------
-    raw : object
-        A single cell's raw ``result_unit``/``measurement_unit`` value.
+    raw : polars.Series
+        One ``result_unit``/``measurement_unit`` column, one chunk at a
+        time.
 
     Returns
     -------
-    str
+    polars.Series
         The canonicalized unit, or ``"UNK"``.
     """
-    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
-        return "UNK"
-    collapsed = re.sub(r"\s+", " ", str(raw).strip().casefold())
-    if collapsed in _UNIT_SENTINELS:
-        return "UNK"
-    return UNIT_CANONICALIZATION_MAP.get(collapsed, collapsed)
+    collapsed = (
+        raw.cast(pl.Utf8)
+        .str.strip_chars()
+        .str.to_lowercase()
+        .str.replace_all(r"\s+", " ")
+    )
+    is_sentinel = raw.is_null() | collapsed.is_in(list(_UNIT_SENTINELS)).fill_null(
+        False
+    )
+    mapped = collapsed.replace(UNIT_CANONICALIZATION_MAP)
+    return pl.select(
+        pl.when(is_sentinel).then(pl.lit("UNK")).otherwise(mapped)
+    ).to_series()
 
 
-def _paginate_rows(
-    table: str, select_cols: list[str], *, batch_size: int = BATCH_ROWS
-) -> Iterator[pd.DataFrame]:
-    """Yield ``table`` in ``row_num``-ordered batches via keyset pagination.
+def _within_admission_guard_mask(ts: pl.Series, admission: pl.Series) -> pl.Series:
+    """Vectorized admission-anchored timestamp guard (see the module docstring).
 
-    Every base table this module reads from carries its own ``row_num``
-    column (confirmed for every matview in ``schema.json``) -- a stable,
-    monotonic per-table cursor. Cheaper than ``OFFSET`` pagination at the
-    hundreds-of-millions-of-rows scale some of these tables are at (``OFFSET``
-    re-scans and discards every prior page; a ``WHERE row_num > :cursor``
-    range filter does not).
+    Both missing/unparsable fails the guard (``False``) -- there is
+    nothing to anchor to. See docs/gemini_extraction.md's open question 7
+    for why this exists: pharmacy/radiology timestamps include real,
+    physically impossible years, data-entry artifacts rather than genuine
+    far-future/far-past events.
+
+    Parameters
+    ----------
+    ts : polars.Series
+        The event timestamp column (already parsed, ``Datetime``).
+    admission : polars.Series
+        The owning encounter's admission time column (already looked up
+        via :func:`fetch_admission_index`'s ``admission_by_genc``,
+        ``Datetime``).
+
+    Returns
+    -------
+    polars.Series
+        ``True`` where ``ts`` should be trusted.
+    """
+    return pl.select(
+        ts.is_not_null()
+        & admission.is_not_null()
+        & ((ts - admission).abs() <= pl.duration(days=GUARD_WINDOW.days))
+    ).to_series()
+
+
+class _CopyChunkSink:
+    """File-like sink for psycopg2's ``copy_expert``, chunking CSV into polars frames.
+
+    ``copy_expert(sql, sink)`` is one synchronous call that blocks until
+    the whole ``COPY`` finishes -- but *within* that call, psycopg2 invokes
+    ``sink.write(bytes)`` repeatedly as data arrives off the wire, not once
+    at the end (``COPY``'s wire protocol is itself chunked). This class is
+    that ``sink``: it buffers bytes until it has a complete header line
+    plus :data:`CHUNK_ROWS` complete data lines, parses exactly that slice
+    with :func:`polars.read_csv`, and puts the resulting
+    :class:`polars.DataFrame` onto ``out_queue`` -- so a consumer reading
+    from ``out_queue`` on another thread sees bounded-size chunks as they
+    become available, instead of the whole table materializing in memory
+    at once (a real concern at ``lab_subset``'s ~659M-row scale). See
+    :func:`_stream_table_copy` for the producer-thread/consumer-generator
+    wiring this exists for.
+
+    Parameters
+    ----------
+    chunk_rows : int
+        Data rows to accumulate before parsing and enqueuing one chunk.
+    out_queue : queue.Queue[polars.DataFrame]
+        Bounded queue (see :func:`_stream_table_copy`'s ``maxsize``, which
+        provides backpressure) that completed chunks are put onto.
+    """
+
+    def __init__(self, chunk_rows: int, out_queue: "queue.Queue[pl.DataFrame]") -> None:
+        self._buffer = bytearray()
+        self._chunk_rows = chunk_rows
+        self._queue = out_queue
+        self._header: Optional[bytes] = None
+
+    def write(self, data: bytes) -> int:
+        """Accept one chunk of bytes from psycopg2 as the CSV output arrives."""
+        self._buffer.extend(data)
+        self._drain()
+        return len(data)
+
+    def _drain(self) -> None:
+        while True:
+            if self._header is None:
+                idx = self._buffer.find(b"\n")
+                if idx == -1:
+                    return
+                self._header = bytes(self._buffer[: idx + 1])
+                del self._buffer[: idx + 1]
+                continue
+            if self._buffer.count(b"\n") < self._chunk_rows:
+                return
+            pos = -1
+            for _ in range(self._chunk_rows):
+                pos = self._buffer.index(b"\n", pos + 1)
+            self._parse_and_enqueue(bytes(self._buffer[: pos + 1]))
+            del self._buffer[: pos + 1]
+
+    def _parse_and_enqueue(self, body: bytes) -> None:
+        assert self._header is not None
+        frame = pl.read_csv(io.BytesIO(self._header + body), null_values=["\\N"])
+        self._queue.put(frame)
+
+    def close(self) -> None:
+        """Flush any final, incomplete-sized chunk still buffered."""
+        if self._header is not None and self._buffer:
+            self._parse_and_enqueue(bytes(self._buffer))
+            self._buffer.clear()
+
+
+#: Sentinel signaling end-of-stream on :func:`_stream_table_copy`'s internal
+#: queue -- a plain ``object()`` rather than ``None``, since ``None`` could
+#: never legitimately be mistaken for a real item on this queue but a typed
+#: sentinel documents the intent better than relying on that.
+_STREAM_DONE = object()
+
+#: Chunks in flight (produced but not yet consumed) before
+#: :func:`_stream_table_copy`'s producer thread blocks -- bounds memory to
+#: roughly this many chunks regardless of table size.
+_STREAM_QUEUE_MAXSIZE = 4
+
+
+def _stream_table_copy(
+    table: str, select_cols: list[str], *, chunk_rows: int = CHUNK_ROWS
+) -> Iterator[pl.DataFrame]:
+    """Preferred fetch path: one full-table ``COPY ... TO STDOUT`` scan, unordered.
+
+    Runs ``COPY`` on a background thread (psycopg2's ``copy_expert`` is a
+    single blocking call with no generator interface of its own) writing
+    into a :class:`_CopyChunkSink`, which puts each completed
+    :data:`CHUNK_ROWS`-row chunk onto a bounded queue
+    (:data:`_STREAM_QUEUE_MAXSIZE`); this generator, running on the calling
+    thread, pulls chunks off that queue and yields them, giving true
+    bounded-memory streaming (the producer blocks once the queue is full,
+    rather than racing ahead and buffering the whole table) without this
+    module needing its own OS pipe. Any exception on the producer thread
+    (a real DB error, a malformed ``COPY`` response, ...) is captured and
+    re-raised here, on the consumer side, once the producer thread has
+    finished.
+
+    No bound parameters, no ``WHERE``, no ``ORDER BY`` -- see the module
+    docstring's "Fetch strategy" section for why: these matviews have no
+    index on ``row_num``, so an ordered read forces a full sort before the
+    first row comes back, which is what made the original keyset-paginated
+    fetch unusable at real scale. Row order from an unordered ``COPY`` is
+    whatever the table's physical storage order happens to be, which
+    nothing downstream depends on.
 
     Parameters
     ----------
@@ -357,32 +511,124 @@ def _paginate_rows(
         Table name, from this module's own hardcoded per-function calls
         (never external input).
     select_cols : list[str]
-        Columns to select; ``row_num`` is always included even if not
-        listed here.
-    batch_size : int
-        Rows per batch.
+        Columns to select.
+    chunk_rows : int
+        Rows per yielded chunk.
 
     Yields
     ------
-    pandas.DataFrame
-        One batch at a time, ordered by ``row_num`` ascending.
+    polars.DataFrame
+        One chunk at a time, in whatever order the server returns rows.
     """
-    cursor = -1
-    cols = list(dict.fromkeys([*select_cols, "row_num"]))
-    cols_sql = ", ".join(_quote_ident(c) for c in cols)
+    cols_sql = ", ".join(_quote_ident(c) for c in dict.fromkeys(select_cols))
     table_sql = _quote_ident(table)
-    row_num_sql = _quote_ident("row_num")
-    while True:
-        sql = (
-            f"SELECT {cols_sql} FROM {table_sql} "
-            f"WHERE {row_num_sql} > {int(cursor)} "
-            f"ORDER BY {row_num_sql} LIMIT {int(batch_size)}"
+    copy_sql = (
+        f"COPY (SELECT {cols_sql} FROM {table_sql}) "
+        f"TO STDOUT WITH (FORMAT CSV, HEADER, NULL '\\N')"
+    )
+
+    out_queue: "queue.Queue[Any]" = queue.Queue(maxsize=_STREAM_QUEUE_MAXSIZE)
+    errors: list[BaseException] = []
+
+    def _produce() -> None:
+        sink = _CopyChunkSink(chunk_rows, out_queue)
+        try:
+            db.copy_to_sink(copy_sql, sink)
+            sink.close()
+        except BaseException as exc:  # noqa: BLE001 -- must reach the consumer thread
+            errors.append(exc)
+        finally:
+            out_queue.put(_STREAM_DONE)
+
+    producer = threading.Thread(target=_produce, daemon=True)
+    producer.start()
+    try:
+        while True:
+            item = out_queue.get()
+            if item is _STREAM_DONE:
+                break
+            yield item
+    finally:
+        producer.join()
+    if errors:
+        raise errors[0]
+
+
+def _stream_table_cursor(
+    table: str, select_cols: list[str], *, chunk_rows: int = CURSOR_FALLBACK_CHUNK_ROWS
+) -> Iterator[pl.DataFrame]:
+    """Fallback fetch path: one un-ordered server-side-cursor scan of ``table``.
+
+    Used only when :func:`_stream_table_copy` fails before yielding
+    anything (e.g. ``COPY`` isn't permitted for this connection/role) --
+    see :func:`_stream_table`. No ``ORDER BY``, same reasoning as
+    :func:`_stream_table_copy`.
+
+    Parameters
+    ----------
+    table : str
+        Table name, from this module's own hardcoded per-function calls
+        (never external input).
+    select_cols : list[str]
+        Columns to select.
+    chunk_rows : int
+        Rows per yielded chunk (psycopg2 cursor ``itersize``, via
+        :func:`odyssey.data.gemini.db.stream_query`'s ``chunksize``).
+
+    Yields
+    ------
+    polars.DataFrame
+        One chunk at a time, in whatever order the server returns rows.
+    """
+    cols_sql = ", ".join(_quote_ident(c) for c in dict.fromkeys(select_cols))
+    table_sql = _quote_ident(table)
+    sql = f"SELECT {cols_sql} FROM {table_sql}"
+    for chunk in db.stream_query(sql, chunksize=chunk_rows):
+        if chunk.empty:
+            continue
+        yield pl.from_pandas(chunk)
+
+
+def _stream_table(table: str, select_cols: list[str]) -> Iterator[pl.DataFrame]:
+    """Stream ``table`` in full, trying :func:`_stream_table_copy` first.
+
+    Falls back to :func:`_stream_table_cursor` only if the ``COPY`` attempt
+    fails *before yielding anything* -- once it has started yielding real
+    chunks, a later failure is not caught here: silently restarting a large
+    table from the cursor path mid-stream would double-count everything
+    already written for it. A failure that deep should surface and let
+    table-level resumability (see the module docstring's "Resumability"
+    section) handle the restart on the next run instead.
+
+    Parameters
+    ----------
+    table : str
+        Table name, from this module's own hardcoded per-function calls
+        (never external input).
+    select_cols : list[str]
+        Columns to select.
+
+    Yields
+    ------
+    polars.DataFrame
+        One chunk at a time, in whatever order the server returns rows.
+    """
+    copy_gen = _stream_table_copy(table, select_cols)
+    try:
+        first = next(copy_gen)
+    except StopIteration:
+        return
+    except Exception:
+        logger.warning(
+            "[extract_meds] COPY fetch failed for %s before yielding any rows; "
+            "falling back to a server-side cursor",
+            table,
+            exc_info=True,
         )
-        batch = db.query(sql)
-        if batch.empty:
-            return
-        yield batch
-        cursor = int(batch["row_num"].iloc[-1])
+        yield from _stream_table_cursor(table, select_cols)
+        return
+    yield first
+    yield from copy_gen
 
 
 def fetch_admission_index() -> tuple[dict[int, str], dict[int, Optional[pd.Timestamp]]]:
@@ -393,7 +639,9 @@ def fetch_admission_index() -> tuple[dict[int, str], dict[int, Optional[pd.Times
     docs/gemini_extraction.md's open question 6), and the pharmacy/
     radiology timestamp guard needs the encounter's admission time as its
     anchor. ~2.27M encounters in the schema-exploration cut -- two plain
-    ``int``/``str``-keyed dicts, not a reason to re-query per row.
+    ``int``/``str``-keyed dicts, not a reason to re-query per row. Never
+    checkpointed -- see the module docstring's "Resumability" section;
+    cheap to rebuild in full on every restart.
 
     Returns
     -------
@@ -402,15 +650,29 @@ def fetch_admission_index() -> tuple[dict[int, str], dict[int, Optional[pd.Times
     """
     subject_by_genc: dict[int, str] = {}
     admission_by_genc: dict[int, Optional[pd.Timestamp]] = {}
-    for batch in _paginate_rows(
+    for chunk in _stream_table(
         "admdad_subset", ["genc_id", "patient_id_hashed", "admission_date_time"]
     ):
-        for _, row in batch.iterrows():
-            genc_id = int(row["genc_id"])
-            subject_by_genc[genc_id] = str(row["patient_id_hashed"])
-            admission_by_genc[genc_id] = _parse_gemini_datetime(
-                row["admission_date_time"]
+        frame = chunk.with_columns(
+            pl.col("genc_id").cast(pl.Int64),
+            _parse_datetime_series(chunk["admission_date_time"]).alias(
+                "admission_date_time"
+            ),
+        )
+        gencs = frame["genc_id"].to_list()
+        subject_by_genc.update(
+            zip(gencs, frame["patient_id_hashed"].cast(pl.Utf8).to_list(), strict=True)
+        )
+        admission_by_genc.update(
+            zip(
+                gencs,
+                (
+                    pd.Timestamp(ts) if ts is not None else None
+                    for ts in frame["admission_date_time"].to_list()
+                ),
+                strict=True,
             )
+        )
     return subject_by_genc, admission_by_genc
 
 
@@ -430,7 +692,11 @@ def fetch_lab_concept_lookup() -> dict[int, str]:
     ``NULL`` description, same row count either way when naively joined
     (see docs/gemini_extraction.md's open question 4). ``DISTINCT ON``
     picks exactly one (a non-null description, per the ``WHERE``) per id,
-    so a caller joining against this dict's keys can't double-count.
+    so a caller joining against this dict's keys can't double-count. This
+    table is small (one row per distinct lab concept, not per lab result)
+    -- unlike every ``extract_<table>`` function's source table, so it
+    stays on :func:`odyssey.data.gemini.db.query`'s plain single
+    round-trip rather than :func:`_stream_table`.
 
     Used by :func:`extract_labs` only to drop lab rows whose
     ``test_type_mapped_omop`` has no real mapped concept at all (garbage
@@ -452,55 +718,65 @@ def fetch_lab_concept_lookup() -> dict[int, str]:
             lookup=_quote_ident("lookup_lab_concept"),
         )
     )
-    return {
-        int(row["concept_id"]): str(row["concept_desc"]) for _, row in result.iterrows()
-    }
+    return dict(
+        zip(result["concept_id"].astype(int), result["concept_desc"].astype(str))
+    )
 
 
-def _meds_batch(
-    subject_ids: list[Optional[str]],
-    times: list[Optional[pd.Timestamp]],
-    codes: list[Optional[str]],
-    numeric_values: list[Optional[float]],
-    hadm_ids: list[Optional[int]],
-) -> pd.DataFrame:
-    """Assemble one MEDS-shaped batch, dropping rows with no subject/time/code.
+class ExtractedBatch(NamedTuple):
+    """One yielded unit of work from an ``extract_<table>`` generator.
+
+    ``source_rows`` is the number of rows read from the source chunk that
+    produced ``frame`` -- not the number of MEDS rows in ``frame``, which
+    can differ (filtered rows drop some; one source row can produce more
+    than one MEDS event, e.g. admission/discharge). Used only for
+    :func:`run_extraction`'s progress logging, never for resumability
+    (table granularity only -- see the module docstring).
+    """
+
+    frame: pd.DataFrame
+    source_rows: int
+
+
+def _finalize_meds_batch(frame: pl.DataFrame) -> pd.DataFrame:
+    """Select :data:`MEDS_COLUMNS`, drop rows missing subject/time/code, return pandas.
 
     A row missing any of subject, time, or code isn't a usable MEDS event
     at all -- dropped here rather than passed downstream as a row of
-    nulls the writer would have to special-case.
+    nulls the writer would have to special-case. Converts to pandas at
+    this one boundary since :class:`MedsShardWriter` (shard split, pyarrow
+    write) stays pandas-based -- everything upstream of this call, inside
+    each ``extract_<table>`` function, is vectorized polars.
 
     Parameters
     ----------
-    subject_ids, times, codes, numeric_values, hadm_ids : list
-        Parallel lists, one entry per candidate row.
+    frame : polars.DataFrame
+        Must carry exactly :data:`MEDS_COLUMNS`.
 
     Returns
     -------
     pandas.DataFrame
         :data:`MEDS_COLUMNS`, one row per usable event.
     """
-    frame = pd.DataFrame(
-        {
-            "subject_id": subject_ids,
-            "time": times,
-            "code": codes,
-            "numeric_value": numeric_values,
-            "hadm_id": hadm_ids,
-        }
+    finalized = frame.select(MEDS_COLUMNS).drop_nulls(
+        subset=["subject_id", "time", "code"]
     )
-    return frame.dropna(subset=["subject_id", "time", "code"]).reset_index(drop=True)
+    return finalized.to_pandas()
 
 
 def extract_admissions(
     subject_by_genc: dict[int, str],
     admission_by_genc: dict[int, Optional[pd.Timestamp]],
-) -> Iterator[pd.DataFrame]:
+) -> Iterator[ExtractedBatch]:
     """Admission and discharge events from ``admdad_subset``.
 
     No timestamp guard applied -- ``admdad_subset``'s own timestamps land
     entirely in the plausible 2010-2024 range (confirmed in
     docs/gemini_extraction.md's date-range check), unlike pharmacy/radiology.
+
+    Event shape: one row produces two MEDS rows, ``ADMISSION`` at
+    ``admission_date_time`` and ``DISCHARGE`` at ``discharge_date_time``,
+    both ``hadm_id = genc_id``, no ``numeric_value``.
 
     Parameters
     ----------
@@ -509,38 +785,51 @@ def extract_admissions(
 
     Yields
     ------
-    pandas.DataFrame
-        :data:`MEDS_COLUMNS` batches.
+    ExtractedBatch
     """
-    for batch in _paginate_rows(
+    for chunk in _stream_table(
         "admdad_subset", ["genc_id", "admission_date_time", "discharge_date_time"]
     ):
-        subject_ids: list[Optional[str]] = []
-        times: list[Optional[pd.Timestamp]] = []
-        codes: list[Optional[str]] = []
-        hadm_ids: list[Optional[int]] = []
-        for _, row in batch.iterrows():
-            genc_id = int(row["genc_id"])
-            subject = subject_by_genc.get(genc_id)
-            admit = admission_by_genc.get(genc_id)
-            discharge = _parse_gemini_datetime(row["discharge_date_time"])
-            for ts, code in ((admit, "ADMISSION"), (discharge, "DISCHARGE")):
-                subject_ids.append(subject)
-                times.append(ts)
-                codes.append(code)
-                hadm_ids.append(genc_id)
-        n = len(subject_ids)
-        yield _meds_batch(subject_ids, times, codes, [None] * n, hadm_ids)
+        frame = chunk.with_columns(pl.col("genc_id").cast(pl.Int64))
+        genc = frame["genc_id"]
+        subject = genc.replace_strict(
+            subject_by_genc, default=None, return_dtype=pl.Utf8
+        )
+        admitted = pl.DataFrame(
+            {
+                "subject_id": subject,
+                "time": genc.replace_strict(
+                    admission_by_genc, default=None, return_dtype=pl.Datetime("us")
+                ),
+                "code": "ADMISSION",
+                "numeric_value": None,
+                "hadm_id": genc,
+            }
+        )
+        discharged = pl.DataFrame(
+            {
+                "subject_id": subject,
+                "time": _parse_datetime_series(frame["discharge_date_time"]),
+                "code": "DISCHARGE",
+                "numeric_value": None,
+                "hadm_id": genc,
+            }
+        )
+        meds = pl.concat([admitted, discharged])
+        yield ExtractedBatch(_finalize_meds_batch(meds), chunk.height)
 
 
-def extract_icu(
-    subject_by_genc: dict[int, str],
-) -> Iterator[pd.DataFrame]:
+def extract_icu(subject_by_genc: dict[int, str]) -> Iterator[ExtractedBatch]:
     """ICU admission/discharge events from ``ipscu_subset``.
 
     Only rows where ``icu_flag`` is true count as ICU specifically --
     ``scu_unit_number`` implies non-ICU special-care units exist too (see
     docs/gemini_extraction.md).
+
+    Event shape: one ``icu_flag`` row produces two MEDS rows,
+    ``ICU_ADMISSION`` at ``scu_admit_date_time`` and ``ICU_DISCHARGE`` at
+    ``scu_discharge_date_time``, both ``hadm_id = genc_id``, no
+    ``numeric_value``.
 
     Parameters
     ----------
@@ -549,40 +838,48 @@ def extract_icu(
 
     Yields
     ------
-    pandas.DataFrame
-        :data:`MEDS_COLUMNS` batches.
+    ExtractedBatch
     """
-    for batch in _paginate_rows(
+    for chunk in _stream_table(
         "ipscu_subset",
         ["genc_id", "scu_admit_date_time", "scu_discharge_date_time", "icu_flag"],
     ):
-        subject_ids: list[Optional[str]] = []
-        times: list[Optional[pd.Timestamp]] = []
-        codes: list[Optional[str]] = []
-        hadm_ids: list[Optional[int]] = []
-        for _, row in batch.iterrows():
-            if not bool(row["icu_flag"]):
-                continue
-            genc_id = int(row["genc_id"])
-            subject = subject_by_genc.get(genc_id)
-            admit = _parse_gemini_datetime(row["scu_admit_date_time"])
-            discharge = _parse_gemini_datetime(row["scu_discharge_date_time"])
-            for ts, code in ((admit, "ICU_ADMISSION"), (discharge, "ICU_DISCHARGE")):
-                subject_ids.append(subject)
-                times.append(ts)
-                codes.append(code)
-                hadm_ids.append(genc_id)
-        n = len(subject_ids)
-        yield _meds_batch(subject_ids, times, codes, [None] * n, hadm_ids)
+        frame = chunk.filter(pl.col("icu_flag").cast(pl.Boolean)).with_columns(
+            pl.col("genc_id").cast(pl.Int64)
+        )
+        genc = frame["genc_id"]
+        subject = genc.replace_strict(
+            subject_by_genc, default=None, return_dtype=pl.Utf8
+        )
+        admitted = pl.DataFrame(
+            {
+                "subject_id": subject,
+                "time": _parse_datetime_series(frame["scu_admit_date_time"]),
+                "code": "ICU_ADMISSION",
+                "numeric_value": None,
+                "hadm_id": genc,
+            }
+        )
+        discharged = pl.DataFrame(
+            {
+                "subject_id": subject,
+                "time": _parse_datetime_series(frame["scu_discharge_date_time"]),
+                "code": "ICU_DISCHARGE",
+                "numeric_value": None,
+                "hadm_id": genc,
+            }
+        )
+        meds = pl.concat([admitted, discharged])
+        yield ExtractedBatch(_finalize_meds_batch(meds), chunk.height)
 
 
 def extract_labs(
     subject_by_genc: dict[int, str], lab_concepts: dict[int, str]
-) -> Iterator[pd.DataFrame]:
+) -> Iterator[ExtractedBatch]:
     """Lab result events from ``lab_subset``.
 
     ``code`` is ``LAB//<omop_id>//<unit>`` -- the raw OMOP concept id plus
-    the normalized unit (:func:`_normalize_unit`), the same
+    the normalized unit (:func:`_normalize_unit_series`), the same
     ``LAB//<itemid>//<unit>`` shape MIMIC-IV already uses. GEMINI is
     multi-hospital and the same concept can carry different units per
     site (see docs/gemini_extraction.md's Units section) -- the unit rides
@@ -594,6 +891,13 @@ def extract_labs(
     :func:`fetch_lab_concept_lookup`) are dropped, not extracted as
     garbage codes.
 
+    Event shape: one row produces one MEDS row, ``time`` =
+    ``collection_date_time``, ``numeric_value`` from ``result_value``
+    (categorical/unparsable results still produce a row, just with a null
+    ``numeric_value``), ``hadm_id = genc_id``. No timestamp guard --
+    ``lab_subset`` timestamps aren't documented as having the
+    pharmacy/radiology outlier problem.
+
     Parameters
     ----------
     subject_by_genc : dict
@@ -603,10 +907,9 @@ def extract_labs(
 
     Yields
     ------
-    pandas.DataFrame
-        :data:`MEDS_COLUMNS` batches.
+    ExtractedBatch
     """
-    for batch in _paginate_rows(
+    for chunk in _stream_table(
         "lab_subset",
         [
             "genc_id",
@@ -616,35 +919,44 @@ def extract_labs(
             "collection_date_time",
         ],
     ):
-        subject_ids: list[Optional[str]] = []
-        times: list[Optional[pd.Timestamp]] = []
-        codes: list[Optional[str]] = []
-        numeric_values: list[Optional[float]] = []
-        hadm_ids: list[Optional[int]] = []
-        for _, row in batch.iterrows():
-            concept_id = row["test_type_mapped_omop"]
-            if pd.isna(concept_id) or int(concept_id) not in lab_concepts:
-                continue
-            genc_id = int(row["genc_id"])
-            subject_ids.append(subject_by_genc.get(genc_id))
-            times.append(_parse_gemini_datetime(row["collection_date_time"]))
-            unit = _normalize_unit(row["result_unit"])
-            codes.append(f"LAB//{int(concept_id)}//{unit}")
-            numeric_values.append(_parse_numeric(row["result_value"]))
-            hadm_ids.append(genc_id)
-        yield _meds_batch(subject_ids, times, codes, numeric_values, hadm_ids)
+        frame = chunk.with_columns(
+            pl.col("genc_id").cast(pl.Int64),
+            pl.col("test_type_mapped_omop").cast(pl.Int64),
+        ).filter(pl.col("test_type_mapped_omop").is_in(list(lab_concepts)))
+        genc = frame["genc_id"]
+        concept = frame["test_type_mapped_omop"]
+        meds = pl.DataFrame(
+            {
+                "subject_id": genc.replace_strict(
+                    subject_by_genc, default=None, return_dtype=pl.Utf8
+                ),
+                "time": _parse_datetime_series(frame["collection_date_time"]),
+                "code": "LAB//"
+                + concept.cast(pl.Utf8)
+                + "//"
+                + _normalize_unit_series(frame["result_unit"]),
+                "numeric_value": frame["result_value"].cast(pl.Float64, strict=False),
+                "hadm_id": genc,
+            }
+        )
+        yield ExtractedBatch(_finalize_meds_batch(meds), chunk.height)
 
 
-def extract_vitals(subject_by_genc: dict[int, str]) -> Iterator[pd.DataFrame]:
+def extract_vitals(subject_by_genc: dict[int, str]) -> Iterator[ExtractedBatch]:
     """Vital-sign events from ``vitals_subset``.
 
     ``code`` is ``VITALS//<omop_id>//<unit>`` -- same reasoning as
     :func:`extract_labs`: GEMINI is multi-hospital, units can differ per
     site for the same concept, so the normalized unit
-    (:func:`_normalize_unit`) rides in the code itself. No dedup step
-    needed here -- ``lookup_vitals_concept`` (unlike ``lookup_lab_concept``)
-    doesn't exhibit the duplicate-row issue at the scale checked so far
-    (see docs/gemini_extraction.md's open question 3).
+    (:func:`_normalize_unit_series`) rides in the code itself. No dedup
+    step needed here -- ``lookup_vitals_concept`` (unlike
+    ``lookup_lab_concept``) doesn't exhibit the duplicate-row issue at the
+    scale checked so far (see docs/gemini_extraction.md's open question 3).
+
+    Event shape: one row produces one MEDS row, ``time`` =
+    ``measure_date_time``, ``numeric_value`` from ``measurement_value``,
+    ``hadm_id = genc_id``. Rows with no mapped concept
+    (``measurement_mapped_omop`` null) are dropped.
 
     Parameters
     ----------
@@ -653,10 +965,9 @@ def extract_vitals(subject_by_genc: dict[int, str]) -> Iterator[pd.DataFrame]:
 
     Yields
     ------
-    pandas.DataFrame
-        :data:`MEDS_COLUMNS` batches.
+    ExtractedBatch
     """
-    for batch in _paginate_rows(
+    for chunk in _stream_table(
         "vitals_subset",
         [
             "genc_id",
@@ -666,38 +977,49 @@ def extract_vitals(subject_by_genc: dict[int, str]) -> Iterator[pd.DataFrame]:
             "measure_date_time",
         ],
     ):
-        subject_ids: list[Optional[str]] = []
-        times: list[Optional[pd.Timestamp]] = []
-        codes: list[Optional[str]] = []
-        numeric_values: list[Optional[float]] = []
-        hadm_ids: list[Optional[int]] = []
-        for _, row in batch.iterrows():
-            concept_id = row["measurement_mapped_omop"]
-            if pd.isna(concept_id):
-                continue
-            genc_id = int(row["genc_id"])
-            subject_ids.append(subject_by_genc.get(genc_id))
-            times.append(_parse_gemini_datetime(row["measure_date_time"]))
-            unit = _normalize_unit(row["measurement_unit"])
-            codes.append(f"VITALS//{int(concept_id)}//{unit}")
-            numeric_values.append(_parse_numeric(row["measurement_value"]))
-            hadm_ids.append(genc_id)
-        yield _meds_batch(subject_ids, times, codes, numeric_values, hadm_ids)
+        frame = chunk.with_columns(
+            pl.col("genc_id").cast(pl.Int64),
+            pl.col("measurement_mapped_omop").cast(pl.Int64),
+        ).filter(pl.col("measurement_mapped_omop").is_not_null())
+        genc = frame["genc_id"]
+        meds = pl.DataFrame(
+            {
+                "subject_id": genc.replace_strict(
+                    subject_by_genc, default=None, return_dtype=pl.Utf8
+                ),
+                "time": _parse_datetime_series(frame["measure_date_time"]),
+                "code": "VITALS//"
+                + frame["measurement_mapped_omop"].cast(pl.Utf8)
+                + "//"
+                + _normalize_unit_series(frame["measurement_unit"]),
+                "numeric_value": frame["measurement_value"].cast(
+                    pl.Float64, strict=False
+                ),
+                "hadm_id": genc,
+            }
+        )
+        yield ExtractedBatch(_finalize_meds_batch(meds), chunk.height)
 
 
 def extract_pharmacy(
     subject_by_genc: dict[int, str],
     admission_by_genc: dict[int, Optional[pd.Timestamp]],
-) -> Iterator[pd.DataFrame]:
+) -> Iterator[ExtractedBatch]:
     """Medication start/end events from ``pharmacy_subset``.
 
     ``code`` uses ``med_id_generic_name_raw`` as the identity (the
     RxNorm/ingredient bridge is a later stage, see the module docstring
     and docs/gemini_extraction.md's open question 5). **The admission
-    guard applies here**: real timestamps in this table include
-    physically impossible years (1930-9022, 1840-8186) -- a start/end
-    time outside +-1y of the encounter's admission is dropped, not
-    extracted as a nonsense event.
+    guard applies here** (:func:`_within_admission_guard_mask`): real
+    timestamps in this table include physically impossible years
+    (1930-9022, 1840-8186) -- a start/end time outside +-1y of the
+    encounter's admission is dropped, not extracted as a nonsense event.
+
+    Event shape: one row with a non-blank drug name produces up to two MEDS
+    rows, ``MEDICATION//<name>//started`` at ``med_start_date_time`` and
+    ``MEDICATION//<name>//ended`` at ``med_end_date_time`` -- each dropped
+    independently if its own timestamp fails the guard (one side of a row
+    can pass while the other fails).
 
     Parameters
     ----------
@@ -706,10 +1028,9 @@ def extract_pharmacy(
 
     Yields
     ------
-    pandas.DataFrame
-        :data:`MEDS_COLUMNS` batches.
+    ExtractedBatch
     """
-    for batch in _paginate_rows(
+    for chunk in _stream_table(
         "pharmacy_subset",
         [
             "genc_id",
@@ -718,30 +1039,44 @@ def extract_pharmacy(
             "med_end_date_time",
         ],
     ):
-        subject_ids: list[Optional[str]] = []
-        times: list[Optional[pd.Timestamp]] = []
-        codes: list[Optional[str]] = []
-        hadm_ids: list[Optional[int]] = []
-        for _, row in batch.iterrows():
-            name = row["med_id_generic_name_raw"]
-            if pd.isna(name) or not str(name).strip():
-                continue
-            genc_id = int(row["genc_id"])
-            admit = admission_by_genc.get(genc_id)
-            started = _parse_gemini_datetime(row["med_start_date_time"])
-            ended = _parse_gemini_datetime(row["med_end_date_time"])
-            for ts, suffix in ((started, "started"), (ended, "ended")):
-                if not _within_admission_guard(ts, admit):
-                    continue
-                subject_ids.append(subject_by_genc.get(genc_id))
-                times.append(ts)
-                codes.append(f"MEDICATION//{name}//{suffix}")
-                hadm_ids.append(genc_id)
-        n = len(subject_ids)
-        yield _meds_batch(subject_ids, times, codes, [None] * n, hadm_ids)
+        frame = chunk.with_columns(pl.col("genc_id").cast(pl.Int64)).filter(
+            pl.col("med_id_generic_name_raw").is_not_null()
+            & (pl.col("med_id_generic_name_raw").cast(pl.Utf8).str.strip_chars() != "")
+        )
+        genc = frame["genc_id"]
+        subject = genc.replace_strict(
+            subject_by_genc, default=None, return_dtype=pl.Utf8
+        )
+        admission = genc.replace_strict(
+            admission_by_genc, default=None, return_dtype=pl.Datetime("us")
+        )
+        name = frame["med_id_generic_name_raw"].cast(pl.Utf8)
+        started_time = _parse_datetime_series(frame["med_start_date_time"])
+        ended_time = _parse_datetime_series(frame["med_end_date_time"])
+
+        started = pl.DataFrame(
+            {
+                "subject_id": subject,
+                "time": started_time,
+                "code": "MEDICATION//" + name + "//started",
+                "numeric_value": None,
+                "hadm_id": genc,
+            }
+        ).filter(_within_admission_guard_mask(started_time, admission))
+        ended = pl.DataFrame(
+            {
+                "subject_id": subject,
+                "time": ended_time,
+                "code": "MEDICATION//" + name + "//ended",
+                "numeric_value": None,
+                "hadm_id": genc,
+            }
+        ).filter(_within_admission_guard_mask(ended_time, admission))
+        meds = pl.concat([started, ended])
+        yield ExtractedBatch(_finalize_meds_batch(meds), chunk.height)
 
 
-def extract_diagnoses(subject_by_genc: dict[int, str]) -> Iterator[pd.DataFrame]:
+def extract_diagnoses(subject_by_genc: dict[int, str]) -> Iterator[ExtractedBatch]:
     """Diagnosis events from ``ipdiagnosis_subset``.
 
     ``code`` is the raw ICD-10-CA code, namespaced (``DIAGNOSIS//<code>``)
@@ -749,6 +1084,12 @@ def extract_diagnoses(subject_by_genc: dict[int, str]) -> Iterator[pd.DataFrame]
     at the encounter level), so ``time`` is the encounter's discharge time
     (a diagnosis is a fact about the whole stay, attributed at its close,
     the same convention MIMIC-IV/eICU discharge diagnoses already use).
+    The discharge-time index below is rebuilt in full on every call --
+    never checkpointed, same as :func:`fetch_admission_index` (see the
+    module docstring's "Resumability" section).
+
+    Event shape: one row with a non-blank diagnosis code produces one MEDS
+    row at the encounter's discharge time, ``hadm_id = genc_id``.
 
     Parameters
     ----------
@@ -757,39 +1098,58 @@ def extract_diagnoses(subject_by_genc: dict[int, str]) -> Iterator[pd.DataFrame]
 
     Yields
     ------
-    pandas.DataFrame
-        :data:`MEDS_COLUMNS` batches.
+    ExtractedBatch
     """
     discharge_by_genc: dict[int, Optional[pd.Timestamp]] = {}
-    for batch in _paginate_rows("admdad_subset", ["genc_id", "discharge_date_time"]):
-        for _, row in batch.iterrows():
-            discharge_by_genc[int(row["genc_id"])] = _parse_gemini_datetime(
-                row["discharge_date_time"]
+    for chunk in _stream_table("admdad_subset", ["genc_id", "discharge_date_time"]):
+        frame = chunk.with_columns(
+            pl.col("genc_id").cast(pl.Int64),
+            _parse_datetime_series(chunk["discharge_date_time"]).alias(
+                "discharge_date_time"
+            ),
+        )
+        discharge_by_genc.update(
+            zip(
+                frame["genc_id"].to_list(),
+                (
+                    pd.Timestamp(ts) if ts is not None else None
+                    for ts in frame["discharge_date_time"].to_list()
+                ),
+                strict=True,
             )
-    for batch in _paginate_rows("ipdiagnosis_subset", ["genc_id", "diagnosis_code"]):
-        subject_ids: list[Optional[str]] = []
-        times: list[Optional[pd.Timestamp]] = []
-        codes: list[Optional[str]] = []
-        hadm_ids: list[Optional[int]] = []
-        for _, row in batch.iterrows():
-            code = row["diagnosis_code"]
-            if pd.isna(code) or not str(code).strip():
-                continue
-            genc_id = int(row["genc_id"])
-            subject_ids.append(subject_by_genc.get(genc_id))
-            times.append(discharge_by_genc.get(genc_id))
-            codes.append(f"DIAGNOSIS//{code}")
-            hadm_ids.append(genc_id)
-        n = len(subject_ids)
-        yield _meds_batch(subject_ids, times, codes, [None] * n, hadm_ids)
+        )
+
+    for chunk in _stream_table("ipdiagnosis_subset", ["genc_id", "diagnosis_code"]):
+        frame = chunk.with_columns(pl.col("genc_id").cast(pl.Int64)).filter(
+            pl.col("diagnosis_code").is_not_null()
+            & (pl.col("diagnosis_code").cast(pl.Utf8).str.strip_chars() != "")
+        )
+        genc = frame["genc_id"]
+        meds = pl.DataFrame(
+            {
+                "subject_id": genc.replace_strict(
+                    subject_by_genc, default=None, return_dtype=pl.Utf8
+                ),
+                "time": genc.replace_strict(
+                    discharge_by_genc, default=None, return_dtype=pl.Datetime("us")
+                ),
+                "code": "DIAGNOSIS//" + frame["diagnosis_code"].cast(pl.Utf8),
+                "numeric_value": None,
+                "hadm_id": genc,
+            }
+        )
+        yield ExtractedBatch(_finalize_meds_batch(meds), chunk.height)
 
 
-def extract_procedures(subject_by_genc: dict[int, str]) -> Iterator[pd.DataFrame]:
+def extract_procedures(subject_by_genc: dict[int, str]) -> Iterator[ExtractedBatch]:
     """Procedure events from ``ipintervention_subset``.
 
     ``code`` is the raw CCI code, namespaced (``PROCEDURE//<code>``), timed
     at ``intervention_episode_start_date_time``.
 
+    Event shape: one row with a non-blank intervention code produces one
+    MEDS row, ``hadm_id = genc_id``.
+
     Parameters
     ----------
     subject_by_genc : dict
@@ -797,43 +1157,50 @@ def extract_procedures(subject_by_genc: dict[int, str]) -> Iterator[pd.DataFrame
 
     Yields
     ------
-    pandas.DataFrame
-        :data:`MEDS_COLUMNS` batches.
+    ExtractedBatch
     """
-    for batch in _paginate_rows(
+    for chunk in _stream_table(
         "ipintervention_subset",
         ["genc_id", "intervention_code", "intervention_episode_start_date_time"],
     ):
-        subject_ids: list[Optional[str]] = []
-        times: list[Optional[pd.Timestamp]] = []
-        codes: list[Optional[str]] = []
-        hadm_ids: list[Optional[int]] = []
-        for _, row in batch.iterrows():
-            code = row["intervention_code"]
-            if pd.isna(code) or not str(code).strip():
-                continue
-            genc_id = int(row["genc_id"])
-            subject_ids.append(subject_by_genc.get(genc_id))
-            times.append(
-                _parse_gemini_datetime(row["intervention_episode_start_date_time"])
-            )
-            codes.append(f"PROCEDURE//{code}")
-            hadm_ids.append(genc_id)
-        n = len(subject_ids)
-        yield _meds_batch(subject_ids, times, codes, [None] * n, hadm_ids)
+        frame = chunk.with_columns(pl.col("genc_id").cast(pl.Int64)).filter(
+            pl.col("intervention_code").is_not_null()
+            & (pl.col("intervention_code").cast(pl.Utf8).str.strip_chars() != "")
+        )
+        genc = frame["genc_id"]
+        meds = pl.DataFrame(
+            {
+                "subject_id": genc.replace_strict(
+                    subject_by_genc, default=None, return_dtype=pl.Utf8
+                ),
+                "time": _parse_datetime_series(
+                    frame["intervention_episode_start_date_time"]
+                ),
+                "code": "PROCEDURE//" + frame["intervention_code"].cast(pl.Utf8),
+                "numeric_value": None,
+                "hadm_id": genc,
+            }
+        )
+        yield ExtractedBatch(_finalize_meds_batch(meds), chunk.height)
 
 
 def extract_radiology(
     subject_by_genc: dict[int, str],
     admission_by_genc: dict[int, Optional[pd.Timestamp]],
-) -> Iterator[pd.DataFrame]:
+) -> Iterator[ExtractedBatch]:
     """Imaging events from ``radiology_subset``.
 
     ``code`` combines modality and body part (``IMAGING//<modality>//
     <body_part>``), timed at ``performed_date_time``. **The admission
-    guard applies here too** -- ``performed_date_time`` includes years up
-    to 9999 (see docs/gemini_extraction.md's open question 7), same fix as
-    pharmacy.
+    guard applies here too** (:func:`_within_admission_guard_mask`) --
+    ``performed_date_time`` includes years up to 9999 (see
+    docs/gemini_extraction.md's open question 7), same fix as pharmacy.
+
+    Event shape: one row produces one MEDS row if its ``performed_date_time``
+    passes the admission guard; missing ``modality_mapped``/
+    ``body_part_mapped`` fall back to ``"UNKNOWN"`` rather than dropping
+    the row (unlike the guard, a missing modality/body part doesn't make
+    the row unusable).
 
     Parameters
     ----------
@@ -842,39 +1209,32 @@ def extract_radiology(
 
     Yields
     ------
-    pandas.DataFrame
-        :data:`MEDS_COLUMNS` batches.
+    ExtractedBatch
     """
-    for batch in _paginate_rows(
+    for chunk in _stream_table(
         "radiology_subset",
         ["genc_id", "modality_mapped", "body_part_mapped", "performed_date_time"],
     ):
-        subject_ids: list[Optional[str]] = []
-        times: list[Optional[pd.Timestamp]] = []
-        codes: list[Optional[str]] = []
-        hadm_ids: list[Optional[int]] = []
-        for _, row in batch.iterrows():
-            genc_id = int(row["genc_id"])
-            admit = admission_by_genc.get(genc_id)
-            ts = _parse_gemini_datetime(row["performed_date_time"])
-            if not _within_admission_guard(ts, admit):
-                continue
-            modality = (
-                row["modality_mapped"]
-                if not pd.isna(row["modality_mapped"])
-                else "UNKNOWN"
-            )
-            body_part = (
-                row["body_part_mapped"]
-                if not pd.isna(row["body_part_mapped"])
-                else "UNKNOWN"
-            )
-            subject_ids.append(subject_by_genc.get(genc_id))
-            times.append(ts)
-            codes.append(f"IMAGING//{modality}//{body_part}")
-            hadm_ids.append(genc_id)
-        n = len(subject_ids)
-        yield _meds_batch(subject_ids, times, codes, [None] * n, hadm_ids)
+        frame = chunk.with_columns(pl.col("genc_id").cast(pl.Int64))
+        genc = frame["genc_id"]
+        admission = genc.replace_strict(
+            admission_by_genc, default=None, return_dtype=pl.Datetime("us")
+        )
+        ts = _parse_datetime_series(frame["performed_date_time"])
+        modality = frame["modality_mapped"].cast(pl.Utf8).fill_null("UNKNOWN")
+        body_part = frame["body_part_mapped"].cast(pl.Utf8).fill_null("UNKNOWN")
+        meds = pl.DataFrame(
+            {
+                "subject_id": genc.replace_strict(
+                    subject_by_genc, default=None, return_dtype=pl.Utf8
+                ),
+                "time": ts,
+                "code": "IMAGING//" + modality + "//" + body_part,
+                "numeric_value": None,
+                "hadm_id": genc,
+            }
+        ).filter(_within_admission_guard_mask(ts, admission))
+        yield ExtractedBatch(_finalize_meds_batch(meds), chunk.height)
 
 
 _SUBJECT_COUNT_SQL = "SELECT COUNT(DISTINCT {column}) AS n FROM {table}"
@@ -1093,8 +1453,102 @@ class MedsShardWriter:
         return dict(self._shard_row_counts)
 
 
+def _manifest_path(output_dir: Path) -> Path:
+    """Return the resume manifest's path (see the module docstring's Resumability)."""
+    return output_dir / "extract_manifest.json"
+
+
+def _load_manifest(output_dir: Path) -> dict[str, str]:
+    """Load the resume manifest, or ``{}`` if this is a fresh run.
+
+    Parameters
+    ----------
+    output_dir : pathlib.Path
+        Same directory :class:`MedsShardWriter` writes shards into.
+
+    Returns
+    -------
+    dict[str, str]
+        ``{table: "complete"}`` -- table-granularity only, see the module
+        docstring's "Resumability" section.
+    """
+    path = _manifest_path(output_dir)
+    if not path.exists():
+        return {}
+    return dict(json.loads(path.read_text()))
+
+
+def _save_manifest(output_dir: Path, manifest: dict[str, str]) -> None:
+    """Atomically write the resume manifest (write-tmp-then-rename).
+
+    Called once a table's extractor is fully drained and its output fully
+    written (see the module docstring's "Resumability" section) -- atomic
+    replace means a crash mid-write never leaves a truncated/corrupt
+    manifest behind for the next restart to choke on.
+
+    Parameters
+    ----------
+    output_dir : pathlib.Path
+        Same directory :class:`MedsShardWriter` writes shards into.
+    manifest : dict[str, str]
+        The manifest to persist.
+    """
+    path = _manifest_path(output_dir)
+    tmp_path = path.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    tmp_path.replace(path)
+
+
+def _log_table_progress(table: str) -> Any:
+    """Return a callback that logs cumulative rows/rows-per-second for ``table``.
+
+    Called by :func:`run_extraction` after every batch with that batch's
+    ``source_rows`` -- logs at most once per
+    :data:`PROGRESS_LOG_INTERVAL_SECONDS` (not every batch, which at
+    :data:`CHUNK_ROWS`/:data:`CURSOR_FALLBACK_CHUNK_ROWS` granularity could
+    still be many times a minute) so a long-running extraction's log stays
+    readable rather than flooded.
+
+    Parameters
+    ----------
+    table : str
+        Table name, for the log line only.
+
+    Returns
+    -------
+    Callable[[int], None]
+        Call with each batch's ``source_rows``.
+    """
+    start = time.monotonic()
+    last_logged = start
+    state = {"rows": 0}
+
+    def _report(source_rows: int) -> None:
+        nonlocal last_logged
+        state["rows"] += source_rows
+        now = time.monotonic()
+        if now - last_logged < PROGRESS_LOG_INTERVAL_SECONDS:
+            return
+        last_logged = now
+        elapsed = now - start
+        rate = state["rows"] / elapsed if elapsed > 0 else 0.0
+        logger.info(
+            "[extract_meds] %s: %d source rows read so far (%.0f rows/s)",
+            table,
+            state["rows"],
+            rate,
+        )
+
+    return _report
+
+
 def run_extraction(output_dir: Optional[Path] = None) -> dict[str, Any]:
     """Run the full GEMINI -> MEDS extraction and write the suppressed summary.
+
+    Resumable at table granularity: see the module docstring's
+    "Resumability" section. A table already marked ``"complete"`` in
+    ``<output_dir>/extract_manifest.json`` is skipped entirely; any other
+    table is (re-)run from scratch.
 
     Parameters
     ----------
@@ -1110,6 +1564,7 @@ def run_extraction(output_dir: Optional[Path] = None) -> dict[str, Any]:
         :func:`_suppressed`.
     """
     target_dir = output_dir if output_dir is not None else OUTPUT_DIR
+    manifest = _load_manifest(target_dir)
 
     logger.info("[extract_meds] counting distinct subjects for the preflight check...")
     n_subjects_estimate = count_distinct_subjects()
@@ -1129,7 +1584,7 @@ def run_extraction(output_dir: Optional[Path] = None) -> dict[str, Any]:
     )
 
     writer = MedsShardWriter(target_dir, shard_by_subject)
-    table_generators: list[tuple[str, Iterator[pd.DataFrame]]] = [
+    table_generators: list[tuple[str, Iterator[ExtractedBatch]]] = [
         ("admdad_subset", extract_admissions(subject_by_genc, admission_by_genc)),
         ("ipscu_subset", extract_icu(subject_by_genc)),
         ("lab_subset", extract_labs(subject_by_genc, lab_concepts)),
@@ -1140,9 +1595,16 @@ def run_extraction(output_dir: Optional[Path] = None) -> dict[str, Any]:
         ("radiology_subset", extract_radiology(subject_by_genc, admission_by_genc)),
     ]
     for table_name, generator in table_generators:
+        if manifest.get(table_name) == "complete":
+            logger.info("[extract_meds] %s already complete, skipping", table_name)
+            continue
         logger.info("[extract_meds] extracting %s...", table_name)
-        for batch in generator:
+        report_progress = _log_table_progress(table_name)
+        for batch, source_rows in generator:
             writer.write_batch(table_name, batch)
+            report_progress(source_rows)
+        manifest[table_name] = "complete"
+        _save_manifest(target_dir, manifest)
 
     shard_row_counts = writer.close()
     summary = {

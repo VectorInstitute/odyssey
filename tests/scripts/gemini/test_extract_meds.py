@@ -1,14 +1,15 @@
 """Tests for scripts/gemini/extract_meds.py.
 
 No real database or filesystem beyond ``tmp_path`` is used --
-``odyssey.data.gemini.db.query`` is monkeypatched, matching every other
-``tests/scripts/gemini/test_*.py``.
+``odyssey.data.gemini.db.query``/``stream_query``/``copy_to_sink`` are
+monkeypatched, matching every other ``tests/scripts/gemini/test_*.py``.
 """
 
 import importlib.util
+import queue
 from pathlib import Path
 from types import ModuleType
-from typing import Callable
+from typing import Any, Callable, Iterator
 
 import pytest
 
@@ -17,8 +18,10 @@ _SKIP_REASON = "gemini extra not installed (uv sync --extra gemini)"
 pytest.importorskip("sqlalchemy", reason=_SKIP_REASON)
 pytest.importorskip("pandas", reason=_SKIP_REASON)
 pytest.importorskip("pyarrow", reason=_SKIP_REASON)
+pytest.importorskip("polars", reason=_SKIP_REASON)
 
 import pandas as pd  # noqa: E402
+import polars as pl  # noqa: E402
 
 
 def _load_module() -> ModuleType:
@@ -32,32 +35,22 @@ def _load_module() -> ModuleType:
     return module
 
 
-def _sequenced_fake_query(
-    by_table: dict[str, list[pd.DataFrame]],
-) -> Callable[[str, object], pd.DataFrame]:
-    """Build a fake ``db.query`` that returns one fixture batch per call, per table.
+def _fake_stream_table(
+    by_table: dict[str, list[pl.DataFrame]],
+) -> Callable[[str, list[str]], Iterator[pl.DataFrame]]:
+    """Build a fake ``_stream_table`` that yields fixture chunks per table.
 
-    Matches the source table name in the SQL text (the only thing this
-    module's queries reliably contain) and pops the next fixture batch for
-    it; once a table's list is exhausted, returns an empty frame with the
-    same columns as the last batch, so ``_paginate_rows`` terminates the
-    same way a real "no more rows" response would.
+    Matches every ``extract_<table>``/index-building function's contract
+    (real ``_stream_table`` is unordered and no longer takes
+    ``resume_from`` -- see the module docstring's "Fetch strategy") without
+    going through the ``COPY``/cursor machinery those functions are tested
+    separately.
     """
-    remaining = {table: list(batches) for table, batches in by_table.items()}
-    empty_cols: dict[str, list[str]] = {
-        table: list(batches[0].columns) if batches else []
-        for table, batches in by_table.items()
-    }
 
-    def fake_query(sql: str, params: object = None) -> pd.DataFrame:
-        for table, batches in remaining.items():
-            if f'"{table}"' in sql:
-                if batches:
-                    return batches.pop(0)
-                return pd.DataFrame(columns=empty_cols[table])
-        raise AssertionError(f"no fixture registered for query: {sql}")
+    def fake(table: str, _select_cols: list[str]) -> Iterator[pl.DataFrame]:
+        yield from by_table.get(table, [])
 
-    return fake_query
+    return fake
 
 
 # --- small helpers -----------------------------------------------------
@@ -69,63 +62,333 @@ def test_quote_ident_double_quotes_and_escapes() -> None:
     assert mod._quote_ident('a"b') == '"a""b"'
 
 
-def test_parse_gemini_datetime_handles_valid_missing_and_garbage() -> None:
+def test_parse_datetime_series_handles_valid_missing_and_garbage() -> None:
     mod = _load_module()
-    assert mod._parse_gemini_datetime("2020-01-15 08:30:00") == pd.Timestamp(
-        "2020-01-15 08:30:00"
-    )
-    assert mod._parse_gemini_datetime(None) is None
-    assert mod._parse_gemini_datetime(float("nan")) is None
-    assert mod._parse_gemini_datetime("not a date at all") is None
+    raw = pl.Series(["2020-01-15 08:30:00", None, "not a date at all"])
+    parsed = mod._parse_datetime_series(raw)
+    assert parsed.to_list() == [pd.Timestamp("2020-01-15 08:30:00"), None, None]
 
 
-def test_within_admission_guard_rejects_the_real_9022_outlier() -> None:
+def test_within_admission_guard_mask_rejects_the_real_9022_outlier() -> None:
     # The actual outlier docs/gemini_extraction.md documents: a real
     # pharmacy_subset.med_start_date_time year of 9022 next to a real
     # admission in 2020.
     mod = _load_module()
-    admission = pd.Timestamp("2020-03-01")
-    within = pd.Timestamp("2020-03-05")
-    outlier = pd.Timestamp("9022-01-01")
+    ts = pl.Series(
+        [
+            pd.Timestamp("2020-03-05"),
+            pd.Timestamp("9022-01-01"),
+            None,
+            pd.Timestamp("2020-03-05"),
+        ]
+    )
+    admission = pl.Series(
+        [
+            pd.Timestamp("2020-03-01"),
+            pd.Timestamp("2020-03-01"),
+            pd.Timestamp("2020-03-01"),
+            None,
+        ]
+    )
+    mask = mod._within_admission_guard_mask(ts, admission)
+    assert mask.to_list() == [True, False, False, False]
 
-    assert mod._within_admission_guard(within, admission) is True
-    assert mod._within_admission_guard(outlier, admission) is False
-    assert mod._within_admission_guard(None, admission) is False
-    assert mod._within_admission_guard(within, None) is False
 
-
-def test_parse_numeric_handles_numeric_and_categorical_values() -> None:
+def test_normalize_unit_series_strips_lowercases_and_falls_back_to_unk() -> None:
     mod = _load_module()
-    assert mod._parse_numeric("3.5") == 3.5
-    assert mod._parse_numeric("POSITIVE") is None
-    assert mod._parse_numeric(None) is None
+    raw = pl.Series([" Umol/L ", None, "", "   "])
+    result = mod._normalize_unit_series(raw)
+    assert result.to_list() == ["umol/l", "UNK", "UNK", "UNK"]
+
+
+def test_normalize_unit_series_maps_every_sentinel_string_case_insensitively() -> None:
+    # Real strings from scripts/gemini/out/extract_dry.md's unit samples --
+    # each is a real, high-frequency "no unit recorded" value, not a guess.
+    mod = _load_module()
+    raw = ["None", "NULL", "null", "(null)", "nan", "NaN", "", "   "]
+    result = mod._normalize_unit_series(pl.Series(raw))
+    assert result.to_list() == ["UNK"] * len(raw)
+
+
+def test_normalize_unit_series_collapses_the_x10e9_family() -> None:
+    # Every one of these is a real result_unit value observed for the
+    # same underlying x10^9/L concept (WBC differentials, platelets).
+    mod = _load_module()
+    variants = [
+        "X10 9/L",
+        "X10  9/L",  # double space
+        "X 10 9/L",
+        "x 10^9/L",
+        "X 10^9/L",
+        "x10^9/L",
+        "X10^9/L",
+        "x10*9/L",
+        "10*9/L",
+        "10e9/L",
+        "10E9/L",
+        "x10e9/L",
+        "x10E9/L",
+        "E9/L",
+    ]
+    result = mod._normalize_unit_series(pl.Series(variants))
+    assert result.to_list() == ["x10e9/l"] * len(variants)
+
+
+def test_normalize_unit_series_collapses_the_x10e6_family_separately_from_x10e9() -> (
+    None
+):
+    mod = _load_module()
+    variants = ["x10E6/L", "X 10^6/L", "x 10^6/L", "x10 6/L"]
+    result = mod._normalize_unit_series(pl.Series(variants))
+    assert result.to_list() == ["x10e6/l"] * len(variants)
+    # A different magnitude -- must never collide with the x10^9/L token.
+    both = mod._normalize_unit_series(pl.Series(["x10^9/L", "x10E6/L"]))
+    assert both[0] != both[1]
+
+
+def test_normalize_unit_series_collapses_the_x10e12_family_separately_from_others() -> (
+    None
+):
+    # Erythrocyte counts -- same fragmentation pattern as x10^9/L, a third
+    # distinct magnitude that must never collide with either other family.
+    mod = _load_module()
+    variants = [
+        "x10^12/L",
+        "X10^12/L",
+        "x10 12/L",
+        "X10 12/L",
+        "x 10^12/L",
+        "X 10^12/L",
+        "x10*12/L",
+        "10*12/L",
+        "10e12/L",
+        "x10e12/L",
+        "x10E12/L",
+        "E12/L",
+        "x E12/L",
+    ]
+    result = mod._normalize_unit_series(pl.Series(variants))
+    assert result.to_list() == ["x10e12/l"] * len(variants)
+    tokens = set(
+        mod._normalize_unit_series(pl.Series(["x10^9/L", "x10E6/L", "x10^12/L"]))
+    )
+    assert tokens == {"x10e9/l", "x10e6/l", "x10e12/l"}
+
+
+def test_normalize_unit_series_fixes_the_real_mmhd_typo() -> None:
+    # ~3.5M vitals rows carry this exact typo for systolic BP.
+    mod = _load_module()
+    result = mod._normalize_unit_series(pl.Series(["mmHd", "mmHg"]))
+    assert result.to_list() == ["mmhg", "mmhg"]
+
+
+def test_normalize_unit_series_collapses_the_100wbc_family() -> None:
+    mod = _load_module()
+    variants = [
+        "/100 LKC",
+        "/100LKC",
+        "/100 WBC",
+        "/100(WBCs)",
+        "/100WBC",
+        "/100 WBC's",
+        "/100 WBCs",
+    ]
+    result = mod._normalize_unit_series(pl.Series(variants))
+    assert result.to_list() == ["/100wbc"] * len(variants)
+
+
+def test_normalize_unit_series_collapses_the_cv_family() -> None:
+    mod = _load_module()
+    result = mod._normalize_unit_series(pl.Series(["%CV", "CV", "% cv"]))
+    assert result.to_list() == ["%cv", "%cv", "%cv"]
+
+
+# --- _CopyChunkSink / _stream_table_copy / _stream_table_cursor / _stream_table ------
+
+
+def test_copy_chunk_sink_chunks_and_flushes_the_remainder() -> None:
+    mod = _load_module()
+    out_queue: "queue.Queue[pl.DataFrame]" = queue.Queue()
+    sink = mod._CopyChunkSink(chunk_rows=2, out_queue=out_queue)
+    csv_text = "a,b\n1,x\n2,y\n3,z\n4,\\N\n5,w\n"
+    data = csv_text.encode()
+    # Feed it in small, arbitrary byte boundaries, including mid-line --
+    # this is exactly what psycopg2's real write() calls look like.
+    for i in range(0, len(data), 5):
+        sink.write(data[i : i + 5])
+    sink.close()
+
+    frames = []
+    while not out_queue.empty():
+        frames.append(out_queue.get())
+
+    assert len(frames) == 3  # two full 2-row chunks + one 1-row remainder
+    result = pl.concat(frames)
+    assert result["a"].to_list() == [1, 2, 3, 4, 5]
+    # NULL '\N' marker, not the CSV-default empty-field convention -- a
+    # real empty string must never be conflated with a real NULL.
+    assert result["b"][3] is None
+
+
+def test_copy_chunk_sink_distinguishes_null_marker_from_empty_string() -> None:
+    mod = _load_module()
+    out_queue: "queue.Queue[pl.DataFrame]" = queue.Queue()
+    sink = mod._CopyChunkSink(chunk_rows=10, out_queue=out_queue)
+    sink.write(b'a,b\n1,\\N\n2,""\n')
+    sink.close()
+    result = out_queue.get()
+    assert result["b"].to_list() == [None, ""]
+
+
+def test_stream_table_copy_streams_all_rows_via_fake_copy_to_sink(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+
+    def fake_copy_to_sink(sql: str, sink: Any) -> None:
+        assert "lab_subset" in sql
+        assert "ORDER BY" not in sql  # unordered -- see the module docstring
+        csv = b"genc_id,x\n1,10\n2,20\n3,30\n"
+        for i in range(0, len(csv), 7):
+            sink.write(csv[i : i + 7])
+
+    monkeypatch.setattr(mod.db, "copy_to_sink", fake_copy_to_sink)
+
+    chunks = list(mod._stream_table_copy("lab_subset", ["genc_id", "x"], chunk_rows=2))
+    total = pl.concat(chunks)
+    assert sorted(total["genc_id"].to_list()) == [1, 2, 3]
+
+
+def test_stream_table_copy_propagates_a_producer_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+
+    def failing_copy_to_sink(sql: str, sink: Any) -> None:
+        raise RuntimeError("permission denied for COPY")
+
+    monkeypatch.setattr(mod.db, "copy_to_sink", failing_copy_to_sink)
+
+    with pytest.raises(RuntimeError, match="permission denied"):
+        list(mod._stream_table_copy("lab_subset", ["genc_id"], chunk_rows=2))
+
+
+def test_stream_table_cursor_has_no_order_by(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = _load_module()
+    captured = {}
+
+    def fake_stream_query(
+        sql: str, params: Any = None, chunksize: int = 100_000
+    ) -> Any:
+        captured["sql"] = sql
+        yield pd.DataFrame({"genc_id": [1], "x": [10]})
+
+    monkeypatch.setattr(mod.db, "stream_query", fake_stream_query)
+
+    chunks = list(mod._stream_table_cursor("lab_subset", ["genc_id", "x"]))
+    assert len(chunks) == 1
+    assert "ORDER BY" not in captured["sql"]
+    assert "lab_subset" in captured["sql"]
+
+
+def test_stream_table_falls_back_to_cursor_when_copy_fails_before_yielding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+
+    def failing_copy_to_sink(sql: str, sink: Any) -> None:
+        raise RuntimeError("no COPY perms")
+
+    def fake_stream_query(
+        sql: str, params: Any = None, chunksize: int = 100_000
+    ) -> Any:
+        yield pd.DataFrame({"genc_id": [9]})
+
+    monkeypatch.setattr(mod.db, "copy_to_sink", failing_copy_to_sink)
+    monkeypatch.setattr(mod.db, "stream_query", fake_stream_query)
+
+    chunks = list(mod._stream_table("admdad_subset", ["genc_id"]))
+    assert len(chunks) == 1
+    assert chunks[0]["genc_id"].to_list() == [9]
+
+
+def test_stream_table_copy_raises_after_yielding_a_real_chunk_on_a_later_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A failure after the queue has already delivered a real chunk must
+    # still surface once the generator is drained -- exercised directly on
+    # _stream_table_copy (with a small chunk_rows so a real flush happens
+    # before the failure), separately from _stream_table's fallback
+    # boundary (see the next test).
+    mod = _load_module()
+
+    def flaky_copy_to_sink(sql: str, sink: Any) -> None:
+        sink.write(b"genc_id\n1\n")  # flushes as its own chunk_rows=1 chunk
+        raise RuntimeError("connection dropped mid-stream")
+
+    monkeypatch.setattr(mod.db, "copy_to_sink", flaky_copy_to_sink)
+
+    gen = mod._stream_table_copy("admdad_subset", ["genc_id"], chunk_rows=1)
+    first = next(gen)
+    assert first["genc_id"].to_list() == [1]
+    with pytest.raises(RuntimeError, match="connection dropped"):
+        next(gen)
+
+
+def test_stream_table_does_not_fall_back_once_copy_has_yielded_real_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A failure after the COPY path has already produced real chunks must
+    # surface, not silently restart from the cursor path (which would
+    # double-count everything already yielded) -- see the module
+    # docstring's "Fetch strategy" section.
+    mod = _load_module()
+
+    def flaky_stream_table_copy(
+        table: str, select_cols: list[str], *, chunk_rows: int = 1
+    ) -> Iterator[pl.DataFrame]:
+        yield pl.DataFrame({"genc_id": [1]})
+        raise RuntimeError("connection dropped mid-stream")
+
+    cursor_called = []
+
+    def fake_stream_table_cursor(
+        table: str, select_cols: list[str], *, chunk_rows: int = 1
+    ) -> Iterator[pl.DataFrame]:
+        cursor_called.append(True)
+        yield pl.DataFrame({"genc_id": [9]})
+
+    monkeypatch.setattr(mod, "_stream_table_copy", flaky_stream_table_copy)
+    monkeypatch.setattr(mod, "_stream_table_cursor", fake_stream_table_cursor)
+
+    with pytest.raises(RuntimeError, match="connection dropped"):
+        list(mod._stream_table("admdad_subset", ["genc_id"]))
+    assert cursor_called == []
 
 
 # --- fetch_admission_index / fetch_lab_concept_lookup -------------------
 
 
-def test_fetch_admission_index_paginates_across_batches(
+def test_fetch_admission_index_reads_every_chunk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mod = _load_module()
-    batch1 = pd.DataFrame(
+    chunk1 = pl.DataFrame(
         {
             "genc_id": [1, 2],
             "patient_id_hashed": ["pA", "pB"],
             "admission_date_time": ["2020-01-01", "2020-02-01"],
-            "row_num": [1, 2],
         }
     )
-    batch2 = pd.DataFrame(
+    chunk2 = pl.DataFrame(
         {
             "genc_id": [3],
             "patient_id_hashed": ["pC"],
             "admission_date_time": ["2020-03-01"],
-            "row_num": [3],
         }
     )
     monkeypatch.setattr(
-        mod.db, "query", _sequenced_fake_query({"admdad_subset": [batch1, batch2]})
+        mod, "_stream_table", _fake_stream_table({"admdad_subset": [chunk1, chunk2]})
     )
 
     subject_by_genc, admission_by_genc = mod.fetch_admission_index()
@@ -167,26 +430,51 @@ def test_extract_admissions_yields_admission_and_discharge(
     mod = _load_module()
     subject_by_genc = {1: "pA"}
     admission_by_genc = {1: pd.Timestamp("2020-01-01")}
-    batch = pd.DataFrame(
+    chunk = pl.DataFrame(
         {
             "genc_id": [1],
             "admission_date_time": ["2020-01-01"],
             "discharge_date_time": ["2020-01-05"],
-            "row_num": [1],
         }
     )
     monkeypatch.setattr(
-        mod.db, "query", _sequenced_fake_query({"admdad_subset": [batch]})
+        mod, "_stream_table", _fake_stream_table({"admdad_subset": [chunk]})
     )
 
     rows = pd.concat(
-        list(mod.extract_admissions(subject_by_genc, admission_by_genc)),
+        [b.frame for b in mod.extract_admissions(subject_by_genc, admission_by_genc)],
         ignore_index=True,
     )
 
     assert set(rows["code"]) == {"ADMISSION", "DISCHARGE"}
     assert (rows["subject_id"] == "pA").all()
     assert (rows["hadm_id"] == 1).all()
+    assert rows["numeric_value"].isna().all()
+
+
+def test_extract_icu_only_extracts_icu_flagged_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    subject_by_genc = {1: "pA", 2: "pB"}
+    chunk = pl.DataFrame(
+        {
+            "genc_id": [1, 2],
+            "scu_admit_date_time": ["2020-01-01", "2020-01-01"],
+            "scu_discharge_date_time": ["2020-01-05", "2020-01-05"],
+            "icu_flag": [True, False],
+        }
+    )
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"ipscu_subset": [chunk]})
+    )
+
+    rows = pd.concat(
+        [b.frame for b in mod.extract_icu(subject_by_genc)], ignore_index=True
+    )
+
+    assert set(rows["code"]) == {"ICU_ADMISSION", "ICU_DISCHARGE"}
+    assert (rows["subject_id"] == "pA").all()
 
 
 def test_extract_labs_drops_rows_with_no_mapped_concept(
@@ -195,20 +483,22 @@ def test_extract_labs_drops_rows_with_no_mapped_concept(
     mod = _load_module()
     subject_by_genc = {1: "pA"}
     lab_concepts = {3020564: "Creatinine"}  # only this one is "real"
-    batch = pd.DataFrame(
+    chunk = pl.DataFrame(
         {
             "genc_id": [1, 1],
             "test_type_mapped_omop": [3020564, 999999],  # second is unmapped
             "result_value": ["1.2", "5.0"],
             "result_unit": ["umol/L", "mg/dL"],
             "collection_date_time": ["2020-01-02 08:00:00", "2020-01-02 09:00:00"],
-            "row_num": [1, 2],
         }
     )
-    monkeypatch.setattr(mod.db, "query", _sequenced_fake_query({"lab_subset": [batch]}))
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"lab_subset": [chunk]})
+    )
 
     rows = pd.concat(
-        list(mod.extract_labs(subject_by_genc, lab_concepts)), ignore_index=True
+        [b.frame for b in mod.extract_labs(subject_by_genc, lab_concepts)],
+        ignore_index=True,
     )
 
     assert len(rows) == 1
@@ -225,20 +515,22 @@ def test_extract_labs_carries_the_literal_unit_and_normalizes_missing(
     mod = _load_module()
     subject_by_genc = {1: "pA", 2: "pB"}
     lab_concepts = {3020564: "Creatinine"}
-    batch = pd.DataFrame(
+    chunk = pl.DataFrame(
         {
             "genc_id": [1, 2],
             "test_type_mapped_omop": [3020564, 3020564],
             "result_value": ["70.0", "1.1"],
             "result_unit": [" umol/L ", None],  # whitespace/case, then missing
             "collection_date_time": ["2020-01-02 08:00:00", "2020-01-02 09:00:00"],
-            "row_num": [1, 2],
         }
     )
-    monkeypatch.setattr(mod.db, "query", _sequenced_fake_query({"lab_subset": [batch]}))
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"lab_subset": [chunk]})
+    )
 
     rows = pd.concat(
-        list(mod.extract_labs(subject_by_genc, lab_concepts)), ignore_index=True
+        [b.frame for b in mod.extract_labs(subject_by_genc, lab_concepts)],
+        ignore_index=True,
     )
 
     codes = sorted(rows["code"])
@@ -250,130 +542,24 @@ def test_extract_vitals_carries_the_literal_unit(
 ) -> None:
     mod = _load_module()
     subject_by_genc = {1: "pA"}
-    batch = pd.DataFrame(
+    chunk = pl.DataFrame(
         {
             "genc_id": [1],
             "measurement_mapped_omop": [3027018],
             "measurement_value": ["88"],
             "measurement_unit": ["bpm"],
             "measure_date_time": ["2020-01-02 08:00:00"],
-            "row_num": [1],
         }
     )
     monkeypatch.setattr(
-        mod.db, "query", _sequenced_fake_query({"vitals_subset": [batch]})
+        mod, "_stream_table", _fake_stream_table({"vitals_subset": [chunk]})
     )
 
-    rows = pd.concat(list(mod.extract_vitals(subject_by_genc)), ignore_index=True)
+    rows = pd.concat(
+        [b.frame for b in mod.extract_vitals(subject_by_genc)], ignore_index=True
+    )
 
     assert rows.iloc[0]["code"] == "VITALS//3027018//bpm"
-
-
-def test_normalize_unit_strips_lowercases_and_falls_back_to_unk() -> None:
-    mod = _load_module()
-    assert mod._normalize_unit(" Umol/L ") == "umol/l"
-    assert mod._normalize_unit(None) == "UNK"
-    assert mod._normalize_unit(float("nan")) == "UNK"
-    assert mod._normalize_unit("") == "UNK"
-    assert mod._normalize_unit("   ") == "UNK"
-
-
-def test_normalize_unit_maps_every_sentinel_string_case_insensitively() -> None:
-    # Real strings from scripts/gemini/out/extract_dry.md's unit samples --
-    # each is a real, high-frequency "no unit recorded" value, not a guess.
-    mod = _load_module()
-    for raw in ["None", "NULL", "null", "(null)", "nan", "NaN", "", "   "]:
-        assert mod._normalize_unit(raw) == "UNK", raw
-
-
-def test_normalize_unit_collapses_the_x10e9_family() -> None:
-    # Every one of these is a real result_unit value observed for the
-    # same underlying x10^9/L concept (WBC differentials, platelets).
-    mod = _load_module()
-    variants = [
-        "X10 9/L",
-        "X10  9/L",  # double space
-        "X 10 9/L",
-        "x 10^9/L",
-        "X 10^9/L",
-        "x10^9/L",
-        "X10^9/L",
-        "x10*9/L",
-        "10*9/L",
-        "10e9/L",
-        "10E9/L",
-        "x10e9/L",
-        "x10E9/L",
-        "E9/L",
-    ]
-    for raw in variants:
-        assert mod._normalize_unit(raw) == "x10e9/l", raw
-
-
-def test_normalize_unit_collapses_the_x10e6_family_separately_from_x10e9() -> None:
-    mod = _load_module()
-    for raw in ["x10E6/L", "X 10^6/L", "x 10^6/L", "x10 6/L"]:
-        assert mod._normalize_unit(raw) == "x10e6/l", raw
-    # A different magnitude -- must never collide with the x10^9/L token.
-    assert mod._normalize_unit("x10^9/L") != mod._normalize_unit("x10E6/L")
-
-
-def test_normalize_unit_collapses_the_x10e12_family_separately_from_others() -> None:
-    # Erythrocyte counts -- same fragmentation pattern as x10^9/L, a third
-    # distinct magnitude that must never collide with either other family.
-    mod = _load_module()
-    variants = [
-        "x10^12/L",
-        "X10^12/L",
-        "x10 12/L",
-        "X10 12/L",
-        "x 10^12/L",
-        "X 10^12/L",
-        "x10*12/L",
-        "10*12/L",
-        "10e12/L",
-        "x10e12/L",
-        "x10E12/L",
-        "E12/L",
-        "x E12/L",
-    ]
-    for raw in variants:
-        assert mod._normalize_unit(raw) == "x10e12/l", raw
-    tokens = {
-        mod._normalize_unit("x10^9/L"),
-        mod._normalize_unit("x10E6/L"),
-        mod._normalize_unit("x10^12/L"),
-    }
-    assert tokens == {"x10e9/l", "x10e6/l", "x10e12/l"}
-
-
-def test_normalize_unit_fixes_the_real_mmhd_typo() -> None:
-    # ~3.5M vitals rows carry this exact typo for systolic BP.
-    mod = _load_module()
-    assert mod._normalize_unit("mmHd") == "mmhg"
-    assert mod._normalize_unit("mmHg") == "mmhg"
-
-
-def test_normalize_unit_collapses_the_100wbc_family() -> None:
-    mod = _load_module()
-    variants = [
-        "/100 LKC",
-        "/100LKC",
-        "/100 WBC",
-        "/100(WBCs)",
-        "/100WBC",
-        "/100 WBC's",
-        "/100 WBCs",
-    ]
-    for raw in variants:
-        assert mod._normalize_unit(raw) == "/100wbc", raw
-
-
-def test_normalize_unit_collapses_the_cv_family() -> None:
-    mod = _load_module()
-    assert mod._normalize_unit("%CV") == "%cv"
-    assert mod._normalize_unit("CV") == "%cv"
-    assert mod._normalize_unit("% cv") == "%cv"
 
 
 def test_extract_pharmacy_applies_the_admission_guard(
@@ -387,21 +573,20 @@ def test_extract_pharmacy_applies_the_admission_guard(
         1: pd.Timestamp("2020-01-01"),
         2: pd.Timestamp("2020-06-01"),
     }
-    batch = pd.DataFrame(
+    chunk = pl.DataFrame(
         {
             "genc_id": [1, 2],
             "med_id_generic_name_raw": ["acetaminophen", "ibuprofen"],
             "med_start_date_time": ["2020-01-02 08:00:00", "9022-01-01 00:00:00"],
             "med_end_date_time": ["2020-01-03 08:00:00", "8186-01-01 00:00:00"],
-            "row_num": [1, 2],
         }
     )
     monkeypatch.setattr(
-        mod.db, "query", _sequenced_fake_query({"pharmacy_subset": [batch]})
+        mod, "_stream_table", _fake_stream_table({"pharmacy_subset": [chunk]})
     )
 
     rows = pd.concat(
-        list(mod.extract_pharmacy(subject_by_genc, admission_by_genc)),
+        [b.frame for b in mod.extract_pharmacy(subject_by_genc, admission_by_genc)],
         ignore_index=True,
     )
 
@@ -414,6 +599,53 @@ def test_extract_pharmacy_applies_the_admission_guard(
     }
 
 
+def test_extract_diagnoses_uses_encounter_discharge_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    subject_by_genc = {1: "pA"}
+    admdad_chunk = pl.DataFrame({"genc_id": [1], "discharge_date_time": ["2020-01-05"]})
+    diag_chunk = pl.DataFrame({"genc_id": [1, 1], "diagnosis_code": ["A01", None]})
+    monkeypatch.setattr(
+        mod,
+        "_stream_table",
+        _fake_stream_table(
+            {"admdad_subset": [admdad_chunk], "ipdiagnosis_subset": [diag_chunk]}
+        ),
+    )
+
+    rows = pd.concat(
+        [b.frame for b in mod.extract_diagnoses(subject_by_genc)], ignore_index=True
+    )
+
+    assert len(rows) == 1  # the null diagnosis_code row is dropped
+    assert rows.iloc[0]["code"] == "DIAGNOSIS//A01"
+    assert rows.iloc[0]["time"] == pd.Timestamp("2020-01-05")
+
+
+def test_extract_procedures_namespaces_the_raw_cci_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    subject_by_genc = {1: "pA"}
+    chunk = pl.DataFrame(
+        {
+            "genc_id": [1],
+            "intervention_code": ["1.AB.10"],
+            "intervention_episode_start_date_time": ["2020-01-02 08:00:00"],
+        }
+    )
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"ipintervention_subset": [chunk]})
+    )
+
+    rows = pd.concat(
+        [b.frame for b in mod.extract_procedures(subject_by_genc)], ignore_index=True
+    )
+
+    assert rows.iloc[0]["code"] == "PROCEDURE//1.AB.10"
+
+
 def test_extract_radiology_applies_the_admission_guard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -423,26 +655,51 @@ def test_extract_radiology_applies_the_admission_guard(
         1: pd.Timestamp("2021-05-01"),
         2: pd.Timestamp("2021-05-01"),
     }
-    batch = pd.DataFrame(
+    chunk = pl.DataFrame(
         {
             "genc_id": [1, 2],
             "modality_mapped": ["CT", "XR"],
             "body_part_mapped": ["Head", "Chest"],
             "performed_date_time": ["2021-05-02 10:00:00", "9999-12-31 00:00:00"],
-            "row_num": [1, 2],
         }
     )
     monkeypatch.setattr(
-        mod.db, "query", _sequenced_fake_query({"radiology_subset": [batch]})
+        mod, "_stream_table", _fake_stream_table({"radiology_subset": [chunk]})
     )
 
     rows = pd.concat(
-        list(mod.extract_radiology(subject_by_genc, admission_by_genc)),
+        [b.frame for b in mod.extract_radiology(subject_by_genc, admission_by_genc)],
         ignore_index=True,
     )
 
     assert len(rows) == 1
     assert rows.iloc[0]["code"] == "IMAGING//CT//Head"
+
+
+def test_extract_radiology_falls_back_to_unknown_for_missing_modality_or_body_part(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    subject_by_genc = {1: "pA"}
+    admission_by_genc = {1: pd.Timestamp("2021-05-01")}
+    chunk = pl.DataFrame(
+        {
+            "genc_id": [1],
+            "modality_mapped": [None],
+            "body_part_mapped": [None],
+            "performed_date_time": ["2021-05-02 10:00:00"],
+        }
+    )
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"radiology_subset": [chunk]})
+    )
+
+    rows = pd.concat(
+        [b.frame for b in mod.extract_radiology(subject_by_genc, admission_by_genc)],
+        ignore_index=True,
+    )
+
+    assert rows.iloc[0]["code"] == "IMAGING//UNKNOWN//UNKNOWN"
 
 
 # --- preflight -------------------------------------------------------
@@ -554,3 +811,116 @@ def test_meds_shard_writer_drops_and_counts_unshardable_rows(tmp_path: Path) -> 
 
     assert counts == {0: 1}
     assert writer.rows_dropped_unshardable == 1
+
+
+# --- resume manifest / run_extraction -------------------------------------
+
+
+def test_manifest_round_trips_and_is_absent_for_a_fresh_run(tmp_path: Path) -> None:
+    mod = _load_module()
+    assert mod._load_manifest(tmp_path) == {}
+    mod._save_manifest(tmp_path, {"admdad_subset": "complete"})
+    assert mod._load_manifest(tmp_path) == {"admdad_subset": "complete"}
+
+
+def test_run_extraction_skips_tables_already_marked_complete(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    mod = _load_module()
+    monkeypatch.setattr(mod, "count_distinct_subjects", lambda: 1)
+    monkeypatch.setattr(
+        mod.db,
+        "query",
+        lambda sql, params=None: pd.DataFrame({"concept_id": [], "concept_desc": []}),
+    )
+
+    admdad_chunk = pl.DataFrame(
+        {
+            "genc_id": [1],
+            "patient_id_hashed": ["pA"],
+            "admission_date_time": ["2020-01-01"],
+            "discharge_date_time": ["2020-01-05"],
+        }
+    )
+    calls: dict[str, int] = {}
+
+    def fake_stream_table(
+        table: str, _select_cols: list[str]
+    ) -> Iterator[pl.DataFrame]:
+        calls[table] = calls.get(table, 0) + 1
+        if table == "admdad_subset":
+            yield admdad_chunk
+
+    monkeypatch.setattr(mod, "_stream_table", fake_stream_table)
+
+    # Every table except admdad_subset already "complete" -- only
+    # admdad_subset's own extractor (not fetch_admission_index's separate,
+    # always-rebuilt pass over the same table) should still run.
+    manifest = dict.fromkeys(
+        [
+            "ipscu_subset",
+            "lab_subset",
+            "vitals_subset",
+            "pharmacy_subset",
+            "ipdiagnosis_subset",
+            "ipintervention_subset",
+            "radiology_subset",
+        ],
+        "complete",
+    )
+    mod._save_manifest(tmp_path, manifest)
+    calls.clear()
+
+    summary = mod.run_extraction(output_dir=tmp_path)
+
+    assert summary["rows_per_table"].keys() == {"admdad_subset"}
+    final_manifest = mod._load_manifest(tmp_path)
+    assert final_manifest["admdad_subset"] == "complete"
+
+
+def test_run_extraction_resumed_run_does_not_duplicate_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    mod = _load_module()
+    monkeypatch.setattr(mod, "count_distinct_subjects", lambda: 1)
+    monkeypatch.setattr(
+        mod.db,
+        "query",
+        lambda sql, params=None: pd.DataFrame(
+            {"concept_id": [3020564], "concept_desc": ["Creatinine"]}
+        ),
+    )
+
+    fixtures = {
+        "admdad_subset": [
+            pl.DataFrame(
+                {
+                    "genc_id": [1],
+                    "patient_id_hashed": ["pA"],
+                    "admission_date_time": ["2020-01-01"],
+                    "discharge_date_time": ["2020-01-05"],
+                }
+            )
+        ],
+        "lab_subset": [
+            pl.DataFrame(
+                {
+                    "genc_id": [1],
+                    "test_type_mapped_omop": [3020564],
+                    "result_value": ["1.2"],
+                    "result_unit": ["umol/L"],
+                    "collection_date_time": ["2020-01-02 08:00:00"],
+                }
+            )
+        ],
+    }
+    monkeypatch.setattr(mod, "_stream_table", _fake_stream_table(fixtures))
+
+    summary1 = mod.run_extraction(output_dir=tmp_path)
+    written_after_first = pd.read_parquet(tmp_path / "shard_0000.parquet")
+
+    summary2 = mod.run_extraction(output_dir=tmp_path)
+    written_after_second = pd.read_parquet(tmp_path / "shard_0000.parquet")
+
+    assert len(written_after_first) == len(written_after_second)
+    assert summary1["n_subjects"] == summary2["n_subjects"]

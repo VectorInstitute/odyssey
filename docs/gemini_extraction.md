@@ -253,6 +253,25 @@ counts) lands in `scripts/gemini/out/extraction_summary.json` once run via
 `scripts/gemini/run.sh extract` -- the actual MEDS parquet shards never
 leave the enclave.
 
+Real run, real incident, real fix (2026-08-21): Amrit's first live run of
+`extract_meds.py` measured ~400 rows/s on the small tables and, on
+`lab_subset`, zero output growth over 5 minutes -- these matviews carry no
+index on `row_num`, so the original keyset-paginated fetch
+(`WHERE row_num > :cursor ORDER BY row_num LIMIT ...`) forced a full
+scan-and-sort of the table before returning even the first row of any page,
+unusable at `lab_subset`'s real ~659M rows. He stopped the job.
+`extract_meds.py`'s fetch layer now reads each source table exactly once,
+unordered (`COPY ... TO STDOUT`, falling back to an unordered server-side
+cursor -- nothing downstream needs source order: `MedsShardWriter` hashes by
+subject, and any per-subject ordering comes from `build_patient_sequence`'s
+own sort later), with resumability at table granularity (a killed table
+restarts from scratch; a completed table is skipped on resume) rather than
+the row-level checkpointing the sorted approach would have needed. Every
+per-table transform is vectorized (polars, whole-chunk operations) rather
+than a Python per-row loop, the other half of the original performance
+request -- see `extract_meds.py`'s module docstring for the full
+before/after measurements and reasoning.
+
 Still open before a full real run: the actual training datacut (question 1,
 still `subdural_hematoma_v1_0_0` at time of writing), the pharmacy
 dual-mapping relationship (question 5, `rxnorm_cache` vs
