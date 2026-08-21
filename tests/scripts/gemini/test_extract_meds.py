@@ -424,7 +424,7 @@ def test_stream_table_does_not_fall_back_once_copy_has_yielded_real_rows(
 # --- _filter_valid_genc_id -----------------------------------------------
 
 
-def test_filter_valid_genc_id_drops_unparseable_rows_not_the_whole_batch(
+def test_filter_valid_genc_id_drops_unparsable_rows_not_the_whole_batch(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     # Real incident this guards against: a hard pl.col("genc_id").cast(pl.Int64)
