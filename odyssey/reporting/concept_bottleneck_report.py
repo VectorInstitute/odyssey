@@ -898,15 +898,24 @@ def build_payload(inputs: ReportInputs) -> Dict[str, Any]:
         f"{n_pool_positions:,} {pool_unit} and {tm['n_predictions']:,} forecast "
         f"positions, never seen during training or validation."
     )
-    qualitative_desc = (
-        f"{len(cases)} held-out patients, selected to span short and long stays "
-        f"and a range of triggered concepts. Each trace streams the stay through "
-        f"the model in the same chunked, state-carrying regime it was trained in "
-        f"(no synthetic resets), showing the concept "
-        f"bottleneck's running probability for all "
-        f"{len(cases[0]['concept_names']) if cases else 0} concepts alongside the "
-        f"model's next-event forecast at sampled points in the stay."
-    )
+    if cases:
+        qualitative_desc = (
+            f"{len(cases)} held-out patients, selected to span short and long "
+            f"stays and a range of triggered concepts. Each trace streams the "
+            f"stay through the model in the same chunked, state-carrying regime "
+            f"it was trained in (no synthetic resets), showing the concept "
+            f"bottleneck's running probability for all "
+            f"{len(cases[0]['concept_names'])} concepts alongside the model's "
+            f"next-event forecast at sampled points in the stay."
+        )
+    else:
+        # Baseline (no-bottleneck) runs produce no case traces; say so
+        # instead of rendering a zero-filled sentence.
+        qualitative_desc = (
+            "Not applicable for this run: case traces visualize the concept "
+            "bottleneck's running probabilities, and this model has no "
+            "bottleneck (or no traces were extracted)."
+        )
 
     interventions_desc = None
     if inputs.interventions:
