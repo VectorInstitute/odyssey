@@ -52,35 +52,50 @@ import numpy as np
 import polars as pl
 
 from odyssey.data.alert_events import EventTimes, origin_hours
+from odyssey.data.sequences import BIRTH_CODE
 from odyssey.inference.alerts import IndexRow, outcome_at_horizon
 
 
 logger = logging.getLogger(__name__)
 
-#: Round-trip tolerance for the prediction_time reconstruction (item (d)):
-#: hours -> absolute datetime -> hours must recover the original value to
-#: well inside a second, not just "close enough" for a bucketed comparison.
-_ROUND_TRIP_TOLERANCE_HOURS = 1e-6
-
 
 def _prediction_times(
-    rows: Sequence[IndexRow], events_binned: pl.DataFrame
+    rows: Sequence[IndexRow], events_binned: pl.DataFrame, *, max_horizon_hours: float
 ) -> list[datetime]:
-    """Absolute ``prediction_time`` per row, with an explicit round-trip assert.
+    """Absolute ``prediction_time`` per row, checked against the subject's event span.
 
     Our landmark rows carry ``time_hours``, hours since each subject's own
     sequence origin (:func:`odyssey.data.alert_events.origin_hours`);
-    MEDS-Tab's task-label schema wants an absolute timestamp. Reconstructs
-    it with exactly that origin and immediately re-derives ``time_hours``
-    from the reconstructed timestamp to confirm the round trip recovers the
-    original value -- a silent origin mismatch would shift every feature
-    window without any other visible symptom, so this is checked on every
-    row, not sampled.
+    MEDS-Tab's task-label schema wants an absolute timestamp. Correctness
+    here rests on construction, not a round trip: ``pred_time = origin +
+    timedelta(hours=time_hours)`` uses the exact same
+    ``origin_hours(events_binned)`` call every landmark row's ``time_hours``
+    was itself built from (a pure, deterministic groupby-min over the same
+    input frame), so both sides necessarily agree on which origin is being
+    used. Re-deriving ``time_hours`` from ``pred_time`` by subtracting that
+    *same* origin back out is not a useful check on its own: a wrong or
+    shifted origin round-trips perfectly (the error cancels both ways), so
+    it cannot catch what it would need to catch.
+
+    What actually bites: asserting ``pred_time`` falls within the subject's
+    own observed event span (at or after their first timed event, at or
+    before their last timed event plus ``max_horizon_hours``) -- a wrong
+    origin lands outside that window immediately, independent of the
+    origin computation itself.
     """
     origins = origin_hours(events_binned)
     origin_map = dict(
         zip(origins["subject_id"].to_list(), origins["_origin"].to_list())
     )
+    spans = (
+        events_binned.filter(
+            pl.col("time").is_not_null() & (pl.col("code") != BIRTH_CODE)
+        )
+        .group_by("subject_id")
+        .agg(pl.col("time").min().alias("_first"), pl.col("time").max().alias("_last"))
+    )
+    first_map = dict(zip(spans["subject_id"].to_list(), spans["_first"].to_list()))
+    last_map = dict(zip(spans["subject_id"].to_list(), spans["_last"].to_list()))
     times: list[datetime] = []
     for r in rows:
         origin = origin_map.get(r.subject_id)
@@ -90,12 +105,14 @@ def _prediction_times(
                 "(no timed non-birth event in events_binned)"
             )
         pred_time = origin + timedelta(hours=r.time_hours)
-        round_tripped = (pred_time - origin).total_seconds() / 3600.0
-        if abs(round_tripped - r.time_hours) > _ROUND_TRIP_TOLERANCE_HOURS:
+        first = first_map[r.subject_id]
+        upper = last_map[r.subject_id] + timedelta(hours=max_horizon_hours)
+        if pred_time < first or pred_time > upper:
             raise AssertionError(
-                f"prediction_time round-trip failed for subject_id={r.subject_id}: "
-                f"time_hours={r.time_hours} -> prediction_time={pred_time} -> "
-                f"{round_tripped}, diff={abs(round_tripped - r.time_hours):.2e}h"
+                f"prediction_time outside the subject's own event span for "
+                f"subject_id={r.subject_id}: pred_time={pred_time}, expected "
+                f"within [{first}, {upper}] (time_hours={r.time_hours}, "
+                f"max_horizon_hours={max_horizon_hours})"
             )
         times.append(pred_time)
     return times
@@ -133,7 +150,9 @@ def export_task_labels(
     for event_name, event_rows in rows.items():
         if not event_rows:
             continue
-        pred_times = _prediction_times(event_rows, events_binned)
+        pred_times = _prediction_times(
+            event_rows, events_binned, max_horizon_hours=max(horizons)
+        )
         for h in horizons:
             outcomes = [outcome_at_horizon(r, times[event_name], h) for r in event_rows]
             keep = [i for i, o in enumerate(outcomes) if o is not None]
