@@ -121,6 +121,22 @@ ebm = [
     "interpret-core>=0.6.0",
 ]
 
+# SurvivalPFN (odyssey/inference/survivalpfn_baseline.py), a fourth comparator:
+# a prior-data fitted network for right-censored survival analysis, fit
+# survival-natively (hours to onset/censor, not a per-horizon binary outcome)
+# the same way this project's own hazard heads are trained -- unlike the GBM/
+# TabICL/EBM baselines' binary-cohort framing. Not on PyPI, git-only; not
+# installed by default, nothing in the training/inference path depends on it.
+# `omegaconf` pinned explicitly alongside the git dependency: it is a hard
+# runtime import in their code (survivalpfn/models/loading.py) but only
+# declared under their own `train` optional-extra, not their base
+# dependencies -- a real packaging gap on their side, routed around here
+# rather than fixed upstream.
+survivalpfn = [
+    "survivalpfn @ git+https://github.com/rgklab/SurvivalPFN.git",
+    "omegaconf>=2.3.0",
+]
+
 # NOTE: transformers/lightning/etc. are intentionally omitted until the
 # concept-bottleneck architecture actually needs them — add alongside the
 # code that uses them, not speculatively.
@@ -261,3 +277,10 @@ markers = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+# Required because the `survivalpfn` extra above is a direct git reference
+# (not on PyPI) -- hatchling refuses to build metadata for a project with
+# any direct-reference dependency unless this is set, even though the
+# reference is confined to one optional extra nothing else depends on.
+allow-direct-references = true
