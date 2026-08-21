@@ -17,7 +17,11 @@
 #                          BASELINE_SHARDS whole into memory; set for full-scale runs
 #                          (hundreds of shards), where the whole-frame path OOMs
 #   CHECKPOINT=checkpoint_best.pt
-#   PYTHON=<path>          interpreter (default: RUN_DIR/../../odyssey/.venv/bin/python, else `python`)
+#   PYTHON=<path>          interpreter (default: $ODYSSEY_REPO/.venv/bin/python, else `python`)
+#   ODYSSEY_REPO=<path>    repo checkout used for the default PYTHON venv and for the
+#                          logged commit hash (default: $HOME/odyssey -- override this,
+#                          not PYTHON alone, on a checkout at a different path, e.g. the
+#                          real GEMINI-node path seen this session, /mnt/nfs/home/<user>/odyssey)
 #   DRY_RUN=1              print the commands instead of running them
 #
 # Stages (each logs "=== STAGE <name> EXIT <code> <utc time> ==="):
@@ -35,14 +39,18 @@ LANES="${LANES:-64}"; CHUNK="${CHUNK:-512}"; ALERT_SHARDS="${ALERT_SHARDS:-4}"; 
 CHECKPOINT="${CHECKPOINT:-checkpoint_best.pt}"; DRY_RUN="${DRY_RUN:-0}"; STREAM_BASELINE="${STREAM_BASELINE:-0}"
 ALERTS_ARGS=(--run-dir "$RUN_DIR" --held-out-shard-dir "$DATA_ROOT/held_out" --baseline-shard-dir "$DATA_ROOT/train" --max-shards "$ALERT_SHARDS" --max-baseline-shards "$BASELINE_SHARDS" --num-lanes "$LANES" --chunk-size "$CHUNK" --output-json "$RUN_DIR/alerts.json" --dump-rows "$RUN_DIR/alerts_rows.parquet" --checkpoint "$CHECKPOINT")
 [ "$STREAM_BASELINE" = "1" ] && ALERTS_ARGS+=(--stream-baseline-shards)
+ODYSSEY_REPO="${ODYSSEY_REPO:-$HOME/odyssey}"
 if [ -z "${PYTHON:-}" ]; then
-  if [ -x "$HOME/odyssey/.venv/bin/python" ]; then PYTHON="$HOME/odyssey/.venv/bin/python"; else PYTHON="python"; fi
+  if [ -x "$ODYSSEY_REPO/.venv/bin/python" ]; then PYTHON="$ODYSSEY_REPO/.venv/bin/python"; else PYTHON="python"; fi
 fi
-MODEL_KIND=$("$PYTHON" - "$RUN_DIR" <<'PY'
+if ! MODEL_KIND=$("$PYTHON" - "$RUN_DIR" <<'PY'
 import json, sys
 print(json.load(open(sys.argv[1] + "/config.json")).get("model_kind", "bottleneck"))
 PY
-)
+); then
+  echo "ERROR: could not read model_kind from $RUN_DIR/config.json (missing or malformed?)" >&2
+  exit 1
+fi
 stage() {  # stage NAME CMD...
   local name="$1"; shift
   echo "=== STAGE $name START $(date -u +%FT%TZ) ==="
@@ -52,7 +60,7 @@ stage() {  # stage NAME CMD...
   echo "=== STAGE $name EXIT $code $(date -u +%FT%TZ) ==="
   return $code
 }
-echo "run=$RUN_DIR data=$DATA_ROOT model_kind=$MODEL_KIND lanes=$LANES chunk=$CHUNK checkpoint=$CHECKPOINT commit=$(cd "$HOME/odyssey" 2>/dev/null && git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+echo "run=$RUN_DIR data=$DATA_ROOT model_kind=$MODEL_KIND lanes=$LANES chunk=$CHUNK checkpoint=$CHECKPOINT commit=$(cd "$ODYSSEY_REPO" 2>/dev/null && git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
 stage eval "$PYTHON" -m odyssey.inference.run_inference --run-dir "$RUN_DIR" --held-out-shard-dir "$DATA_ROOT/held_out" --output-json "$RUN_DIR/inference_results.json" --num-lanes "$LANES" --chunk-size "$CHUNK" --checkpoint "$CHECKPOINT"
 

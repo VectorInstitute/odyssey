@@ -400,6 +400,18 @@ def _within_admission_guard_mask(ts: pl.Series, admission: pl.Series) -> pl.Seri
     ).to_series()
 
 
+class _StreamAbandonedError(Exception):
+    """Internal sentinel: the consumer stopped reading before ``COPY`` finished.
+
+    Raised by :class:`_CopyChunkSink`'s ``write()`` once
+    :func:`_stream_table_copy`'s cleanup has requested a stop, to abort
+    psycopg2's ``copy_expert`` early rather than let it keep calling
+    ``write()`` on a sink nobody is draining anymore -- see
+    :func:`_stream_table_copy`'s ``finally`` block. Caught and swallowed on
+    the producer thread; never meant to reach a caller.
+    """
+
+
 class _CopyChunkSink:
     """File-like sink for psycopg2's ``copy_expert``, chunking CSV into polars frames.
 
@@ -417,6 +429,22 @@ class _CopyChunkSink:
     :func:`_stream_table_copy` for the producer-thread/consumer-generator
     wiring this exists for.
 
+    **Column constraint, not currently violated but not enforced either:**
+    row boundaries are found by counting raw ``\\n`` bytes
+    (:meth:`_drain`), not by CSV-aware parsing. A column value containing a
+    literal newline inside a CSV-quoted field (Postgres ``COPY`` quotes a
+    field containing the delimiter, quote character, or a newline) would
+    make this miscount row boundaries and split a single logical row across
+    two chunks, silently corrupting both. Every column every
+    ``extract_<table>`` function currently selects (ids, codes, units,
+    hashed identifiers, datetimes) is free of this risk by construction --
+    genuine free-text fields (e.g. ``radiology_subset.imaging_result``) are
+    deliberately never selected (see the module docstring's MEDS mapping
+    table / ``docs/gemini_extraction.md``). If a future change ever selects
+    a free-text column through :func:`_stream_table_copy`, verify first
+    that it can't contain a literal newline, or add real CSV-aware
+    chunking here instead of the newline-count shortcut.
+
     Parameters
     ----------
     chunk_rows : int
@@ -424,16 +452,31 @@ class _CopyChunkSink:
     out_queue : queue.Queue[polars.DataFrame]
         Bounded queue (see :func:`_stream_table_copy`'s ``maxsize``, which
         provides backpressure) that completed chunks are put onto.
+    stop_requested : threading.Event
+        Checked on every ``write()`` call; once set, ``write()`` raises
+        :class:`_StreamAbandonedError` to abort the in-flight ``COPY`` instead
+        of continuing to buffer/parse/enqueue for a consumer that has
+        already given up (see :func:`_stream_table_copy`'s ``finally``
+        block -- this is what makes early abandonment terminate instead of
+        deadlocking on a producer blocked on a full, undrained queue).
     """
 
-    def __init__(self, chunk_rows: int, out_queue: "queue.Queue[pl.DataFrame]") -> None:
+    def __init__(
+        self,
+        chunk_rows: int,
+        out_queue: "queue.Queue[pl.DataFrame]",
+        stop_requested: threading.Event,
+    ) -> None:
         self._buffer = bytearray()
         self._chunk_rows = chunk_rows
         self._queue = out_queue
         self._header: Optional[bytes] = None
+        self._stop_requested = stop_requested
 
     def write(self, data: bytes) -> int:
         """Accept one chunk of bytes from psycopg2 as the CSV output arrives."""
+        if self._stop_requested.is_set():
+            raise _StreamAbandonedError
         self._buffer.extend(data)
         self._drain()
         return len(data)
@@ -529,12 +572,15 @@ def _stream_table_copy(
 
     out_queue: "queue.Queue[Any]" = queue.Queue(maxsize=_STREAM_QUEUE_MAXSIZE)
     errors: list[BaseException] = []
+    stop_requested = threading.Event()
 
     def _produce() -> None:
-        sink = _CopyChunkSink(chunk_rows, out_queue)
+        sink = _CopyChunkSink(chunk_rows, out_queue, stop_requested)
         try:
             db.copy_to_sink(copy_sql, sink)
             sink.close()
+        except _StreamAbandonedError:
+            pass  # consumer gave up early -- not a real error, nothing to report
         except BaseException as exc:  # noqa: BLE001 -- must reach the consumer thread
             errors.append(exc)
         finally:
@@ -549,7 +595,24 @@ def _stream_table_copy(
                 break
             yield item
     finally:
-        producer.join()
+        # Not an unconditional producer.join(): if this generator is being
+        # abandoned early (e.g. a caller elsewhere in run_extraction raises
+        # mid-table and this generator is garbage-collected/closed without
+        # being exhausted), the producer thread can be blocked on
+        # out_queue.put() with a full queue and no one left to drain it --
+        # join()ing unconditionally here would then hang forever. Setting
+        # stop_requested makes the next write() abort the COPY
+        # (_StreamAbandonedError), and draining the queue here unblocks any put()
+        # already in flight so that abort can actually be observed. On the
+        # normal exhaustion path (loop broke on _STREAM_DONE), the queue is
+        # already empty and the producer already finished, so this is a
+        # no-op there.
+        stop_requested.set()
+        while producer.is_alive():
+            try:
+                out_queue.get_nowait()
+            except queue.Empty:
+                producer.join(timeout=0.1)
     if errors:
         raise errors[0]
 
