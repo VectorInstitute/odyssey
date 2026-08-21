@@ -227,6 +227,19 @@ _PREFIX_TO_TYPE: Dict[str, int] = {
     "ICU_ADMISSION_WEIGHT": DEMOGRAPHIC_TYPE,
     "ICU_ADMISSION_HEIGHT": DEMOGRAPHIC_TYPE,
     "ICU_DISCHARGE_WEIGHT": DEMOGRAPHIC_TYPE,
+    # GEMINI families (scripts/gemini/extract_meds.py). LAB/VITALS/
+    # MEDICATION/DIAGNOSIS/PROCEDURE/ICU_ADMISSION/ICU_DISCHARGE already
+    # covered above -- GEMINI's own admdad_subset admission/discharge and
+    # radiology events are the only genuinely new prefixes.
+    "ADMISSION": VISIT_TYPE,
+    "DISCHARGE": VISIT_TYPE,
+    "IMAGING": PROCEDURE_TYPE,
+    # Not a clinical event type -- physicians_subset provider-hash events,
+    # kept option-preserving for a tabled (not abandoned) physician-
+    # preference IV study, see docs/gemini_extraction.md's "Why provider
+    # ids are preserved". Explicit OTHER_TYPE, not a silent fall-through:
+    # deliberate, not an omission.
+    "PROVIDER": OTHER_TYPE,
 }
 
 
