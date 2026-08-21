@@ -31,6 +31,7 @@ import polars as pl  # noqa: E402
 import odyssey.training.train as train_module  # noqa: E402
 from odyssey.inference.run_inference import evaluate_run  # noqa: E402
 from odyssey.training.train import TrainingConfig, train  # noqa: E402
+from odyssey.utils import env_fingerprint  # noqa: E402
 
 
 T0 = datetime(2024, 1, 1, 0, 0)
@@ -233,6 +234,56 @@ def test_train_resumes_from_an_epoch_checkpoint(tmp_path: Path) -> None:
     # first run left off rather than overlapping it.
     steps_after_first_run = [r["step"] for r in records if r["step"] > first_run_step]
     assert steps_after_first_run
+
+
+def test_train_writes_provenance_for_periodic_and_epoch_checkpoints(
+    tmp_path: Path,
+) -> None:
+    # Real bug this guards against: checkpoint_best.pt/checkpoint_final.pt
+    # got write_run_provenance, but checkpoint_{step}.pt and
+    # checkpoint_epoch_{n}.pt did not -- verify_run_provenance's
+    # stored_all.get(checkpoint_name or "") then silently returns []
+    # ("no mismatch") for those checkpoints on resume, since there is
+    # simply no canary entry to compare against, masking real environment
+    # drift (a different GPU/kernel/torch build) instead of catching it --
+    # exactly the failure mode this project's reproducibility directive
+    # exists to prevent.
+    train_dir = tmp_path / "data" / "train"
+    tuning_dir = tmp_path / "data" / "tuning"
+    _write_shards(train_dir, n_subjects=12, n_events_per_subject=30)
+    _write_shards(tuning_dir, n_subjects=4, n_events_per_subject=30)
+
+    output_dir = tmp_path / "run"
+    config = _tiny_config(
+        train_dir,
+        tuning_dir,
+        output_dir,
+        eval_every=100000,
+        checkpoint_every=4,  # small enough to land a checkpoint_{step}.pt mid-epoch
+    )
+    train(config)
+
+    periodic_checkpoints = sorted(
+        output_dir.glob("checkpoint_[0-9]*.pt"),
+        key=lambda p: int(p.stem.split("_")[-1]),
+    )
+    assert periodic_checkpoints, "expected at least one checkpoint_every checkpoint"
+    epoch_checkpoint = output_dir / "checkpoint_epoch_0.pt"
+    assert epoch_checkpoint.exists()
+
+    canary = json.loads((output_dir / env_fingerprint.CANARY_FILENAME).read_text())
+    assert periodic_checkpoints[0].name in canary, (
+        "no canary entry for the periodic checkpoint -- verify_run_provenance "
+        "would silently report no drift on resume from it"
+    )
+    assert epoch_checkpoint.name in canary, (
+        "no canary entry for the epoch checkpoint -- verify_run_provenance "
+        "would silently report no drift on resume from it"
+    )
+    # checkpoint_best.pt/checkpoint_final.pt were already covered before this
+    # fix -- pinning that coverage stays intact, not just the two new cases.
+    assert "checkpoint_best.pt" in canary
+    assert "checkpoint_final.pt" in canary
 
 
 @cuda_required
