@@ -31,7 +31,12 @@ T0 = datetime(2024, 1, 1, 6, 0, 0)
 
 
 def _events_binned(subject_ids: list[int]) -> pl.DataFrame:
-    """One timed non-birth event per subject, at T0 -- a clean, known origin."""
+    """One timed non-birth event per subject, at T0 -- a clean, known origin.
+
+    Single-event-per-subject fixture: first == last == origin == T0. Tests
+    that need a subject with a real event span (first < last) build their
+    own frame instead of using this one.
+    """
     return pl.DataFrame(
         {
             "subject_id": subject_ids,
@@ -42,32 +47,75 @@ def _events_binned(subject_ids: list[int]) -> pl.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# _prediction_times: the (d) round-trip
+# _prediction_times: reconstruction + the event-span tripwire
 # ---------------------------------------------------------------------------
 
 
 def test_prediction_times_reconstructs_the_absolute_timestamp() -> None:
     rows = [IndexRow(subject_id=1, visit_id=10, time_hours=5.5)]
-    times = _prediction_times(rows, _events_binned([1]))
+    times = _prediction_times(rows, _events_binned([1]), max_horizon_hours=8.0)
     assert times == [T0 + timedelta(hours=5.5)]
 
 
-def test_prediction_times_round_trips_exactly_for_many_rows() -> None:
-    rows = [
-        IndexRow(subject_id=1, visit_id=10, time_hours=h)
-        for h in (0.0, 4.0, 8.5, 100.25, 999.999)
-    ]
-    events = _events_binned([1])
-    times = _prediction_times(rows, events)
+def test_prediction_times_accepts_rows_within_the_events_span_plus_horizon() -> None:
+    # events span T0 to T0+50h; a landmark at 40h with an 8h horizon reaches
+    # 48h, still inside [T0, T0+50h+8h] -- accepted.
+    events = pl.DataFrame(
+        {
+            "subject_id": [1, 1],
+            "code": ["LAB//x//normal", "LAB//x//normal"],
+            "time": [T0, T0 + timedelta(hours=50.0)],
+        }
+    )
+    rows = [IndexRow(subject_id=1, visit_id=10, time_hours=h) for h in (0.0, 4.0, 40.0)]
+    times = _prediction_times(rows, events, max_horizon_hours=8.0)
     for r, t in zip(rows, times):
-        back = (t - T0).total_seconds() / 3600.0
-        assert back == pytest.approx(r.time_hours, abs=1e-9)
+        assert t == T0 + timedelta(hours=r.time_hours)
+
+
+def test_prediction_times_rejects_a_row_past_the_last_event_plus_horizon() -> None:
+    events = pl.DataFrame(
+        {
+            "subject_id": [1, 1],
+            "code": ["LAB//x//normal", "LAB//x//normal"],
+            "time": [T0, T0 + timedelta(hours=50.0)],
+        }
+    )
+    # time_hours=100 puts pred_time at T0+100h, past last(T0+50h) + 8h horizon.
+    rows = [IndexRow(subject_id=1, visit_id=10, time_hours=100.0)]
+    with pytest.raises(AssertionError, match="outside the subject's own event span"):
+        _prediction_times(rows, events, max_horizon_hours=8.0)
+
+
+def test_prediction_times_catches_a_wrong_origin_via_the_span_check() -> None:
+    # Simulates the exact bug class the old round-trip check could not
+    # catch: a row built against a DIFFERENT (wrong) origin than the one
+    # this call recomputes from events_binned. Subject 1's real events
+    # span T0..T0+10h; a row claiming time_hours=3.0 relative to a wrong
+    # origin 500h before T0 would, if silently trusted, place prediction_time
+    # far outside the subject's real span -- the row-order/index bookkeeping
+    # bug this guards against.  Here we construct that directly: a row whose
+    # intended prediction_time (computed by the caller against a bad origin)
+    # falls outside the span, which is exactly what large/negative
+    # time_hours values arriving from a mismatched origin would produce.
+    events = pl.DataFrame(
+        {
+            "subject_id": [1, 1],
+            "code": ["LAB//x//normal", "LAB//x//normal"],
+            "time": [T0, T0 + timedelta(hours=10.0)],
+        }
+    )
+    rows = [IndexRow(subject_id=1, visit_id=10, time_hours=-500.0)]
+    with pytest.raises(AssertionError, match="outside the subject's own event span"):
+        _prediction_times(rows, events, max_horizon_hours=8.0)
 
 
 def test_prediction_times_raises_for_a_subject_with_no_origin() -> None:
     rows = [IndexRow(subject_id=99, visit_id=1, time_hours=1.0)]
     with pytest.raises(ValueError, match="no sequence origin"):
-        _prediction_times(rows, _events_binned([1]))  # subject 1, not 99
+        _prediction_times(
+            rows, _events_binned([1]), max_horizon_hours=8.0
+        )  # subject 1, not 99
 
 
 # ---------------------------------------------------------------------------
