@@ -26,6 +26,13 @@
 #   all          probe, schema, extract-dry, in order (default; deliberately
 #                excludes env-gpu and the not-yet-built steps -- see below)
 #
+# Self-syncing: every invocation starts with `git fetch origin && git reset
+# --hard origin/main` (never `git pull` -- every mirror rewrites history, so
+# pull's merge sees the same content as two unrelated commits and refuses).
+# Refuses to reset, and stops instead, if the tree is dirty or there are
+# local commits origin/main doesn't have -- see docs/gemini.md's
+# "fetch+reset, never pull" note for what to do if that happens.
+#
 # Activates (creating if missing) a venv under $HOME, installs only what the
 # selected step needs, runs it, then commits and pushes ONLY the output it
 # produced. Safe to re-run: venv/install steps are idempotent, each step
@@ -40,6 +47,46 @@ cd "$REPO_DIR"
 
 STEP="${1:-all}"
 VENV="${GEMINI_VENV:-$HOME/.venvs/odyssey-gemini}"
+
+# --- sync with the mirror (fetch + reset, never pull) ---------------------
+#
+# Every mirror rewrites gemini's history (see docs/gemini.md's mirroring
+# section): a commit made on this node and its mirrored equivalent from
+# GitHub can be the exact same content under two different hashes, so
+# `git pull` (fetch + merge) sees them as unrelated and refuses -- the
+# predictable divergence Amrit hit. Fetch + hard reset to origin/main is
+# the fix, but only when it's safe: if the working tree is dirty or this
+# node has real local commits origin/main doesn't have, resetting would
+# silently throw them away. Runs before every step, not just once, so a
+# plain `scripts/gemini/run.sh <step>` is always self-syncing.
+sync_with_mirror() {
+    git fetch origin --quiet
+
+    local dirty
+    dirty=$(git status --porcelain)
+    if [[ -n "$dirty" ]]; then
+        echo "REFUSING to sync: working tree is dirty:" >&2
+        echo "$dirty" >&2
+        echo "Commit or stash these changes first, then re-run." >&2
+        exit 1
+    fi
+
+    local unpushed
+    unpushed=$(git log --oneline origin/main..HEAD)
+    if [[ -n "$unpushed" ]]; then
+        echo "REFUSING to sync: local commits not on origin/main:" >&2
+        echo "$unpushed" >&2
+        echo "These outputs must be pushed before resetting over them -- if" >&2
+        echo "run.sh's own commit-and-push step made them, re-run this step" >&2
+        echo "to retry the push; if you committed some other way, push it" >&2
+        echo "first." >&2
+        exit 1
+    fi
+
+    git reset --hard origin/main
+}
+
+sync_with_mirror
 
 # --- environment -------------------------------------------------------
 
