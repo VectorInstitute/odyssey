@@ -196,15 +196,31 @@ def write_run_provenance(
     vocab_size: int,
     *,
     device: str = "cpu",
+    checkpoint_name: Optional[str] = None,
 ) -> None:
-    """Write the fingerprint and canary files into a training run directory."""
+    """Record the environment fingerprint, and the canary for one checkpoint.
+
+    Call once at run start with ``checkpoint_name=None`` (fingerprint only:
+    the canary of a randomly initialized model is meaningless, the first
+    wiring of this function got that wrong and every eval "failed" its
+    canary) and again with the checkpoint name each time a checkpoint is
+    saved, so the canary file maps checkpoint filename -> canary of the
+    exact weights in it.
+    """
     run_dir = Path(run_dir)
     (run_dir / FINGERPRINT_FILENAME).write_text(
         json.dumps(environment_fingerprint(), indent=2)
     )
-    (run_dir / CANARY_FILENAME).write_text(
-        json.dumps(numeric_canary(model, vocab_size, device=device), indent=2)
-    )
+    if checkpoint_name is None:
+        return
+    canary_path = run_dir / CANARY_FILENAME
+    stored: Dict[str, Any] = {}
+    if canary_path.exists():
+        stored = json.loads(canary_path.read_text())
+        if "mean" in stored:  # legacy single-canary file (pre per-checkpoint)
+            stored = {}
+    stored[checkpoint_name] = numeric_canary(model, vocab_size, device=device)
+    canary_path.write_text(json.dumps(stored, indent=2))
 
 
 def verify_run_provenance(
@@ -213,6 +229,7 @@ def verify_run_provenance(
     vocab_size: int,
     *,
     device: str = "cpu",
+    checkpoint_name: Optional[str] = None,
 ) -> List[str]:
     """Recompute the canary against a run dir's stored one; log and return mismatches.
 
@@ -221,7 +238,14 @@ def verify_run_provenance(
     canary_path = Path(run_dir) / CANARY_FILENAME
     if not canary_path.exists():
         return []
-    stored = json.loads(canary_path.read_text())
+    stored_all = json.loads(canary_path.read_text())
+    if "mean" in stored_all:
+        # Legacy single-canary file written at model construction (random
+        # weights): meaningless to compare against; skip silently.
+        return []
+    stored = stored_all.get(checkpoint_name or "")
+    if stored is None:
+        return []
     fresh = numeric_canary(model, vocab_size, device=device)
     problems = check_canary(stored, fresh)
     for p in problems:

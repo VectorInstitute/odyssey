@@ -53,12 +53,38 @@ def test_canary_is_deterministic_and_detects_weight_changes() -> None:
 
 def test_provenance_roundtrip_and_legacy_runs(tmp_path: Path) -> None:
     model = _model()
+    # fingerprint-only call writes no canary (a random model's canary is meaningless)
     write_run_provenance(tmp_path, model, 32)
     assert (tmp_path / FINGERPRINT_FILENAME).exists()
-    assert (tmp_path / CANARY_FILENAME).exists()
-    assert verify_run_provenance(tmp_path, model, 32) == []
+    assert not (tmp_path / CANARY_FILENAME).exists()
+    # per-checkpoint canaries
+    write_run_provenance(tmp_path, model, 32, checkpoint_name="checkpoint_best.pt")
+    assert (
+        verify_run_provenance(tmp_path, model, 32, checkpoint_name="checkpoint_best.pt")
+        == []
+    )
+    # a different checkpoint name has no stored canary: silent
+    assert (
+        verify_run_provenance(tmp_path, model, 32, checkpoint_name="checkpoint_9.pt")
+        == []
+    )
     with torch.no_grad():
         model.lm_head.weight.add_(0.05)
-    assert verify_run_provenance(tmp_path, model, 32) != []
+    assert (
+        verify_run_provenance(tmp_path, model, 32, checkpoint_name="checkpoint_best.pt")
+        != []
+    )
     # a run predating provenance files verifies silently
     assert verify_run_provenance(tmp_path / "nope", model, 32) == []
+
+
+def test_legacy_single_canary_files_are_skipped(tmp_path: Path) -> None:
+    """Files written by the first (construction-time) wiring never fail evals."""
+    model = _model()
+    (tmp_path / CANARY_FILENAME).write_text(
+        json.dumps({"mean": 0.0, "std": 1.0, "absmax": 1.0, "shape": [1]})
+    )
+    assert (
+        verify_run_provenance(tmp_path, model, 32, checkpoint_name="checkpoint_best.pt")
+        == []
+    )
