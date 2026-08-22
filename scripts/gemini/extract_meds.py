@@ -2955,7 +2955,7 @@ class MedsShardWriter:
             combined
         )
 
-    def write_batch(self, table: str, batch: pd.DataFrame) -> None:
+    def write_batch(self, table: str, batch: pd.DataFrame) -> tuple[int, int]:
         """Split one MEDS-shaped batch by shard and buffer it for writing.
 
         Parameters
@@ -2965,26 +2965,39 @@ class MedsShardWriter:
             eventual summary -- not written to the Parquet itself.
         batch : pandas.DataFrame
             Must carry exactly :data:`MEDS_COLUMNS`.
+
+        Returns
+        -------
+        tuple[int, int]
+            ``(n_written, n_dropped_unshardable)`` for this call --
+            :func:`run_extraction` sums these per table and asserts the
+            total against what the table's generator actually emitted
+            (see :data:`SHARD_FLUSH_ROW_THRESHOLD`'s neighboring incident
+            note): a mismatch means a row silently vanished somewhere
+            between the generator and durable disk, the exact failure
+            class this accounting exists to make loud instead of silent.
         """
         if batch.empty:
-            return
+            return 0, 0
         shard_ids = batch["subject_id"].map(self.shard_by_subject)
         unmatched = shard_ids.isna()
+        n_dropped = 0
         if unmatched.any():
-            n_unmatched = int(unmatched.sum())
-            self.rows_dropped_unshardable += n_unmatched
+            n_dropped = int(unmatched.sum())
+            self.rows_dropped_unshardable += n_dropped
             logger.warning(
                 "%d rows for %s had a subject_id with no shard assignment, dropping",
-                n_unmatched,
+                n_dropped,
                 table,
             )
             batch = batch.loc[~unmatched]
             shard_ids = shard_ids.loc[~unmatched]
         if batch.empty:
-            return
-        self.rows_written_per_table[table] = self.rows_written_per_table.get(
-            table, 0
-        ) + len(batch)
+            return 0, n_dropped
+        n_written = len(batch)
+        self.rows_written_per_table[table] = (
+            self.rows_written_per_table.get(table, 0) + n_written
+        )
         for raw_shard, group in batch.groupby(shard_ids.astype(int)):
             shard = int(raw_shard)
             self._buffers.setdefault(shard, []).append(group)
@@ -2993,6 +3006,44 @@ class MedsShardWriter:
             ) + len(group)
             if self._buffer_row_counts[shard] >= SHARD_FLUSH_ROW_THRESHOLD:
                 self._flush_shard(shard)
+        return n_written, n_dropped
+
+    def flush_all(self) -> None:
+        """Force-flush every buffered shard and close its writer, durably.
+
+        A Parquet file's footer (schema, row-group index -- everything a
+        reader needs) is only written on ``pq.ParquetWriter.close()``;
+        ``write_table()`` alone leaves an unreadable, footer-less file if
+        the process dies before ``close()`` runs. Real incident this
+        closes: a resumed run's manifest is marked ``"complete"`` per
+        table (see :func:`run_extraction`), but before this method
+        existed, every writer's actual ``close()`` happened exactly once,
+        at the very end of the whole run, after every table. One real run
+        buffered ``ipscu_subset``'s ~1.08M events (under
+        :data:`SHARD_FLUSH_ROW_THRESHOLD` per shard), marked it complete,
+        then crashed on a later table (``lab_subset``) before that
+        end-of-run ``close()`` ever ran -- silently losing every
+        `ipscu_subset`` row while the manifest still claimed completion,
+        so every subsequent resumed run skipped re-extracting it.
+
+        Called by :func:`run_extraction` immediately after each table's
+        generator is drained, *before* that table's manifest entry is
+        marked complete -- durability must precede the claim of
+        durability, always. Closing every open writer (not just flushing
+        buffers into it) is what makes a shard's on-disk state actually
+        valid, readable Parquet. The next table's writes to the same
+        shard reopen a fresh ``_partN`` file via
+        :func:`_next_shard_write_path`'s existing multi-part-shard design
+        (already built for the resumed-run case) -- this costs one extra
+        small part file per shard per table boundary, never a rewrite of
+        anything already on disk.
+        """
+        for shard in list(self._buffers):
+            self._flush_shard(shard)
+        for writer in self._writers.values():
+            writer.close()
+        self._writers.clear()
+        self._shard_row_counts.clear()
 
     def close(self) -> dict[int, int]:
         """Flush every buffered shard, close every writer, return logical row counts.
@@ -3006,10 +3057,7 @@ class MedsShardWriter:
             an already-completed table live in a file this instance never
             touched.
         """
-        for shard in list(self._buffers):
-            self._flush_shard(shard)
-        for writer in self._writers.values():
-            writer.close()
+        self.flush_all()
         return _logical_shard_row_counts(self.output_dir)
 
 
@@ -3100,6 +3148,70 @@ def _log_table_progress(table: str) -> Any:
         )
 
     return _report
+
+
+def _extract_one_table(
+    table_name: str, generator: Iterator[ExtractedBatch], writer: MedsShardWriter
+) -> None:
+    """Drain one table's generator into ``writer``, durably, before returning.
+
+    Split out of :func:`run_extraction` so that function's own statement
+    count stays under ruff's PLR0915 threshold; this holds the per-table
+    batch loop, timing log, and the durability guard below.
+
+    Calls :meth:`MedsShardWriter.flush_all` once the generator is
+    exhausted -- **before** :func:`run_extraction` marks this table
+    complete in the manifest -- and asserts the generator's own emitted
+    row count against what the writer durably accounts for
+    (written + dropped-unshardable), raising loudly on any mismatch
+    rather than letting a silently-lost row through. See
+    :meth:`MedsShardWriter.flush_all`'s docstring for the real incident
+    (``ipscu_subset``'s buffered-but-unflushed rows lost when a *later*
+    table crashed before the single end-of-run ``close()`` ever ran) this
+    ordering closes.
+    """
+    logger.info("[extract_meds] extracting %s...", table_name)
+    report_progress = _log_table_progress(table_name)
+    gen_iter = iter(generator)
+    global _datetime_parse_seconds  # noqa: PLW0603
+    n_generated = 0
+    n_written = 0
+    n_dropped = 0
+    while True:
+        _datetime_parse_seconds = 0.0
+        t_generate_start = time.time()
+        try:
+            batch, source_rows = next(gen_iter)
+        except StopIteration:
+            break
+        t_generate = time.time() - t_generate_start
+        t_parse = _datetime_parse_seconds
+        t_transform = max(t_generate - t_parse, 0.0)
+        t_write_start = time.time()
+        n_generated += len(batch)
+        batch_written, batch_dropped = writer.write_batch(table_name, batch)
+        n_written += batch_written
+        n_dropped += batch_dropped
+        t_write = time.time() - t_write_start
+        logger.info(
+            "[extract_meds] %s: batch phase timing (%d rows) "
+            "parse=%.1fms transform=%.1fms write=%.1fms",
+            table_name,
+            source_rows,
+            t_parse * 1000,
+            t_transform * 1000,
+            t_write * 1000,
+        )
+        report_progress(source_rows)
+    writer.flush_all()
+    if n_generated != n_written + n_dropped:
+        raise RuntimeError(
+            f"[extract_meds] {table_name}: generator emitted {n_generated} rows "
+            f"but the writer only accounts for {n_written} written + "
+            f"{n_dropped} dropped-unshardable -- rows went missing between "
+            "the generator and durable disk, refusing to mark this table "
+            "complete"
+        )
 
 
 def run_extraction(output_dir: Optional[Path] = None) -> dict[str, Any]:
@@ -3194,33 +3306,7 @@ def run_extraction(output_dir: Optional[Path] = None) -> dict[str, Any]:
         if manifest.get(table_name) == "complete":
             logger.info("[extract_meds] %s already complete, skipping", table_name)
             continue
-        logger.info("[extract_meds] extracting %s...", table_name)
-        report_progress = _log_table_progress(table_name)
-        gen_iter = iter(generator)
-        global _datetime_parse_seconds  # noqa: PLW0603
-        while True:
-            _datetime_parse_seconds = 0.0
-            t_generate_start = time.time()
-            try:
-                batch, source_rows = next(gen_iter)
-            except StopIteration:
-                break
-            t_generate = time.time() - t_generate_start
-            t_parse = _datetime_parse_seconds
-            t_transform = max(t_generate - t_parse, 0.0)
-            t_write_start = time.time()
-            writer.write_batch(table_name, batch)
-            t_write = time.time() - t_write_start
-            logger.info(
-                "[extract_meds] %s: batch phase timing (%d rows) "
-                "parse=%.1fms transform=%.1fms write=%.1fms",
-                table_name,
-                source_rows,
-                t_parse * 1000,
-                t_transform * 1000,
-                t_write * 1000,
-            )
-            report_progress(source_rows)
+        _extract_one_table(table_name, generator, writer)
         manifest[table_name] = "complete"
         _save_manifest(target_dir, manifest)
 
