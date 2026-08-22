@@ -3,6 +3,19 @@
 No real database or filesystem beyond ``tmp_path`` is used --
 ``odyssey.data.gemini.db.query``/``stream_query``/``copy_to_sink`` are
 monkeypatched, matching every other ``tests/scripts/gemini/test_*.py``.
+
+**Every fixture chunk fed to an ``extract_<table>``/``fetch_*`` function
+must be built via** :func:`_utf8_chunk`, **not a bare ``pl.DataFrame(...)``**
+-- real ``_stream_table`` chunks are 100% ``pl.Utf8`` (see
+``extract_meds.py``'s module docstring, afc50c4), and a native-Python-typed
+fixture exercises a chunk shape that never occurs against the real
+database. This is the second real dtype-assumption bug this project has
+shipped past its own tests since afc50c4 (the first: ``test_type_mapped_omop``/
+``measurement_mapped_omop``; the second: ``extract_death``'s
+``discharge_disposition`` cross-check, which crashed the first real
+GEMINI re-extract with an ``is_in()`` dtype mismatch that every existing
+test's typed fixture papered over). See :func:`_utf8_chunk`'s own
+docstring for the exact convention.
 """
 
 import importlib.util
@@ -53,6 +66,47 @@ def _fake_stream_table(
         yield from by_table.get(table, [])
 
     return fake
+
+
+def _utf8_chunk(data: dict[str, list]) -> pl.DataFrame:
+    """Build a fixture chunk with every column ``pl.Utf8``, like a real one.
+
+    Real ``_stream_table`` chunks are 100% ``pl.Utf8`` (``pl.read_csv``'s
+    ``infer_schema_length=0``, see the module docstring's afc50c4 entry) --
+    every ``extract_<table>``/``fetch_*`` function does its own explicit
+    lenient cast downstream, never relies on an inferred dtype. A fixture
+    built from native Python ints/bools instead (plain ``pl.DataFrame(...)``,
+    which polars infers a typed column from) exercises a chunk shape that
+    never occurs against the real database. That gap is exactly what let a
+    real ``is_in()`` dtype-mismatch crash (``discharge_disposition`` arrived
+    ``Utf8``, compared against an ``Int64`` literal tuple) ship past every
+    ``extract_death`` test and crash the first real re-extract.
+
+    **Every new** ``extract_*``/``fetch_*`` **test must build its fixture
+    chunks through this helper**, not a bare ``pl.DataFrame(...)``, unless
+    it is deliberately testing a non-Utf8 edge case.
+
+    Parameters
+    ----------
+    data : dict[str, list]
+        Column name -> raw values, exactly as they'd render over the wire
+        (e.g. ``7`` for an integer column -- stringified here -- or the
+        literal ``"t"``/``"f"`` for a Postgres boolean; pass the exact
+        string yourself for anything that doesn't stringify the same way
+        Python's ``str()`` would). ``None`` stays ``None`` (SQL ``NULL``).
+
+    Returns
+    -------
+    polars.DataFrame
+        Every column ``pl.Utf8``, matching a real chunk.
+    """
+    return pl.DataFrame(
+        {
+            col: [None if v is None else str(v) for v in values]
+            for col, values in data.items()
+        },
+        schema=dict.fromkeys(data, pl.Utf8),
+    )
 
 
 # --- small helpers -----------------------------------------------------
@@ -814,10 +868,10 @@ def test_fetch_mortality_index_reads_every_chunk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mod = _load_module()
-    chunk1 = pl.DataFrame(
+    chunk1 = _utf8_chunk(
         {"genc_id": [1, 2], "in_hospital_mortality_derived": ["t", "f"]}
     )
-    chunk2 = pl.DataFrame({"genc_id": [3], "in_hospital_mortality_derived": ["t"]})
+    chunk2 = _utf8_chunk({"genc_id": [3], "in_hospital_mortality_derived": ["t"]})
     monkeypatch.setattr(
         mod,
         "_stream_table",
@@ -833,7 +887,7 @@ def test_fetch_mortality_index_treats_null_flag_as_not_dead(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mod = _load_module()
-    chunk = pl.DataFrame(
+    chunk = _utf8_chunk(
         {"genc_id": [1, 2], "in_hospital_mortality_derived": [None, "t"]}
     )
     monkeypatch.setattr(
@@ -913,7 +967,7 @@ def test_extract_death_emits_bare_meds_death_for_derived_true_admissions(
     }
     # 1, 2 died per the derived flag; 3 did not.
     mortality_by_genc = {1: True, 2: True, 3: False}
-    chunk = pl.DataFrame(
+    chunk = _utf8_chunk(
         {
             "genc_id": [1, 2, 3],
             "discharge_disposition": [7, 72, 1],
@@ -953,7 +1007,7 @@ def test_extract_death_ignores_discharge_disposition_for_emission(
     subject_by_genc = {1: "pA", 2: "pB"}
     admission_by_genc = {1: pd.Timestamp("2020-01-01"), 2: pd.Timestamp("2020-01-01")}
     mortality_by_genc = {1: True, 2: False}
-    chunk = pl.DataFrame(
+    chunk = _utf8_chunk(
         {
             "genc_id": [1, 2],
             "discharge_disposition": [1, 7],
@@ -984,7 +1038,7 @@ def test_extract_death_treats_genc_absent_from_mortality_index_as_not_dead(
     mod = _load_module()
     subject_by_genc = {1: "pA"}
     admission_by_genc = {1: pd.Timestamp("2020-01-01")}
-    chunk = pl.DataFrame(
+    chunk = _utf8_chunk(
         {
             "genc_id": [1],
             "discharge_disposition": [7],
@@ -1013,7 +1067,7 @@ def test_extract_death_drops_discharge_recorded_before_admission(
         2: pd.Timestamp("2020-01-01"),
     }
     mortality_by_genc = {1: True, 2: True}
-    chunk = pl.DataFrame(
+    chunk = _utf8_chunk(
         {
             "genc_id": [1, 2],
             "discharge_disposition": [7, 7],
@@ -1053,7 +1107,7 @@ def test_extract_death_logs_the_cross_check_tally(
     # (derived true, disposition not a death code). 3: disposition-only
     # (derived false, disposition says death).
     mortality_by_genc = {1: True, 2: True, 3: False}
-    chunk = pl.DataFrame(
+    chunk = _utf8_chunk(
         {
             "genc_id": [1, 2, 3],
             "discharge_disposition": [7, 1, 7],

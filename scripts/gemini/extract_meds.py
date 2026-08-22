@@ -1497,10 +1497,23 @@ def extract_death(
         derived_dead = genc.replace_strict(
             mortality_by_genc, default=False, return_dtype=pl.Boolean
         )
-        disposition_dead = (
-            frame["discharge_disposition"]
-            .is_in(DEATH_DISPOSITION_CODES)
-            .fill_null(False)
+        # discharge_disposition arrives as raw Utf8 like every other chunk
+        # column (see the module docstring's afc50c4 entry) -- DEATH_
+        # DISPOSITION_CODES is a tuple of Python ints, so is_in() needs a
+        # leniently-cast Int64 series first, not the raw string column.
+        # Real incident: shipped without this and crashed the first real
+        # re-extract with a dtype-mismatch error. Unparsable/null values
+        # simply aren't in the death-code set -- this is the cross-check
+        # side only, never gates emission, so no row is dropped over it.
+        disposition_int = frame["discharge_disposition"].cast(pl.Int64, strict=False)
+        _warn_on_unparsable_int_cast(
+            frame["discharge_disposition"],
+            disposition_int,
+            "discharge_disposition",
+            "admdad_subset",
+        )
+        disposition_dead = disposition_int.is_in(DEATH_DISPOSITION_CODES).fill_null(
+            False
         )
         n_both_agree += int((derived_dead & disposition_dead).sum())
         n_derived_only += int((derived_dead & ~disposition_dead).sum())
