@@ -9,7 +9,8 @@ architecture runs, produces the right shapes, and trains, not that it
 learns anything meaningful on real data.
 """
 
-from typing import Dict, List
+import contextlib
+from typing import Dict, Iterator, List, cast
 
 import pytest
 import torch
@@ -23,7 +24,10 @@ cuda_required = pytest.mark.skipif(
 )
 
 from odyssey.data.types import AuxiliaryInputs, ClinicalSequenceBatch  # noqa: E402
-from odyssey.models.backbones.hybrid import EHRHybridBackbone  # noqa: E402
+from odyssey.models.backbones.hybrid import (  # noqa: E402
+    EHRHybridBackbone,
+    HybridBlock,
+)
 from odyssey.models.sequence_model import (  # noqa: E402
     BaselineSequenceModel,
     ConceptBottleneckSequenceModel,
@@ -199,7 +203,7 @@ def test_hybrid_backbone_mamba_branch_carries_state_matches_one_shot() -> None:
     full_batch = _make_batch(batch=2, seq_len=full_len, device="cuda")
 
     captured: Dict[str, List[torch.Tensor]] = {}
-    block = backbone.layers[0]
+    block = cast(HybridBlock, backbone.layers[0])
     original_forward = block.forward
 
     def _capture_mamba_out(hidden_states, residual, **kwargs):  # type: ignore[no-untyped-def]
@@ -309,7 +313,7 @@ def test_hybrid_backbone_output_differs_from_mamba_only_and_attention_only() -> 
     backbone = _make_backbone(num_hidden_layers=1).eval()  # disable dropout
     batch = _make_batch(batch=2, seq_len=SEQ_LEN, device="cuda")
 
-    block = backbone.layers[0]
+    block = cast(HybridBlock, backbone.layers[0])
     original_forward = block.forward
 
     def _mamba_zeroed(hidden_states, residual, **kwargs):  # type: ignore[no-untyped-def]
@@ -334,3 +338,217 @@ def test_hybrid_backbone_output_differs_from_mamba_only_and_attention_only() -> 
         block.forward = original_forward  # type: ignore[method-assign]
 
     assert not torch.allclose(hidden_full, hidden_attn_only, atol=1e-4)
+
+
+@cuda_required
+def test_hybrid_backbone_output_also_differs_when_attention_is_zeroed() -> None:
+    """The symmetric half of the "both branches contribute" claim.
+
+    The adjacent test zeroes the Mamba branch and shows the result
+    differs from the full output -- proving attention alone isn't
+    carrying the whole thing, but never checks the other direction. This
+    zeroes the attention branch instead (mamba-only) and shows THAT also
+    differs from the full output: if it didn't, the merge layer would be
+    silently ignoring the attention branch entirely.
+    """
+    torch.manual_seed(0)
+    backbone = _make_backbone(num_hidden_layers=1).eval()
+    batch = _make_batch(batch=2, seq_len=SEQ_LEN, device="cuda")
+
+    block = cast(HybridBlock, backbone.layers[0])
+    original_forward = block.forward
+
+    def _attn_zeroed(hidden_states, residual, **kwargs):  # type: ignore[no-untyped-def]
+        new_residual = (
+            hidden_states + residual if residual is not None else hidden_states
+        )
+        normed = block.norm(new_residual.to(dtype=block.norm.weight.dtype))
+        mamba_out = block.mamba(
+            normed, inference_params=kwargs.get("mamba_inference_params")
+        )
+        attn_out = (
+            block.attn(normed, inference_params=kwargs.get("attn_inference_params")) * 0
+        )
+        fused = block.merge(mamba_out, attn_out)
+        return fused, new_residual
+
+    with torch.no_grad():
+        hidden_full, _ = backbone(batch)
+        block.forward = _attn_zeroed  # type: ignore[method-assign]
+        hidden_mamba_only, _ = backbone(batch)
+        block.forward = original_forward  # type: ignore[method-assign]
+
+    assert not torch.allclose(hidden_full, hidden_mamba_only, atol=1e-4)
+
+
+@contextlib.contextmanager
+def _capturing_mamba_out(block: HybridBlock) -> Iterator[List[torch.Tensor]]:
+    """Monkeypatch a HybridBlock to record its pre-merge Mamba output per call.
+
+    Same technique as test_hybrid_backbone_mamba_branch_carries_state_
+    matches_one_shot, factored out so a chunk-size sweep can reuse it
+    without re-deriving the patch for every split.
+    """
+    captured: List[torch.Tensor] = []
+    original_forward = block.forward
+
+    def _capture(hidden_states, residual, **kwargs):  # type: ignore[no-untyped-def]
+        new_residual = (
+            hidden_states + residual if residual is not None else hidden_states
+        )
+        normed = block.norm(new_residual.to(dtype=block.norm.weight.dtype))
+        mamba_out = block.mamba(
+            normed, inference_params=kwargs.get("mamba_inference_params")
+        )
+        captured.append(mamba_out)
+        attn_out = block.attn(
+            normed, inference_params=kwargs.get("attn_inference_params")
+        )
+        fused = block.merge(mamba_out, attn_out)
+        return fused, new_residual
+
+    block.forward = _capture  # type: ignore[method-assign]
+    try:
+        yield captured
+    finally:
+        block.forward = original_forward  # type: ignore[method-assign]
+
+
+def _slice_batch(
+    batch: ClinicalSequenceBatch, start: int, end: int
+) -> ClinicalSequenceBatch:
+    return ClinicalSequenceBatch(
+        concept_ids=batch.concept_ids[:, start:end],
+        aux=AuxiliaryInputs(
+            type_ids=batch.aux.type_ids[:, start:end],
+            time_stamps=batch.aux.time_stamps[:, start:end],
+            ages=batch.aux.ages[:, start:end],
+            visit_orders=batch.aux.visit_orders[:, start:end],
+            visit_segments=batch.aux.visit_segments[:, start:end],
+        ),
+    )
+
+
+@cuda_required
+def test_hybrid_backbone_mamba_branch_matches_one_shot_across_chunk_size_splits() -> (
+    None
+):
+    """Chunk-size invariance, TinyGRU's exact discipline, on the real backbone.
+
+    test_hybrid_backbone_mamba_branch_carries_state_matches_one_shot
+    already proves this for one fixed 2-way split at chunk_size==SEQ_LEN.
+    This is the property _make_mamba2_with_state_cls exists to provide
+    (initial_states actually wired into the chunk-scan kernel across
+    forward() calls), and it's exactly the kind of bug that's invisible
+    to every downstream check (loss curves, eval metrics all still look
+    plausible) since it only shows up as numerical drift accumulating
+    across streaming-chunk boundaries -- so it's worth pinning across
+    genuinely different split granularities, not just one. Uses a small
+    mamba_chunk_size (kernel-internal chunking; a forward() call's own
+    seq_len must be a multiple of it) so a truly small streaming
+    increment is a valid call, then sweeps small (4) through huge (32,
+    i.e. only two calls) splits of the same 64-token sequence against the
+    same one-shot (single-call, no state) ground truth.
+    """
+    torch.manual_seed(0)
+    small_chunk_backbone = (
+        EHRHybridBackbone(
+            vocab_size=VOCAB_SIZE,
+            hidden_size=HIDDEN_SIZE,
+            padding_idx=PADDING_IDX,
+            num_hidden_layers=1,
+            mamba_state_size=16,
+            mamba_headdim=MAMBA_HEADDIM,
+            mamba_chunk_size=4,
+            attn_num_heads=ATTN_NUM_HEADS,
+        )
+        .cuda()
+        .eval()
+    )
+    block = cast(HybridBlock, small_chunk_backbone.layers[0])
+
+    full_len = 64
+    full_batch = _make_batch(batch=2, seq_len=full_len, device="cuda")
+
+    with torch.no_grad():
+        with _capturing_mamba_out(block) as captured:
+            small_chunk_backbone(full_batch)
+        mamba_full = captured[0]
+
+        for split_len in (4, 8, 32):  # small through huge, all multiples of 4
+            state = None
+            pieces = []
+            with _capturing_mamba_out(block) as captured:
+                for start in range(0, full_len, split_len):
+                    chunk = _slice_batch(full_batch, start, start + split_len)
+                    _, state = small_chunk_backbone(chunk, state=state)
+                    pieces.append(captured[-1])
+            streamed = torch.cat(pieces, dim=1)
+            assert torch.allclose(streamed, mamba_full, atol=1e-3, rtol=1e-3), (
+                f"chunk_size={split_len} diverged from the one-shot ground truth"
+            )
+
+
+@cuda_required
+def test_hybrid_backbone_real_positions_are_invariant_to_trailing_padding() -> None:
+    """The concrete, checkable form of "masking correct at padding".
+
+    Padding is always appended at the end (packed_context.py's pad_to:
+    PAD_ID + zeroed aux fields, right-padded, never interior) -- so real
+    positions' outputs must not change depending on how much trailing
+    padding follows them, in either the causal-attention branch (whose
+    mask must not let padding leak backward) or the Mamba branch (whose
+    parallel SSD-chunked kernel could in principle be shape-dependent even
+    though the recurrence itself is causal). Not that padding positions
+    look sensible (nothing downstream reads them -- loss is masked via
+    PAD_ID/ignore_index), but that real positions are unaffected by
+    whether/how much padding follows.
+    """
+    torch.manual_seed(0)
+    backbone = _make_backbone().eval()
+
+    real_len = SEQ_LEN
+    pad_len = SEQ_LEN
+    real_batch = _make_batch(batch=2, seq_len=real_len, device="cuda")
+
+    padded_batch = ClinicalSequenceBatch(
+        concept_ids=torch.cat(
+            [
+                real_batch.concept_ids,
+                torch.full((2, pad_len), PADDING_IDX, device="cuda"),
+            ],
+            dim=1,
+        ),
+        aux=AuxiliaryInputs(
+            type_ids=torch.cat(
+                [real_batch.aux.type_ids, torch.zeros(2, pad_len, device="cuda")],
+                dim=1,
+            ).long(),
+            time_stamps=torch.cat(
+                [real_batch.aux.time_stamps, torch.zeros(2, pad_len, device="cuda")],
+                dim=1,
+            ),
+            ages=torch.cat(
+                [real_batch.aux.ages, torch.zeros(2, pad_len, device="cuda")], dim=1
+            ),
+            visit_orders=torch.cat(
+                [real_batch.aux.visit_orders, torch.zeros(2, pad_len, device="cuda")],
+                dim=1,
+            ).long(),
+            visit_segments=torch.cat(
+                [
+                    real_batch.aux.visit_segments,
+                    torch.zeros(2, pad_len, device="cuda"),
+                ],
+                dim=1,
+            ).long(),
+        ),
+    )
+
+    with torch.no_grad():
+        hidden_real, _ = backbone(real_batch)
+        hidden_padded, _ = backbone(padded_batch)
+
+    assert torch.allclose(
+        hidden_padded[:, :real_len], hidden_real, atol=1e-3, rtol=1e-3
+    )
