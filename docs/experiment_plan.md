@@ -24,7 +24,7 @@ attached does not launch.
    comparable; alert evals follow wave conventions exactly.
 6. **Decision gates before expensive rungs** (listed per item below).
 
-## H200 / GEMINI queue (forecasting side; Amrit-mediated)
+## H200 / GEMINI queue (forecasting side; operator-mediated)
 
 | # | Run | Question | Est. | Gate |
 |---|-----|----------|------|------|

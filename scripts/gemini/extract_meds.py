@@ -56,7 +56,7 @@ Design, one function per source table, streaming throughout:
 Fetch strategy (2026-08-21 rewrite, second pass): the first pass of this
 rewrite kept row-ordered keyset pagination (``WHERE row_num > :cursor
 ORDER BY row_num``) but read it through one continuous server-side cursor
-instead of many small requeries. Amrit's real run of *that* immediately
+instead of many small requeries. A real run of *that* immediately
 showed the actual root cause: these matviews have no index on ``row_num``,
 so ``ORDER BY row_num`` forces Postgres to fully scan and sort the table
 before returning even the first row of any page -- confirmed by zero byte

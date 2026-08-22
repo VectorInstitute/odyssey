@@ -4,7 +4,7 @@ No `GEMINI.yaml` here, unlike `eICU.yaml` in this same directory --
 GEMINI's extraction is SQL-based, not MESSY-based.
 
 GEMINI has no file distribution at all (the only access is a live SQL
-connection to Amrit's node), and `meds-extract-run`'s MESSY tooling assumes
+connection to the GEMINI node), and `meds-extract-run`'s MESSY tooling assumes
 a file-based `input_dir`. Making it fit would mean dumping GEMINI's tables
 to files first: roughly doubling the enclave's storage footprint for no
 functional benefit, and needing to validate the whole `meds-extract-run`

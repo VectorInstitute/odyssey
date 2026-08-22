@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Single entry point for everything that runs inside GEMINI. See
 # docs/gemini.md's "scripts/gemini/run.sh" section for the full picture:
-# nobody but Amrit can log into the node, so this is what he actually runs.
+# nobody can log into the node directly, so this is what actually runs there.
 #
 # Usage (on the GEMINI node, from the repo root):
 #   scripts/gemini/run.sh [probe|schema|env-gpu|extract-dry|extract|finalize|export-codes|train-smoke|train-smoke-2|train-full|eval-forecast <run-name>|train|eval|all]
@@ -130,7 +130,7 @@ main() {
     # section): a commit made on this node and its mirrored equivalent from
     # GitHub can be the exact same content under two different hashes, so
     # `git pull` (fetch + merge) sees them as unrelated and refuses -- the
-    # predictable divergence Amrit hit. Fetch + hard reset to origin/main is
+    # predictable divergence hit in practice. Fetch + hard reset to origin/main is
     # the fix, but only when it's safe: if the working tree is dirty or this
     # node has real local commits origin/main doesn't have, resetting would
     # silently throw them away. Runs before every step, not just once, so a
@@ -232,7 +232,7 @@ main() {
     # packages, skip everything else". The list below MUST be kept in sync
     # with pyproject.toml's `gemini` extra by hand -- real incident: polars
     # was added there for extract_meds.py's vectorized transforms but not
-    # here, and Amrit's extract crashed on ModuleNotFoundError before
+    # here, and a real extract crashed on ModuleNotFoundError before
     # touching the database, because this list still didn't have it.
     echo "Installing odyssey (editable, no deps) + gemini extras..."
     if command -v uv >/dev/null 2>&1; then

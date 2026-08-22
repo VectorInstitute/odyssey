@@ -189,7 +189,7 @@ def test_null_fraction_or_error_recovers_from_a_failing_column(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # One pathological column must not kill the whole extract-dry run --
-    # Amrit cannot iterate interactively on the GEMINI node.
+    # nobody can iterate interactively on the GEMINI node.
     mod = _load_module()
 
     def fake_query(sql: str, params: object = None) -> pd.DataFrame:
@@ -379,8 +379,8 @@ def test_design_queries_survives_one_query_failing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # One bad design query (e.g. a column-name assumption that doesn't
-    # hold) must not stop every other design query from running -- Amrit
-    # cannot iterate interactively on the GEMINI node.
+    # hold) must not stop every other design query from running -- nobody
+    # can iterate interactively on the GEMINI node.
     mod = _load_module()
 
     def fake_query(sql: str, params: object = None) -> pd.DataFrame:

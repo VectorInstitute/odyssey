@@ -17,7 +17,7 @@ check is this step's own definition of done, not a separate manual step.
 Deliberately never imports from or modifies ``extract_meds.py`` (a
 different script, not a shared library -- see that module's own docstring
 on why GEMINI-facing scripts don't cross-import; small constants/helpers
-needed here are duplicated, not imported) and never touches Amrit's
+needed here are duplicated, not imported) and never touches an in-flight
 extraction run: everything here operates on already-written output plus
 one small, independent, read-only query of its own (:func:`_fetch_hadm_id_hospital`).
 
@@ -484,7 +484,7 @@ def _fetch_hadm_id_hospital() -> pd.DataFrame:
     ``extract_meds.fetch_lab_concept_lookup``), not the COPY streaming
     machinery. Deliberately *not* sourced from ``extract_meds.py``'s own
     output, which doesn't capture ``hospital_num`` at all: this step must
-    never touch or depend on the extractor itself, so Amrit's in-flight
+    never touch or depend on the extractor itself, so an in-flight
     (or already-complete) extraction run is never put at risk.
     """
     return db.query(

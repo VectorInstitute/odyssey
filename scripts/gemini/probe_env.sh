@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Probe the GEMINI H200 node's environment and write a small, patient-data-free
-# text report. See docs/gemini.md for why this exists: nobody but Amrit can
-# log into GEMINI, so this is how the rest of the team learns what the node
-# actually looks like (GPU/driver/CUDA, Python, package manager, libstdc++)
+# text report. See docs/gemini.md for why this exists: nobody on this team
+# can log into GEMINI directly, so this is how the rest of the team learns
+# what the node actually looks like (GPU/driver/CUDA, Python, package
+# manager, libstdc++)
 # before writing the environment recipe.
 #
 # Usage (run on the GEMINI node, from the repo root):
