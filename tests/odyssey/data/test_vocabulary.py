@@ -113,6 +113,14 @@ _GEMINI_PREFIXES = [
     "PROCEDURE",
     "IMAGING",
     "PROVIDER",
+    "ED_REGISTRATION",
+    "ED_TRIAGE",
+    "ED_OUT",
+    "ED_DIAGNOSIS",
+    "ER_CONSULT",
+    "TRANSFER_TO",
+    "BILLING_CMG",
+    "BILLING_HIG",
 ]
 
 

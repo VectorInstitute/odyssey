@@ -240,6 +240,23 @@ _PREFIX_TO_TYPE: Dict[str, int] = {
     # ids are preserved". Explicit OTHER_TYPE, not a silent fall-through:
     # deliberate, not an omission.
     "PROVIDER": OTHER_TYPE,
+    # GEMINI's ER/transfer/billing families, added alongside the core
+    # tables above. ED_REGISTRATION/ED_OUT/TRANSFER_TO already existed in
+    # this table (MIMIC's own convention) and are reused as-is, not
+    # redefined here -- GEMINI's extract_er/extract_transfers just produce
+    # codes under those same prefixes. ED_TRIAGE, ED_DIAGNOSIS, ER_CONSULT,
+    # BILLING_CMG, BILLING_HIG are genuinely new. ED_DIAGNOSIS is kept
+    # distinct from ipdiagnosis_subset's DIAGNOSIS// (different clinical
+    # context, same DIAGNOSIS_TYPE bucket); BILLING_CMG/BILLING_HIG are
+    # kept distinct from each other and from DRG (CIHI's Canadian CMG/HIG
+    # casemix systems, not the US DRG system -- same BILLING_TYPE bucket,
+    # different code vocabularies, so collapsing them onto one prefix
+    # would conflate real differences).
+    "ED_TRIAGE": VISIT_TYPE,
+    "ED_DIAGNOSIS": DIAGNOSIS_TYPE,
+    "ER_CONSULT": OTHER_TYPE,
+    "BILLING_CMG": BILLING_TYPE,
+    "BILLING_HIG": BILLING_TYPE,
 }
 
 

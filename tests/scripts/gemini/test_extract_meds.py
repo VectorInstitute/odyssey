@@ -119,6 +119,15 @@ def test_select_expr_sql_covers_every_column_selected_by_the_extractors() -> Non
         "mrp_cpso_hashed",
         "adm_phy_cpso_hashed",
         "dis_phy_cpso_hashed",
+        "registration_date_time",
+        "triage_date_time",
+        "left_er_date_time",
+        "er_diagnosis_code",
+        "consult_service_code",
+        "consult_request_date_time",
+        "institution_to_mns",
+        "cmg",
+        "hig_code",
     ]
     for column in free_text_columns:
         sql = mod._select_expr_sql(column)
@@ -1235,6 +1244,232 @@ def test_extract_providers_skips_nulls_and_namespaces_by_role(
     # discharge-time attribution.
     subject_a_rows = rows[rows["subject_id"] == "pA"]
     assert (subject_a_rows["time"] == pd.Timestamp("2020-01-01")).all()
+
+
+# --- ER / transfer / billing families --------------------------------
+
+
+def test_fetch_discharge_index_reads_every_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    chunk = pl.DataFrame(
+        {
+            "genc_id": [1, 2],
+            "discharge_date_time": ["2020-01-05", "2020-02-05"],
+        }
+    )
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"admdad_subset": [chunk]})
+    )
+
+    discharge_by_genc = mod.fetch_discharge_index()
+
+    assert discharge_by_genc == {
+        1: pd.Timestamp("2020-01-05"),
+        2: pd.Timestamp("2020-02-05"),
+    }
+
+
+def test_extract_er_produces_registration_triage_and_out_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    subject_by_genc = {1: "pA"}
+    admission_by_genc = {1: pd.Timestamp("2020-01-01")}
+    chunk = pl.DataFrame(
+        {
+            "genc_id": [1],
+            "registration_date_time": ["2020-01-01 08:00:00"],
+            "triage_date_time": ["2020-01-01 08:10:00"],
+            "left_er_date_time": ["2020-01-01 12:00:00"],
+        }
+    )
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"er_subset": [chunk]})
+    )
+
+    rows = pd.concat(
+        [b.frame for b in mod.extract_er(subject_by_genc, admission_by_genc)],
+        ignore_index=True,
+    )
+
+    assert sorted(rows["code"]) == ["ED_OUT", "ED_REGISTRATION", "ED_TRIAGE"]
+    assert (rows["subject_id"] == "pA").all()
+    assert (rows["hadm_id"] == 1).all()
+
+
+def test_extract_er_applies_the_admission_guard_per_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real-shape guard: a garbage-year registration time must not produce
+    # an event, even though triage/leave times on the same row are fine --
+    # each of the three events is guarded independently.
+    mod = _load_module()
+    subject_by_genc = {1: "pA"}
+    admission_by_genc = {1: pd.Timestamp("2020-01-01")}
+    chunk = pl.DataFrame(
+        {
+            "genc_id": [1],
+            "registration_date_time": ["9022-01-01 08:00:00"],
+            "triage_date_time": ["2020-01-01 08:10:00"],
+            "left_er_date_time": ["2020-01-01 12:00:00"],
+        }
+    )
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"er_subset": [chunk]})
+    )
+
+    rows = pd.concat(
+        [b.frame for b in mod.extract_er(subject_by_genc, admission_by_genc)],
+        ignore_index=True,
+    )
+
+    assert sorted(rows["code"]) == ["ED_OUT", "ED_TRIAGE"]
+
+
+def test_extract_er_diagnoses_namespaces_and_attributes_to_admission_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    subject_by_genc = {1: "pA"}
+    admission_by_genc = {1: pd.Timestamp("2020-01-01")}
+    chunk = pl.DataFrame(
+        {"genc_id": [1, 1], "er_diagnosis_code": ["R51", None]},
+    )
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"erdiagnosis_subset": [chunk]})
+    )
+
+    rows = pd.concat(
+        [b.frame for b in mod.extract_er_diagnoses(subject_by_genc, admission_by_genc)],
+        ignore_index=True,
+    )
+
+    assert len(rows) == 1  # null diagnosis code dropped
+    assert rows.iloc[0]["code"] == "ED_DIAGNOSIS//R51"
+    assert rows.iloc[0]["time"] == pd.Timestamp("2020-01-01")
+
+
+def test_extract_er_procedures_reuses_the_procedure_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Deliberate: same CCI coding system as ipintervention_subset, so this
+    # reuses PROCEDURE// rather than a new ER-specific prefix.
+    mod = _load_module()
+    subject_by_genc = {1: "pA"}
+    admission_by_genc = {1: pd.Timestamp("2020-01-01")}
+    chunk = pl.DataFrame(
+        {
+            "genc_id": [1],
+            "intervention_code": ["1.ZZ.35"],
+            "intervention_episode_start_date_time": ["2020-01-01 09:00:00"],
+        }
+    )
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"erintervention_subset": [chunk]})
+    )
+
+    rows = pd.concat(
+        [
+            b.frame
+            for b in mod.extract_er_procedures(subject_by_genc, admission_by_genc)
+        ],
+        ignore_index=True,
+    )
+
+    assert rows.iloc[0]["code"] == "PROCEDURE//1.ZZ.35"
+
+
+def test_extract_er_consults_namespaces_by_service_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    subject_by_genc = {1: "pA"}
+    admission_by_genc = {1: pd.Timestamp("2020-01-01")}
+    chunk = pl.DataFrame(
+        {
+            "genc_id": [1, 1],
+            "consult_service_code": ["CARD", ""],
+            "consult_request_date_time": ["2020-01-01 10:00:00", "2020-01-01 10:00:00"],
+        }
+    )
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"erconsults_subset": [chunk]})
+    )
+
+    rows = pd.concat(
+        [b.frame for b in mod.extract_er_consults(subject_by_genc, admission_by_genc)],
+        ignore_index=True,
+    )
+
+    assert len(rows) == 1  # blank service code dropped
+    assert rows.iloc[0]["code"] == "ER_CONSULT//CARD"
+
+
+def test_extract_transfers_attributes_to_admission_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    subject_by_genc = {1: "pA"}
+    admission_by_genc = {1: pd.Timestamp("2020-01-01")}
+    chunk = pl.DataFrame(
+        {"genc_id": [1, 1], "institution_to_mns": ["H002", None]},
+    )
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"lookup_transfer_subset": [chunk]})
+    )
+
+    rows = pd.concat(
+        [b.frame for b in mod.extract_transfers(subject_by_genc, admission_by_genc)],
+        ignore_index=True,
+    )
+
+    assert len(rows) == 1  # null destination dropped
+    assert rows.iloc[0]["code"] == "TRANSFER_TO//H002"
+    assert rows.iloc[0]["time"] == pd.Timestamp("2020-01-01")
+
+
+def test_extract_billing_cmg_attributes_to_discharge_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    subject_by_genc = {1: "pA"}
+    discharge_by_genc = {1: pd.Timestamp("2020-01-05")}
+    chunk = pl.DataFrame({"genc_id": [1, 1], "cmg": ["123", None]})
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"ipcmg_subset": [chunk]})
+    )
+
+    rows = pd.concat(
+        [b.frame for b in mod.extract_billing_cmg(subject_by_genc, discharge_by_genc)],
+        ignore_index=True,
+    )
+
+    assert len(rows) == 1
+    assert rows.iloc[0]["code"] == "BILLING_CMG//123"
+    assert rows.iloc[0]["time"] == pd.Timestamp("2020-01-05")
+
+
+def test_extract_billing_hig_attributes_to_discharge_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    subject_by_genc = {1: "pA"}
+    discharge_by_genc = {1: pd.Timestamp("2020-01-05")}
+    chunk = pl.DataFrame({"genc_id": [1, 1], "hig_code": ["H01", ""]})
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"iphig_subset": [chunk]})
+    )
+
+    rows = pd.concat(
+        [b.frame for b in mod.extract_billing_hig(subject_by_genc, discharge_by_genc)],
+        ignore_index=True,
+    )
+
+    assert len(rows) == 1  # blank HIG code dropped
+    assert rows.iloc[0]["code"] == "BILLING_HIG//H01"
+    assert rows.iloc[0]["time"] == pd.Timestamp("2020-01-05")
 
 
 # --- preflight -------------------------------------------------------

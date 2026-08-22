@@ -144,7 +144,13 @@ priority order:
 | **Subject** | `admdad_subset.patient_id_hashed` | Only table carrying it -- see open question 6. |
 | **Visit** | `genc_id` (GEMINI's encounter id; treated as MEDS' `hadm_id`-equivalent) | Present on nearly every table; the actual join key throughout. |
 | **Admission / discharge / death** | `admdad_subset`: `admission_date_time`, `discharge_date_time`; death via `derived_variables_subset.in_hospital_mortality_derived` | Mortality signal resolved, see open question 2 -- use the derived flag, not a `discharge_disposition` decode. |
-| **ED triage / disposition** | `er_subset`: `triage_date_time`, `disposition_date_time`, plus `registration_date_time`, `physician_initial_assessment_date_time`, `ambulance_arrival_date_time`, `left_er_date_time` | Richer timestamp set than admission/discharge alone -- worth deciding which ED timestamps become MEDS events vs. stay as event attributes. |
+| **ED registration / triage / out** | `er_subset`: `registration_date_time` -> `ED_REGISTRATION`, `triage_date_time` -> `ED_TRIAGE` (new prefix), `left_er_date_time` -> `ED_OUT` | Resolved: three of `er_subset`'s six timestamps become events, matching MIMIC's own `ED_REGISTRATION`/`ED_OUT` prefixes (already in `odyssey/data/vocabulary.py`); `disposition_date_time`/`physician_initial_assessment_date_time`/`ambulance_arrival_date_time` stay unextracted (describe the visit, don't bound a stage transition). Same admission-window guard as pharmacy/radiology. A `genc_id` here can be missing from `admdad_subset` entirely (ED visit, no admission) -- dropped via the existing subject-lookup-miss path, not a new failure mode. |
+| **ED diagnoses** | `erdiagnosis_subset.er_diagnosis_code` -> `ED_DIAGNOSIS//<code>` (new prefix, kept distinct from `ipdiagnosis_subset`'s `DIAGNOSIS//`) | No event-level timestamp -- attributed to the encounter's admission time, same convention as `physicians_subset`. |
+| **ED procedures** | `erintervention_subset.intervention_code` -> `PROCEDURE//<code>` (reuses `ipintervention_subset`'s own prefix -- same CCI coding system, not a new ER-specific vocabulary) | Own timestamp (`intervention_episode_start_date_time`), admission-window guard. |
+| **ED consults** | `erconsults_subset.consult_service_code` -> `ER_CONSULT//<code>` (new prefix, `OTHER_TYPE`) | Timed at `consult_request_date_time`; `consult_arrival_date_time` not extracted as a second event. |
+| **Transfers** | `lookup_transfer_subset.institution_to_mns` -> `TRANSFER_TO//<institution>` (already in `odyssey/data/vocabulary.py`, matching MIMIC's own convention) | Despite the table name, real per-encounter rows, not a static lookup. No event-level timestamp -- attributed to admission time. |
+| **Billing (CMG)** | `ipcmg_subset.cmg` -> `BILLING_CMG//<cmg>` (new prefix, `BILLING_TYPE`) | Canada's CIHI casemix-group system -- kept distinct from MIMIC's own `DRG` prefix (different vocabulary, same type bucket). No event-level timestamp -- attributed to discharge time (grouper codes finalize at stay close, same reasoning as diagnoses below). |
+| **Billing (HIG)** | `iphig_subset.hig_code` -> `BILLING_HIG//<code>` (new prefix, `BILLING_TYPE`) | CIHI's Health-based Inpatient Group system, distinct from both CMG and DRG. Same discharge-time attribution as CMG. |
 | **ICU admission / discharge** | `ipscu_subset`: `scu_admit_date_time`, `scu_discharge_date_time`, `icu_flag` | `icu_flag` gates whether a `scu_*` stay counts as ICU specifically (`scu_unit_number` suggests non-ICU special-care units exist too, e.g. step-down). |
 | **Labs** | `lab_subset`: code via `test_type_mapped_omop` (join `lookup_lab_concept`, deduplicated -- see open question 4), numeric parse of `result_value`, unit from `result_unit`, time from `collection_date_time` | `result_value` is `text` -- needs the same numeric-parse-with-fallback-to-categorical pattern already used for MIMIC/eICU labs. **SI units, not MIMIC/eICU's US-conventional units -- see [Units and canonical clinical ranges](#units-and-canonical-clinical-ranges).** |
 | **Vitals** | `vitals_subset`: code via `measurement_mapped_omop` (join `lookup_vitals_concept` -- confirmed real and covers the common vitals, open question 3), numeric parse of `measurement_value`, unit from `measurement_unit`, time from `measure_date_time` | |
@@ -268,7 +274,23 @@ the unit has to be part of the token identity so mixed-unit values never
 share a quantile bin. The OMOP -> LOINC bridge and value-binning
 per-unit-family clinical ranges are a separate, later stage (owned by the
 lead session, see the OMOP -> LOINC bridge note above), not yet run against
-real data. Real, aggregate-only run output (rounded row/subject/shard
+real data.
+
+**Schema-completeness gap, found and closed (2026-08-21)**: the tables
+above covered admission/discharge, ICU, labs, vitals, medications,
+inpatient diagnoses/procedures, imaging, and providers -- but left the ED
+family (`er_subset`, `erdiagnosis_subset`, `erintervention_subset`,
+`erconsults_subset`), unit transfers (`lookup_transfer_subset`), and
+billing/casemix (`ipcmg_subset`, `iphig_subset`) unextracted entirely.
+Added as purely additive `table_generators` entries (see the MEDS mapping
+table above for the per-table event shape and code prefixes) -- existing
+table entries, resumability, and guards untouched.
+`derived_variables_subset`/`locality_variables_subset` (per-admission
+sidecars) and `cohort` (duplicates `admdad_subset`) remain deliberately
+out of scope; `transfusion` isn't in this datacut at all
+(`lookup_transfusion` is empty).
+
+Real, aggregate-only run output (rounded row/subject/shard
 counts) lands in `scripts/gemini/out/extraction_summary.json` once run via
 `scripts/gemini/run.sh extract` -- the actual MEDS parquet shards never
 leave the enclave.
