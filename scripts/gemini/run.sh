@@ -244,6 +244,38 @@ run_finalize() {
 
 run_env_gpu() {
     echo "=== env-gpu ==="
+
+    # --- probe first: fail loudly here, in seconds, not 25+ minutes into
+    # a mamba-ssm compile that was always going to fail. The CUDA toolkit
+    # version on whatever node this runs on is not assumed -- discovered
+    # fresh every run rather than trusting docs/gemini.md's last probe
+    # (2026-08-18, possibly a different node or a since-changed one).
+    echo "--- probing GPU/CUDA ---"
+    if ! command -v nvidia-smi >/dev/null 2>&1; then
+        echo "nvidia-smi not found -- no NVIDIA driver visible on this node." >&2
+        echo "env-gpu needs a real GPU node; refusing to proceed." >&2
+        exit 1
+    fi
+    nvidia-smi --query-gpu=name,driver_version,compute_cap --format=csv,noheader
+
+    CUDA_TOOLKIT_DIR=""
+    for candidate in /usr/local/cuda-*; do
+        if [[ -x "$candidate/bin/nvcc" ]]; then
+            CUDA_TOOLKIT_DIR="$candidate"
+            break
+        fi
+    done
+    if [[ -z "$CUDA_TOOLKIT_DIR" ]]; then
+        echo "No CUDA toolkit with a working nvcc found under /usr/local/cuda-*." >&2
+        echo "mamba-ssm's CUDA extension cannot be built without one -- the" >&2
+        echo "driver alone (see nvidia-smi output above) is not enough." >&2
+        echo "See docs/gemini.md's Environment section and pyproject.toml's" >&2
+        echo "cuda extra comment for what this needs and why." >&2
+        exit 1
+    fi
+    echo "Using CUDA toolkit: $CUDA_TOOLKIT_DIR"
+    "$CUDA_TOOLKIT_DIR/bin/nvcc" --version
+
     GPU_VENV="${GEMINI_GPU_VENV:-$HOME/.venvs/odyssey-gemini-gpu}"
     if [[ ! -f "$GPU_VENV/bin/activate" ]]; then
         echo "Creating GPU venv at $GPU_VENV"
@@ -264,22 +296,38 @@ run_env_gpu() {
         pip install -q torch==2.6.0 --index-url https://download.pytorch.org/whl/cu124
     fi
 
-    echo "Installing odyssey (editable, no deps)..."
+    # This venv is a curated no-deps world: torch and mamba-ssm are
+    # installed separately (above/below) for exact-CUDA-pin reasons, and
+    # `--no-deps` on odyssey itself means every OTHER real runtime import
+    # odyssey.training/models/inference actually makes has to be listed
+    # here explicitly, same discipline as the lightweight venv's
+    # gemini-extras mirror above. Audited against every top-level AND
+    # deferred (`# noqa: PLC0415`) third-party import across odyssey/ --
+    # polars and scikit-learn (odyssey.training.metrics) were already
+    # missing from any install path for this venv; einops
+    # (odyssey.models.backbones.hybrid, needed by TrainingConfig's own
+    # backbone="hybrid" default) was missing from pyproject.toml entirely,
+    # fixed there too (see the cuda extra). Real incident this discipline
+    # exists for: polars was once missing from the lightweight venv's own
+    # mirror list the same way.
+    echo "Installing odyssey (editable, no deps) + training runtime deps..."
     pip install -q -e . --no-deps
+    pip install -q "polars>=1.30.0" "scikit-learn>=1.7.0" "einops>=0.7.0"
 
     if python -c "from mamba_ssm.modules.mamba2 import Mamba2" 2>/dev/null; then
         echo "mamba_ssm already importable, skipping rebuild."
     else
-        echo "Force-rebuilding mamba-ssm==2.3.0 against CUDA 12.8 (real compile, ~30 min)..."
-        PATH="/usr/local/cuda-12.8/bin:$PATH" \
-            CUDA_HOME=/usr/local/cuda-12.8 MAX_JOBS=12 \
+        echo "Force-rebuilding mamba-ssm==2.3.0 against $CUDA_TOOLKIT_DIR (real compile, ~30 min)..."
+        PATH="$CUDA_TOOLKIT_DIR/bin:$PATH" \
+            CUDA_HOME="$CUDA_TOOLKIT_DIR" MAX_JOBS=12 \
             MAMBA_FORCE_BUILD=TRUE \
             pip install --no-build-isolation --no-binary mamba-ssm \
             --no-deps --no-cache-dir --force-reinstall 'mamba-ssm==2.3.0'
     fi
 
-    echo "Import-checking mamba_ssm..."
+    echo "Import-checking mamba_ssm and einops..."
     python -c "from mamba_ssm.modules.mamba2 import Mamba2; print('mamba_ssm import OK')"
+    python -c "import einops; print('einops import OK')"
 
     echo "Writing env fingerprint..."
     mkdir -p scripts/gemini/out
