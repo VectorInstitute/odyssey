@@ -1804,6 +1804,445 @@ def extract_providers(
         yield ExtractedBatch(_finalize_meds_batch(meds), chunk.height)
 
 
+def fetch_discharge_index() -> dict[int, Optional[pd.Timestamp]]:
+    """One pass over ``admdad_subset``: ``genc_id -> discharge time``.
+
+    A second, discharge-only index alongside :func:`fetch_admission_index`'s
+    own admission-time one -- shared by :func:`extract_billing_cmg` and
+    :func:`extract_billing_hig`, both of which anchor to discharge (a
+    grouper/casemix code is finalized once the whole stay is coded, the
+    same "coded at the encounter level, attributed at its close" reasoning
+    :func:`extract_diagnoses` already uses for its own, separate discharge
+    index -- kept separate rather than shared with that function to avoid
+    touching its already-tested internals for an unrelated addition).
+    Never checkpointed, rebuilt in full on every call, same as
+    :func:`fetch_admission_index` -- see the module docstring's
+    "Resumability" section.
+
+    Returns
+    -------
+    dict[int, pandas.Timestamp | None]
+        ``{genc_id: discharge_time}``.
+    """
+    discharge_by_genc: dict[int, Optional[pd.Timestamp]] = {}
+    report_progress = _log_table_progress("admdad_subset (billing discharge index)")
+    for chunk in _stream_table("admdad_subset", ["genc_id", "discharge_date_time"]):
+        frame = _filter_valid_genc_id(chunk, "admdad_subset")
+        frame = frame.with_columns(
+            _parse_datetime_series(frame["discharge_date_time"]).alias(
+                "discharge_date_time"
+            ),
+        )
+        discharge_by_genc.update(
+            zip(
+                frame["genc_id"].to_list(),
+                (
+                    pd.Timestamp(ts) if ts is not None else None
+                    for ts in frame["discharge_date_time"].to_list()
+                ),
+                strict=True,
+            )
+        )
+        report_progress(chunk.height)
+    return discharge_by_genc
+
+
+def extract_er(
+    subject_by_genc: dict[int, str],
+    admission_by_genc: dict[int, Optional[pd.Timestamp]],
+) -> Iterator[ExtractedBatch]:
+    """ED registration/triage/leave events from ``er_subset``.
+
+    Three real, independent timestamps on this table, each its own event
+    -- ``ED_REGISTRATION`` (``registration_date_time``, the same prefix
+    MIMIC-IV's own ED extraction uses -- already in
+    ``odyssey/data/vocabulary.py``'s ``_PREFIX_TO_TYPE``), ``ED_TRIAGE``
+    (``triage_date_time``, a new prefix), ``ED_OUT`` (``left_er_date_time``,
+    also already in the vocabulary). ``disposition_date_time`` and the
+    ambulance/physician-assessment timestamps are not extracted as events
+    here -- registration/triage/leave are the three that mark real stage
+    transitions in the ED visit; the rest describe the visit rather than
+    bounding it. Same admission-window guard as every other real-timestamp
+    table in this module (:func:`_within_admission_guard_mask`) -- not
+    documented as having outlier years yet, but guarded defensively rather
+    than assumed clean.
+
+    A ``genc_id`` here may not appear in ``admdad_subset`` at all -- an ED
+    visit that didn't result in an admission has no corresponding row
+    there, so :func:`fetch_admission_index` never saw it, and these rows
+    are dropped as unattributable (no ``subject_id``) via the same
+    existing ``genc_id -> subject`` lookup-miss path every other table
+    already uses -- not a new failure mode, just a real one that bites this
+    table more than most.
+
+    Event shape: one row can produce up to three MEDS rows, ``hadm_id =
+    genc_id``.
+
+    Parameters
+    ----------
+    subject_by_genc, admission_by_genc : dict
+        From :func:`fetch_admission_index`.
+
+    Yields
+    ------
+    ExtractedBatch
+    """
+    for chunk in _stream_table(
+        "er_subset",
+        [
+            "genc_id",
+            "registration_date_time",
+            "triage_date_time",
+            "left_er_date_time",
+        ],
+    ):
+        frame = _filter_valid_genc_id(chunk, "er_subset")
+        genc = frame["genc_id"]
+        subject = genc.replace_strict(
+            subject_by_genc, default=None, return_dtype=pl.Utf8
+        )
+        admission = genc.replace_strict(
+            admission_by_genc, default=None, return_dtype=pl.Datetime("us")
+        )
+        events = [
+            ("ED_REGISTRATION", "registration_date_time"),
+            ("ED_TRIAGE", "triage_date_time"),
+            ("ED_OUT", "left_er_date_time"),
+        ]
+        batches = []
+        for code, column in events:
+            event_time = _parse_datetime_series(frame[column])
+            batches.append(
+                pl.DataFrame(
+                    {
+                        "subject_id": subject,
+                        "time": event_time,
+                        "code": code,
+                        "numeric_value": None,
+                        "hadm_id": genc,
+                    }
+                ).filter(_within_admission_guard_mask(event_time, admission))
+            )
+        meds = pl.concat(batches)
+        yield ExtractedBatch(_finalize_meds_batch(meds), chunk.height)
+
+
+def extract_er_diagnoses(
+    subject_by_genc: dict[int, str],
+    admission_by_genc: dict[int, Optional[pd.Timestamp]],
+) -> Iterator[ExtractedBatch]:
+    """ED diagnosis events from ``erdiagnosis_subset``.
+
+    ``code`` is the raw ER diagnosis code, namespaced (``ED_DIAGNOSIS//<code>``,
+    a new prefix -- kept distinct from ``ipdiagnosis_subset``'s own
+    ``DIAGNOSIS//`` since these are coded in a different clinical context,
+    even though both fall under ``DIAGNOSIS_TYPE``). No event-level
+    timestamp exists on this table -- ``time`` is the encounter's admission
+    time, the same convention :func:`extract_providers` already uses for
+    another no-timestamp table.
+
+    Event shape: one row with a non-blank diagnosis code produces one MEDS
+    row, ``hadm_id = genc_id``.
+
+    Parameters
+    ----------
+    subject_by_genc, admission_by_genc : dict
+        From :func:`fetch_admission_index`.
+
+    Yields
+    ------
+    ExtractedBatch
+    """
+    for chunk in _stream_table("erdiagnosis_subset", ["genc_id", "er_diagnosis_code"]):
+        frame = _filter_valid_genc_id(chunk, "erdiagnosis_subset").filter(
+            pl.col("er_diagnosis_code").is_not_null()
+            & (pl.col("er_diagnosis_code").cast(pl.Utf8).str.strip_chars() != "")
+        )
+        genc = frame["genc_id"]
+        meds = pl.DataFrame(
+            {
+                "subject_id": genc.replace_strict(
+                    subject_by_genc, default=None, return_dtype=pl.Utf8
+                ),
+                "time": genc.replace_strict(
+                    admission_by_genc, default=None, return_dtype=pl.Datetime("us")
+                ),
+                "code": "ED_DIAGNOSIS//" + frame["er_diagnosis_code"].cast(pl.Utf8),
+                "numeric_value": None,
+                "hadm_id": genc,
+            }
+        )
+        yield ExtractedBatch(_finalize_meds_batch(meds), chunk.height)
+
+
+def extract_er_procedures(
+    subject_by_genc: dict[int, str],
+    admission_by_genc: dict[int, Optional[pd.Timestamp]],
+) -> Iterator[ExtractedBatch]:
+    """ED procedure events from ``erintervention_subset``.
+
+    ``code`` reuses ``ipintervention_subset``'s own ``PROCEDURE//<code>``
+    prefix, not a new ER-specific one: ``intervention_code`` is CCI-coded
+    in both tables (same column name, same coding system), so an ER
+    intervention and an inpatient one are genuinely the same vocabulary,
+    just from a different source table -- unlike diagnoses (see
+    :func:`extract_er_diagnoses`), there's no source-context distinction
+    worth losing by merging the code spaces. Own real timestamp
+    (``intervention_episode_start_date_time``), same admission-window guard
+    as every other real-timestamp table.
+
+    Event shape: one row with a non-blank intervention code produces one
+    MEDS row, ``hadm_id = genc_id``.
+
+    Parameters
+    ----------
+    subject_by_genc, admission_by_genc : dict
+        From :func:`fetch_admission_index`.
+
+    Yields
+    ------
+    ExtractedBatch
+    """
+    for chunk in _stream_table(
+        "erintervention_subset",
+        ["genc_id", "intervention_code", "intervention_episode_start_date_time"],
+    ):
+        frame = _filter_valid_genc_id(chunk, "erintervention_subset").filter(
+            pl.col("intervention_code").is_not_null()
+            & (pl.col("intervention_code").cast(pl.Utf8).str.strip_chars() != "")
+        )
+        genc = frame["genc_id"]
+        subject = genc.replace_strict(
+            subject_by_genc, default=None, return_dtype=pl.Utf8
+        )
+        admission = genc.replace_strict(
+            admission_by_genc, default=None, return_dtype=pl.Datetime("us")
+        )
+        event_time = _parse_datetime_series(
+            frame["intervention_episode_start_date_time"]
+        )
+        meds = pl.DataFrame(
+            {
+                "subject_id": subject,
+                "time": event_time,
+                "code": "PROCEDURE//" + frame["intervention_code"].cast(pl.Utf8),
+                "numeric_value": None,
+                "hadm_id": genc,
+            }
+        ).filter(_within_admission_guard_mask(event_time, admission))
+        yield ExtractedBatch(_finalize_meds_batch(meds), chunk.height)
+
+
+def extract_er_consults(
+    subject_by_genc: dict[int, str],
+    admission_by_genc: dict[int, Optional[pd.Timestamp]],
+) -> Iterator[ExtractedBatch]:
+    """ED consult-request events from ``erconsults_subset``.
+
+    ``code`` is ``ER_CONSULT//<consult_service_code>`` (a new prefix,
+    ``OTHER_TYPE`` -- a consult is a referral to a service, not itself a
+    diagnosis or procedure, so it doesn't fit an existing type bucket any
+    more precisely). Timed at ``consult_request_date_time`` (the
+    consult-ordering clinician's action, the natural anchor -- matches
+    this module's convention elsewhere of using the *initiating* timestamp
+    when a row carries more than one candidate, e.g. pharmacy's
+    ``med_start_date_time``); ``consult_arrival_date_time`` is not
+    extracted as a second event, just the one meaningful "this was
+    requested" fact. Same admission-window guard as every other
+    real-timestamp table.
+
+    Event shape: one row with a non-blank consult service code produces
+    one MEDS row, ``hadm_id = genc_id``.
+
+    Parameters
+    ----------
+    subject_by_genc, admission_by_genc : dict
+        From :func:`fetch_admission_index`.
+
+    Yields
+    ------
+    ExtractedBatch
+    """
+    for chunk in _stream_table(
+        "erconsults_subset",
+        ["genc_id", "consult_service_code", "consult_request_date_time"],
+    ):
+        frame = _filter_valid_genc_id(chunk, "erconsults_subset").filter(
+            pl.col("consult_service_code").is_not_null()
+            & (pl.col("consult_service_code").cast(pl.Utf8).str.strip_chars() != "")
+        )
+        genc = frame["genc_id"]
+        subject = genc.replace_strict(
+            subject_by_genc, default=None, return_dtype=pl.Utf8
+        )
+        admission = genc.replace_strict(
+            admission_by_genc, default=None, return_dtype=pl.Datetime("us")
+        )
+        event_time = _parse_datetime_series(frame["consult_request_date_time"])
+        meds = pl.DataFrame(
+            {
+                "subject_id": subject,
+                "time": event_time,
+                "code": "ER_CONSULT//" + frame["consult_service_code"].cast(pl.Utf8),
+                "numeric_value": None,
+                "hadm_id": genc,
+            }
+        ).filter(_within_admission_guard_mask(event_time, admission))
+        yield ExtractedBatch(_finalize_meds_batch(meds), chunk.height)
+
+
+def extract_transfers(
+    subject_by_genc: dict[int, str],
+    admission_by_genc: dict[int, Optional[pd.Timestamp]],
+) -> Iterator[ExtractedBatch]:
+    """Institution-transfer events from ``lookup_transfer_subset``.
+
+    ``code`` is ``TRANSFER_TO//<institution_to_mns>`` -- despite the table
+    name, these are real per-encounter unit-transfer rows, not a static
+    lookup; ``TRANSFER_TO`` is already in
+    ``odyssey/data/vocabulary.py``'s ``_PREFIX_TO_TYPE``, matching MIMIC's
+    own convention. No event-level timestamp exists on this table (~1.25M
+    rows for ~2.27M encounters -- most encounters have none, consistent
+    with a transfer being a real but not-always-present sub-event) --
+    ``time`` is the encounter's admission time, same convention as
+    :func:`extract_er_diagnoses`.
+
+    Event shape: one row with a non-blank destination institution produces
+    one MEDS row, ``hadm_id = genc_id``.
+
+    Parameters
+    ----------
+    subject_by_genc, admission_by_genc : dict
+        From :func:`fetch_admission_index`.
+
+    Yields
+    ------
+    ExtractedBatch
+    """
+    for chunk in _stream_table(
+        "lookup_transfer_subset", ["genc_id", "institution_to_mns"]
+    ):
+        frame = _filter_valid_genc_id(chunk, "lookup_transfer_subset").filter(
+            pl.col("institution_to_mns").is_not_null()
+            & (pl.col("institution_to_mns").cast(pl.Utf8).str.strip_chars() != "")
+        )
+        genc = frame["genc_id"]
+        meds = pl.DataFrame(
+            {
+                "subject_id": genc.replace_strict(
+                    subject_by_genc, default=None, return_dtype=pl.Utf8
+                ),
+                "time": genc.replace_strict(
+                    admission_by_genc, default=None, return_dtype=pl.Datetime("us")
+                ),
+                "code": "TRANSFER_TO//" + frame["institution_to_mns"].cast(pl.Utf8),
+                "numeric_value": None,
+                "hadm_id": genc,
+            }
+        )
+        yield ExtractedBatch(_finalize_meds_batch(meds), chunk.height)
+
+
+def extract_billing_cmg(
+    subject_by_genc: dict[int, str],
+    discharge_by_genc: dict[int, Optional[pd.Timestamp]],
+) -> Iterator[ExtractedBatch]:
+    """Case Mix Group billing events from ``ipcmg_subset``.
+
+    ``code`` is ``BILLING_CMG//<cmg>`` (a new prefix, ``BILLING_TYPE`` --
+    the same type bucket MIMIC's own ``DRG`` prefix uses, but kept a
+    distinct code identity from it: CMG is CIHI's Canadian casemix-group
+    system, not the US DRG system, so collapsing them onto the literal
+    ``DRG`` string would conflate two different grouper vocabularies under
+    one code). No event-level timestamp -- a grouper code is finalized
+    once the whole stay is coded, so ``time`` is the encounter's discharge
+    time (:func:`fetch_discharge_index`), the same "attributed at its
+    close" convention :func:`extract_diagnoses` already uses.
+
+    Event shape: one row with a non-blank CMG code produces one MEDS row,
+    ``hadm_id = genc_id``.
+
+    Parameters
+    ----------
+    subject_by_genc : dict
+        From :func:`fetch_admission_index`.
+    discharge_by_genc : dict
+        From :func:`fetch_discharge_index`.
+
+    Yields
+    ------
+    ExtractedBatch
+    """
+    for chunk in _stream_table("ipcmg_subset", ["genc_id", "cmg"]):
+        frame = _filter_valid_genc_id(chunk, "ipcmg_subset").filter(
+            pl.col("cmg").is_not_null()
+            & (pl.col("cmg").cast(pl.Utf8).str.strip_chars() != "")
+        )
+        genc = frame["genc_id"]
+        meds = pl.DataFrame(
+            {
+                "subject_id": genc.replace_strict(
+                    subject_by_genc, default=None, return_dtype=pl.Utf8
+                ),
+                "time": genc.replace_strict(
+                    discharge_by_genc, default=None, return_dtype=pl.Datetime("us")
+                ),
+                "code": "BILLING_CMG//" + frame["cmg"].cast(pl.Utf8),
+                "numeric_value": None,
+                "hadm_id": genc,
+            }
+        )
+        yield ExtractedBatch(_finalize_meds_batch(meds), chunk.height)
+
+
+def extract_billing_hig(
+    subject_by_genc: dict[int, str],
+    discharge_by_genc: dict[int, Optional[pd.Timestamp]],
+) -> Iterator[ExtractedBatch]:
+    """Health-based Inpatient Group billing events from ``iphig_subset``.
+
+    ``code`` is ``BILLING_HIG//<hig_code>`` (a new prefix, ``BILLING_TYPE``
+    -- same reasoning as :func:`extract_billing_cmg`: HIG is a distinct
+    CIHI grouper system from both CMG and US DRG, kept as its own code
+    identity rather than collapsed onto either). Same discharge-time
+    anchor as :func:`extract_billing_cmg`, same reasoning.
+
+    Event shape: one row with a non-blank HIG code produces one MEDS row,
+    ``hadm_id = genc_id``.
+
+    Parameters
+    ----------
+    subject_by_genc : dict
+        From :func:`fetch_admission_index`.
+    discharge_by_genc : dict
+        From :func:`fetch_discharge_index`.
+
+    Yields
+    ------
+    ExtractedBatch
+    """
+    for chunk in _stream_table("iphig_subset", ["genc_id", "hig_code"]):
+        frame = _filter_valid_genc_id(chunk, "iphig_subset").filter(
+            pl.col("hig_code").is_not_null()
+            & (pl.col("hig_code").cast(pl.Utf8).str.strip_chars() != "")
+        )
+        genc = frame["genc_id"]
+        meds = pl.DataFrame(
+            {
+                "subject_id": genc.replace_strict(
+                    subject_by_genc, default=None, return_dtype=pl.Utf8
+                ),
+                "time": genc.replace_strict(
+                    discharge_by_genc, default=None, return_dtype=pl.Datetime("us")
+                ),
+                "code": "BILLING_HIG//" + frame["hig_code"].cast(pl.Utf8),
+                "numeric_value": None,
+                "hadm_id": genc,
+            }
+        )
+        yield ExtractedBatch(_finalize_meds_batch(meds), chunk.height)
+
+
 _SUBJECT_COUNT_SQL = "SELECT COUNT(DISTINCT {column}) AS n FROM {table}"
 
 
@@ -2269,6 +2708,9 @@ def run_extraction(output_dir: Optional[Path] = None) -> dict[str, Any]:
     logger.info("[extract_meds] fetching deduplicated lab concept lookup...")
     lab_concepts = fetch_lab_concept_lookup()
 
+    logger.info("[extract_meds] building billing discharge index...")
+    discharge_by_genc = fetch_discharge_index()
+
     shard_by_subject = assign_shards(subject_by_genc.values())
     n_shards = len(set(shard_by_subject.values()))
     logger.info(
@@ -2287,6 +2729,22 @@ def run_extraction(output_dir: Optional[Path] = None) -> dict[str, Any]:
         ("ipintervention_subset", extract_procedures(subject_by_genc)),
         ("radiology_subset", extract_radiology(subject_by_genc, admission_by_genc)),
         ("physicians_subset", extract_providers(subject_by_genc, admission_by_genc)),
+        ("er_subset", extract_er(subject_by_genc, admission_by_genc)),
+        (
+            "erdiagnosis_subset",
+            extract_er_diagnoses(subject_by_genc, admission_by_genc),
+        ),
+        (
+            "erintervention_subset",
+            extract_er_procedures(subject_by_genc, admission_by_genc),
+        ),
+        ("erconsults_subset", extract_er_consults(subject_by_genc, admission_by_genc)),
+        (
+            "lookup_transfer_subset",
+            extract_transfers(subject_by_genc, admission_by_genc),
+        ),
+        ("ipcmg_subset", extract_billing_cmg(subject_by_genc, discharge_by_genc)),
+        ("iphig_subset", extract_billing_hig(subject_by_genc, discharge_by_genc)),
     ]
     for table_name, generator in table_generators:
         if manifest.get(table_name) == "complete":
