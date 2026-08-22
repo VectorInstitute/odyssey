@@ -10,6 +10,10 @@ ehr = "ehr"
 # NAM = Neural Additive Model (Agarwal et al.), a model family in the README.
 NAM = "NAM"
 NAMs = "NAMs"
+# GAM = Generalized Additive Model, paired with NAM as one of the project's
+# comparator model families (NAM-GAM) -- not a typo for "GAME".
+GAM = "GAM"
+GAMs = "GAMs"
 # MCH = Mean Corpuscular Hemoglobin, a standard CBC lab concept name in
 # scripts/gemini/extract_dry.py's TOP_LAB_CONCEPTS, not a typo for "MUCH".
 MCH = "MCH"
