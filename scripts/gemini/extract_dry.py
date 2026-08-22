@@ -333,7 +333,7 @@ def _null_fraction_or_error(table: str, column: str, column_type: str) -> str:
     """Suppressed null count for one column, or an error marker if the query fails.
 
     One pathological column (a type Postgres can't ``COUNT`` cleanly, an
-    unexpected encoding, ...) must not kill the whole run -- Amrit cannot
+    unexpected encoding, ...) must not kill the whole run -- nobody can
     iterate interactively on the GEMINI node (see ``docs/gemini.md``), so a
     single bad column becomes a note in the report instead of a crash.
 
@@ -592,7 +592,7 @@ def _safe_query(name: str, fn: Any) -> Any:
 
     One query failing (a column that doesn't exist the way expected, an
     unexpected type, ...) must not cost the whole `extract-dry` round trip
-    -- Amrit cannot iterate interactively on the GEMINI node. Mirrors
+    -- nobody can iterate interactively on the GEMINI node. Mirrors
     :func:`_null_fraction_or_error`'s per-column recovery, generalized to
     every design query.
 

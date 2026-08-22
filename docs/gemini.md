@@ -7,13 +7,13 @@ validated (see the README's [Goal](../README.md#goal) and
 [Roadmap](../README.md#roadmap)). This page documents how development against
 GEMINI actually works, since it differs from MIMIC-IV/eICU in a way that
 shapes every step: **nobody on this team can log into or run code inside
-GEMINI.** Amrit is the only person with an account on the H200 node. The only
-channel in or out is git.
+GEMINI.** The only channel in or out is git.
 
 ## The git-only channel
 
 Every GEMINI-facing script is designed around one workflow: **we push a
-script, Amrit runs it on the node, the output comes back in a commit.** There
+script, the operator runs it on the node, the output comes back in a
+commit.** There
 is no way to iterate interactively — a script has to be correct (or fail
 loudly and safely) on the first real run, which is why GEMINI-facing code
 gets the same test discipline as everything else in `odyssey/` (see
@@ -26,7 +26,7 @@ odyssey has two git remotes:
   remote. All history lives here.
 - `gemini` — GEMINI's internal GitLab
   (`git@code.gemini-hpc.ca:vector-ai-engineering/odyssey.git`), reachable
-  only from inside the GEMINI environment (Amrit's node). `main` on GitHub is
+  only from inside the GEMINI environment (the GEMINI node). `main` on GitHub is
   mirrored to `main` on this remote after GitHub CI is green; GEMINI's git
   server has no CI of its own.
 
@@ -60,7 +60,8 @@ in a commit whose surrounding history pushes the pack over the cap). A normal
 incremental `git push gemini main` is usually fine; if it is rejected, push
 in chunks -- but **never chunk-push directly to `refs/heads/main`**: a
 mid-sequence force-push briefly leaves `main` pointing at an old, partial
-commit, and anyone who happens to `git pull` in that window (Amrit has) sees
+commit, and anyone who happens to `git pull` in that window (the operator has)
+sees
 a broken-looking repo, even though the *final* state is correct. Stage the
 full history on a throwaway ref first, then flip `main` to the real tip in
 one atomic push:
@@ -113,18 +114,19 @@ history from before this project's current mirroring approach) are never
 touched by any of the above -- only `refs/heads/main` (via
 `_mirror-staging`) is ever written.
 
-**Coordination rule: never mirror while Amrit has a step in flight.** A
-mirror landing between his `sync_with_mirror()` and his own output push
-races his push into a rejection (`run.sh`'s push step retries with rebase
-for exactly this case, see `scripts/gemini/run.sh`, but the race is still
-better avoided than recovered from). Only mirror GitHub -> GEMINI when the
-channel is confirmed idle -- explicitly told so, or after seeing his
-output commit actually land on `gemini main` -- never speculatively or
-"just in case." **This rule has already failed once because it relied on
-remembering**: a mirror force-pushed straight over an operator's freshly-landed
-`extract-dry` output before it had been copied back to GitHub, discarding
-`gemini main`'s only copy of it (recovered by having him re-push from his
-local clone, which the sync guard had correctly refused to reset over).
+**Coordination rule: never mirror while the operator has a step in flight.**
+A mirror landing between the operator's `sync_with_mirror()` and their own
+output push races that push into a rejection (`run.sh`'s push step retries
+with rebase for exactly this case, see `scripts/gemini/run.sh`, but the race
+is still better avoided than recovered from). Only mirror GitHub -> GEMINI
+when the channel is confirmed idle -- explicitly told so, or after seeing
+the operator's output commit actually land on `gemini main` -- never
+speculatively or "just in case." **This rule has already failed once
+because it relied on remembering**: a mirror force-pushed straight over an
+operator's freshly-landed `extract-dry` output before it had been copied
+back to GitHub, discarding `gemini main`'s only copy of it (recovered by
+having the operator re-push from their local clone, which the sync guard
+had correctly refused to reset over).
 Step 0 above exists specifically so this can't happen from forgetting --
 run it, don't just remember the rule.
 
@@ -191,10 +193,11 @@ none of those need torch/mamba-ssm at all.
 
 ## scripts/gemini/run.sh
 
-The single entry point Amrit actually runs on the node, mirroring
+The single entry point the operator actually runs on the node, mirroring
 `gemini-variation-study`'s `run.sh`: it activates (creating if missing) a
-venv under his home directory, installs what the selected step needs, runs
-the step, then commits and pushes only the small output files it produced.
+venv under the operator's home directory, installs what the selected step
+needs, runs the step, then commits and pushes only the small output files
+it produced.
 
 ```bash
 scripts/gemini/run.sh probe        # scripts/gemini/probe_env.sh -> env_probe.txt
@@ -227,7 +230,8 @@ pushes the summary synchronously after the step finishes, which a
 self-daemonizing step would break. It warns loudly (checking `$TMUX`/`$STY`)
 if it doesn't look like a detached session, but running `extract` under
 `tmux`/`screen`/`nohup` so a dropped SSH connection doesn't kill an
-hours-long run is on Amrit to do, not something `run.sh` can do for him.
+hours-long run is on the operator to do, not something `run.sh` can do for
+them.
 The not-yet-built `train`/`eval` steps aren't wired into `all` either -- `all`
 stays a fast, safe, no-surprises default.
 
@@ -238,7 +242,7 @@ anything outside `scripts/gemini/out/` or `docs/gemini*`, anything over
 900 KB, or any path that looks like data (`.parquet`, `.csv`, `.pt`,
 `.ckpt`, ...) — see the script itself for the exact checks. Future steps
 (extraction, training, eval) are meant to slot in as additional `case`
-branches, not as separate scripts Amrit has to remember to run in order.
+branches, not as separate scripts the operator has to remember to run in order.
 
 ## Credentials
 
@@ -314,22 +318,23 @@ it stays inside.
    `scripts/gemini/run.sh`) against a mocked connection, push it to both
    `origin` and `gemini` (`origin` first; mirror to `gemini` once GitHub CI
    is green).
-2. Amrit runs `scripts/gemini/run.sh <step>` directly on the GEMINI node --
+2. The operator runs `scripts/gemini/run.sh <step>` directly on the GEMINI node --
    no separate `git pull` first. **Fetch + reset, never pull**: `run.sh`
    opens with `git fetch origin && git reset --hard origin/main` on every
    invocation, not `git pull`. Every mirror rewrites `gemini`'s history (see
    the mirroring section above), so a commit made on this node and its
    mirrored equivalent from GitHub can be the exact same content under two
    different hashes -- `git pull`'s merge sees that as two unrelated
-   histories and refuses, the exact divergence Amrit hit once. Reset is safe
+   histories and refuses -- a divergence hit in practice once. Reset is safe
    here specifically *because* it's guarded: if the working tree is dirty,
    `run.sh` stops and prints the diff. If there are local commits
    `origin/main` doesn't have *by hash*, `run.sh` doesn't refuse on
    ancestry alone -- a mirror rewrite orphans a commit's hash even when its
    content already reached `origin/main` via the fetch-and-copy-files
-   mirror-back direction below (this happened to Amrit: his real
-   `extract-dry` output was already upstream, just under a different
-   commit). It diffs the actual paths those commits touched against
+   mirror-back direction below (this has happened in practice: an
+   operator's real `extract-dry` output was already upstream, just under a
+   different commit). It diffs the actual paths those commits touched
+   against
    `origin/main`'s current content for those exact paths; if every one
    matches exactly, it prints "outputs preserved upstream, resetting" and
    proceeds. It only refuses, printing exactly which paths would lose real
@@ -346,7 +351,7 @@ it stays inside.
    could have been made.
 5. Someone with GitHub push access fetches it back: `git fetch gemini main`,
    then copies only the new/changed files under `scripts/gemini/out/` (and
-   `docs/gemini*` if Amrit's run touched docs) into a normal commit on
+   `docs/gemini*` if the operator's run touched docs) into a normal commit on
    `origin main` --
 
    ```bash
@@ -355,7 +360,7 @@ it stays inside.
    # copy out the specific files that changed, e.g.:
    git show gemini/main:scripts/gemini/out/schema.json > scripts/gemini/out/schema.json
    git add scripts/gemini/out/schema.json
-   git commit -m "GEMINI: schema report from Amrit's run.sh schema"
+   git commit -m "GEMINI: schema report from the operator's run.sh schema"
    git push origin main
    ```
 
@@ -372,7 +377,7 @@ it stays inside.
    main` too, so both sides end up consistent again -- `gemini main`
    temporarily leading between steps 4 and 6 is expected, not a conflict.
 7. We iterate from the output — adjust the script, repeat. Every round trip
-   costs Amrit's time on the node, so scripts should fail fast and report
+   costs the operator's time on the node, so scripts should fail fast and report
    clearly rather than requiring a second run to fix an avoidable mistake.
 
 ## GEMINI to MEDS
