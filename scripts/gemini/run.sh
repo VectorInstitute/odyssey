@@ -307,11 +307,69 @@ main() {
         echo "Using CUDA toolkit: $CUDA_TOOLKIT_DIR"
         "$CUDA_TOOLKIT_DIR/bin/nvcc" --version
 
+        # Real incident, 2026-08-22: the GPU venv's system python3.12 had no
+        # dev headers at all (/usr/include/python3.12 empty/absent), so
+        # mamba-ssm's CUDA extension build got most of the way through (the
+        # sm_90 kernels compiled fine) and then died on `Python.h: No such
+        # file or directory` -- a ~30 minute compile in, not at venv-creation
+        # time. Same probe-first philosophy as the CUDA discovery above:
+        # check the interpreter that's actually going to build the venv has
+        # headers BEFORE creating anything. PYTHON_FOR_GPU_VENV is the
+        # escape hatch for whatever this node's real fix turns out to be
+        # (an environment-modules python, an already-on-disk uv-managed
+        # python, a python3.12-dev install) without needing another code
+        # change to point at it.
+        PYTHON_FOR_GPU_VENV="${PYTHON_FOR_GPU_VENV:-python3}"
+        PYTHON_INCLUDE_DIR=$(
+            "$PYTHON_FOR_GPU_VENV" -c \
+                "import sysconfig; print(sysconfig.get_path('include'))" \
+                2>/dev/null || true
+        )
+        if [[ -z "$PYTHON_INCLUDE_DIR" || ! -f "$PYTHON_INCLUDE_DIR/Python.h" ]]; then
+            echo "No Python.h found for '$PYTHON_FOR_GPU_VENV' (checked" >&2
+            echo "${PYTHON_INCLUDE_DIR:-<python -c sysconfig lookup failed>}/Python.h)." >&2
+            echo "mamba-ssm's CUDA extension build needs Python dev headers --" >&2
+            echo "the GPU venv can't be built from a header-less interpreter." >&2
+            echo "Point PYTHON_FOR_GPU_VENV at a header-bearing python3.12 and" >&2
+            echo "re-run, e.g.:" >&2
+            echo "  PYTHON_FOR_GPU_VENV=/path/to/python3.12 scripts/gemini/run.sh env-gpu" >&2
+            echo "Candidates on an HPC node: an environment-modules python" >&2
+            echo "('module avail python', then 'module load <name>' before" >&2
+            echo "re-running this with that module's python3 on PATH), an" >&2
+            echo "already-on-disk uv-managed python ('uv python list' --" >&2
+            echo "uv's own python *downloads* are likely proxy-blocked here," >&2
+            echo "same as pytorch.org, so only a python uv already has helps)," >&2
+            echo "or a python3.12-dev package from a node admin." >&2
+            exit 1
+        fi
+        echo "Using $PYTHON_FOR_GPU_VENV for the GPU venv (Python.h found at $PYTHON_INCLUDE_DIR)."
+
         GPU_VENV="${GEMINI_GPU_VENV:-$HOME/.venvs/odyssey-gemini-gpu}"
+        # venv *creation* doesn't need headers -- only the mamba-ssm compile
+        # later does -- so a venv already sitting at $GPU_VENV from a prior,
+        # header-less attempt looks perfectly valid to the plain
+        # bin/activate check below and would otherwise get silently reused,
+        # sending a re-run with a now-fixed PYTHON_FOR_GPU_VENV straight
+        # back into the same Python.h failure ~30 minutes in. Check the
+        # existing venv's own python for headers first and wipe it if it's
+        # the stale, header-less kind.
+        if [[ -f "$GPU_VENV/bin/activate" ]]; then
+            existing_include=$(
+                "$GPU_VENV/bin/python3" -c \
+                    "import sysconfig; print(sysconfig.get_path('include'))" \
+                    2>/dev/null || true
+            )
+            if [[ -z "$existing_include" || ! -f "$existing_include/Python.h" ]]; then
+                echo "Existing GPU venv at $GPU_VENV has no Python.h (built from" >&2
+                echo "a header-less interpreter) -- wiping and recreating from" >&2
+                echo "$PYTHON_FOR_GPU_VENV." >&2
+                rm -rf "$GPU_VENV"
+            fi
+        fi
         if [[ ! -f "$GPU_VENV/bin/activate" ]]; then
             echo "Creating GPU venv at $GPU_VENV"
             rm -rf "$GPU_VENV"
-            python3 -m venv "$GPU_VENV"
+            "$PYTHON_FOR_GPU_VENV" -m venv "$GPU_VENV"
         fi
         # shellcheck source=/dev/null
         source "$GPU_VENV/bin/activate"
