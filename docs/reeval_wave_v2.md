@@ -80,9 +80,28 @@ time, since new runs may land before this wave starts):
 
 | Dataset | Checkpoint | VM | Notes |
 |---|---|---|---|
-| MIMIC | `full_run_v8` `checkpoint_best.pt` | cbm | flagship full-scale MIMIC run |
+| MIMIC | `full_run_v8` `checkpoint_best.pt` | cbm | flagship full-scale MIMIC run (epoch-2 continuation; new flagship, not directly comparable to the registry's v1 row -- different checkpoint, see note below) |
 | eICU | `eicu_subset_v9` `checkpoint_best.pt` | eicu | flagship eICU run (recency features) |
 | eICU | `eicu_subset_v8` `checkpoint_best.pt` | eicu | only if a published table still cites it directly |
+
+**MIMIC checkpoint-provenance note (2026-08-22)**: the registry's `full_run_v8`
+row (137,605 steps, 1 epoch, research_journal 20) was backed by that run's
+own `checkpoint_best.pt`, step ~134,500 -- not `checkpoint_final.pt`. The
+epoch-2 continuation overwrote `checkpoint_best.pt` (it now holds epoch-2's
+own best) and no periodic checkpoint near step 134,500 survived the
+continuation's rolling retention window. The only artifact preserved from
+that era is `checkpoint_final_epoch1.pt` (that run's renamed
+`checkpoint_final.pt`) -- a genuinely different checkpoint from the one
+the registry numbers came from, not a substitute for it. Consequences:
+(1) a same-model v1-vs-v2 **protocol delta** for MIMIC is still obtainable
+by dumping both protocols against `checkpoint_final_epoch1.pt` -- valid on
+any fixed model -- but its *absolute* alert numbers will not match the
+registry row, expected from checkpoint provenance, not a sign of drift.
+(2) MIMIC's extra-baseline v1 rows (TabICL etc., anything needing the
+original `checkpoint_best.pt`-era row set) can never be produced now --
+MIMIC extra-baseline comparisons are v2-only going forward. The registry's
+existing v1 row keeps its historical numbers unchanged, with a provenance
+note added ("backing checkpoint no longer on disk; see wave notes").
 
 For each: run `scripts/eval_run.sh` (or `evaluate_alerts` directly) with
 `--dump-rows` pointed at a **new path** (e.g. `alerts_rows_v2.parquet`,
@@ -145,3 +164,19 @@ check is one line against both dumps' `.height`.
   the wave (not just before it), stop immediately -- an environment drift
   discovered mid-wave invalidates every v2 number produced so far, not
   just the one run being evaluated when it was caught.
+- **Incident, 2026-08-22 (lesson filed)**: the never-overwrite rule above
+  was violated once, but not by wave code -- `full_run_v8`'s pre-wave-era
+  automatic epoch-2-completion chain (`vm_epoch2_wait_and_eval.sh` ->
+  `scripts/eval_run.sh`) ran its own `alerts` stage against the standard
+  `alerts.json`/`alerts_rows.parquet` paths as part of ordinary post-training
+  eval, unaware it was about to become the wave's own protected v1 baseline.
+  Since `LANDMARK_PROTOCOL_VERSION` is a hardcoded constant on `main`
+  rather than an opt-in flag, that ordinary chain silently wrote *v2*-
+  protocol rows over what had been the only surviving v1 dump, for a
+  different checkpoint besides (see the MIMIC checkpoint-provenance note
+  in section 2) -- destroying MIMIC's ability to produce extra-baseline v1
+  rows against the registry's original checkpoint. Eval tooling is growing
+  an anti-clobber guard (refuse to write `alerts.json`/`alerts_rows.parquet`
+  if a wave-in-progress marker or an existing dump under active comparison
+  is present) so an ordinary eval run can't silently destroy a wave
+  precondition again.
