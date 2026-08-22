@@ -159,7 +159,7 @@ priority order:
 | **Transfers** | `lookup_transfer_subset.institution_to_mns` -> `TRANSFER_TO//<institution>` (already in `odyssey/data/vocabulary.py`, matching MIMIC's own convention) | Despite the table name, real per-encounter rows, not a static lookup. No event-level timestamp -- attributed to admission time. |
 | **Billing (CMG)** | `ipcmg_subset.cmg` -> `BILLING_CMG//<cmg>` (new prefix, `BILLING_TYPE`) | Canada's CIHI casemix-group system -- kept distinct from MIMIC's own `DRG` prefix (different vocabulary, same type bucket). No event-level timestamp -- attributed to discharge time (grouper codes finalize at stay close, same reasoning as diagnoses below). |
 | **Billing (HIG)** | `iphig_subset.hig_code` -> `BILLING_HIG//<code>` (new prefix, `BILLING_TYPE`) | CIHI's Health-based Inpatient Group system, distinct from both CMG and DRG. Same discharge-time attribution as CMG. |
-| **ICU admission / discharge** | `ipscu_subset`: `scu_admit_date_time`, `scu_discharge_date_time`, `icu_flag` | `icu_flag` gates whether a `scu_*` stay counts as ICU specifically (`scu_unit_number` suggests non-ICU special-care units exist too, e.g. step-down). **Open incident (2026-08-22)**: the real finalized dataset's code inventory (`scripts/gemini/out/codes_inventory.json`, 16,187 distinct codes, from the `export-codes` run at 2026-08-22T18:28:04Z) has zero `ICU_ADMISSION`/`ICU_DISCHARGE` codes despite `ipscu_subset` having ~631k rows. `extract_icu`'s `icu_flag` coercion (`_coerce_boolean_flag`, recognizing bare `t`/`f` -- Postgres `COPY`'s own boolean CSV encoding) landed in commit `d2dbb16` (2026-08-21 16:04:14), well before that `export-codes` run -- so the coercion bug alone doesn't explain this. Two real possibilities, not yet distinguished: (a) `ipscu_subset`'s manifest entry was marked complete from a run that predates the fix and was never re-touched by a later resumed run (`manifest.json` lives only on the GEMINI node's filesystem, never committed to git, so this can't be checked from repo history alone), or (b) the coercion is working correctly and genuinely (near-)all `icu_flag` values in this datacut are false. Needs Amrit's direct query against `ipscu_subset` (`SELECT icu_flag, count(*) FROM ipscu_subset GROUP BY icu_flag`, or similar) to resolve; the re-extract already planned for the death-event landing (see Status) will re-run `ipscu_subset` from scratch regardless, since a manifest wipe is part of that plan. |
+| **ICU admission / discharge** | `ipscu_subset`: `scu_admit_date_time`, `scu_discharge_date_time`, `icu_flag` | `icu_flag` gates whether a `scu_*` stay counts as ICU specifically (`scu_unit_number` suggests non-ICU special-care units exist too, e.g. step-down). **Incident, resolved (2026-08-22)**: the real finalized dataset's code inventory had zero `ICU_ADMISSION`/`ICU_DISCHARGE` codes despite `ipscu_subset` having ~631k rows. Root cause, forensically confirmed (not the `icu_flag` boolean-coercion bug, which had already landed by then, confirmed via Amrit's direct query -- 541,688 real `t` rows correctly parsed): `MedsShardWriter` buffered rows in memory and only wrote a valid Parquet footer at `close()`, called exactly once at the very end of the whole run -- but each table's manifest entry was marked `"complete"` immediately after its own generator drained, long before that single end-of-run `close()`. Attempt 5: `ipscu_subset`'s ~1.08M events buffered under the flush threshold, manifest marked complete, then `lab_subset`'s crash (`103@POST`, see the ER incident above) killed the process before `close()` ever ran -- silently losing every `ipscu_subset` row while the manifest kept claiming completion, so every later resumed run skipped re-extracting it. Confirmed by accounting: `finalize`'s shard totals exceeded the per-run table sums by almost exactly `admdad_subset`'s events alone, ~zero from `ipscu_subset`. Fixed in `extract_meds.py` (`MedsShardWriter.flush_all`, called per table before its manifest mark, plus a generator-emitted-vs-durably-written row assert) -- see the Status entry below. The already-planned re-extract heals the data hole for free (fresh manifest re-extracts `ipscu_subset` under the fixed code). |
 | **Labs** | `lab_subset`: code via `test_type_mapped_omop` (join `lookup_lab_concept`, deduplicated -- see open question 4), numeric parse of `result_value`, unit from `result_unit`, time from `collection_date_time` | `result_value` is `text` -- needs the same numeric-parse-with-fallback-to-categorical pattern already used for MIMIC/eICU labs. **SI units, not MIMIC/eICU's US-conventional units -- see [Units and canonical clinical ranges](#units-and-canonical-clinical-ranges).** |
 | **Vitals** | `vitals_subset`: code via `measurement_mapped_omop` (join `lookup_vitals_concept` -- confirmed real and covers the common vitals, open question 3), numeric parse of `measurement_value`, unit from `measurement_unit`, time from `measure_date_time` | Two passes: mapped (above) and `_unmapped` (the exact complement, `measurement_mapped_omop` null). ~119M of ~412M rows have no concept mapping at all -- the entire 71%-retention story, confirmed real (FiO2/oxygen-delivery/pain-score/pupillary-response/LOC names among the top unmapped) -- rescued via `measurement_name` as a fallback identity, the eICU convention. See "Real run, real incident, real fix" below. |
 | **Medications** | `pharmacy_subset`: ingredient via `rxnorm_cache`/`lookup_pharmacy_mapping` (see open question 5) or `med_id_generic_name_raw` as a fallback identity; `med_start_date_time`/`med_end_date_time` for course timing; `route`, `dose_amount`/`dose_unit`, `frequency`, `PRN_IND` as attributes | Real datetime columns exist, but their values include physically impossible year outliers (1930-9022) -- needs the admission-date guard, see open question 7. |
@@ -421,3 +421,32 @@ If a third schema addition after a `finalize` happens, a `finalize
 --amend` mode (partitioned-sink merge of only the new event rows into the
 existing `data/` layout, skipping the full compacting rewrite) becomes
 worth building -- not yet, this is only the second occurrence.
+
+**Real incident, real fix (2026-08-22): a completed table's manifest mark
+could outlive its own data.** Root cause of the ICU zero-codes incident
+above, forensically confirmed: `MedsShardWriter` buffered rows in memory
+and only wrote a valid Parquet footer at `close()`, called exactly once
+at the very end of the whole run, across every table -- but each table's
+manifest entry was marked `"complete"` immediately after its own
+generator drained, well before that single end-of-run `close()`.
+Attempt 5: `ipscu_subset` buffered under threshold, manifest marked
+complete, then `lab_subset`'s crash killed the process before `close()`
+ever ran -- silently losing every `ipscu_subset` row while the manifest
+kept claiming completion. Fixed: `MedsShardWriter.flush_all()`
+force-flushes every buffered shard and closes its writer (a real footer,
+not just buffered `write_table()` calls) without ending the writer's
+lifetime -- the next table's writes to the same shard reopen a fresh
+`_partN` file via the existing multi-part-shard resumability design.
+`run_extraction` calls it immediately after each table's generator
+drains, *before* that table's manifest mark -- durability precedes the
+claim of durability. A new per-table assert (generator-emitted rows ==
+writer-durable rows written + dropped) raises loudly on any future
+mismatch instead of letting one through silently. Deliberately does
+*not* also close writers on an arbitrary exception mid-table: since
+`flush_all()` already durably closes every *completed* table before the
+next one starts, the only writer state still open at exception time
+belongs to the table currently mid-flight, and closing it there would
+finalize a valid-but-partial file that a retry (which redoes the whole
+table from scratch) would then double-count alongside its own fresh part
+files -- left unclosed, that case still reads as a loud, footer-missing
+parquet error on next read rather than a silent duplicate.
