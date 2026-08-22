@@ -175,22 +175,23 @@ Organized by research track; the foundational plumbing that is finished lives in
 3. MEDS-Tab as the field-standard external baseline on our own MEDS data (pipeline glue merged, driver in progress)
 4. Comparator suite on eICU (done: tuned GBM strongest overall; TabICL wins AKI and two ICU pairs; EBM and SurvivalPFN not competitive; registry has full tables); MIMIC repeat under the v2 landmark protocol in the re-evaluation wave (`docs/reeval_wave_v2.md`)
 5. Backbone control: a modern-vanilla decoder-only transformer (RoPE, pre-norm, SwiGLU; no LLM pre/post-training extras) swapped in behind the same tokenization, losses, heads, and matched parameter and compute budget -- prices the hybrid Mamba-2 + attention choice the way the no-bottleneck variant prices the bottleneck. Subset scale first; full scale only if the subset result is interesting in either direction. If it matches the hybrid, simplicity wins and we switch; if it loses, the architecture choice finally has a measured receipt.
-6. Clinical text as a timeline modality, probe-gated: a report (MIMIC-IV-Note discharge/radiology text; GEMINI `imaging_result`) becomes a timeline event carrying a precomputed frozen-encoder embedding in a sidecar table, projected into token space at input exactly like the numeric value channel -- backbone unchanged, MEDS waist preserved (sources without notes simply lack the sidecar), and pooled embeddings go to the tabular baselines for a fair comparison. Gated on the cheap headroom test first: pooled report embeddings as extra GBM features on MIMIC alerts; the fusion work proceeds only if text measurably moves the probe.
+6. Missingness stress protocol, eval-only, all model families on identical degraded records: AUROC/calibration degradation curves under event-level lab dropout, whole-family blackouts, and simulated lab-turnaround lag (charted-time vs actually-available-time, the classic silent deployment gap). Two fairness constraints are the design: degradation applies to the *event record* before each model's own featurization (the GBM recomputes its staleness features on the degraded record, not on frozen features), and it runs under the v2 landmark protocol so the curves are wave-comparable. Motivation: the event-stream paradigm never imputes and models observability explicitly (concept observability head, recency seen-flags), which *should* degrade more gracefully than fixed-feature-panel models -- this measures whether that folklore is true, per family, as a deployment-readiness figure for the paper.
+7. Clinical text as a timeline modality, probe-gated: a report (MIMIC-IV-Note discharge/radiology text; GEMINI `imaging_result`) becomes a timeline event carrying a precomputed frozen-encoder embedding in a sidecar table, projected into token space at input exactly like the numeric value channel -- backbone unchanged, MEDS waist preserved (sources without notes simply lack the sidecar), and pooled embeddings go to the tabular baselines for a fair comparison. Gated on the cheap headroom test first: pooled report embeddings as extra GBM features on MIMIC alerts; the fusion work proceeds only if text measurably moves the probe.
 
 **Track B: interpretability and causality**
-7. The stage-B cost frontier: longer training, partial unfreezing, small stage-A task weight (M-series, running); acceptance test is the six-mode banded intervention suite
-8. Concept-set widening (the completeness axis: richer concept vocabulary from structured data), plus leakage metrics (CTL/ICL) reported per run
-9. Input-level counterfactual rollouts as the near-term clinician what-if
-10. Population-level causal effect estimation (exploratory; CausalPFN line)
+8. The stage-B cost frontier: longer training, partial unfreezing, small stage-A task weight (M-series, running); acceptance test is the six-mode banded intervention suite
+9. Concept-set widening (the completeness axis: richer concept vocabulary from structured data), plus leakage metrics (CTL/ICL) reported per run
+10. Input-level counterfactual rollouts as the near-term clinician what-if
+11. Population-level causal effect estimation (exploratory; CausalPFN line)
 
 **Track C: generalization**
-11. GEMINI: SQL-streaming MEDS extraction (built, first full extraction in progress), post-extraction MEDS conformance step (int64 subject ids, `metadata/`, deliberate split rule), then external validation of frozen models (`docs/gemini.md`, `scripts/gemini/`)
-12. EHRSHOT-style few-shot/transfer protocol, the pretrain-once test
+12. GEMINI: SQL-streaming MEDS extraction (built, first full extraction in progress), post-extraction MEDS conformance step (int64 subject ids, `metadata/`, deliberate split rule), then external validation of frozen models (`docs/gemini.md`, `scripts/gemini/`)
+13. EHRSHOT-style few-shot/transfer protocol, the pretrain-once test
 
 **Track D: platform and clinical interface**
-13. Reproducibility: environment fingerprints and per-checkpoint numeric canaries recorded with every run (done); landmark protocol versioning on all alert evaluations (done: `LANDMARK_PROTOCOL_VERSION`, re-evaluation wave planned in `docs/reeval_wave_v2.md`)
-14. MEDS conformance validator as a gate on every extraction output; thin MEDS-to-FHIR translator once the best model is settled (deployment readiness as an adapter at the MEDS boundary, not a rearchitecture)
-15. Phase 2: an LLM agent (e.g. MedGemma) reading the concept-annotated forecast, with retrospective clinician validation on GEMINI; gated on Tracks B and C
+14. Reproducibility: environment fingerprints and per-checkpoint numeric canaries recorded with every run (done); landmark protocol versioning on all alert evaluations (done: `LANDMARK_PROTOCOL_VERSION`, re-evaluation wave planned in `docs/reeval_wave_v2.md`)
+15. MEDS conformance validator as a gate on every extraction output; thin MEDS-to-FHIR translator once the best model is settled (deployment readiness as an adapter at the MEDS boundary, not a rearchitecture)
+16. Phase 2: an LLM agent (e.g. MedGemma) reading the concept-annotated forecast, with retrospective clinician validation on GEMINI; gated on Tracks B and C
 
 <details>
 <summary>Foundational work, complete (items 1-8, 10, 12, 13, 16, 17 of the original list)</summary>
