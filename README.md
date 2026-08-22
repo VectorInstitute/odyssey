@@ -172,7 +172,7 @@ Sequences are built from each subject's **complete history**, not scoped to one 
 
 ## GEMINI
 
-Cross-hospital generalization is assessed on [GEMINI](https://geminimedicine.ca/), a ~30-hospital inpatient database. Nobody on this team has a login on the GEMINI node except Amrit, so all GEMINI-facing work is git-mediated: we push a script to a second, 1 MiB-per-push-capped remote, Amrit runs it on the node, and only small aggregate/cell-suppressed output comes back in a commit, never patient-level data or model checkpoints. See [`docs/gemini.md`](docs/gemini.md) for the full workflow, credential pattern, and governance rules.
+Cross-hospital generalization is assessed on [GEMINI](https://geminimedicine.ca/), a ~30-hospital inpatient database in a governed research environment. GEMINI-facing work is git-mediated and privacy-preserving by construction: code goes in through version control, runs inside the environment, and only small, aggregate, cell-suppressed outputs (metrics, summaries) ever come back -- never patient-level data or model checkpoints. See [`docs/gemini.md`](docs/gemini.md) for the full workflow, credential pattern, and governance rules.
 
 ## Development
 
