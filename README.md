@@ -197,20 +197,22 @@ Organized by research track; the foundational plumbing that is finished lives in
 6. Missingness stress protocol, eval-only, all model families on identical degraded records: AUROC/calibration degradation curves under event-level lab dropout, whole-family blackouts, and simulated lab-turnaround lag (charted-time vs actually-available-time, the classic silent deployment gap). Two fairness constraints are the design: degradation applies to the *event record* before each model's own featurization (the GBM recomputes its staleness features on the degraded record, not on frozen features), and it runs under the v2 landmark protocol so the curves are wave-comparable. Motivation: the event-stream paradigm never imputes and models observability explicitly (concept observability head, recency seen-flags), which *should* degrade more gracefully than fixed-feature-panel models -- this measures whether that folklore is true, per family, as a deployment-readiness figure for the paper.
 7. Clinical text as a timeline modality, probe-gated: a report (MIMIC-IV-Note discharge/radiology text; GEMINI `imaging_result`) becomes a timeline event carrying a precomputed frozen-encoder embedding in a sidecar table, projected into token space at input exactly like the numeric value channel -- backbone unchanged, MEDS waist preserved (sources without notes simply lack the sidecar), and pooled embeddings go to the tabular baselines for a fair comparison. Gated on the cheap headroom test first: pooled report embeddings as extra GBM features on MIMIC alerts; the fusion work proceeds only if text measurably moves the probe.
 
+8. Task-suite expansion for the v10/GEMINI training generation, born under the v2 landmark protocol: **Sepsis-3 onset** (suspected infection = culture drawn + antibiotics started within the standard window, plus an acute SOFA rise >= 2, built as concept-registry rules with the same windowed-criteria discipline as the KDIGO/AKI labels; diagnosis-code labels rejected deliberately -- discharge billing codes carry no onset time, so a code-based "time to sepsis" is invalid for a real-time task) and **30-day readmission** (discharge-anchored landmarks, a new landmark type on the same hazard machinery; the task where GEMINI's multi-hospital linkage genuinely beats MIMIC). Both get survival/time-to-event formulations, all model families, all three datasets. The GCS coverage gap (eICU) is a stated limitation of the SOFA neuro component, and GEMINI's rescued FiO2/oxygen-support vitals feed the respiratory component directly. A bundling-tolerance/timestamp-jitter check joins the stress-protocol family (item 6): within-bundle order is already ignored by design (set-scored bundles); the open dial is how coarse the bundle window can go before the timeline signal degrades.
+
 **Track B: interpretability and causality**
-8. The stage-B cost frontier: longer training, partial unfreezing, small stage-A task weight (M-series, running); acceptance test is the six-mode banded intervention suite
-9. Concept-set widening (the completeness axis: richer concept vocabulary from structured data), plus leakage metrics (CTL/ICL) reported per run
-10. Input-level counterfactual rollouts as the near-term clinician what-if
-11. Population-level causal effect estimation (exploratory; CausalPFN line)
+9. The stage-B cost frontier: longer training, partial unfreezing, small stage-A task weight (M-series, running); acceptance test is the six-mode banded intervention suite
+10. Concept-set widening (the completeness axis: richer concept vocabulary from structured data), plus leakage metrics (CTL/ICL) reported per run
+11. Input-level counterfactual rollouts as the near-term clinician what-if
+12. Population-level causal effect estimation (exploratory; CausalPFN line)
 
 **Track C: generalization**
-12. GEMINI: SQL-streaming MEDS extraction (built, first full extraction in progress), post-extraction MEDS conformance step (int64 subject ids, `metadata/`, deliberate split rule), then external validation of frozen models (`docs/gemini.md`, `scripts/gemini/`)
-13. EHRSHOT-style few-shot/transfer protocol, the pretrain-once test
+13. GEMINI: SQL-streaming MEDS extraction (built, first full extraction in progress), post-extraction MEDS conformance step (int64 subject ids, `metadata/`, deliberate split rule), then external validation of frozen models (`docs/gemini.md`, `scripts/gemini/`)
+14. EHRSHOT-style few-shot/transfer protocol, the pretrain-once test
 
 **Track D: platform and clinical interface**
-14. Reproducibility: environment fingerprints and per-checkpoint numeric canaries recorded with every run (done); landmark protocol versioning on all alert evaluations (done: `LANDMARK_PROTOCOL_VERSION`, re-evaluation wave planned in `docs/reeval_wave_v2.md`)
-15. MEDS conformance validator as a gate on every extraction output; thin MEDS-to-FHIR translator once the best model is settled (deployment readiness as an adapter at the MEDS boundary, not a rearchitecture)
-16. Phase 2: an LLM agent (e.g. MedGemma) reading the concept-annotated forecast, with retrospective clinician validation on GEMINI; gated on Tracks B and C
+15. Reproducibility: environment fingerprints and per-checkpoint numeric canaries recorded with every run (done); landmark protocol versioning on all alert evaluations (done: `LANDMARK_PROTOCOL_VERSION`, re-evaluation wave planned in `docs/reeval_wave_v2.md`)
+16. MEDS conformance validator as a gate on every extraction output; thin MEDS-to-FHIR translator once the best model is settled (deployment readiness as an adapter at the MEDS boundary, not a rearchitecture)
+17. Phase 2: an LLM agent (e.g. MedGemma) reading the concept-annotated forecast, with retrospective clinician validation on GEMINI; gated on Tracks B and C
 
 <details>
 <summary>Foundational work, complete (items 1-8, 10, 12, 13, 16, 17 of the original list)</summary>
