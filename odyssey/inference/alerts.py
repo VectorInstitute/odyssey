@@ -81,7 +81,7 @@ from odyssey.data.value_binning import (
 from odyssey.data.vocabulary import Vocabulary, code_type
 from odyssey.inference.baseline_features import StrongFeatureBuilder
 from odyssey.inference.baseline_features import feature_names as strong_feature_names
-from odyssey.inference.run_inference import load_run
+from odyssey.inference.run_inference import load_run, refuse_existing_output
 from odyssey.models.sequence_model import SequenceModel
 from odyssey.models.time_to_event import probability_within
 from odyssey.training.data import (
@@ -1815,7 +1815,24 @@ def _main() -> None:
         default=None,
         help="write the per-index-row score/outcome table as parquet (patient-level)",
     )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help=(
+            "allow clobbering an existing --output-json/--dump-rows file. "
+            "Protocol-versioned science outputs are append-only by "
+            "default -- a real, irreplaceable alerts_rows.parquet was "
+            "lost to a silent overwrite on 2026-08-22. Pass this only "
+            "when re-running the same run/protocol intentionally."
+        ),
+    )
     args = parser.parse_args()
+    out = Path(args.output_json)
+    refuse_existing_output(out, overwrite=args.overwrite, kind="alerts")
+    if args.dump_rows is not None:
+        refuse_existing_output(
+            Path(args.dump_rows), overwrite=args.overwrite, kind="alerts rows"
+        )
     run_dir = Path(args.run_dir)
     results = evaluate_alerts(
         run_dir,
@@ -1832,7 +1849,6 @@ def _main() -> None:
         stream_baseline=args.stream_baseline_shards,
         dump_rows_path=args.dump_rows,
     )
-    out = Path(args.output_json)
     out.parent.mkdir(parents=True, exist_ok=True)
     # Per-record field, not a top-level wrapper: build_alert_finding (and
     # anything else reading this file) expects a bare list of records --

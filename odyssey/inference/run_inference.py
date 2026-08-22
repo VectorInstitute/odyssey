@@ -1006,6 +1006,52 @@ def results_to_dict(results: InferenceResults) -> Dict[str, object]:
     return out
 
 
+def refuse_existing_output(path: Path, *, overwrite: bool, kind: str) -> None:
+    """Refuse to silently clobber an existing protocol-versioned output file.
+
+    Real incident this guards against (2026-08-22): an automatic eval
+    chain overwrote a finished run's own original v1-protocol
+    ``alerts.json``/``alerts_rows.parquet`` at their standard output
+    paths -- the registry's aggregate numbers survived (recorded
+    elsewhere), but the row-level dump was unrecoverable once
+    overwritten, silently deleting that run's extra-baseline v1
+    comparisons. Protocol-versioned science outputs (inference results,
+    interventions, alerts, and their row-level dumps) are append-only by
+    default: an existing file at ``path`` aborts the run with a clear
+    message unless the caller passes ``--overwrite`` explicitly. Shared
+    by :mod:`odyssey.inference.run_inference`,
+    :mod:`odyssey.inference.interventions`, and
+    :mod:`odyssey.inference.alerts` -- each CLI's own ``--overwrite``
+    flag threads through to this same check, called *before* the (often
+    expensive) evaluation itself runs, so a mistaken rerun fails fast
+    rather than after minutes of compute.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        The output path about to be written.
+    overwrite : bool
+        From the caller's own ``--overwrite`` flag -- ``True`` skips the
+        check entirely.
+    kind : str
+        Human-readable label for the error message (e.g. ``"inference
+        results"``, ``"interventions"``, ``"alerts"``, ``"alerts rows"``).
+
+    Raises
+    ------
+    SystemExit
+        If ``path`` already exists and ``overwrite`` is ``False``.
+    """
+    if not overwrite and path.exists():
+        raise SystemExit(
+            f"refusing to overwrite existing {kind} output at {path} -- "
+            "pass --overwrite if this is intentional (protocol-versioned "
+            "science outputs are append-only by default: a real, "
+            "irreplaceable row-level dump was lost this way on "
+            "2026-08-22)"
+        )
+
+
 @dataclass(frozen=True)
 class _CliArgs:
     """Parsed CLI args for :func:`evaluate_run`, mirroring ``training.train``'s CLI."""
@@ -1017,6 +1063,7 @@ class _CliArgs:
     max_shards: Optional[int]
     num_lanes: int
     chunk_size: int
+    overwrite: bool
 
 
 def _parse_args() -> _CliArgs:
@@ -1034,6 +1081,17 @@ def _parse_args() -> _CliArgs:
     parser.add_argument("--max-shards", type=int, default=None)
     parser.add_argument("--num-lanes", type=int, default=8)
     parser.add_argument("--chunk-size", type=int, default=256)
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help=(
+            "allow clobbering an existing --output-json file. Protocol-"
+            "versioned science outputs are append-only by default -- a "
+            "real, irreplaceable row-level dump (alerts_rows.parquet) was "
+            "lost to a silent overwrite on 2026-08-22. Pass this only "
+            "when re-running the same run/protocol intentionally."
+        ),
+    )
     args = parser.parse_args()
 
     run_dir = Path(args.run_dir)
@@ -1045,6 +1103,7 @@ def _parse_args() -> _CliArgs:
         max_shards=args.max_shards,
         num_lanes=args.num_lanes,
         chunk_size=args.chunk_size,
+        overwrite=args.overwrite,
     )
 
 
@@ -1054,6 +1113,9 @@ if __name__ == "__main__":
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     cli_args = _parse_args()
+    refuse_existing_output(
+        cli_args.output_json, overwrite=cli_args.overwrite, kind="inference results"
+    )
     results = evaluate_run(
         cli_args.run_dir,
         cli_args.held_out_shard_dir,
@@ -1074,4 +1136,5 @@ __all__ = [
     "run_streaming_inference",
     "evaluate_run",
     "results_to_dict",
+    "refuse_existing_output",
 ]

@@ -1,6 +1,7 @@
 """Tests for the concept intervention / completeness harness (CPU)."""
 
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Dict, Tuple
 
 import polars as pl
@@ -438,3 +439,36 @@ def test_evaluate_interventions_rejects_transformer_backbone_before_touching_sha
 
     with pytest.raises(NotImplementedError, match="backbone='transformer'"):
         evaluate_interventions("/runs/x", "/data/held_out")
+
+
+def test_main_refuses_to_overwrite_an_existing_output_before_evaluating(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Guard must fire before evaluate_interventions runs, not just before the write.
+
+    Real incident: a silent overwrite lost an irreplaceable row-level
+    science output (2026-08-22, alerts.py's own dump-rows --
+    interventions.py shares the same --output-json shape).
+    """
+    existing = tmp_path / "interventions_band15.json"
+    existing.write_text("[]")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "prog",
+            "--run-dir",
+            "/runs/x",
+            "--held-out-shard-dir",
+            "/data/held_out",
+            "--output-json",
+            str(existing),
+        ],
+    )
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("must not evaluate before the overwrite guard fires")
+
+    monkeypatch.setattr(interventions_module, "evaluate_interventions", _boom)
+
+    with pytest.raises(SystemExit, match="refusing to overwrite"):
+        interventions_module._main()

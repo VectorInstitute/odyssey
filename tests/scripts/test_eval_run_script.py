@@ -43,6 +43,37 @@ def test_bottleneck_plan_runs_every_stage(tmp_path: Path) -> None:
     assert "--dump-rows" in tokens  # per-index-row table for error analysis
 
 
+def test_overwrite_flag_defaults_off_and_never_appears_in_the_plan(
+    tmp_path: Path,
+) -> None:
+    plan = _plan(tmp_path, "bottleneck")
+    assert "--overwrite" not in plan
+
+
+def test_overwrite_env_var_forwards_the_flag_to_every_stage(tmp_path: Path) -> None:
+    """OVERWRITE=1 must reach eval/interventions/alerts's own --overwrite guard."""
+    run_dir = tmp_path / "run_bottleneck"
+    run_dir.mkdir()
+    (run_dir / "config.json").write_text(json.dumps({"model_kind": "bottleneck"}))
+    data = tmp_path / "data"
+    (data / "held_out").mkdir(parents=True)
+    (data / "train").mkdir()
+    env = dict(os.environ, DRY_RUN="1", PYTHON="python3", OVERWRITE="1")
+
+    out = subprocess.run(
+        ["bash", str(SCRIPT), str(run_dir), str(data)],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    )
+
+    for stage in ("eval", "interventions", "alerts"):
+        assert f"=== STAGE {stage} EXIT 0 (dry) ===" in out.stdout, stage
+    tokens = out.stdout.replace("'", "").split()
+    assert tokens.count("--overwrite") == 3  # eval, interventions, alerts
+
+
 def test_baseline_plan_skips_bottleneck_only_stages(tmp_path: Path) -> None:
     plan = _plan(tmp_path, "baseline")
     assert "=== STAGE interventions SKIPPED (baseline model) ===" in plan

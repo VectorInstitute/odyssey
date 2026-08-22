@@ -26,6 +26,7 @@ from odyssey.inference.run_inference import (
     _parse_args,
     _RunningTaskMetrics,
     load_run,
+    refuse_existing_output,
     results_to_dict,
     run_streaming_inference,
 )
@@ -290,6 +291,77 @@ def test_parse_args_honours_an_explicit_checkpoint_name(
     )
     args = _parse_args()
     assert args.checkpoint_path == Path("/runs/x/checkpoint_final.pt")
+
+
+def test_parse_args_overwrite_defaults_to_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "prog",
+            "--run-dir",
+            "/runs/x",
+            "--held-out-shard-dir",
+            "/data/held_out",
+            "--output-json",
+            "/out/results.json",
+        ],
+    )
+    assert _parse_args().overwrite is False
+
+
+def test_parse_args_overwrite_flag_is_honoured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "prog",
+            "--run-dir",
+            "/runs/x",
+            "--held-out-shard-dir",
+            "/data/held_out",
+            "--output-json",
+            "/out/results.json",
+            "--overwrite",
+        ],
+    )
+    assert _parse_args().overwrite is True
+
+
+# ---------------------------------------------------------------------------
+# refuse_existing_output: append-only-by-default guard for science outputs
+# ---------------------------------------------------------------------------
+
+
+def test_refuse_existing_output_raises_on_an_existing_file_without_overwrite(
+    tmp_path: Path,
+) -> None:
+    """Real incident: an overwrite lost an irreplaceable row-level dump (2026-08-22)."""
+    existing = tmp_path / "alerts.json"
+    existing.write_text("{}")
+
+    with pytest.raises(SystemExit, match="refusing to overwrite"):
+        refuse_existing_output(existing, overwrite=False, kind="alerts")
+
+
+def test_refuse_existing_output_allows_an_existing_file_with_overwrite(
+    tmp_path: Path,
+) -> None:
+    existing = tmp_path / "alerts.json"
+    existing.write_text("{}")
+
+    refuse_existing_output(existing, overwrite=True, kind="alerts")  # no raise
+
+
+def test_refuse_existing_output_allows_a_nonexistent_file_either_way(
+    tmp_path: Path,
+) -> None:
+    missing = tmp_path / "does_not_exist.json"
+
+    refuse_existing_output(missing, overwrite=False, kind="alerts")  # no raise
+    refuse_existing_output(missing, overwrite=True, kind="alerts")  # no raise
 
 
 # ---------------------------------------------------------------------------
