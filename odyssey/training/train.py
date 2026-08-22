@@ -943,6 +943,37 @@ def _train_streaming(config: TrainingConfig, output_dir: Path, device: str) -> P
     return _run_training(config, output_dir, device, corpus)
 
 
+def _batch_config_fields(cfg: TrainingConfig) -> Dict[str, object]:
+    """Fields that determine what a resume's data stream actually replays.
+
+    What ``PackedLaneSampler.next_chunk()``/``PackedContextSampler`` produce
+    at a given position, for a given epoch's seed -- saved alongside every
+    periodic checkpoint so a resume can tell whether fast-forwarding to the
+    checkpoint's ``steps_into_epoch`` would land on the same position it was
+    taken at, or a different one (e.g. this run manually restarted with a
+    different ``num_lanes``/``chunk_size``, which is exactly what happened
+    partway through the run that motivated this: batch size was tuned up
+    for GPU utilization mid-training). Deliberately excludes model/
+    optimizer hyperparameters (``learning_rate`` etc.), which don't affect
+    the data stream.
+
+    Module-level (not a closure inside :func:`_run_training`) specifically
+    so it can be unit-tested on its own -- see
+    ``test_batch_config_fields_covers_every_resume_relevant_field`` in
+    ``tests/odyssey/training/test_train.py``, which fails if a
+    resume-relevant field is ever added to :class:`TrainingConfig` without
+    also being added here.
+    """
+    return {
+        "backbone": cfg.backbone,
+        "num_lanes": cfg.num_lanes,
+        "chunk_size": cfg.chunk_size,
+        "reset_prob": cfg.reset_prob,
+        "max_context": cfg.max_context,
+        "seed": cfg.seed,
+    }
+
+
 def _run_training(  # noqa: PLR0912, PLR0915
     config: TrainingConfig, output_dir: Path, device: str, corpus: PreparedCorpus
 ) -> Path:
@@ -1050,26 +1081,6 @@ def _run_training(  # noqa: PLR0912, PLR0915
         task=config.task_weight,
         concept_pos_weight=pos_weight,
     )
-
-    # Fields that determine what PackedLaneSampler.next_chunk() actually
-    # produces at a given position, for a given epoch's seed -- saved
-    # alongside every periodic checkpoint so a resume can tell whether
-    # fast-forwarding to the checkpoint's steps_into_epoch would land on
-    # the same position it was taken at, or a different one (e.g. this
-    # run manually restarted with a different num_lanes/chunk_size,
-    # which is exactly what happened partway through the run that
-    # motivated this: batch size was tuned up for GPU utilization mid
-    # -training). Deliberately excludes model/optimizer hyperparameters
-    # (learning_rate etc.), which don't affect the data stream.
-    def _batch_config_fields(cfg: TrainingConfig) -> Dict[str, object]:
-        return {
-            "backbone": cfg.backbone,
-            "num_lanes": cfg.num_lanes,
-            "chunk_size": cfg.chunk_size,
-            "reset_prob": cfg.reset_prob,
-            "max_context": cfg.max_context,
-            "seed": cfg.seed,
-        }
 
     start_epoch = 0
     global_step = 0
