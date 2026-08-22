@@ -6,10 +6,29 @@
   <a href="https://github.com/VectorInstitute/odyssey/actions/workflows/code_checks.yml">
     <img src="https://github.com/VectorInstitute/odyssey/actions/workflows/code_checks.yml/badge.svg" alt="code checks">
   </a>
+  <a href="https://github.com/VectorInstitute/odyssey/actions/workflows/unit_tests.yml">
+    <img src="https://github.com/VectorInstitute/odyssey/actions/workflows/unit_tests.yml/badge.svg" alt="unit tests">
+  </a>
+  <a href="https://github.com/VectorInstitute/odyssey/actions/workflows/integration_tests.yml">
+    <img src="https://github.com/VectorInstitute/odyssey/actions/workflows/integration_tests.yml/badge.svg" alt="integration tests">
+  </a>
+  <a href="https://codecov.io/gh/VectorInstitute/odyssey">
+    <img src="https://codecov.io/gh/VectorInstitute/odyssey/branch/main/graph/badge.svg" alt="coverage">
+  </a>
+  <br>
   <a href="https://arxiv.org/abs/2405.14567">
     <img src="https://img.shields.io/badge/arXiv-2405.14567-b31b1b.svg" alt="arXiv">
   </a>
   <img src="https://img.shields.io/badge/python-≥3.12-blue.svg" alt="Python ≥ 3.12">
+  <a href="https://github.com/astral-sh/uv">
+    <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json" alt="uv">
+  </a>
+  <a href="https://github.com/astral-sh/ruff">
+    <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="ruff">
+  </a>
+  <a href="LICENSE.md">
+    <img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license">
+  </a>
 </p>
 
 ---
