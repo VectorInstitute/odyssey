@@ -62,28 +62,41 @@ to land in), so this step is structured as two passes with two different,
 deliberately bounded memory shapes -- not the whole dataset resident at
 once either way:
 
-1. :func:`_repartition_pass` streams one *input* logical shard at a time
-   (its base file plus every ``_partN`` file read together --
-   ``extract_meds.py``'s own ``assign_shards`` invariant guarantees a
-   subject's rows for any table never leave their one input shard index,
-   so no input shard is ever revisited). Each row's destination
-   ``(split, output_shard)`` is looked up and the row is buffered in
-   memory per destination, flushed (one ``write_table()`` call) once a
-   destination's buffer crosses :data:`REPARTITION_FLUSH_ROW_THRESHOLD`
-   rows -- the same buffered-flush fix ``extract_meds.MedsShardWriter``
-   already uses, applied here for the same reason: since a hash-based
-   output-shard assignment is unrelated to input-shard identity, a naive
-   per-input-shard, unbuffered scatter would revive almost exactly the
-   original small-write-per-destination problem (potentially close to one
-   write per *subject* rather than per shard, worse than the incident
-   that motivated the buffered-writer fix in the first place). Peak
-   memory here is **not** "one shard's rows" -- it is bounded by
-   ``REPARTITION_FLUSH_ROW_THRESHOLD`` times the number of distinct
-   ``(split, output_shard)`` destinations touched so far (up to
-   ``n_output_shards_total`` in the worst case), the same shape
-   ``MedsShardWriter`` itself accepts, and for the same reason: ample
-   headroom on the real host, and it is far below "the whole dataset
-   materialized at once" even in that worst case.
+1. :func:`_repartition_pass` lazily scans every input shard file (base
+   plus every ``_partN`` file) as one multi-file ``pl.scan_parquet``,
+   computes each row's remapped ``subject_id`` and destination
+   ``(split, output_shard)`` as chained lazy expressions (all three
+   derived from the same ``remapped_subject`` expression object in one
+   ``with_columns`` call, mirroring the prior eager version's Series-level
+   dependency order exactly -- see :func:`_repartition_pass`'s own
+   docstring), and hands the whole pipeline to polars' native
+   ``sink_parquet(pl.PartitionBy(key=["__split", "__out_shard"], ...))``.
+   The engine owns its own internal buffering/flushing -- no hand-rolled
+   per-destination buffer-and-flush loop. This replaced an earlier
+   version of this pass that buffered rows per destination in Python
+   (flushed at :data:`REPARTITION_FLUSH_ROW_THRESHOLD`-row intervals, the
+   same fix ``extract_meds.MedsShardWriter`` uses) -- a real scratch
+   benchmark (20M rows, 100 input files, 400 output destinations at real
+   ``FINALIZE_SUBJECTS_PER_SHARD`` sizing, 2 runs each, peak RSS via
+   ``RUSAGE_CHILDREN``) found the native sink both faster and lighter:
+   0.52-0.72s wall / 1.35-1.42GB peak RSS for the native sink vs.
+   4.62-4.77s wall / 1.86-1.88GB peak RSS for the buffered version, with
+   an exhaustive row-set equality check (every one of 400 destinations,
+   not a sample) confirming byte-identical output between the two. The
+   buffered version's overhead scales with row count through
+   Python-level ``group_by`` dispatch and an ``to_pandas()``/
+   ``pa.Table.from_pandas()`` round trip per flush, neither of which
+   vectorizes the way the native engine's internal scatter does, so the
+   gap is expected to hold or widen at real (~279M-row worst-case) scale,
+   not shrink -- not independently verified at that scale, since this
+   pass is now the sub-minute part of the run either way. ``PartitionBy``
+   is marked **unstable** by polars itself (may change without a
+   semver-breaking bump); the exact surface this module depends on
+   (``key=`` with multiple columns, ``include_key=False``,
+   ``file_path_provider=``) is pinned down by its own dedicated test
+   (see ``tests/scripts/gemini/test_finalize_meds.py``), so a future
+   polars bump that changes this API fails the test suite, not a live
+   GEMINI run.
 2. :func:`_sort_and_finalize_shard` runs once per *output* shard, after
    every input shard has been fully repartitioned (a subject's complete
    row set for that shard destination is only known once every input
@@ -144,14 +157,13 @@ import re
 import resource
 import shutil
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 import pandas as pd
 import polars as pl
-import pyarrow as pa
-import pyarrow.parquet as pq
 
 from odyssey.data.gemini import db
 from odyssey.data.meds_validation import validate_meds_dataset
@@ -184,28 +196,32 @@ MEDS_COLUMNS = ["subject_id", "time", "code", "numeric_value", "hadm_id"]
 
 #: Same shape as extract_meds.MEDS_ARROW_SCHEMA except subject_id is Int64
 #: here, not the raw hashed string -- the whole point of this rewrite.
-MEDS_ARROW_SCHEMA_FINAL = pa.schema(
-    [
-        ("subject_id", pa.int64()),
-        ("time", pa.timestamp("us")),
-        ("code", pa.string()),
-        ("numeric_value", pa.float64()),
-        ("hadm_id", pa.int64()),
-    ]
-)
+#: Expressed as polars dtypes (not a pyarrow schema) since _repartition_pass
+#: now casts to these directly in the lazy pipeline before sinking -- see
+#: that function's docstring.
+MEDS_POLARS_DTYPES_FINAL: dict[str, pl.DataType] = {
+    "subject_id": pl.Int64(),
+    "time": pl.Datetime("us"),
+    "code": pl.Utf8(),
+    "numeric_value": pl.Float64(),
+    "hadm_id": pl.Int64(),
+}
 
 #: See extract_meds.FD_HEADROOM -- duplicated, not imported.
 FD_HEADROOM = 64
 
-#: Rows buffered per (split, output_shard) destination in the repartition
-#: pass before a write_table() call -- see the module docstring's "Layout
-#: rewrite" section for why this matters as much here as it did for
-#: MedsShardWriter. Same value as extract_meds.SHARD_FLUSH_ROW_THRESHOLD,
-#: duplicated rather than imported.
-REPARTITION_FLUSH_ROW_THRESHOLD = 250_000
-
 #: Matches extract_meds.py's own flat shard filename convention.
 _SHARD_FILE_RE = re.compile(r"^shard_(\d{4})(?:_part(\d+))?\.parquet$")
+
+#: Matches _repartition_pass's own sink_parquet(PartitionBy(...))
+#: file_path_provider naming convention: "{split}__{out_idx:04d}_{part:03d}.parquet".
+#: Parts beyond _000 only occur if the sink engine ever splits one
+#: destination across multiple physical files -- not observed at the
+#: scratch benchmark's 20M-row scale (400/400 destinations were 1 file
+#: each), but _sort_and_finalize_shard's caller globs on this pattern and
+#: concatenates every match per destination regardless, so it's correct
+#: either way.
+_PARTITION_FILE_RE = re.compile(r"^([a-z_]+)__(\d{4})_(\d{3})\.parquet$")
 
 #: Non-negative-63-bit mask for the hash-based subject_id (see
 #: _build_subject_id_mapping) -- clears the sign bit so the value is
@@ -454,92 +470,150 @@ def _fetch_hadm_id_hospital() -> pd.DataFrame:
     )
 
 
+def _partition_file_path(args: pl.FileProviderArgs, *, tmp_dir: Path) -> str:
+    """Deterministic ``{split}__{out_idx:04d}_{part:03d}.parquet`` naming.
+
+    Matches :data:`_PARTITION_FILE_RE`. Keeping the naming under our own
+    control (rather than polars' default) is what lets
+    :func:`_repartition_pass`'s caller reconstruct ``{(split, out_shard):
+    [paths]}`` from a plain directory listing after the sink completes,
+    with no callback needed.
+    """
+    split_name = args.partition_keys["__split"][0]
+    out_idx = args.partition_keys["__out_shard"][0]
+    return str(
+        tmp_dir / f"{split_name}__{out_idx:04d}_{args.index_in_partition:03d}.parquet"
+    )
+
+
 def _repartition_pass(
     shard_files: dict[int, list[Path]],
     subject_id_mapping: dict[str, int],
     output_shard_by_subject: dict[int, int],
     split_by_subject: dict[int, str],
     tmp_dir: Path,
-    *,
-    flush_threshold: int = REPARTITION_FLUSH_ROW_THRESHOLD,
-) -> dict[tuple[str, int], Path]:
-    """Stream every input shard once and scatter its rows into buffered output files.
+) -> dict[tuple[str, int], list[Path]]:
+    """Lazily scan every input shard once, sinking rows into per-destination files.
 
     Writes unsorted -- see the module docstring's "Layout rewrite and its
-    two-pass memory
-    shape" section for the full design and its memory bound. Returns
-    ``{(split, output_shard_index): path}`` for :func:`_sort_and_finalize_shard`.
+    two-pass memory shape" section for the full design, the native
+    ``sink_parquet(pl.PartitionBy(...))`` this uses, and the benchmark it's
+    based on. Returns ``{(split, output_shard_index): [paths]}`` for
+    :func:`_sort_and_finalize_shard` -- a list, not one path, since the
+    sink engine is free to split one destination across more than one
+    physical file (not observed at benchmark scale, but not something to
+    assume never happens at real scale either).
+
+    The three lazy lookups (subject_id remap, split, output shard) are all
+    built from the *same* ``remapped_subject`` expression object and
+    applied in a single ``with_columns`` call, deliberately mirroring the
+    prior eager implementation's dependency order: that version computed
+    ``subject_int`` as one Series from the original (pre-remap)
+    ``subject_id`` column, then derived ``split``/``out_shard`` from that
+    *same* Series, then added all three as new columns in one call --
+    never re-reading a column through its own just-written alias. The
+    lazy version preserves that exactly, rather than e.g. re-referencing
+    ``pl.col("subject_id")`` after it's been aliased to the remapped value
+    (which would also work here, since a later ``with_columns`` call sees
+    an earlier one's output, but wouldn't be the same translation being
+    tested).
     """
-    buffers: dict[tuple[str, int], list[pl.DataFrame]] = {}
-    buffer_counts: dict[tuple[str, int], int] = {}
-    writers: dict[tuple[str, int], pq.ParquetWriter] = {}
-    paths: dict[tuple[str, int], Path] = {}
+    all_paths = [str(p) for files in shard_files.values() for p in files]
+    lf = pl.scan_parquet(all_paths)
 
-    def flush(key: tuple[str, int]) -> None:
-        frames = buffers.pop(key, None)
-        buffer_counts[key] = 0
-        if not frames:
-            return
-        combined = frames[0] if len(frames) == 1 else pl.concat(frames)
-        if key not in writers:
-            split_name, out_idx = key
-            path = tmp_dir / f"{split_name}__{out_idx:04d}.parquet"
-            writers[key] = pq.ParquetWriter(str(path), MEDS_ARROW_SCHEMA_FINAL)
-            paths[key] = path
-        arrow_table = pa.Table.from_pandas(
-            combined.select(MEDS_COLUMNS).to_pandas(),
-            schema=MEDS_ARROW_SCHEMA_FINAL,
-            preserve_index=False,
-        )
-        writers[key].write_table(arrow_table)
-
-    for shard_index in sorted(shard_files):
-        files = shard_files[shard_index]
-        frame = (
-            pl.concat([pl.read_parquet(p) for p in files])
-            if len(files) > 1
-            else pl.read_parquet(files[0])
-        )
-        if frame.height == 0:
-            continue
-        subject_int = frame["subject_id"].replace_strict(
-            subject_id_mapping, default=None, return_dtype=pl.Int64
-        )
-        if subject_int.is_null().any():
-            missing = frame["subject_id"].filter(subject_int.is_null()).unique().head(3)
-            raise RuntimeError(
-                f"shard {shard_index}: {int(subject_int.is_null().sum())} rows "
-                f"have a subject_id not in the collected universe "
-                f"(e.g. {missing.to_list()}) -- the subject-collection pass and "
-                "this pass must see the exact same input files"
-            )
-        split = subject_int.replace_strict(
+    remapped_subject = pl.col("subject_id").replace_strict(
+        subject_id_mapping, default=None, return_dtype=pl.Int64
+    )
+    # __raw_subject_id keeps the pre-remap value around under its own name
+    # purely so a null-remap failure can name the actual offending raw
+    # subject_id in its error message (see below) -- by the end of this
+    # with_columns call, "subject_id" itself has already been overwritten
+    # with the remapped value, same as the prior eager version.
+    lf = lf.with_columns(
+        remapped_subject.alias("subject_id"),
+        remapped_subject.replace_strict(
             split_by_subject, default=None, return_dtype=pl.Utf8
-        )
-        out_shard = subject_int.replace_strict(
+        ).alias("__split"),
+        remapped_subject.replace_strict(
             output_shard_by_subject, default=None, return_dtype=pl.Int64
-        )
-        frame = frame.with_columns(
-            subject_int.alias("subject_id"),
-            split.alias("__split"),
-            out_shard.alias("__out_shard"),
-        )
-        for (split_name, out_idx), group in frame.group_by(["__split", "__out_shard"]):
-            key = (str(split_name), int(out_idx))
-            buffers.setdefault(key, []).append(group)
-            buffer_counts[key] = buffer_counts.get(key, 0) + group.height
-            if buffer_counts[key] >= flush_threshold:
-                flush(key)
+        ).alias("__out_shard"),
+        pl.col("subject_id").alias("__raw_subject_id"),
+    )
 
-    for key in list(buffers):
-        flush(key)
-    for writer in writers.values():
-        writer.close()
+    # One combined check-and-count pass, not two: happy-path cost is a
+    # single column-projected scan (same class of cost as
+    # _collect_subject_universe's own scan), and doubles as the row total
+    # for the completion heartbeat below. The (rare, error-path-only)
+    # per-row examples for a loud failure message cost a second, smaller
+    # scan -- only run if n_missing is actually nonzero.
+    check = lf.select(
+        pl.col("subject_id").is_null().sum().alias("n_missing"),
+        pl.len().alias("n_rows"),
+    ).collect()
+    n_missing = int(check["n_missing"][0])
+    total_rows = int(check["n_rows"][0])
+    if n_missing:
+        examples = (
+            lf.filter(pl.col("subject_id").is_null())
+            .select("__raw_subject_id")
+            .unique()
+            .head(3)
+            .collect()["__raw_subject_id"]
+            .to_list()
+        )
+        raise RuntimeError(
+            f"{n_missing} rows have a subject_id not in the collected "
+            f"universe (e.g. {examples}) -- the subject-collection pass "
+            "and this pass must see the exact same input files"
+        )
+
+    lf = lf.select(
+        pl.col("subject_id").cast(MEDS_POLARS_DTYPES_FINAL["subject_id"]),
+        pl.col("time").cast(MEDS_POLARS_DTYPES_FINAL["time"]),
+        pl.col("code").cast(MEDS_POLARS_DTYPES_FINAL["code"]),
+        pl.col("numeric_value").cast(MEDS_POLARS_DTYPES_FINAL["numeric_value"]),
+        pl.col("hadm_id").cast(MEDS_POLARS_DTYPES_FINAL["hadm_id"]),
+        pl.col("__split"),
+        pl.col("__out_shard"),
+    )
+
+    logger.info(
+        "[finalize] repartition pass: scanning %d input files (%d rows) into "
+        "destinations across %d splits...",
+        len(all_paths),
+        total_rows,
+        len(set(split_by_subject.values())),
+    )
+    t0 = time.perf_counter()
+    lf.sink_parquet(
+        pl.PartitionBy(
+            str(tmp_dir),
+            key=["__split", "__out_shard"],
+            include_key=False,
+            file_path_provider=lambda args: _partition_file_path(args, tmp_dir=tmp_dir),
+        ),
+        mkdir=True,
+    )
+    elapsed = time.perf_counter() - t0
+    logger.info(
+        "[finalize] repartition pass complete: %d rows across %d input files in %.1fs",
+        total_rows,
+        len(all_paths),
+        elapsed,
+    )
+
+    paths: dict[tuple[str, int], list[Path]] = {}
+    for path in tmp_dir.glob("*.parquet"):
+        match = _PARTITION_FILE_RE.match(path.name)
+        if match is None:
+            continue
+        key = (match.group(1), int(match.group(2)))
+        paths.setdefault(key, []).append(path)
     return paths
 
 
 def _sort_and_finalize_shard(
-    tmp_path: Path, final_path: Path
+    tmp_paths: list[Path], final_path: Path
 ) -> tuple[int, dict[str, int]]:
     """Sort one repartitioned-but-unsorted output shard and write it to its final path.
 
@@ -549,12 +623,21 @@ def _sort_and_finalize_shard(
     :func:`_write_codes_parquet`'s aggregate, since the data is already
     resident in memory here -- avoids a third full read of the same rows.
 
+    ``tmp_paths`` is normally a single file (see
+    :func:`_repartition_pass`'s docstring on why it's a list), read
+    together the same way :func:`_input_shard_files`'s multi-part input
+    shards are.
+
     Returns
     -------
     tuple[int, dict[str, int]]
         ``(row_count, code_counts)`` for this shard.
     """
-    frame = pl.read_parquet(tmp_path)
+    frame = (
+        pl.concat([pl.read_parquet(p) for p in tmp_paths])
+        if len(tmp_paths) > 1
+        else pl.read_parquet(tmp_paths[0])
+    )
     frame = frame.sort(["subject_id", "time"], nulls_last=False)
     final_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_final = final_path.with_suffix(".parquet.tmp")
@@ -718,9 +801,9 @@ def run_finalize(output_dir: Optional[Path] = None) -> dict[str, Any]:
 
     logger.info("[finalize] sorting %d output shards...", len(tmp_paths))
     code_counts: dict[str, int] = {}
-    for (split_name, out_idx), tmp_path in tmp_paths.items():
+    for (split_name, out_idx), these_tmp_paths in tmp_paths.items():
         final_path = data_dir / split_name / f"shard_{out_idx:04d}.parquet"
-        _, this_shard_codes = _sort_and_finalize_shard(tmp_path, final_path)
+        _, this_shard_codes = _sort_and_finalize_shard(these_tmp_paths, final_path)
         for code, count in this_shard_codes.items():
             code_counts[code] = code_counts.get(code, 0) + count
     shutil.rmtree(tmp_dir, ignore_errors=True)
