@@ -418,9 +418,28 @@ main() {
         # fixed there too (see the cuda extra). Real incident this discipline
         # exists for: polars was once missing from the lightweight venv's own
         # mirror list the same way.
+        #
+        # huggingface_hub/packaging/transformers below are NOT this project's
+        # own imports -- they're mamba-ssm 2.3.0's own eager runtime imports,
+        # found by downloading its sdist and grepping every top-level import
+        # in the package: mamba_ssm/__init__.py unconditionally imports
+        # models.mixer_seq_simple, which imports utils.hf (transformers.utils,
+        # transformers.utils.hub) and utils.generation (transformers.generation)
+        # eagerly; modules.mamba2 imports huggingface_hub.PyTorchModelHubMixin
+        # and (via ops.triton.ssd_combined) packaging.version, also eagerly.
+        # Real incident, 2026-08-22: the first live env-gpu run's mamba-ssm
+        # compile succeeded, but the post-build import check then failed on
+        # a missing huggingface_hub -- invisible to the odyssey/-only import
+        # audit above since none of odyssey's own code imports it; only
+        # auditing mamba-ssm's own source surfaces it. triton is NOT listed
+        # here despite heavy use throughout mamba_ssm/ops/triton/ -- it's a
+        # real dependency of torch's own Linux+CUDA wheel, confirmed present
+        # transitively by the fact that the real compile above only failed on
+        # huggingface_hub, never triton.
         echo "Installing odyssey (editable, no deps) + training runtime deps..."
         pip install -q -e . --no-deps
-        pip install -q "polars>=1.30.0" "scikit-learn>=1.7.0" "einops>=0.7.0"
+        pip install -q "polars>=1.30.0" "scikit-learn>=1.7.0" "einops>=0.7.0" \
+            "huggingface_hub>=0.20.0" "packaging>=23.0" "transformers>=4.40.0"
 
         if python -c "from mamba_ssm.modules.mamba2 import Mamba2" 2>/dev/null; then
             echo "mamba_ssm already importable, skipping rebuild."
