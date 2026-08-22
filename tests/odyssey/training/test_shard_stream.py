@@ -163,3 +163,27 @@ def test_streaming_matches_in_memory_preparation(tmp_path: Path) -> None:
         )
     ]
     assert sorted(order_a) == sorted(reference) and order_a != order_b
+
+
+def test_shard_paths_accepts_gemini_naming_convention(tmp_path):
+    """shard_0148.parquet-style names (GEMINI finalize) must sort numerically.
+
+    int(p.stem) crashed on these (the first GEMINI train-smoke failure);
+    both extractor conventions carry one numeric index in the stem.
+    """
+    import polars as pl
+
+    from odyssey.training.shard_stream import shard_paths
+
+    for name in ["shard_0010.parquet", "shard_0002.parquet", "shard_0001.parquet"]:
+        pl.DataFrame({"subject_id": [1]}).write_parquet(tmp_path / name)
+    paths = shard_paths(tmp_path)
+    assert [p.name for p in paths] == [
+        "shard_0001.parquet",
+        "shard_0002.parquet",
+        "shard_0010.parquet",
+    ]
+    assert [p.name for p in shard_paths(tmp_path, 2)] == [
+        "shard_0001.parquet",
+        "shard_0002.parquet",
+    ]

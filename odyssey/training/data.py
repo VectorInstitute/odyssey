@@ -11,6 +11,7 @@ expects for concept labels/masks.
 """
 
 import random
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar, Union
@@ -67,7 +68,7 @@ def load_meds_shards(
     hardcoding the select and failing on a shard schema that lacks one.
     """
     shard_dir = Path(shard_dir)
-    paths = sorted(shard_dir.glob("*.parquet"), key=lambda p: int(p.stem))
+    paths = sorted(shard_dir.glob("*.parquet"), key=shard_sort_key)
     if max_shards is not None:
         paths = paths[:max_shards]
     if not paths:
@@ -80,6 +81,23 @@ def _load_meds_paths(paths: Sequence[Path]) -> pl.DataFrame:
     available = set(lf.collect_schema().names())
     columns = [c for c in _MEDS_EVENT_COLUMNS if c in available]
     return lf.select(columns).collect(engine="streaming")
+
+
+def shard_sort_key(path: Path) -> int:
+    """Numeric shard index from a shard filename, tolerant of both conventions.
+
+    MIMIC/eICU extractions name shards ``0.parquet``/``17.parquet``; the
+    GEMINI finalize step names them ``shard_0148.parquet``. Both carry one
+    numeric index; sort on it rather than assuming the stem IS the index
+    (``int(p.stem)`` crashed on the GEMINI convention -- the loaders must
+    accept any conformant MEDS layout, not one extractor's naming).
+    """
+    digits = re.search(r"\d+", path.stem)
+    if digits is None:
+        raise ValueError(
+            f"shard filename {path.name!r} has no numeric index in its stem"
+        )
+    return int(digits.group())
 
 
 def load_meds_shard(path: Union[str, Path]) -> pl.DataFrame:
