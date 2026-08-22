@@ -210,49 +210,58 @@ matter who or what wrote it.
 
 ### 2.2 Recommended disclosure text for this project
 
-Two Methods subsections (drop the second if usage was strictly grammar/readability):
+**Factual basis for this text**: Amber-tier AI activity occurred in this project extensively
+and by design, not incidentally — AI sessions proposed analytical and modelling approaches
+(intervention protocols, experiment designs, comparator scopes, statistical checks) and
+identified patterns in exploratory error analyses, throughout, under continuous human
+direction, with the human author making every final call. The disclosure below reflects that
+as the default, not as a conditional addendum — omitting it would misrepresent Amber activity
+as absent, which is itself a disclosure failure.
 
-> **Use of AI tools.** Portions of this study's software engineering work — including
-> construction of the data extraction and preprocessing pipeline, and a substantial share of
-> the analysis and experiment-orchestration code — were produced with the assistance of an AI
-> coding agent ([tool name and model version], [vendor]), operating under continuous human
-> direction. The agent was used for code authoring and refactoring under explicit human
-> specification; it was not used to generate hypotheses, to select or interpret experimental
-> results, or to draft the scientific claims of this manuscript. Every AI-assisted change was
-> reviewed and approved by a human author before being incorporated, and all changes are
-> recorded with authorship attribution in the project's version control history. All analytical
-> outputs reported here were verified by the human authors against the underlying data and
-> code. Study design, choice of analytical and modelling approaches, interpretation of results,
-> and all scientific conclusions are the work of the named human authors, who take full
-> accountability for them. No AI system meets authorship criteria and none is listed as an
-> author. The complete pipeline and analysis code are available as described under Code
-> availability, allowing the reported results to be independently reproduced irrespective of
-> how the code was authored.
+Two Methods subsections (drop the second if language-model prose assistance was strictly
+grammar/readability):
+
+> **Use of AI tools.** Portions of this study's software engineering and analytical work —
+> including construction of the data extraction and preprocessing pipeline, a substantial share
+> of the analysis and experiment-orchestration code, and proposals for analytical and modelling
+> approaches (including intervention protocols, experiment designs, comparator scopes, and
+> statistical checks) — were produced with the assistance of an AI coding agent ([tool name and
+> model version], [vendor]), operating under continuous human direction. The agent proposed
+> analyses, experimental designs, and patterns identified in exploratory analysis; the human
+> authors directed this work, evaluated and selected among the options the agent proposed,
+> verified all resulting analyses against the underlying data and code, and are accountable for
+> them. The agent was not used to generate hypotheses, analyses, or conclusions and present them
+> as human-derived, nor was any AI system given authorship or accountability for this work.
+> Every AI-assisted change was reviewed and approved by a human author before being
+> incorporated, and all changes are recorded with authorship attribution in the project's
+> version control history; the project's research journal documents each experimental decision
+> as it was made. Study design, final choice of analytical and modelling approaches,
+> interpretation of results, and all scientific conclusions are the work of the named human
+> authors, who take full accountability for them. No AI system meets authorship criteria and
+> none is listed as an author. Records of the AI-assisted development process, including the
+> project's research journal and full commit history, are available from the corresponding
+> author on request. The complete pipeline and analysis code are available as described under
+> Code availability, allowing the reported results to be independently reproduced irrespective
+> of how the code was authored.
 
 > Language-model assistance was additionally used for [copy editing / improving the clarity and
 > readability of author-written text]. All text was written and verified by the human authors,
 > who are responsible for its final content.
 
-**Before finalizing, check honestly** whether the agent, at any point, suggested a modelling
-approach, statistical test, feature transformation, or surfaced a pattern in exploratory
-analysis (this happened in this project's own concept-lever investigations and error analyses).
-If so, that's Amber activity and needs its own sentence — omitting it is what would turn an
-Amber disclosure into an undisclosed Red one:
+Note the denial sentence above is scoped precisely to Red-tier conduct as the policy defines
+it — *"generating hypotheses, analyses or conclusions and presenting them as human-derived"* —
+not to Amber activity, which is disclosed rather than denied. Don't reuse older phrasing like
+"was not used to select or interpret experimental results": that denies exactly the Amber
+activity this project actually did, and would misrepresent it.
 
-> "Where the agent proposed analytical or modelling options, these were evaluated and selected
-> by the human authors, who verified the resulting analyses independently."
-
-Optional, cheap, and reads well to an integrity-minded editor:
-
-> "Records of the AI-assisted development process, including the project's research journal
-> and full commit history, are available from the corresponding author on request."
-
-Cover-letter line:
+Cover-letter lines:
 
 > "We note that the data pipeline and a substantial portion of the analysis code for this study
 > were developed using AI-assisted software engineering under human direction, review, and
-> verification. This is described in the 'Use of AI tools' subsection of the Methods. No AI
-> system is an author, and all scientific claims and interpretations are the authors' own."
+> verification, including AI-proposed analytical and modelling approaches that the human authors
+> evaluated, selected, and verified. This is described in the 'Use of AI tools' subsection of the
+> Methods. No AI system is an author, and all scientific claims and interpretations are the
+> authors' own."
 
 ---
 
@@ -445,9 +454,9 @@ Real range: 41–72, median ~56. More clinical framing → more references (Yoon
 - [ ] Code availability: real repository URL(s), specific enough to reproduce reported results
 - [ ] Ethics statement: MIMIC-IV, eICU, and GEMINI each cite their own approving IRB/REB
       separately
-- [ ] "Use of AI tools" Methods subsection drafted per §2.2, with tool/model named, Red-list
-      activities explicitly disclaimed, and any Amber-tier agent contributions (analytical/
-      methodological suggestions) honestly disclosed if they occurred
+- [ ] "Use of AI tools" Methods subsection drafted per §2.2, with tool/model named, the
+      Amber-tier analytical/methodological contributions disclosed as part of the default text
+      (not omitted), and the denial sentence scoped to Red-tier conduct only
 - [ ] Every performance claim in Abstract/Discussion checked against §3.5's calibration
       patterns — no unqualified "validated," "generalizable," or "deployment-ready" language
 - [ ] Reference count in the 55–75 range
