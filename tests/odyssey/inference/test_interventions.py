@@ -13,11 +13,16 @@ from odyssey.data.streaming import PackedLaneSampler
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.interventions import (
     INTERVENTION_MODES,
+    _chunk_intervention,
     evaluate_interventions,
     run_streaming_intervention,
 )
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
-from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
+from odyssey.models.concept_bottleneck import BottleneckIntervention
+from odyssey.models.sequence_model import (
+    BaselineSequenceModel,
+    ConceptBottleneckSequenceModel,
+)
 from odyssey.training.data import (
     build_visit_concept_first_times,
     iter_patient_sequences,
@@ -244,9 +249,165 @@ def test_uncertain_band_limits_replacement_and_reports_displacement() -> None:
         assert banded.mean_abs_displacement <= 0.55
 
 
+def test_run_streaming_intervention_rejects_an_unknown_mode() -> None:
+    vocab = _vocab()
+    labels, masks = _labels_and_masks()
+    with pytest.raises(ValueError, match="unknown intervention mode 'bogus'"):
+        run_streaming_intervention(
+            _model(len(vocab)),
+            _events(),
+            vocab,
+            labels,
+            masks,
+            mode="bogus",
+            supervision="stay",
+            num_lanes=2,
+            chunk_size=8,
+            device="cpu",
+        )
+
+
+def test_chunk_intervention_rejects_an_unknown_mode_directly() -> None:
+    """The inner per-chunk builder's own guard, a second line of defense.
+
+    run_streaming_intervention already rejects a bad mode before ever
+    reaching this function; calling it directly proves this guard would
+    still fire on its own if that outer check were ever bypassed or
+    reordered.
+    """
+    vocab = _vocab()
+    labels, masks = _labels_and_masks()
+    seqs = iter_patient_sequences(_events(), vocab)
+    sampler = PackedLaneSampler(seqs, num_lanes=1, chunk_size=8, reset_prob=0.0)
+    chunk = next(iter(sampler))
+    with pytest.raises(ValueError, match="unknown intervention mode: 'bogus'"):
+        _chunk_intervention(
+            chunk,
+            "bogus",
+            labels,
+            masks,
+            {},
+            supervision="stay",
+            num_concepts=NUM_CONCEPTS,
+            device="cpu",
+            rng=torch.Generator(),
+        )
+
+
+def test_run_streaming_intervention_skips_a_chunk_with_no_real_positions() -> None:
+    """A trailing chunk after the only subject finishes (all lanes NO_SUBJECT).
+
+    More lanes than subjects, a chunk_size that leaves an all-padding
+    chunk after the one subject's short sequence -- confirmed directly
+    (chunk.real_mask.any() is False for the second chunk here) rather
+    than assumed from the sampler's docs.
+    """
+    codes = CODES
+    rows = [
+        (1, codes[i % len(codes)], T0 + timedelta(hours=i), None, 101) for i in range(3)
+    ]
+    events = pl.DataFrame(
+        rows,
+        schema={
+            "subject_id": pl.Int64,
+            "code": pl.Utf8,
+            "time": pl.Datetime,
+            "numeric_value": pl.Float32,
+            "hadm_id": pl.Int64,
+        },
+        orient="row",
+    )
+    vocab = _vocab()
+    labels = {1: torch.tensor([1.0, 0.0, 1.0])}
+    masks = {1: torch.ones(NUM_CONCEPTS)}
+    model = _model(len(vocab))
+
+    result = run_streaming_intervention(
+        model,
+        events,
+        vocab,
+        labels,
+        masks,
+        mode="none",
+        supervision="stay",
+        num_lanes=2,  # more lanes than the one subject
+        chunk_size=2,  # leaves a fully-empty trailing chunk
+        device="cpu",
+    )
+
+    assert result.n_predictions == 2  # 3 events, minus the last (no next target)
+
+
+def test_run_streaming_intervention_handles_an_unmasked_intervention(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """intervention_apply_mask returning None ("everywhere") must not crash.
+
+    _chunk_intervention always sets probs_mask, so this path is never
+    reached through the normal mode-building code -- forced directly by
+    replacing _chunk_intervention's output for one call, to prove the
+    fallback (treat None as "applied everywhere") is handled correctly
+    rather than left an untested assumption.
+    """
+    vocab = _vocab()
+    labels, masks = _labels_and_masks()
+    model = _model(len(vocab))
+
+    def fake_chunk_intervention(*_args: object, **_kwargs: object):
+        return BottleneckIntervention(probs=torch.full((NUM_CONCEPTS,), 0.5))
+
+    monkeypatch.setattr(
+        interventions_module, "_chunk_intervention", fake_chunk_intervention
+    )
+
+    result = run_streaming_intervention(
+        model,
+        _events(),
+        vocab,
+        labels,
+        masks,
+        mode="truth",
+        supervision="stay",
+        num_lanes=2,
+        chunk_size=8,
+        device="cpu",
+    )
+
+    # every real position counted as intervened, since apply=None means
+    # "everywhere" rather than "nowhere"
+    assert result.n_intervened_positions == result.n_predictions + 3  # +3 final events
+
+
 # ---------------------------------------------------------------------------
 # evaluate_interventions: backbone="transformer" gate
 # ---------------------------------------------------------------------------
+
+
+def test_evaluate_interventions_rejects_a_non_bottleneck_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_model = BaselineSequenceModel(
+        TinyGRUBackbone(vocab_size=10, hidden_size=4), vocab_size=10
+    )
+    fake_config = TrainingConfig(
+        train_shard_dir="/train",
+        tuning_shard_dir="/tuning",
+        output_dir="/out",
+        model_kind="baseline",
+    )
+    monkeypatch.setattr(
+        interventions_module,
+        "load_run",
+        lambda *a, **k: (fake_model, object(), object(), fake_config),
+    )
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("must not read shards before the model_kind gate fires")
+
+    monkeypatch.setattr(interventions_module, "load_meds_shards", _boom)
+
+    with pytest.raises(ValueError, match="needs a concept bottleneck"):
+        evaluate_interventions("/runs/x", "/data/held_out")
 
 
 def test_evaluate_interventions_rejects_transformer_backbone_before_touching_shards(
