@@ -23,6 +23,8 @@ pytest.importorskip("polars", reason=_SKIP_REASON)
 
 import pandas as pd  # noqa: E402
 import polars as pl  # noqa: E402
+import pyarrow as pa  # noqa: E402
+import pyarrow.parquet as pq  # noqa: E402
 
 from odyssey.data.meds_validation import validate_meds_dataset  # noqa: E402
 
@@ -305,7 +307,7 @@ def test_fetch_hadm_id_hospital_queries_admdad_subset(
 # --- repartition + sort -----------------------------------------------
 
 
-def test_repartition_pass_buffers_and_flushes_across_input_shards(
+def test_repartition_pass_partitions_rows_by_split_and_out_shard(
     tmp_path: Path,
 ) -> None:
     mod = _load_module("finalize_meds")
@@ -332,13 +334,13 @@ def test_repartition_pass_buffers_and_flushes_across_input_shards(
         output_shard_by_subject,
         split_by_subject,
         tmp_dir,
-        flush_threshold=1_000_000,  # never triggers mid-pass -- flushed at end
     )
 
     assert set(paths) == {("train", 0), ("tuning", 0)}
-    train_frame = pl.read_parquet(paths[("train", 0)])
+    train_frame = pl.concat([pl.read_parquet(p) for p in paths[("train", 0)]])
     assert train_frame["subject_id"].to_list() == [111]
     assert train_frame["subject_id"].dtype == pl.Int64
+    assert list(train_frame.columns) == mod.MEDS_COLUMNS  # __split/__out_shard dropped
 
 
 def test_repartition_pass_raises_loudly_on_an_unmapped_subject(tmp_path: Path) -> None:
@@ -361,6 +363,36 @@ def test_repartition_pass_raises_loudly_on_an_unmapped_subject(tmp_path: Path) -
         mod._repartition_pass(shard_files, {}, {}, {}, tmp_dir)
 
 
+def test_repartition_pass_error_names_the_actual_raw_subject_id(
+    tmp_path: Path,
+) -> None:
+    """The error message must name the real offending raw id, not a null.
+
+    Regression guard for a real bug hit while building this: by the point
+    the null-check runs, "subject_id" has already been overwritten with
+    the (null, for an unmapped subject) remapped value -- the error path
+    has to read the example from a column that still holds the pre-remap
+    raw value, not re-read "subject_id" itself.
+    """
+    mod = _load_module("finalize_meds")
+    frame = pl.DataFrame(
+        {
+            "subject_id": ["totally-unmapped-subject"],
+            "time": [pd.Timestamp("2020-01-01")],
+            "code": ["X"],
+            "numeric_value": [None],
+            "hadm_id": [1],
+        }
+    )
+    frame.write_parquet(tmp_path / "shard_0000.parquet")
+    shard_files = mod._input_shard_files(tmp_path)
+    tmp_dir = tmp_path / "repartition_tmp"
+    tmp_dir.mkdir()
+
+    with pytest.raises(RuntimeError, match="totally-unmapped-subject"):
+        mod._repartition_pass(shard_files, {}, {}, {}, tmp_dir)
+
+
 def test_sort_and_finalize_shard_sorts_by_subject_then_time_nulls_first(
     tmp_path: Path,
 ) -> None:
@@ -378,7 +410,7 @@ def test_sort_and_finalize_shard_sorts_by_subject_then_time_nulls_first(
     unsorted.write_parquet(tmp_path_file)
     final_path = tmp_path / "data" / "train" / "shard_0000.parquet"
 
-    n_rows, code_counts = mod._sort_and_finalize_shard(tmp_path_file, final_path)
+    n_rows, code_counts = mod._sort_and_finalize_shard([tmp_path_file], final_path)
 
     assert n_rows == 3
     result = pl.read_parquet(final_path)
@@ -386,6 +418,313 @@ def test_sort_and_finalize_shard_sorts_by_subject_then_time_nulls_first(
     assert result["subject_id"].to_list() == [1, 1, 2]
     assert result["code"].to_list() == ["C1a", "C1b", "C2"]
     assert code_counts == {"C1a": 1, "C1b": 1, "C2": 1}
+
+
+def test_sort_and_finalize_shard_concatenates_multiple_input_files(
+    tmp_path: Path,
+) -> None:
+    """_sort_and_finalize_shard must merge every part file for a destination.
+
+    The sink can in principle split one destination across >1 physical
+    file (see _repartition_pass's docstring) -- _sort_and_finalize_shard
+    must read and merge every one of them, not just the first.
+    """
+    mod = _load_module("finalize_meds")
+    part0 = pl.DataFrame(
+        {
+            "subject_id": [2],
+            "time": [pd.Timestamp("2020-01-01")],
+            "code": ["C2"],
+            "numeric_value": [None],
+            "hadm_id": [1],
+        }
+    )
+    part1 = pl.DataFrame(
+        {
+            "subject_id": [1],
+            "time": [pd.Timestamp("2020-01-02")],
+            "code": ["C1"],
+            "numeric_value": [None],
+            "hadm_id": [2],
+        }
+    )
+    path0 = tmp_path / "train__0000_000.parquet"
+    path1 = tmp_path / "train__0000_001.parquet"
+    part0.write_parquet(path0)
+    part1.write_parquet(path1)
+    final_path = tmp_path / "data" / "train" / "shard_0000.parquet"
+
+    n_rows, code_counts = mod._sort_and_finalize_shard([path0, path1], final_path)
+
+    assert n_rows == 2
+    result = pl.read_parquet(final_path)
+    assert result["subject_id"].to_list() == [1, 2]
+    assert code_counts == {"C1": 1, "C2": 1}
+
+
+# --- the lazy translation's own focused test --------------------------------
+
+
+def test_lazy_replace_strict_matches_eager_replace_strict_for_the_same_lookups() -> (
+    None
+):
+    """Focused test for the one real translation risk in the rewrite.
+
+    The prior implementation built subject_id/split/out_shard as three
+    plain eager pl.Series via Series.replace_strict, all derived from one
+    original Series; _repartition_pass now builds the same three via
+    Expr.replace_strict chained from one pl.col("subject_id") expression,
+    inside a LazyFrame. This isolates just that translation -- eager
+    Series-level replace_strict vs. the identical lookups expressed as
+    lazy expressions -- independent of the sink/partitioning machinery
+    the broader A/B test below also covers.
+    """
+    subject_id_mapping = {"a": 111, "b": 222, "c": 333}
+    split_by_subject = {111: "train", 222: "train", 333: "tuning"}
+    output_shard_by_subject = {111: 0, 222: 1, 333: 0}
+    raw_ids = ["a", "b", "c", "a", "unmapped"]
+
+    eager_series = pl.Series("subject_id", raw_ids)
+    eager_remapped = eager_series.replace_strict(
+        subject_id_mapping, default=None, return_dtype=pl.Int64
+    )
+    eager_split = eager_remapped.replace_strict(
+        split_by_subject, default=None, return_dtype=pl.Utf8
+    )
+    eager_out_shard = eager_remapped.replace_strict(
+        output_shard_by_subject, default=None, return_dtype=pl.Int64
+    )
+
+    lazy_remapped_expr = pl.col("subject_id").replace_strict(
+        subject_id_mapping, default=None, return_dtype=pl.Int64
+    )
+    lazy_result = (
+        pl.LazyFrame({"subject_id": raw_ids})
+        .with_columns(
+            lazy_remapped_expr.alias("subject_id"),
+            lazy_remapped_expr.replace_strict(
+                split_by_subject, default=None, return_dtype=pl.Utf8
+            ).alias("__split"),
+            lazy_remapped_expr.replace_strict(
+                output_shard_by_subject, default=None, return_dtype=pl.Int64
+            ).alias("__out_shard"),
+        )
+        .collect()
+    )
+
+    assert lazy_result["subject_id"].to_list() == eager_remapped.to_list()
+    assert lazy_result["__split"].to_list() == eager_split.to_list()
+    assert lazy_result["__out_shard"].to_list() == eager_out_shard.to_list()
+    # The unmapped "unmapped" entry must come through as null on all three,
+    # not silently coerced or dropped -- same contract on both sides.
+    assert lazy_result["subject_id"][4] is None
+    assert eager_remapped[4] is None
+
+
+# --- A/B equality against a reference buffered implementation --------------
+
+
+def _reference_buffered_repartition(
+    shard_files: dict[int, list[Path]],
+    subject_id_mapping: dict[str, int],
+    output_shard_by_subject: dict[int, int],
+    split_by_subject: dict[int, str],
+    tmp_dir: Path,
+    *,
+    meds_columns: list[str],
+    flush_threshold: int = 250_000,
+) -> dict[tuple[str, int], Path]:
+    """Run the pre-rewrite buffered-scatter algorithm.
+
+    Preserved here (only) as the ground truth an A/B equality check runs
+    against -- not imported from finalize_meds.py, which no longer has
+    this code path at all.
+    """
+    arrow_schema = pa.schema(
+        [
+            ("subject_id", pa.int64()),
+            ("time", pa.timestamp("us")),
+            ("code", pa.string()),
+            ("numeric_value", pa.float64()),
+            ("hadm_id", pa.int64()),
+        ]
+    )
+    buffers: dict[tuple[str, int], list[pl.DataFrame]] = {}
+    buffer_counts: dict[tuple[str, int], int] = {}
+    writers: dict[tuple[str, int], "pq.ParquetWriter"] = {}
+    paths: dict[tuple[str, int], Path] = {}
+
+    def flush(key: tuple[str, int]) -> None:
+        frames = buffers.pop(key, None)
+        buffer_counts[key] = 0
+        if not frames:
+            return
+        combined = frames[0] if len(frames) == 1 else pl.concat(frames)
+        if key not in writers:
+            split_name, out_idx = key
+            path = tmp_dir / f"ref__{split_name}__{out_idx:04d}.parquet"
+            writers[key] = pq.ParquetWriter(str(path), arrow_schema)
+            paths[key] = path
+        arrow_table = pa.Table.from_pandas(
+            combined.select(meds_columns).to_pandas(),
+            schema=arrow_schema,
+            preserve_index=False,
+        )
+        writers[key].write_table(arrow_table)
+
+    for shard_index in sorted(shard_files):
+        files = shard_files[shard_index]
+        frame = (
+            pl.concat([pl.read_parquet(p) for p in files])
+            if len(files) > 1
+            else pl.read_parquet(files[0])
+        )
+        if frame.height == 0:
+            continue
+        subject_int = frame["subject_id"].replace_strict(
+            subject_id_mapping, default=None, return_dtype=pl.Int64
+        )
+        split = subject_int.replace_strict(
+            split_by_subject, default=None, return_dtype=pl.Utf8
+        )
+        out_shard = subject_int.replace_strict(
+            output_shard_by_subject, default=None, return_dtype=pl.Int64
+        )
+        frame = frame.with_columns(
+            subject_int.alias("subject_id"),
+            split.alias("__split"),
+            out_shard.alias("__out_shard"),
+        )
+        for (split_name, out_idx), group in frame.group_by(["__split", "__out_shard"]):
+            key = (str(split_name), int(out_idx))
+            buffers.setdefault(key, []).append(group)
+            buffer_counts[key] = buffer_counts.get(key, 0) + group.height
+            if buffer_counts[key] >= flush_threshold:
+                flush(key)
+
+    for key in list(buffers):
+        flush(key)
+    for writer in writers.values():
+        writer.close()
+    return paths
+
+
+def test_repartition_pass_matches_a_reference_buffered_implementation(
+    tmp_path: Path,
+) -> None:
+    """Graduated from the scratch benchmark's exhaustive A/B check.
+
+    The new native-sink _repartition_pass and the old buffered algorithm
+    must produce byte-identical row sets for every destination, not just
+    matching row counts. Small scale here (a real test, not a benchmark)
+    but the same exhaustive-not-sampled comparison.
+    """
+    mod = _load_module("finalize_meds")
+    extraction_dir = tmp_path / "extraction"
+    extraction_dir.mkdir()
+    # _write_fixture_extraction's own subjects_per_shard=1000 (extract_meds'
+    # convention, not finalize's) means >1000 subjects is what it takes to
+    # get more than one *input* file here -- separate from output-shard
+    # sizing below, which uses finalize's own subjects_per_shard.
+    _write_fixture_extraction(extraction_dir, n_subjects=2500)
+    shard_files = mod._input_shard_files(extraction_dir)
+    assert len(shard_files) > 1  # exercise the multi-input-file scan for real
+
+    subjects = mod._collect_subject_universe(shard_files)
+    subject_id_mapping = mod._build_subject_id_mapping(subjects)
+    split_by_subject = mod._assign_splits(list(subject_id_mapping.values()))
+    output_shard_by_subject, n_shards_by_split = mod._assign_output_shards(
+        split_by_subject, subjects_per_shard=20
+    )
+    assert sum(n_shards_by_split.values()) > 1  # exercise multiple destinations
+
+    new_dir = tmp_path / "new"
+    new_dir.mkdir()
+    ref_dir = tmp_path / "ref"
+    ref_dir.mkdir()
+
+    new_paths = mod._repartition_pass(
+        shard_files,
+        subject_id_mapping,
+        output_shard_by_subject,
+        split_by_subject,
+        new_dir,
+    )
+    ref_paths = _reference_buffered_repartition(
+        shard_files,
+        subject_id_mapping,
+        output_shard_by_subject,
+        split_by_subject,
+        ref_dir,
+        meds_columns=mod.MEDS_COLUMNS,
+    )
+
+    assert set(new_paths) == set(ref_paths), (
+        f"destination sets differ: new-only={set(new_paths) - set(ref_paths)}, "
+        f"ref-only={set(ref_paths) - set(new_paths)}"
+    )
+    for key in sorted(new_paths):
+        new_frame = pl.concat([pl.read_parquet(p) for p in new_paths[key]]).select(
+            mod.MEDS_COLUMNS
+        )
+        ref_frame = pl.read_parquet(ref_paths[key]).select(mod.MEDS_COLUMNS)
+        assert new_frame.height == ref_frame.height, f"row count differs at {key}"
+        assert new_frame.sort(mod.MEDS_COLUMNS).equals(
+            ref_frame.sort(mod.MEDS_COLUMNS)
+        ), f"row content differs at {key}"
+
+
+# --- PartitionBy API-surface guard ------------------------------------------
+
+
+def test_partition_by_multi_key_no_include_key_custom_provider_api_surface(
+    tmp_path: Path,
+) -> None:
+    """Exercise the exact pl.PartitionBy surface _repartition_pass depends on.
+
+    Multi-column key, include_key=False, file_path_provider -- directly,
+    independent of finalize_meds.py itself. polars marks PartitionBy
+    unstable (may change without a semver-breaking bump); this is the
+    guard that's supposed to catch that on a routine `uv sync`/CI run,
+    not on the GEMINI node mid-finalize. If this test starts failing after
+    a polars bump, the fix belongs in _repartition_pass's own
+    sink_parquet(PartitionBy(...)) call, not here.
+    """
+    lf = pl.LazyFrame(
+        {
+            "value": [1, 2, 3, 4],
+            "split": ["train", "train", "tuning", "tuning"],
+            "shard": [0, 1, 0, 1],
+        }
+    )
+
+    def file_path_provider(args: "pl.FileProviderArgs") -> str:
+        split = args.partition_keys["split"][0]
+        shard = args.partition_keys["shard"][0]
+        return str(
+            tmp_path / f"out__{split}__{shard}_{args.index_in_partition:03d}.parquet"
+        )
+
+    lf.sink_parquet(
+        pl.PartitionBy(
+            str(tmp_path),
+            key=["split", "shard"],
+            include_key=False,
+            file_path_provider=file_path_provider,
+        ),
+        mkdir=True,
+    )
+    files = sorted(p.name for p in tmp_path.glob("*.parquet"))
+    assert files == [
+        "out__train__0_000.parquet",
+        "out__train__1_000.parquet",
+        "out__tuning__0_000.parquet",
+        "out__tuning__1_000.parquet",
+    ]
+    one = pl.read_parquet(tmp_path / "out__train__0_000.parquet")
+    # include_key=False: the partition columns are not in the output.
+    assert list(one.columns) == ["value"]
+    assert one["value"].to_list() == [1]
 
 
 # --- run_finalize (integration) -----------------------------------------
