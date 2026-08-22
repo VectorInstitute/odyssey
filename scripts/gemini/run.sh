@@ -333,13 +333,19 @@ main() {
             echo "Point PYTHON_FOR_GPU_VENV at a header-bearing python3.12 and" >&2
             echo "re-run, e.g.:" >&2
             echo "  PYTHON_FOR_GPU_VENV=/path/to/python3.12 scripts/gemini/run.sh env-gpu" >&2
-            echo "Candidates on an HPC node: an environment-modules python" >&2
-            echo "('module avail python', then 'module load <name>' before" >&2
+            echo "On the GEMINI H200 node specifically: conda at /opt/Miniconda" >&2
+            echo "is configured against an internal mirror (packages.gemini-hpc.ca," >&2
+            echo "not blocked by the proxy that blocks pytorch.org/uv's python" >&2
+            echo "downloads) -- this is the confirmed working route there:" >&2
+            echo "  conda create -y -p ~/py312 python=3.12" >&2
+            echo "  PYTHON_FOR_GPU_VENV=~/py312/bin/python3.12 scripts/gemini/run.sh env-gpu" >&2
+            echo "On a different node, other candidates: an environment-modules" >&2
+            echo "python ('module avail python', then 'module load <name>' before" >&2
             echo "re-running this with that module's python3 on PATH), an" >&2
             echo "already-on-disk uv-managed python ('uv python list' --" >&2
-            echo "uv's own python *downloads* are likely proxy-blocked here," >&2
-            echo "same as pytorch.org, so only a python uv already has helps)," >&2
-            echo "or a python3.12-dev package from a node admin." >&2
+            echo "uv's own python *downloads* are likely proxy-blocked, same as" >&2
+            echo "pytorch.org, so only a python uv already has helps), or a" >&2
+            echo "python3.12-dev package from a node admin." >&2
             exit 1
         fi
         echo "Using $PYTHON_FOR_GPU_VENV for the GPU venv (Python.h found at $PYTHON_INCLUDE_DIR)."
