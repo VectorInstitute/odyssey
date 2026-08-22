@@ -126,13 +126,63 @@ def test_null_fraction_quotes_a_mixed_case_column(
 
     monkeypatch.setattr(mod.db, "query", fake_query)
 
-    mod.null_fraction("lookup_statcan_v2021", "Pop2021")
+    mod.null_fraction("lookup_statcan_v2021", "Pop2021", "double precision")
 
     assert '"Pop2021"' in captured_sql["sql"]
     assert '"lookup_statcan_v2021"' in captured_sql["sql"]
     # unquoted would silently pass through mypy/tests but fail against a
     # real mixed-case-sensitive database:
     assert "COUNT(Pop2021)" not in captured_sql["sql"]
+
+
+def test_null_fraction_counts_blank_strings_for_text_columns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real incident this closes: intervention_episode_start_date_time was
+    # blank (empty string, not SQL NULL) on 96.7% of erintervention_subset's
+    # rows -- invisible to a plain COUNT(column)-based null count, which
+    # reported ~768k where the real unusable-value count was ~2.8M.
+    mod = _load_module()
+    captured_sql = {}
+
+    def fake_query(sql: str, params: object = None) -> pd.DataFrame:
+        captured_sql["sql"] = sql
+        return pd.DataFrame({"n_null": [0]})
+
+    monkeypatch.setattr(mod.db, "query", fake_query)
+
+    mod.null_fraction(
+        "erintervention_subset", "intervention_episode_start_date_time", "text"
+    )
+
+    assert "TRIM(" in captured_sql["sql"]
+    assert "NULLIF(" in captured_sql["sql"]
+
+
+def test_null_fraction_skips_the_blank_check_for_non_text_columns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    captured_sql = {}
+
+    def fake_query(sql: str, params: object = None) -> pd.DataFrame:
+        captured_sql["sql"] = sql
+        return pd.DataFrame({"n_null": [0]})
+
+    monkeypatch.setattr(mod.db, "query", fake_query)
+
+    mod.null_fraction("admdad_subset", "genc_id", "integer")
+
+    assert "TRIM(" not in captured_sql["sql"]
+
+
+def test_is_blank_string_type_matches_text_and_varchar_with_length() -> None:
+    mod = _load_module()
+    assert mod._is_blank_string_type("text")
+    assert mod._is_blank_string_type("character varying(64)")
+    assert not mod._is_blank_string_type("integer")
+    assert not mod._is_blank_string_type("double precision")
+    assert not mod._is_blank_string_type("boolean")
 
 
 def test_null_fraction_or_error_recovers_from_a_failing_column(
@@ -147,7 +197,9 @@ def test_null_fraction_or_error_recovers_from_a_failing_column(
 
     monkeypatch.setattr(mod.db, "query", fake_query)
 
-    result = mod._null_fraction_or_error("lookup_statcan_v2021", "Pop2021")
+    result = mod._null_fraction_or_error(
+        "lookup_statcan_v2021", "Pop2021", "double precision"
+    )
     assert result.startswith("error:")
     assert "Pop2021" in result
 

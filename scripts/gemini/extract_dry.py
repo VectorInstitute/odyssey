@@ -56,7 +56,32 @@ SCHEMA_PATH = OUT_DIR / "schema.json"
 LARGE_TABLE_ROW_THRESHOLD = 5_000_000
 
 _NULL_COUNT_SQL = "SELECT COUNT(*) - COUNT({column}) AS n_null FROM {table}"
+#: For text/character varying columns only -- COUNT(column) alone counts a
+#: blank/whitespace-only string as "present," not null, which is why this
+#: report's null counts looked nothing like real unusable-value counts for
+#: at least one real column (erintervention_subset.
+#: intervention_episode_start_date_time: ~768k by this metric, ~2.8M
+#: blank-or-null in reality -- see docs/gemini_extraction.md). NULLIF(TRIM(...), '')
+#: turns a blank-after-trim string into NULL first, so COUNT(...) then
+#: only counts genuinely non-blank values -- SQL NULL input still comes
+#: through as NULL from TRIM/NULLIF either way, so this subsumes the plain
+#: null count, it doesn't replace it with something narrower.
+_NULL_OR_BLANK_COUNT_SQL = (
+    "SELECT COUNT(*) - COUNT(NULLIF(TRIM({column}::text), '')) AS n_null FROM {table}"
+)
 _ROW_COUNT_SQL = "SELECT COUNT(*) AS n FROM {table}"
+
+#: Postgres column types where a blank/whitespace-only string is
+#: semantically equivalent to NULL for this report's purposes. Matched by
+#: prefix since ``character varying`` carries a length suffix (e.g.
+#: ``character varying(64)``).
+_BLANK_STRING_TYPE_PREFIXES = ("text", "character varying")
+
+
+def _is_blank_string_type(column_type: str) -> bool:
+    """Return whether ``column_type`` is a text-ish type worth blank-checking."""
+    return column_type.startswith(_BLANK_STRING_TYPE_PREFIXES)
+
 
 #: Which text datetime-ish column(s) to pull a year range from, per matview
 #: that has one -- hand-curated from the real schema report (column names
@@ -252,8 +277,8 @@ def _suppressed(n: int) -> str:
     return str(round(n / 1000) * 1000)
 
 
-def null_fraction(table: str, column: str) -> str:
-    """Suppressed count of null values in one column of one table.
+def null_fraction(table: str, column: str, column_type: str) -> str:
+    """Suppressed count of null (and, for text columns, blank) values.
 
     Parameters
     ----------
@@ -263,14 +288,23 @@ def null_fraction(table: str, column: str) -> str:
         called with external input).
     column : str
         Column name, same provenance as ``table``.
+    column_type : str
+        The column's Postgres type (from ``schema.json``) -- decides
+        whether the blank-string-aware query runs (see
+        :func:`_is_blank_string_type`) or the plain null-only one.
 
     Returns
     -------
     str
         A suppressed count (see :func:`_suppressed`).
     """
+    sql = (
+        _NULL_OR_BLANK_COUNT_SQL
+        if _is_blank_string_type(column_type)
+        else _NULL_COUNT_SQL
+    )
     result = db.query(
-        _NULL_COUNT_SQL.format(column=_quote_ident(column), table=_quote_ident(table))
+        sql.format(column=_quote_ident(column), table=_quote_ident(table))
     )
     return _suppressed(int(result["n_null"].iloc[0]))
 
@@ -295,7 +329,7 @@ def fresh_row_count(table: str) -> str:
     return _suppressed(int(result["n"].iloc[0]))
 
 
-def _null_fraction_or_error(table: str, column: str) -> str:
+def _null_fraction_or_error(table: str, column: str, column_type: str) -> str:
     """Suppressed null count for one column, or an error marker if the query fails.
 
     One pathological column (a type Postgres can't ``COUNT`` cleanly, an
@@ -309,6 +343,8 @@ def _null_fraction_or_error(table: str, column: str) -> str:
         Table name.
     column : str
         Column name.
+    column_type : str
+        Passed straight through to :func:`null_fraction`.
 
     Returns
     -------
@@ -316,7 +352,7 @@ def _null_fraction_or_error(table: str, column: str) -> str:
         A suppressed count (see :func:`_suppressed`), or ``"error: ..."``.
     """
     try:
-        return null_fraction(table, column)
+        return null_fraction(table, column, column_type)
     except Exception as exc:
         logger.warning("null_fraction(%s, %s) failed: %s", table, column, exc)
         return f"error: {exc}"
@@ -361,7 +397,9 @@ def build_report(schema: dict[str, Any]) -> dict[str, Any]:
                 "columns": [
                     {
                         "name": col["name"],
-                        "n_null": _null_fraction_or_error(name, col["name"]),
+                        "n_null": _null_fraction_or_error(
+                            name, col["name"], col["type"]
+                        ),
                     }
                     for col in obj["columns"]
                 ],

@@ -146,14 +146,14 @@ priority order:
 | **Admission / discharge / death** | `admdad_subset`: `admission_date_time`, `discharge_date_time`; death via `derived_variables_subset.in_hospital_mortality_derived` | Mortality signal resolved, see open question 2 -- use the derived flag, not a `discharge_disposition` decode. |
 | **ED registration / triage / out** | `er_subset`: `registration_date_time` -> `ED_REGISTRATION`, `triage_date_time` -> `ED_TRIAGE` (new prefix), `left_er_date_time` -> `ED_OUT` | Resolved: three of `er_subset`'s six timestamps become events, matching MIMIC's own `ED_REGISTRATION`/`ED_OUT` prefixes (already in `odyssey/data/vocabulary.py`); `disposition_date_time`/`physician_initial_assessment_date_time`/`ambulance_arrival_date_time` stay unextracted (describe the visit, don't bound a stage transition). Same admission-window guard as pharmacy/radiology. A `genc_id` here can be missing from `admdad_subset` entirely (ED visit, no admission) -- dropped via the existing subject-lookup-miss path, not a new failure mode. |
 | **ED diagnoses** | `erdiagnosis_subset.er_diagnosis_code` -> `ED_DIAGNOSIS//<code>` (new prefix, kept distinct from `ipdiagnosis_subset`'s `DIAGNOSIS//`) | No event-level timestamp -- attributed to the encounter's admission time, same convention as `physicians_subset`. |
-| **ED procedures** | `erintervention_subset.intervention_code` -> `PROCEDURE//<code>` (reuses `ipintervention_subset`'s own prefix -- same CCI coding system, not a new ER-specific vocabulary) | Own timestamp (`intervention_episode_start_date_time`), admission-window guard. |
+| **ED procedures** | `erintervention_subset.intervention_code` -> `PROCEDURE//<code>` (reuses `ipintervention_subset`'s own prefix -- same CCI coding system, not a new ER-specific vocabulary) | Two passes: timed (own timestamp, admission-window guard) and `_untimed` (the exact complement, attributed to admission time). `intervention_episode_start_date_time` is blank (not `NULL`) on ~96.7% of coded rows -- the timed pass alone kept only ~90k of ~2.94M coded interventions; the untimed pass rescues the rest. Real incident, see "Real run, real incident, real fix" below. |
 | **ED consults** | `erconsults_subset.consult_service_code` -> `ER_CONSULT//<code>` (new prefix, `OTHER_TYPE`) | Timed at `consult_request_date_time`; `consult_arrival_date_time` not extracted as a second event. |
 | **Transfers** | `lookup_transfer_subset.institution_to_mns` -> `TRANSFER_TO//<institution>` (already in `odyssey/data/vocabulary.py`, matching MIMIC's own convention) | Despite the table name, real per-encounter rows, not a static lookup. No event-level timestamp -- attributed to admission time. |
 | **Billing (CMG)** | `ipcmg_subset.cmg` -> `BILLING_CMG//<cmg>` (new prefix, `BILLING_TYPE`) | Canada's CIHI casemix-group system -- kept distinct from MIMIC's own `DRG` prefix (different vocabulary, same type bucket). No event-level timestamp -- attributed to discharge time (grouper codes finalize at stay close, same reasoning as diagnoses below). |
 | **Billing (HIG)** | `iphig_subset.hig_code` -> `BILLING_HIG//<code>` (new prefix, `BILLING_TYPE`) | CIHI's Health-based Inpatient Group system, distinct from both CMG and DRG. Same discharge-time attribution as CMG. |
 | **ICU admission / discharge** | `ipscu_subset`: `scu_admit_date_time`, `scu_discharge_date_time`, `icu_flag` | `icu_flag` gates whether a `scu_*` stay counts as ICU specifically (`scu_unit_number` suggests non-ICU special-care units exist too, e.g. step-down). |
 | **Labs** | `lab_subset`: code via `test_type_mapped_omop` (join `lookup_lab_concept`, deduplicated -- see open question 4), numeric parse of `result_value`, unit from `result_unit`, time from `collection_date_time` | `result_value` is `text` -- needs the same numeric-parse-with-fallback-to-categorical pattern already used for MIMIC/eICU labs. **SI units, not MIMIC/eICU's US-conventional units -- see [Units and canonical clinical ranges](#units-and-canonical-clinical-ranges).** |
-| **Vitals** | `vitals_subset`: code via `measurement_mapped_omop` (join `lookup_vitals_concept` -- confirmed real and covers the common vitals, open question 3), numeric parse of `measurement_value`, unit from `measurement_unit`, time from `measure_date_time` | |
+| **Vitals** | `vitals_subset`: code via `measurement_mapped_omop` (join `lookup_vitals_concept` -- confirmed real and covers the common vitals, open question 3), numeric parse of `measurement_value`, unit from `measurement_unit`, time from `measure_date_time` | Two passes: mapped (above) and `_unmapped` (the exact complement, `measurement_mapped_omop` null). ~119M of ~412M rows have no concept mapping at all -- the entire 71%-retention story, confirmed real (FiO2/oxygen-delivery/pain-score/pupillary-response/LOC names among the top unmapped) -- rescued via `measurement_name` as a fallback identity, the eICU convention. See "Real run, real incident, real fix" below. |
 | **Medications** | `pharmacy_subset`: ingredient via `rxnorm_cache`/`lookup_pharmacy_mapping` (see open question 5) or `med_id_generic_name_raw` as a fallback identity; `med_start_date_time`/`med_end_date_time` for course timing; `route`, `dose_amount`/`dose_unit`, `frequency`, `PRN_IND` as attributes | Real datetime columns exist, but their values include physically impossible year outliers (1930-9022) -- needs the admission-date guard, see open question 7. |
 | **Diagnoses** | `ipdiagnosis_subset`: `diagnosis_code` (ICD-10-CA, via `lookup_icd10_ca_description`), `diagnosis_type` (e.g. most-responsible vs. secondary), `icd3` backoff via `diagnosis_prefix` (see open question 8) | |
 | **Procedures** | `ipintervention_subset`: `intervention_code` (CCI, via `lookup_cci`), `intervention_type`, `procedure_location` as an attribute | |
@@ -344,3 +344,40 @@ picking one), `diagnosis_prefix`'s exact derivation (question 8, not yet
 used by the extractor), and the locality/StatCan scope decision (question
 9, not extracted at all currently -- treated as out of scope for the MEDS
 event stream per that question's reasoning).
+
+Real run, real incident, real fix (2026-08-21, second wave): the ER
+extraction landed 90k of ~2.94M coded `erintervention_subset` rows --
+`intervention_episode_start_date_time` is blank (empty string, not SQL
+`NULL`) on 2,838,024 of 2,936,194 rows (96.7%), invisible to
+`extract-dry`'s `null_fraction` at the time (a plain `COUNT(*) -
+COUNT(column)`, which counts a blank string as "present"), so the report
+showed ~768k nulls where the real blank-or-null count was ~2.8M. Root
+cause confirmed server-side, not an extractor bug: within-guard-window
+real timestamps = 98,168, matching the ~90k observed after the code/id
+filters. `null_fraction` now counts blank/whitespace-only strings as null
+for `text`/`character varying` columns (`NULLIF(TRIM(column::text), '')`)
+-- see `extract_dry.py`'s `_is_blank_string_type`. Rescued by
+`extract_er_procedures_untimed`, the exact complement of
+`extract_er_procedures`'s own admission-guard predicate, attributed to
+admission time instead -- see that function's docstring for why this is a
+second pass rather than one function silently preferring the coarser
+attribution.
+
+`vitals_subset`'s own 71% retention turned out to be a different, larger
+mechanism, not the blank-timestamp one -- measured blank timestamps there
+are only ~44k. The real cause: `extract_vitals` drops every row whose
+`measurement_mapped_omop` doesn't resolve to a concept id at all, ~119M of
+~412M rows. Real unmapped names by frequency: FiO2 variants, oxygen
+delivery method/flow/therapy, pain score, `NEURO.PIR`/`PIA` (pupillary
+response -- core signal for a subdural-hematoma cohort), `VS.NWS.LOC1`
+(level of consciousness), plus assorted qualifier fields. Rescued by
+`extract_vitals_unmapped`, the exact complement of `extract_vitals`'s own
+concept-id filter, via `measurement_name` as a fallback identity -- the
+same convention eICU's own extraction already uses for an unmapped
+vital/lab. Name normalization is casefold + whitespace-collapse only
+(`_normalize_name_series`), deliberately without a cross-name
+canonicalization map -- unlike units, there is no known-variant-cluster
+map for vitals *names* yet; collapsing spelling variants of the same
+measurement onto one code is future `odyssey/data/code_mapping.py` work.
+This closes every retention anomaly found in the real-run accounting so
+far.
