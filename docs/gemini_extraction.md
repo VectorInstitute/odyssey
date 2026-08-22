@@ -63,8 +63,15 @@ priority order:
    `discharge_disposition` (candidate death codes `{7, 72, 73, 74}`) is
    still read alongside it, but purely as a cross-check tally
    (both-agree / derived-only / disposition-only counts, logged once per
-   extraction run) -- it never gates emission. Numbers land here once a
-   real run reports them.
+   extraction run) -- it never gates emission. **Real run numbers
+   (2026-08-22, post-durability-fix rerun)**: 170,148 both agree, 0
+   derived-only, 11 disposition-only, out of 2,268,279 admissions --
+   near-perfect agreement, validating both the derived-flag-primary
+   decision and the candidate code set; the 11 disposition-only rows
+   (0.006%) read as coding-edge noise, not a systematic gap. Cohort
+   in-hospital mortality is ~7.5% (170,148 / 2,268,279). The death
+   extractor itself ran clean end-to-end (2.27M rows, ~23s, all five
+   batches) on this rerun.
 3. ~~**`lookup_vitals_concept` is genuinely empty**~~ **Resolved, and the
    opposite of what the schema report's rounded count suggested**:
    `extract-dry`'s real `EXISTS` check found all four "suspect-empty"
