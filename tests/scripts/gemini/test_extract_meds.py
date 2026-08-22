@@ -1994,6 +1994,122 @@ def test_meds_shard_writer_flushes_once_a_shard_crosses_the_threshold(
     assert pd.read_parquet(tmp_path / "shard_0000.parquet").shape[0] == 3
 
 
+def test_meds_shard_writer_flush_all_makes_a_below_threshold_batch_durable_without_close(
+    tmp_path: Path,
+) -> None:
+    """Real incident: buffered rows lost when the process crashed before close().
+
+    ipscu_subset's events were buffered under SHARD_FLUSH_ROW_THRESHOLD,
+    the manifest was marked complete, and a *later* table's crash killed
+    the process before MedsShardWriter.close() -- which back then was the
+    only thing that ever flushed a buffered shard or wrote a valid
+    Parquet footer -- ever ran. flush_all() must make a table's rows
+    durable and readable on its own, with no dependence on close() ever
+    being reached.
+    """
+    mod = _load_module()
+    writer = mod.MedsShardWriter(tmp_path, {"pA": 0})
+    batch = pd.DataFrame(
+        {
+            "subject_id": ["pA"],
+            "time": [pd.Timestamp("2020-01-01")],
+            "code": ["ICU_ADMISSION"],
+            "numeric_value": [None],
+            "hadm_id": [1],
+        }
+    )
+    writer.write_batch("ipscu_subset", batch)
+    assert not (tmp_path / "shard_0000.parquet").exists()  # still buffered
+
+    writer.flush_all()
+    # Simulate the process being killed right here, before any later
+    # table's generator runs and before writer.close() is ever reached --
+    # flush_all()'s output must already be valid, readable Parquet.
+    assert (tmp_path / "shard_0000.parquet").exists()
+    on_disk = pd.read_parquet(tmp_path / "shard_0000.parquet")
+    assert on_disk["code"].tolist() == ["ICU_ADMISSION"]
+    assert mod._logical_shard_row_counts(tmp_path) == {0: 1}
+
+
+def test_meds_shard_writer_flush_all_lets_the_next_table_use_a_fresh_part_file(
+    tmp_path: Path,
+) -> None:
+    mod = _load_module()
+    writer = mod.MedsShardWriter(tmp_path, {"pA": 0})
+    row = lambda code: pd.DataFrame(  # noqa: E731
+        {
+            "subject_id": ["pA"],
+            "time": [pd.Timestamp("2020-01-01")],
+            "code": [code],
+            "numeric_value": [None],
+            "hadm_id": [1],
+        }
+    )
+    writer.write_batch("ipscu_subset", row("ICU_ADMISSION"))
+    writer.flush_all()
+    writer.write_batch("lab_subset", row("LAB//1//UNK"))
+    writer.close()
+
+    assert (tmp_path / "shard_0000.parquet").exists()
+    assert (tmp_path / "shard_0000_part1.parquet").exists()
+    assert mod._logical_shard_row_counts(tmp_path) == {0: 2}
+
+
+def test_run_extraction_survives_a_later_tables_crash_without_losing_an_earlier_ones_rows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Pins the exact attempt-5 scenario odyssey-db forensically diagnosed.
+
+    ipscu_subset's rows were buffered below SHARD_FLUSH_ROW_THRESHOLD,
+    manifest-marked complete, and then lab_subset's crash killed the
+    process before the single end-of-run writer.close() ever ran --
+    silently losing every ipscu_subset row while the manifest still
+    claimed completion. Reproduced here: admdad_subset (small, buffered)
+    completes and is marked complete, then lab_subset's generator raises
+    -- admdad_subset's rows must already be durable on disk, and the
+    manifest's claim about it must be true.
+    """
+    mod = _load_module()
+    monkeypatch.setattr(mod, "count_distinct_subjects", lambda: 1)
+    monkeypatch.setattr(
+        mod.db,
+        "query",
+        lambda sql, params=None: pd.DataFrame({"concept_id": [], "concept_desc": []}),
+    )
+
+    admdad_chunk = pl.DataFrame(
+        {
+            "genc_id": [1],
+            "patient_id_hashed": ["pA"],
+            "admission_date_time": ["2020-01-01"],
+            "discharge_date_time": ["2020-01-05"],
+            # 1 = discharged home, not a death code -- admdad_subset__death
+            # reads this too (for its cross-check tally), needs it present.
+            "discharge_disposition": [1],
+        }
+    )
+
+    def fake_stream_table(
+        table: str, _select_cols: list[str]
+    ) -> Iterator[pl.DataFrame]:
+        if table == "admdad_subset":
+            yield admdad_chunk
+        elif table == "lab_subset":
+            raise RuntimeError("simulated crash: 103@POST")
+
+    monkeypatch.setattr(mod, "_stream_table", fake_stream_table)
+
+    with pytest.raises(RuntimeError, match="103@POST"):
+        mod.run_extraction(output_dir=tmp_path)
+
+    manifest = mod._load_manifest(tmp_path)
+    assert manifest.get("admdad_subset") == "complete"
+    # The claim must be true: admdad_subset's rows are actually durable on
+    # disk, not sitting lost in an unflushed, never-closed writer buffer.
+    on_disk = pd.concat(pd.read_parquet(p) for p in tmp_path.glob("shard_*.parquet"))
+    assert set(on_disk["code"]) == {"ADMISSION", "DISCHARGE"}
+
+
 # --- MedsShardWriter part-file resumability -------------------------------
 
 
