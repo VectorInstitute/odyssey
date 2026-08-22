@@ -38,7 +38,7 @@ our ``train/tuning/held_out`` subdirectory structure exactly are strong
 evidence split membership is read from that directory layout natively, not
 re-derived from ``subject_splits.parquet`` at tabularization/fit time --
 verified explicitly for a real run by
-:func:`assert_no_held_out_subject_in_training_features`, not just assumed
+:func:`assert_no_split_leakage`, not just assumed
 from the config read.
 """
 
@@ -216,38 +216,155 @@ def verify_cached_label_count(cache_dir: Path, task_name: str, expected_n: int) 
         )
 
 
-def assert_no_held_out_subject_in_training_features(
+def assert_label_feature_alignment(
     tabularize_dir: Path,
+    label_dir: Path,
+    *,
+    representative_window: str = "1d",
+    representative_agg: str = "code/count",
+) -> None:
+    """Standalone-path integrity check.
+
+    Label rows must align 1:1 with tabularized feature rows, per shard.
+    Only relevant when ``meds-tab-cache-task`` never runs -- our direct
+    tabularize + xgboost architecture bypasses it entirely (confirmed from
+    ``MEDS_tabular_automl.xgboost_model``'s own label-loading source: it
+    reads ``input_label_cache_dir/<split>/<shard>.parquet`` directly, with
+    feature rows and label rows joined purely by shared positional order,
+    not a separate cache-task join to verify). The coupling actually under
+    threat here is label-row-to-feature-row alignment: if a label file and
+    its tabularized ``.npz`` disagree on row count, xgboost would silently
+    train/score against misaligned rows.
+
+    Deliberately avoids importing the ``meds-tab`` package (matching this
+    module's existing no-optional-dependency design -- the CLI stages run
+    outside it, in a separate driver script): reads only the ``shape`` key
+    directly out of the ``.npz`` file via ``numpy.load``, the same key
+    ``MEDS_tabular_automl.utils.load_matrix`` reads internally, confirmed
+    against a real finished run (shard 0, acute_kidney_injury_8h): label
+    parquet height 26,087 == npz ``shape[0]`` 26,087, for both a
+    time-series aggregation file and the static/present file -- MEDS-Tab
+    writes every (window, agg) file for a shard in the same row order as
+    whatever label_df it was given for that shard.
+    """
+    label_files = sorted(label_dir.glob("*.parquet"))
+    if not label_files:
+        raise AssertionError(f"no label files found under {label_dir}")
+    mismatches: list[str] = []
+    for label_fp in label_files:
+        shard = label_fp.stem
+        npz_fp = (
+            tabularize_dir / shard / representative_window / representative_agg
+        ).with_suffix(".npz")
+        if not npz_fp.exists():
+            raise AssertionError(
+                f"expected tabularized feature file not found: {npz_fp}"
+            )
+        n_label = pl.read_parquet(label_fp).height
+        n_feature = int(np.load(npz_fp)["shape"][0])
+        if n_label != n_feature:
+            mismatches.append(
+                f"shard {shard}: label rows={n_label}, feature rows={n_feature}"
+            )
+    if mismatches:
+        raise AssertionError(
+            "label/feature row-count mismatch (silent drop or reorder in "
+            "MEDS-Tab's own tabularization): " + "; ".join(mismatches)
+        )
+
+
+def _subject_ids_in_parquet_dir(d: Path, *, column: str = "subject_id") -> set[int]:
+    files = sorted(d.glob("**/*.parquet"))
+    if not files:
+        raise AssertionError(f"no parquet files found under {d}")
+    ids: set[int] = set()
+    for fp in files:
+        ids |= set(pl.read_parquet(fp, columns=[column])[column].unique().to_list())
+    return ids
+
+
+def assert_no_split_leakage(
+    tab_data_dir: Path,
     held_out_subject_ids: set[int],
     *,
+    train_label_dir: Path,
+    held_out_label_dir: Path | None = None,
     subject_id_column: str = "subject_id",
 ) -> None:
     """(e): held-out subjects must be unreachable at fit time.
 
-    MEDS-Tab's split handling is native (its own directory layout, not a
-    subject_splits.parquet re-derivation at this stage -- see the module
-    docstring), which should make this true by construction; checked
-    explicitly here rather than assumed, over every tabularized training
-    feature file MEDS-Tab actually produced.
+    Checked at both levels that could leak them.
+
+    Originally (as ``assert_no_held_out_subject_in_training_features``)
+    this globbed ``**/*.parquet`` under MEDS-Tab's own ``tabularize/``
+    output dir -- but that output is exclusively ``.npz`` (scipy sparse
+    matrices) on every real run, with no ``subject_id`` column to check at
+    all. Confirmed on a real 11.3h tabularize-time-series run: 0 .parquet
+    files, 930 .npz files under ``tabularize/train``. That glob could never
+    match anything MEDS-Tab actually produces, so the check always raised
+    "no files found" regardless of whether a real leak existed -- it never
+    once actually verified anything.
+
+    Checks two levels instead, both over real parquet with a real
+    ``subject_id`` column:
+
+    1. Raw input level: every subject in ``tab_data_dir/train/*.parquet``
+       (our own scoped shard partitioning, the thing actually under our
+       control -- MEDS-Tab's tabularization is a deterministic function of
+       whichever shards we feed it, so it cannot introduce leakage beyond
+       what's already in our own input partitioning) must be absent from
+       ``held_out_subject_ids``.
+    2. Label level: every subject in ``train_label_dir``'s task-label files
+       -- what ``meds-tab-xgboost`` actually trains against, via
+       ``meds-tab-cache-task``'s own join -- must also be absent from
+       ``held_out_subject_ids``. This is the vector level (1) alone cannot
+       see: a bug in MEDS-Tab's own label/cache-task join mixing splits.
+
+    If ``held_out_label_dir`` is given, also checks the mirror-image leak:
+    every subject in the held-out label files must be a member of the raw
+    held-out split (not a stray non-held-out subject that leaked in).
     """
-    train_files = sorted((tabularize_dir / "train").glob("**/*.parquet"))
-    if not train_files:
+    raw_train_subjects = _subject_ids_in_parquet_dir(
+        tab_data_dir / "train", column=subject_id_column
+    )
+    leaked_raw = raw_train_subjects & held_out_subject_ids
+    if leaked_raw:
+        sample = sorted(leaked_raw)[:5]
         raise AssertionError(
-            f"no tabularized training feature files found under {tabularize_dir / 'train'}"
+            f"{len(leaked_raw)} held-out subject_id(s) present in raw training "
+            f"shards under {tab_data_dir / 'train'} (e.g. {sample}) -- shard "
+            "partitioning leaked held-out subjects into train"
         )
-    leaked: set[int] = set()
-    for fp in train_files:
-        df = pl.read_parquet(fp, columns=[subject_id_column])
-        leaked |= set(df[subject_id_column].unique().to_list()) & held_out_subject_ids
-        if leaked:
-            break
-    if leaked:
-        sample = sorted(leaked)[:5]
+
+    label_train_subjects = _subject_ids_in_parquet_dir(
+        train_label_dir, column=subject_id_column
+    )
+    leaked_label = label_train_subjects & held_out_subject_ids
+    if leaked_label:
+        sample = sorted(leaked_label)[:5]
         raise AssertionError(
-            f"{len(leaked)} held-out subject_id(s) present in tabularized training "
-            f"features under {tabularize_dir / 'train'} (e.g. {sample}) -- split "
-            "enforcement failed, held-out subjects were reachable at fit time"
+            f"{len(leaked_label)} held-out subject_id(s) present in train-split "
+            f"task labels under {train_label_dir} (e.g. {sample}) -- split "
+            "enforcement failed in the label/cache-task join, held-out subjects "
+            "were reachable at fit time"
         )
+
+    if held_out_label_dir is not None:
+        raw_held_out_subjects = _subject_ids_in_parquet_dir(
+            tab_data_dir / "held_out", column=subject_id_column
+        )
+        label_held_out_subjects = _subject_ids_in_parquet_dir(
+            held_out_label_dir, column=subject_id_column
+        )
+        stray = label_held_out_subjects - raw_held_out_subjects
+        if stray:
+            sample = sorted(stray)[:5]
+            raise AssertionError(
+                f"{len(stray)} subject_id(s) in held-out task labels under "
+                f"{held_out_label_dir} are not in the raw held-out split under "
+                f"{tab_data_dir / 'held_out'} (e.g. {sample}) -- held-out label "
+                "file contains subjects outside the held-out cohort"
+            )
 
 
 @dataclass
@@ -300,8 +417,9 @@ def index_matrix_by_event(rows: dict[str, list[IndexRow]]) -> dict[str, np.ndarr
 
 __all__ = [
     "MedsTabBaselineModel",
-    "assert_no_held_out_subject_in_training_features",
+    "assert_no_split_leakage",
     "export_task_labels",
     "index_matrix_by_event",
     "verify_cached_label_count",
+    "assert_label_feature_alignment",
 ]
