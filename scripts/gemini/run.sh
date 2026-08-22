@@ -4,7 +4,7 @@
 # nobody but Amrit can log into the node, so this is what he actually runs.
 #
 # Usage (on the GEMINI node, from the repo root):
-#   scripts/gemini/run.sh [probe|schema|env-gpu|extract-dry|extract|finalize|train-smoke|train-smoke-2|train-full|eval-forecast <run-name>|train|eval|all]
+#   scripts/gemini/run.sh [probe|schema|env-gpu|extract-dry|extract|finalize|export-codes|train-smoke|train-smoke-2|train-full|eval-forecast <run-name>|train|eval|all]
 #
 # Steps:
 #   probe        scripts/gemini/probe_env.sh -> scripts/gemini/out/env_probe.txt
@@ -36,6 +36,16 @@
 #                not assumed) -- do not run this until told to; see
 #                scripts/gemini/finalize_meds.py's own docstring for the
 #                design and crash semantics.
+#   export-codes scripts/gemini/export_codes.py -> reads finalize's
+#                metadata/codes.parquet and writes scripts/gemini/out/
+#                codes_inventory.json, every distinct code with a suppressed
+#                count (rounded to the nearest 1000, or "<1000") -- needs
+#                `finalize` done. Unblocks the exhaustive OMOP->LOINC mapping
+#                work; code strings aren't patient data, only small counts
+#                are suppressed. Falls back to dropping the "<1000" entries
+#                if the full inventory would exceed the commit-size cap
+#                below (real risk at GEMINI's ~13-50k-code scale, not
+#                hypothetical -- see the script's own docstring).
 #   train-smoke  proves data+env+backbone on a small slice before committing
 #                to a full run: model_kind=baseline, source=gemini,
 #                concepts/alerts off (event_hazards=False), backbone stays
@@ -248,6 +258,13 @@ main() {
     run_extract_dry() {
         echo "=== extract-dry ==="
         python scripts/gemini/extract_dry.py
+    }
+
+    run_export_codes() {
+        echo "=== export-codes ==="
+        echo "Reads metadata/codes.parquet (needs finalize done) and writes"
+        echo "the suppressed code inventory to scripts/gemini/out/codes_inventory.json."
+        python scripts/gemini/export_codes.py
     }
 
     run_pending_stub() {
@@ -716,6 +733,7 @@ JSON
         extract-dry) run_extract_dry ;;
         extract) run_extract ;;
         finalize) run_finalize ;;
+        export-codes) run_export_codes ;;
         train-smoke) run_train_smoke 5 2 gemini_smoke_1 ;;
         train-smoke-2) run_train_smoke 30 "" gemini_smoke_2 ;;
         train-full) run_train_full ;;
@@ -724,7 +742,7 @@ JSON
         eval) run_pending_stub eval ;;
         all) run_probe; run_schema; run_extract_dry ;;
         *)
-            echo "unknown step: $STEP (expected probe, schema, env-gpu, extract-dry, extract, finalize, train-smoke, train-smoke-2, train-full, eval-forecast, train, eval, or all)" >&2
+            echo "unknown step: $STEP (expected probe, schema, env-gpu, extract-dry, extract, finalize, export-codes, train-smoke, train-smoke-2, train-full, eval-forecast, train, eval, or all)" >&2
             exit 1
             ;;
     esac
