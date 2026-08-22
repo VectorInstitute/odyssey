@@ -484,8 +484,16 @@ weakref-based regression test (feed many batches through many
 `flush_all()` cycles, assert every internal buffer structure is
 genuinely empty afterward and closed writers are actually
 garbage-collected, not just zeroed) -- the test passes, finding no such
-leak. The global cap is the fix; the leak hypothesis is not confirmed
-(kept open pending real-run RSS diagnostics, but the cap is correct
-regardless of the exact mechanism). Total buffered rows are now logged
-in the per-batch timing line so this class of question is answerable
+leak. The global cap is the fix, not a leak fix -- **reconciling
+hypothesis for the yesterday-vs-today difference (circumstantial, not
+confirmed)**: yesterday's successful lab_subset pass ran lab-first on a
+resumed run with a clean heap, while today's full rebuild churned
+through 12 tables of 100M+-row pandas allocations first, plausibly
+leaving a glibc arena-fragmentation floor (freed-to-allocator, never
+returned to the OS) that the lab flush wave then stacked on top of --
+consistent with a run-*shape* change rather than a code regression, and
+with the cap (bounding the wave itself to ~10-14 GB) surviving any
+plausible fragmentation floor regardless. Total buffered rows are now
+logged in the per-batch timing line so this class of question is
+answerable
 from logs directly next time.
