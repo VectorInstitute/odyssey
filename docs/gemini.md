@@ -156,6 +156,26 @@ should apply here too, once `PATH`/`CUDA_HOME` point at
 builds already support, so no separate GPU-architecture concern beyond what's
 already validated on A100.
 
+**Update, 2026-08-22 (real `env-gpu` run on the H200)**: the system
+`python3.12` above has no dev headers at all (`/usr/include/python3.12`
+empty/absent) -- `venv` creation itself doesn't need them, so `env-gpu`
+got all the way to the mamba-ssm compile (CUDA/sm_90 kernels building
+fine) before dying on `Python.h: No such file or directory`, ~30 minutes
+in. No environment-modules python was available, and `uv`'s own python
+*downloads* are proxy-blocked the same way `pytorch.org` is (both
+external). The fix that actually worked on this node: `conda` at
+`/opt/Miniconda`, contrary to the 2026-08-18 probe row above (either a
+different node, or conda was added since), is configured against an
+*internal* mirror (`packages.gemini-hpc.ca`), not the external proxy --
+`conda create -y -p ~/py312 python=3.12` resolves and installs a real,
+header-bearing Python 3.12. `env-gpu` now takes a `PYTHON_FOR_GPU_VENV`
+override for exactly this: `PYTHON_FOR_GPU_VENV=~/py312/bin/python3.12
+scripts/gemini/run.sh env-gpu` builds the GPU venv from the conda python
+instead of the header-less system one, and self-heals a GPU venv already
+built from the header-less python (venv creation succeeding while the
+later compile fails leaves one behind that would otherwise be silently
+reused on retry).
+
 Since `uv` isn't installed on the node, the CUDA-index pinning
 (`[tool.uv.sources]`/`[[tool.uv.index]]` in `pyproject.toml`) isn't available
 through plain `pip` — torch would need installing explicitly from PyTorch's
