@@ -2834,6 +2834,35 @@ def assign_shards(
 #: per shard for the whole table instead of one per chunk.
 SHARD_FLUSH_ROW_THRESHOLD = 250_000
 
+#: Global cap on rows buffered across *all* shards at once, independent of
+#: :data:`SHARD_FLUSH_ROW_THRESHOLD`'s per-shard bound. Overridable via
+#: ``GEMINI_WRITER_MAX_BUFFERED_ROWS``.
+#:
+#: Real incident this closes (second OOM kill, new mechanism): subject-hash
+#: sharding is uniform, so with ~1,118 shards and a table's rows arriving
+#: roughly evenly across subjects, every shard accumulates rows at close to
+#: the same rate -- all ~1,118 shards cross
+#: :data:`SHARD_FLUSH_ROW_THRESHOLD` within the same processing window,
+#: producing a synchronized high-water of up to
+#: ``SHARD_FLUSH_ROW_THRESHOLD * n_shards`` (~279M rows for 1,118 shards)
+#: resident at once, not the ``SHARD_FLUSH_ROW_THRESHOLD``-per-shard bound
+#: :class:`MedsShardWriter`'s docstring used to claim. Real per-row cost in
+#: a pandas object-dtype frame with string codes measured at ~250-400
+#: bytes (not an earlier ~130-byte estimate), plus each flush's
+#: ``pd.concat`` copy -- 318M then 340M buffered lab_subset rows OOM-killed
+#: both a 64 GB and a 96 GB job at almost exactly this ~280M-row mark. This
+#: cap tracks :attr:`MedsShardWriter.total_buffered_rows` across every
+#: shard and force-flushes the fullest ones first once it's exceeded (see
+#: :meth:`MedsShardWriter._flush_fullest_shards_until_under_cap`) --
+#: bounding peak memory to roughly this cap's own row count, and
+#: desynchronizing future waves since the flushed shards restart from 0
+#: while the others keep accumulating. ``SHARD_FLUSH_ROW_THRESHOLD`` itself
+#: is untouched -- this is an *additional*, aggregate bound, not a
+#: replacement.
+WRITER_MAX_BUFFERED_ROWS = int(
+    os.environ.get("GEMINI_WRITER_MAX_BUFFERED_ROWS", "40000000")
+)
+
 _SHARD_FILE_RE = re.compile(r"^shard_(\d{4})(?:_part(\d+))?\.parquet$")
 
 
@@ -2916,9 +2945,21 @@ class MedsShardWriter:
     rows have accumulated for it (or at :meth:`close`) -- collapsing many
     small per-chunk ``write_table()`` calls into far fewer, larger ones;
     see :data:`SHARD_FLUSH_ROW_THRESHOLD`'s docstring for the real-run
-    measurement this fixes. Memory use is bounded by at most
-    ``SHARD_FLUSH_ROW_THRESHOLD`` buffered rows per shard plus one open
-    Parquet writer per shard actually touched -- with thousands of
+    measurement this fixes. **Measured memory reality, corrected (second
+    OOM incident)**: ``SHARD_FLUSH_ROW_THRESHOLD`` alone bounds each
+    shard's *own* buffer, but with subject-hash sharding spreading rows
+    uniformly across ~1,118 shards, every shard tends to cross that
+    threshold within the same processing window -- the real aggregate
+    high-water mark is closer to ``SHARD_FLUSH_ROW_THRESHOLD * n_shards``
+    (a real, measured ~279M rows resident at once, not the per-shard
+    figure this docstring used to claim), at ~250-400 bytes/row in a
+    pandas object-dtype frame with string codes plus each flush's own
+    ``pd.concat`` copy -- enough to OOM-kill both a 64 GB and a 96 GB job.
+    :data:`WRITER_MAX_BUFFERED_ROWS` (:attr:`total_buffered_rows`,
+    force-flushing the fullest shards first via
+    :meth:`_flush_fullest_shards_until_under_cap`) is the actual memory
+    bound now; see its own docstring for the full incident. Also needs one
+    open Parquet writer per shard actually touched -- with thousands of
     subjects per :data:`SUBJECTS_PER_SHARD`\\ =1000 shard, a large subject
     universe could need `ulimit -n` raised above a typical default (1024),
     flagged here rather than solved by a multi-pass design, which would
@@ -2944,6 +2985,15 @@ class MedsShardWriter:
         self._buffer_row_counts: dict[int, int] = {}
         self.rows_written_per_table: dict[str, int] = {}
         self.rows_dropped_unshardable = 0
+        #: Rows currently buffered across *every* shard -- see
+        #: :data:`WRITER_MAX_BUFFERED_ROWS`'s docstring for why this,
+        #: not the per-shard :data:`SHARD_FLUSH_ROW_THRESHOLD`, is the
+        #: real memory bound. Kept exactly in sync with
+        #: ``sum(self._buffer_row_counts.values())`` by every mutation
+        #: site (buffering in :meth:`write_batch`, clearing in
+        #: :meth:`_flush_shard`) rather than recomputed, since it's read
+        #: on every :meth:`write_batch` call.
+        self.total_buffered_rows = 0
 
     def _writer_for(self, shard: int) -> pq.ParquetWriter:
         if shard not in self._writers:
@@ -2954,6 +3004,7 @@ class MedsShardWriter:
 
     def _flush_shard(self, shard: int) -> None:
         frames = self._buffers.pop(shard, None)
+        self.total_buffered_rows -= self._buffer_row_counts.get(shard, 0)
         self._buffer_row_counts[shard] = 0
         if not frames:
             return
@@ -2967,6 +3018,33 @@ class MedsShardWriter:
         self._shard_row_counts[shard] = self._shard_row_counts.get(shard, 0) + len(
             combined
         )
+
+    def _flush_fullest_shards_until_under_cap(self) -> None:
+        """Force-flush the most-buffered shards first until under the global cap.
+
+        Real incident this fixes: uniform subject-hash sharding means every
+        shard tends to fill at close to the same rate, so
+        :data:`SHARD_FLUSH_ROW_THRESHOLD`'s per-shard bound alone lets all
+        ~1,118 shards approach it in lockstep -- a synchronized aggregate
+        high-water of up to ``SHARD_FLUSH_ROW_THRESHOLD * n_shards`` (a
+        real, measured ~279M rows), which OOM-killed both a 64 GB and a
+        96 GB extraction job at almost exactly that mark. Called from
+        :meth:`write_batch` once :attr:`total_buffered_rows` exceeds
+        :data:`WRITER_MAX_BUFFERED_ROWS`; flushing the fullest shards
+        first (rather than, say, insertion order) both clears the most
+        memory per flush and desynchronizes future waves, since a flushed
+        shard restarts from 0 while less-full shards keep accumulating
+        independently.
+        """
+        while self.total_buffered_rows > WRITER_MAX_BUFFERED_ROWS:
+            fullest_shard = max(
+                self._buffer_row_counts,
+                key=lambda s: self._buffer_row_counts[s],
+                default=None,
+            )
+            if fullest_shard is None or self._buffer_row_counts[fullest_shard] == 0:
+                break  # nothing left buffered -- total_buffered_rows must already be 0
+            self._flush_shard(fullest_shard)
 
     def write_batch(self, table: str, batch: pd.DataFrame) -> tuple[int, int]:
         """Split one MEDS-shaped batch by shard and buffer it for writing.
@@ -3014,11 +3092,15 @@ class MedsShardWriter:
         for raw_shard, group in batch.groupby(shard_ids.astype(int)):
             shard = int(raw_shard)
             self._buffers.setdefault(shard, []).append(group)
-            self._buffer_row_counts[shard] = self._buffer_row_counts.get(
-                shard, 0
-            ) + len(group)
+            n_group = len(group)
+            self._buffer_row_counts[shard] = (
+                self._buffer_row_counts.get(shard, 0) + n_group
+            )
+            self.total_buffered_rows += n_group
             if self._buffer_row_counts[shard] >= SHARD_FLUSH_ROW_THRESHOLD:
                 self._flush_shard(shard)
+        if self.total_buffered_rows > WRITER_MAX_BUFFERED_ROWS:
+            self._flush_fullest_shards_until_under_cap()
         return n_written, n_dropped
 
     def flush_all(self) -> None:
@@ -3208,12 +3290,13 @@ def _extract_one_table(
         t_write = time.time() - t_write_start
         logger.info(
             "[extract_meds] %s: batch phase timing (%d rows) "
-            "parse=%.1fms transform=%.1fms write=%.1fms",
+            "parse=%.1fms transform=%.1fms write=%.1fms total_buffered=%d",
             table_name,
             source_rows,
             t_parse * 1000,
             t_transform * 1000,
             t_write * 1000,
+            writer.total_buffered_rows,
         )
         report_progress(source_rows)
     writer.flush_all()

@@ -18,10 +18,12 @@ test's typed fixture papered over). See :func:`_utf8_chunk`'s own
 docstring for the exact convention.
 """
 
+import gc
 import importlib.util
 import queue
 import threading
 import time
+import weakref
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, Iterator
@@ -2107,6 +2109,92 @@ def test_meds_shard_writer_flush_all_lets_the_next_table_use_a_fresh_part_file(
     assert (tmp_path / "shard_0000.parquet").exists()
     assert (tmp_path / "shard_0000_part1.parquet").exists()
     assert mod._logical_shard_row_counts(tmp_path) == {0: 2}
+
+
+def test_flush_all_leaves_no_retained_buffers_or_closed_writers(tmp_path: Path) -> None:
+    """Regression guard for a suspected reference-retention leak.
+
+    Real production incident this checks for: a lab_subset extraction was
+    OOM-killed at 340M buffered rows in a 96 GB job shortly after the
+    per-table flush_all() durability fix landed -- close in time enough
+    that a retention leak in the new writer lifecycle (frames/writers
+    never actually released) was suspected as the cause. Runs many
+    batches through many flush_all() cycles (simulating many tables all
+    writing to the same shards) and asserts: (1) every internal buffer
+    structure is genuinely empty afterward, not just zeroed, and (2) a
+    closed pq.ParquetWriter is actually garbage-collected once flush_all()
+    drops the last reference to it, not kept alive by anything else.
+    """
+    mod = _load_module()
+    writer = mod.MedsShardWriter(tmp_path, {f"p{i}": i % 4 for i in range(20)})
+    closed_writer_refs = []
+
+    for table_i in range(10):
+        batch = pd.DataFrame(
+            {
+                "subject_id": [f"p{i}" for i in range(20)],
+                "time": [pd.Timestamp("2020-01-01")] * 20,
+                "code": [f"CODE//{table_i}"] * 20,
+                "numeric_value": [None] * 20,
+                "hadm_id": list(range(20)),
+            }
+        )
+        writer.write_batch(f"table_{table_i}", batch)
+        # Every shard actually used this table must have an open writer to
+        # track a weakref against, proving flush_all() really drops it.
+        closed_writer_refs.extend(weakref.ref(w) for w in writer._writers.values())
+        writer.flush_all()
+        assert writer._buffers == {}
+        assert all(v == 0 for v in writer._buffer_row_counts.values())
+        assert writer._writers == {}
+
+    gc.collect()
+    assert all(ref() is None for ref in closed_writer_refs), (
+        "a closed pq.ParquetWriter from an earlier table is still alive -- "
+        "something outside MedsShardWriter's own cleared dicts is retaining it"
+    )
+    writer.close()
+    assert sum(mod._logical_shard_row_counts(tmp_path).values()) == 20 * 10
+
+
+def test_write_batch_flushes_the_fullest_shards_once_the_global_cap_is_exceeded(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The global cap must flush the fullest shards first, keeping the total bounded.
+
+    Real incident: uniform hash-sharding brings every shard to its own
+    per-shard SHARD_FLUSH_ROW_THRESHOLD in lockstep, producing a
+    synchronized aggregate high-water of ~SHARD_FLUSH_ROW_THRESHOLD *
+    n_shards resident rows -- enough to OOM-kill a 64 GB and a 96 GB job.
+    """
+    mod = _load_module()
+    monkeypatch.setattr(mod, "SHARD_FLUSH_ROW_THRESHOLD", 10_000)
+    monkeypatch.setattr(mod, "WRITER_MAX_BUFFERED_ROWS", 100)
+    n_shards = 20
+    shard_by_subject = {f"p{i}": i for i in range(n_shards)}
+    writer = mod.MedsShardWriter(tmp_path, shard_by_subject)
+
+    # Every shard gets a few rows per batch, well under its own
+    # per-shard threshold (10_000) -- only the GLOBAL cap (100) can
+    # possibly trigger a flush here.
+    for _ in range(10):
+        batch = pd.DataFrame(
+            {
+                "subject_id": [f"p{i}" for i in range(n_shards)],
+                "time": [pd.Timestamp("2020-01-01")] * n_shards,
+                "code": ["CODE"] * n_shards,
+                "numeric_value": [None] * n_shards,
+                "hadm_id": list(range(n_shards)),
+            }
+        )
+        writer.write_batch("big_table", batch)
+        assert writer.total_buffered_rows <= 100 + n_shards, (
+            "global cap must keep total buffered rows bounded, not let "
+            "every shard's own per-shard threshold be the only limit"
+        )
+
+    writer.close()
+    assert sum(mod._logical_shard_row_counts(tmp_path).values()) == n_shards * 10
 
 
 def test_run_extraction_survives_a_later_tables_crash_without_losing_an_earlier_ones_rows(
