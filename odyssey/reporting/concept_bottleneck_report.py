@@ -376,9 +376,20 @@ def build_findings(
     test_ce = inference["task_metrics"]["cross_entropy"]
     training = (
         f"<b>Convergence at a glance.</b> Smoothed train task loss went from "
-        f"{task_first:.2f} to {task_last:.2f} over {tr['step'][-1]:,} steps; the "
-        f"tuning split ended near {val_last:.2f} and the untouched test split "
-        f"scored {test_ce:.2f}, so the train/held-out gap is small."
+        f"{task_first:.2f} to {task_last:.2f} over {tr['step'][-1]:,} steps; "
+        + (
+            f"the tuning split ended near {val_last:.2f} and the untouched "
+            f"test split scored {test_ce:.2f}, so the train/held-out gap is "
+            f"small."
+            if val_last is not None
+            # No tuning-split records yet (e.g. a report generated before
+            # the first eval_every checkpoint) -- degrade gracefully instead
+            # of crashing on None:.2f, same as the by-type empty-bucket
+            # guard below.
+            else f"the untouched test split scored {test_ce:.2f}. No "
+            f"tuning-split checkpoint was logged yet, so there is no "
+            f"train/held-out gap comparison for this run."
+        )
     )
     if "orthogonality_loss" in tr:
         orth_last = _smoothed_last(tr["orthogonality_loss"])
@@ -469,30 +480,41 @@ def build_findings(
     om = [c for c in inference["observability_metrics"] if c.get("auroc") is not None]
     mean_auroc = sum(c["auroc"] for c in om) / len(om) if om else float("nan")
     rates = [c["observed_rate"] for c in inference["observability_metrics"]]
-    # Vitals-derived concepts are only observed where chartevents exist,
-    # i.e. ICU stays; on a visit-scoped evaluation their observed rate is
-    # roughly the ICU fraction of visits and their observability AUROC is
-    # largely "is this an ICU visit" -- easy, and worth saying so.
-    low_rate = [
-        c for c in inference["observability_metrics"] if c["observed_rate"] < 0.25
-    ]
-    observability = (
-        f"<b>The observability head knows what gets measured.</b> Mean AUROC "
-        f"{mean_auroc:.2f} across {len(om)} concepts, against observed rates "
-        f"ranging {min(rates):.0%} to {max(rates):.0%}: predicting whether a "
-        f"concept will be measured at all is itself informative signal "
-        f"(missingness in EHR data is clinical, not random)."
-        + (
-            f" Read the near-perfect scores with care: {len(low_rate)} concepts "
-            f"are observed in under 25% of visits because their signals are "
-            f"only charted in the ICU, so for those the head is largely "
-            f"recognizing an ICU stay. The lab-derived concepts (creatinine, "
-            f"lactate, WBC), observed across the wards, are the more telling "
-            f"test."
-            if low_rate
-            else ""
+    if not rates:
+        # A run can have known-concept heads without an observability head
+        # (or the observability eval was skipped) -- degrade gracefully
+        # instead of crashing on min()/max() of an empty list, same as the
+        # by-type empty-bucket guard above.
+        observability = (
+            "<b>No observability metrics in this run.</b> Concept heads are "
+            "present, but no observability metrics were scored, so there is "
+            "no read on whether the model predicts what will be measured."
         )
-    )
+    else:
+        # Vitals-derived concepts are only observed where chartevents exist,
+        # i.e. ICU stays; on a visit-scoped evaluation their observed rate is
+        # roughly the ICU fraction of visits and their observability AUROC is
+        # largely "is this an ICU visit" -- easy, and worth saying so.
+        low_rate = [
+            c for c in inference["observability_metrics"] if c["observed_rate"] < 0.25
+        ]
+        observability = (
+            f"<b>The observability head knows what gets measured.</b> Mean AUROC "
+            f"{mean_auroc:.2f} across {len(om)} concepts, against observed rates "
+            f"ranging {min(rates):.0%} to {max(rates):.0%}: predicting whether a "
+            f"concept will be measured at all is itself informative signal "
+            f"(missingness in EHR data is clinical, not random)."
+            + (
+                f" Read the near-perfect scores with care: {len(low_rate)} concepts "
+                f"are observed in under 25% of visits because their signals are "
+                f"only charted in the ICU, so for those the head is largely "
+                f"recognizing an ICU stay. The lab-derived concepts (creatinine, "
+                f"lactate, WBC), observed across the wards, are the more telling "
+                f"test."
+                if low_rate
+                else ""
+            )
+        )
 
     findings = {
         "training": training,
@@ -649,6 +671,15 @@ def build_intervention_finding(
     band = truth_row.get("uncertain_band")
     disp = {m: (by_mode.get(m) or {}).get("mean_abs_displacement") for m in by_mode}
 
+    def disp_str(mode: str) -> str:
+        # mean_abs_displacement is legitimately None when zero positions
+        # fell inside uncertain_band for that mode (n_replaced_entries==0,
+        # e.g. a tight band + an unlucky sample) -- degrade to "n/a" instead
+        # of crashing on None:.2f. dict.get's default never helps here since
+        # the key is always present in `disp`, just sometimes valued None.
+        v = disp.get(mode)
+        return f"{v:.2f}" if v is not None else "n/a"
+
     # Separation between correct and inverted concept values, in top-1
     # points. Reported as a magnitude, not a verdict: 0.5 points is the
     # bar for calling the lever usable; anything positive but smaller is
@@ -675,8 +706,8 @@ def build_intervention_finding(
                 f"probability sat within {band:.2f} of 0.5, so the running "
                 f"ground truth and its flip displace the bottleneck equally "
                 f"(mean displacement "
-                f"{disp.get('truth', float('nan')):.2f} vs "
-                f"{disp.get('flip', float('nan')):.2f}) and the comparison "
+                f"{disp_str('truth')} vs "
+                f"{disp_str('flip')}) and the comparison "
                 f"is a pure test of direction: truth moves top-1 "
                 f"{d_truth:+.1%}, flip {d_flip:+.1%}"
                 + (f", random {d_random:+.1%}" if d_random is not None else "")
