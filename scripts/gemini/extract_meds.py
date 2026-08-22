@@ -188,6 +188,33 @@ type rather than by inspection). :data:`_SINK_BUFFER_BYTE_CAP` adds a
 byte-size flush trigger alongside the row-count one as further insurance
 against any future large region this module hasn't already bounded.
 
+Real-run hardening (2026-08-21, fifth incident): the newly-added ER
+extraction landed only 90k of ~2.94M coded ``erintervention_subset`` rows.
+Root cause, confirmed server-side: ``intervention_episode_start_date_time``
+is blank (empty string, not SQL ``NULL``) on 96.7% of coded rows --
+invisible to ``extract_dry.py``'s old null counting (a plain ``COUNT(*) -
+COUNT(column)``, which counts a blank string as "present," not null; fixed
+there too, see that module). :func:`extract_er_procedures_untimed` rescues
+the complement -- every coded row :func:`extract_er_procedures`'s own
+admission-guard predicate rejects (blank/unparsable timestamp, or outside
+the guard window), attributed to admission time instead. The extractor
+itself was never at fault here; this is a genuine data-shape discovery,
+not a bug fix in the fetch/parsing layers those first four incidents
+covered.
+
+Real-run hardening (2026-08-21, sixth incident): ``vitals_subset``'s own
+71% retention turned out to be a different, larger mechanism than the
+fifth incident's -- measured blank timestamps there are only ~44k. Real
+cause: :func:`extract_vitals` drops every row whose
+``measurement_mapped_omop`` doesn't resolve to a concept id, ~119M of
+~412M rows. :func:`extract_vitals_unmapped` rescues the exact complement
+via ``measurement_name`` as a fallback identity (the same convention
+eICU's own extraction already uses for an unmapped vital/lab) --
+:func:`_normalize_name_series` handles the name/value text (casefold +
+whitespace-collapse only, no cross-name canonicalization map yet, unlike
+:func:`_normalize_unit_series`'s unit handling). Closes every retention
+anomaly found in the real-run accounting so far.
+
 Run on the GEMINI node (writes real patient data to ``OUTPUT_DIR`` -- not a
 dry run):
 
@@ -563,6 +590,43 @@ def _normalize_unit_series(raw: pl.Series) -> pl.Series:
     mapped = collapsed.replace(UNIT_CANONICALIZATION_MAP)
     return pl.select(
         pl.when(is_sentinel).then(pl.lit("UNK")).otherwise(mapped)
+    ).to_series()
+
+
+def _normalize_name_series(raw: pl.Series) -> pl.Series:
+    """Casefold + whitespace-collapse a raw name/value column for a MEDS ``code``.
+
+    Same textual cleanup :func:`_normalize_unit_series` uses (strip,
+    casefold, collapse internal whitespace) but deliberately *without*
+    that function's sentinel-to-``"UNK"`` word-list or its
+    canonicalization map: there is no known-variant-cluster map for vitals
+    *names* the way :data:`UNIT_CANONICALIZATION_MAP` exists for units, so
+    two spellings of what's genuinely the same measurement will not
+    collapse onto one code here -- that cross-name canonicalization is
+    future ``odyssey/data/code_mapping.py`` work, not something to
+    improvise in the extractor. Null or blank (after stripping) still
+    becomes ``"UNK"``, same fallback as :func:`_normalize_unit_series`.
+
+    Parameters
+    ----------
+    raw : polars.Series
+        A raw name or (non-numeric) value column, one chunk at a time.
+
+    Returns
+    -------
+    polars.Series
+        Casefolded, whitespace-collapsed text, or ``"UNK"``.
+    """
+    collapsed = (
+        raw.cast(pl.Utf8)
+        .str.strip_chars()
+        .str.to_lowercase()
+        .str.replace_all(r"\s+", " ")
+    )
+    return pl.select(
+        pl.when(raw.is_null() | (collapsed == ""))
+        .then(pl.lit("UNK"))
+        .otherwise(collapsed)
     ).to_series()
 
 
@@ -1446,7 +1510,11 @@ def extract_vitals(subject_by_genc: dict[int, str]) -> Iterator[ExtractedBatch]:
     Event shape: one row produces one MEDS row, ``time`` =
     ``measure_date_time``, ``numeric_value`` from ``measurement_value``,
     ``hadm_id = genc_id``. Rows with no mapped concept
-    (``measurement_mapped_omop`` null) are dropped.
+    (``measurement_mapped_omop`` null) are dropped -- rescued separately
+    by :func:`extract_vitals_unmapped`, the exact complement, since this
+    drop accounts for ~119M of ~412M rows (the entire 71%-retention
+    story, confirmed real, not a blank-timestamp artifact -- see that
+    function's docstring).
 
     Parameters
     ----------
@@ -1490,6 +1558,107 @@ def extract_vitals(subject_by_genc: dict[int, str]) -> Iterator[ExtractedBatch]:
                 "numeric_value": frame["measurement_value"].cast(
                     pl.Float64, strict=False
                 ),
+                "hadm_id": genc,
+            }
+        )
+        yield ExtractedBatch(_finalize_meds_batch(meds), chunk.height)
+
+
+def extract_vitals_unmapped(
+    subject_by_genc: dict[int, str],
+) -> Iterator[ExtractedBatch]:
+    """Vital-sign events from ``vitals_subset`` with no OMOP concept mapping.
+
+    Real incident this rescues: :func:`extract_vitals` drops every row
+    whose ``measurement_mapped_omop`` doesn't resolve to a concept id --
+    ~119M of ~412M rows, the entire 71%-retention story. Confirmed real
+    and server-side, not a blank-timestamp artifact the way
+    ``erintervention_subset``'s own gap was (measured blank timestamps
+    here are only ~44k). Real unmapped names by frequency: FiO2 variants,
+    oxygen delivery method/flow/therapy, pain score, ``NEURO.PIR``/``PIA``
+    (pupillary response -- core signal for a subdural-hematoma cohort),
+    ``VS.NWS.LOC1`` (level of consciousness), plus assorted qualifier
+    fields (HR source, BP location/position).
+
+    This is the exact complement of :func:`extract_vitals`'s own
+    concept-id filter (``measurement_mapped_omop`` null after the same
+    lenient cast -- not re-logged here, :func:`extract_vitals`'s own pass
+    over this same table already does that once), rescued via
+    ``measurement_name`` as a fallback identity -- the same convention
+    eICU's own extraction already uses for an unmapped vital/lab (a
+    device/measurement label rather than no signal at all). ``code`` is
+    ``VITALS//<name>//<unit>`` when ``measurement_value`` parses as
+    numeric (``numeric_value`` set, same as :func:`extract_vitals`'s own
+    mapped rows), or ``VITALS//<name>//<value>`` when it doesn't
+    (``numeric_value`` null, the categorical value folded into the code
+    itself, the same style demographic codes elsewhere in this project
+    already use). Name and non-numeric-value normalization is casefold +
+    whitespace-collapse only (:func:`_normalize_name_series`) --
+    deliberately not :func:`_normalize_unit_series`'s fuller
+    sentinel/canonicalization treatment: there is no known-variant-cluster
+    map for vitals *names* yet the way there is for units, so two
+    spellings of the same measurement will not collapse onto one code
+    here -- future ``odyssey/data/code_mapping.py`` work, not something to
+    improvise in the extractor. No admission-window guard, matching
+    :func:`extract_vitals`'s own convention (it doesn't apply one either).
+
+    Own manifest key (``vitals_subset__unmapped``) in
+    :func:`run_extraction`'s ``table_generators``, resumable
+    independently of the mapped pass. Rows with no usable
+    ``measurement_name`` (null/blank) are dropped -- with no concept id
+    *and* no name, there is no identity left to build a code from.
+
+    Event shape: one row with an unmapped concept and a non-blank name
+    produces one MEDS row, ``hadm_id = genc_id``.
+
+    Parameters
+    ----------
+    subject_by_genc : dict
+        From :func:`fetch_admission_index`.
+
+    Yields
+    ------
+    ExtractedBatch
+    """
+    for chunk in _stream_table(
+        "vitals_subset",
+        [
+            "genc_id",
+            "measurement_mapped_omop",
+            "measurement_name",
+            "measurement_value",
+            "measurement_unit",
+            "measure_date_time",
+        ],
+    ):
+        frame = _filter_valid_genc_id(chunk, "vitals_subset")
+        concept_cast = frame["measurement_mapped_omop"].cast(pl.Int64, strict=False)
+        frame = frame.with_columns(concept_cast).filter(
+            pl.col("measurement_mapped_omop").is_null()
+            & pl.col("measurement_name").is_not_null()
+            & (pl.col("measurement_name").cast(pl.Utf8).str.strip_chars() != "")
+        )
+        genc = frame["genc_id"]
+        name = _normalize_name_series(frame["measurement_name"])
+        numeric_value = frame["measurement_value"].cast(pl.Float64, strict=False)
+        unit = _normalize_unit_series(frame["measurement_unit"])
+        value_text = _normalize_name_series(frame["measurement_value"])
+        value_or_unit = pl.DataFrame(
+            {"numeric_value": numeric_value, "unit": unit, "value_text": value_text}
+        ).select(
+            pl.when(pl.col("numeric_value").is_not_null())
+            .then(pl.col("unit"))
+            .otherwise(pl.col("value_text"))
+            .alias("value_or_unit")
+        )["value_or_unit"]
+        meds = pl.DataFrame(
+            {
+                "subject_id": genc.replace_strict(
+                    subject_by_genc, default=None, return_dtype=pl.Utf8
+                ),
+                "time": _parse_datetime_series(frame["measure_date_time"]),
+                "code": "VITALS//" + name + "//" + value_or_unit,
+                "numeric_value": numeric_value,
                 "hadm_id": genc,
             }
         )
@@ -1979,7 +2148,7 @@ def extract_er_procedures(
     subject_by_genc: dict[int, str],
     admission_by_genc: dict[int, Optional[pd.Timestamp]],
 ) -> Iterator[ExtractedBatch]:
-    """ED procedure events from ``erintervention_subset``.
+    """ED procedure events from ``erintervention_subset`` with a passing timestamp.
 
     ``code`` reuses ``ipintervention_subset``'s own ``PROCEDURE//<code>``
     prefix, not a new ER-specific one: ``intervention_code`` is CCI-coded
@@ -1990,6 +2159,19 @@ def extract_er_procedures(
     worth losing by merging the code spaces. Own real timestamp
     (``intervention_episode_start_date_time``), same admission-window guard
     as every other real-timestamp table.
+
+    **Only a real minority of coded rows have a usable timestamp here**:
+    ``intervention_episode_start_date_time`` is blank (empty string, not
+    SQL ``NULL`` -- invisible to ``extract-dry``'s old ``COUNT(column)``-based
+    null counting, see :func:`extract_dry.null_fraction`'s fix) on ~96.7%
+    of rows with a real code. This function keeps exactly the rows whose
+    timestamp both parses and passes the admission-window guard;
+    :func:`extract_er_procedures_untimed` is the complement -- every
+    coded row this function's own guard rejects, attributed instead to
+    admission time. Split into two passes, rather than one function
+    picking a single attribution per row, so a row's real, trustworthy
+    timestamp is never discarded in favor of the coarser admission-time
+    fallback just because *some* rows need that fallback.
 
     Event shape: one row with a non-blank intervention code produces one
     MEDS row, ``hadm_id = genc_id``.
@@ -2030,6 +2212,77 @@ def extract_er_procedures(
                 "hadm_id": genc,
             }
         ).filter(_within_admission_guard_mask(event_time, admission))
+        yield ExtractedBatch(_finalize_meds_batch(meds), chunk.height)
+
+
+def extract_er_procedures_untimed(
+    subject_by_genc: dict[int, str],
+    admission_by_genc: dict[int, Optional[pd.Timestamp]],
+) -> Iterator[ExtractedBatch]:
+    """ED procedure events from ``erintervention_subset`` with no usable timestamp.
+
+    Real incident this rescues: :func:`extract_er_procedures`'s admission
+    guard, combined with ``intervention_episode_start_date_time`` being
+    blank (not ``NULL``) on ~96.7% of rows, left only ~90k of ~2.94M
+    coded ER interventions in that function's own output. This is the
+    exact complement -- same code-validity filter, same admission-window
+    guard predicate, inverted (``NOT`` guard-passed: blank/unparsable
+    timestamp, or a timestamp outside the guard window) -- attributed
+    instead to the encounter's admission time, the same no-usable-own-
+    timestamp convention :func:`extract_er_diagnoses`/:func:`extract_transfers`
+    already use. Must never re-emit a row :func:`extract_er_procedures`
+    already kept: since both functions compute the identical
+    ``_within_admission_guard_mask`` predicate over the identical
+    code-filtered row set and simply keep opposite sides of it, every
+    coded row lands in exactly one of the two outputs, never both, never
+    neither. Own manifest key (``erintervention_subset__untimed``) in
+    :func:`run_extraction`'s ``table_generators``, so this pass is
+    resumable independently of the timed one.
+
+    Event shape: one row with a non-blank intervention code AND a
+    failing admission guard produces one MEDS row at the encounter's
+    admission time, ``hadm_id = genc_id``. A row whose ``genc_id`` has no
+    admission time either (not in ``admdad_subset`` at all) is dropped
+    here too -- there is nothing left to attribute it to, same as every
+    other admission-time-anchored table in this module.
+
+    Parameters
+    ----------
+    subject_by_genc, admission_by_genc : dict
+        From :func:`fetch_admission_index`.
+
+    Yields
+    ------
+    ExtractedBatch
+    """
+    for chunk in _stream_table(
+        "erintervention_subset",
+        ["genc_id", "intervention_code", "intervention_episode_start_date_time"],
+    ):
+        frame = _filter_valid_genc_id(chunk, "erintervention_subset").filter(
+            pl.col("intervention_code").is_not_null()
+            & (pl.col("intervention_code").cast(pl.Utf8).str.strip_chars() != "")
+        )
+        genc = frame["genc_id"]
+        subject = genc.replace_strict(
+            subject_by_genc, default=None, return_dtype=pl.Utf8
+        )
+        admission = genc.replace_strict(
+            admission_by_genc, default=None, return_dtype=pl.Datetime("us")
+        )
+        event_time = _parse_datetime_series(
+            frame["intervention_episode_start_date_time"]
+        )
+        guard_passed = _within_admission_guard_mask(event_time, admission)
+        meds = pl.DataFrame(
+            {
+                "subject_id": subject,
+                "time": admission,
+                "code": "PROCEDURE//" + frame["intervention_code"].cast(pl.Utf8),
+                "numeric_value": None,
+                "hadm_id": genc,
+            }
+        ).filter(~guard_passed)
         yield ExtractedBatch(_finalize_meds_batch(meds), chunk.height)
 
 
@@ -2724,6 +2977,7 @@ def run_extraction(output_dir: Optional[Path] = None) -> dict[str, Any]:
         ("ipscu_subset", extract_icu(subject_by_genc)),
         ("lab_subset", extract_labs(subject_by_genc, lab_concepts)),
         ("vitals_subset", extract_vitals(subject_by_genc)),
+        ("vitals_subset__unmapped", extract_vitals_unmapped(subject_by_genc)),
         ("pharmacy_subset", extract_pharmacy(subject_by_genc, admission_by_genc)),
         ("ipdiagnosis_subset", extract_diagnoses(subject_by_genc)),
         ("ipintervention_subset", extract_procedures(subject_by_genc)),
@@ -2737,6 +2991,10 @@ def run_extraction(output_dir: Optional[Path] = None) -> dict[str, Any]:
         (
             "erintervention_subset",
             extract_er_procedures(subject_by_genc, admission_by_genc),
+        ),
+        (
+            "erintervention_subset__untimed",
+            extract_er_procedures_untimed(subject_by_genc, admission_by_genc),
         ),
         ("erconsults_subset", extract_er_consults(subject_by_genc, admission_by_genc)),
         (

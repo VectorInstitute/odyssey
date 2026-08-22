@@ -1066,6 +1066,85 @@ def test_extract_vitals_handles_a_garbage_measurement_mapped_omop_without_crashi
     assert any("measurement_mapped_omop" in r.message for r in caplog.records)
 
 
+def test_normalize_name_series_casefolds_and_collapses_whitespace_only() -> None:
+    # Deliberately NOT _normalize_unit_series's canonicalization map --
+    # no cross-name variant clustering yet, only casefold + whitespace.
+    mod = _load_module()
+    raw = pl.Series([" R  FIO2 ", "VSFiO2", None, "", "Pain Score"])
+    result = mod._normalize_name_series(raw)
+    assert result.to_list() == ["r fio2", "vsfio2", "UNK", "UNK", "pain score"]
+
+
+def test_extract_vitals_unmapped_is_the_exact_complement_of_extract_vitals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real incident this rescues: extract_vitals drops every
+    # measurement_mapped_omop-null row -- ~119M of ~412M rows, the whole
+    # 71%-retention story. The two functions must partition the coded
+    # rows exactly: no row in both outputs, no row in neither.
+    mod = _load_module()
+    subject_by_genc = {1: "pA", 2: "pA", 3: "pA"}
+    chunk = pl.DataFrame(
+        {
+            "genc_id": [1, 2, 3],
+            "measurement_mapped_omop": ["3027018", None, None],
+            "measurement_name": ["Heart Rate", "VSFiO2", None],
+            "measurement_value": ["88", "40", "irrelevant"],
+            "measurement_unit": ["bpm", "pct", "pct"],
+            "measure_date_time": [
+                "2020-01-02 08:00:00",
+                "2020-01-02 09:00:00",
+                "2020-01-02 10:00:00",
+            ],
+        }
+    )
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"vitals_subset": [chunk]})
+    )
+
+    mapped = pd.concat(
+        [b.frame for b in mod.extract_vitals(subject_by_genc)], ignore_index=True
+    )
+    unmapped = pd.concat(
+        [b.frame for b in mod.extract_vitals_unmapped(subject_by_genc)],
+        ignore_index=True,
+    )
+
+    assert mapped["code"].tolist() == ["VITALS//3027018//bpm"]
+    # row 2 (VSFiO2, numeric value) -> unit segment; row 3 (no name) dropped.
+    assert unmapped["code"].tolist() == ["VITALS//vsfio2//pct"]
+    assert unmapped["numeric_value"].tolist() == [40.0]
+    assert set(mapped["code"]) & set(unmapped["code"]) == set()
+
+
+def test_extract_vitals_unmapped_folds_a_non_numeric_value_into_the_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    subject_by_genc = {1: "pA"}
+    chunk = pl.DataFrame(
+        {
+            "genc_id": [1],
+            "measurement_mapped_omop": [None],
+            "measurement_name": ["Pain Score"],
+            "measurement_value": ["Unable to assess"],
+            "measurement_unit": [None],
+            "measure_date_time": ["2020-01-02 08:00:00"],
+        }
+    )
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"vitals_subset": [chunk]})
+    )
+
+    rows = pd.concat(
+        [b.frame for b in mod.extract_vitals_unmapped(subject_by_genc)],
+        ignore_index=True,
+    )
+
+    assert rows.iloc[0]["code"] == "VITALS//pain score//unable to assess"
+    assert pd.isna(rows.iloc[0]["numeric_value"])
+
+
 def test_extract_pharmacy_applies_the_admission_guard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1379,6 +1458,64 @@ def test_extract_er_procedures_reuses_the_procedure_prefix(
     )
 
     assert rows.iloc[0]["code"] == "PROCEDURE//1.ZZ.35"
+
+
+def test_extract_er_procedures_and_untimed_partition_the_coded_rows_exactly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real incident this guards against: intervention_episode_start_date_time
+    # is blank on ~96.7% of real rows, which combined with the admission
+    # guard left only ~90k of ~2.94M coded interventions in the timed
+    # pass's output. The untimed pass must catch exactly the rows the
+    # timed pass drops -- no row in both outputs, no row in neither.
+    mod = _load_module()
+    subject_by_genc = {1: "pA", 2: "pA", 3: "pA", 4: "pA"}
+    admission_by_genc = {
+        1: pd.Timestamp("2020-01-01"),
+        2: pd.Timestamp("2020-01-01"),
+        3: pd.Timestamp("2020-01-01"),
+        4: None,  # genc not in admdad_subset at all
+    }
+    chunk = pl.DataFrame(
+        {
+            "genc_id": [1, 2, 3, 4],
+            "intervention_code": ["A", "B", "C", "D"],
+            "intervention_episode_start_date_time": [
+                "2020-01-01 09:00:00",  # 1: real, in-window -- kept by the timed pass
+                "",  # 2: blank -- rescued by the untimed pass
+                "9022-01-01 09:00:00",  # 3: real but out-of-window -- rescued
+                "2020-01-01 09:00:00",  # 4: real, in-window, but no admission time
+            ],
+        }
+    )
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"erintervention_subset": [chunk]})
+    )
+
+    timed = pd.concat(
+        [
+            b.frame
+            for b in mod.extract_er_procedures(subject_by_genc, admission_by_genc)
+        ],
+        ignore_index=True,
+    )
+    untimed = pd.concat(
+        [
+            b.frame
+            for b in mod.extract_er_procedures_untimed(
+                subject_by_genc, admission_by_genc
+            )
+        ],
+        ignore_index=True,
+    )
+
+    assert sorted(timed["code"]) == ["PROCEDURE//A"]
+    assert sorted(untimed["code"]) == ["PROCEDURE//B", "PROCEDURE//C"]
+    # 4 is dropped by both -- no admission time to fall back to.
+    assert set(timed["code"]) & set(untimed["code"]) == set()
+    assert "PROCEDURE//D" not in set(timed["code"]) | set(untimed["code"])
+    untimed_c = untimed[untimed["code"] == "PROCEDURE//C"]
+    assert (untimed_c["time"] == pd.Timestamp("2020-01-01")).all()
 
 
 def test_extract_er_consults_namespaces_by_service_code(
