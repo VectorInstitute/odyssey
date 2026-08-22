@@ -160,3 +160,9 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+
+# NFS silly-rename artifacts (a file deleted/replaced while another process
+# still has it open) -- filesystem noise on the GEMINI node's NFS mount, not
+# user work. Left untracked, these still show up as "??" in git status and
+# trip run.sh's dirty-tree sync guard; real incident, 2026-08-22.
+.nfs*
