@@ -199,20 +199,22 @@ Organized by research track; the foundational plumbing that is finished lives in
 
 8. Task-suite expansion for the v10/GEMINI training generation, born under the v2 landmark protocol: **Sepsis-3 onset** (suspected infection = culture drawn + antibiotics started within the standard window, plus an acute SOFA rise >= 2, built as concept-registry rules with the same windowed-criteria discipline as the KDIGO/AKI labels; diagnosis-code labels rejected deliberately -- discharge billing codes carry no onset time, so a code-based "time to sepsis" is invalid for a real-time task) and **30-day readmission** (discharge-anchored landmarks, a new landmark type on the same hazard machinery; the task where GEMINI's multi-hospital linkage genuinely beats MIMIC). Both get survival/time-to-event formulations, all model families, all three datasets. The GCS coverage gap (eICU) is a stated limitation of the SOFA neuro component, and GEMINI's rescued FiO2/oxygen-support vitals feed the respiratory component directly. A bundling-tolerance/timestamp-jitter check joins the stress-protocol family (item 6): within-bundle order is already ignored by design (set-scored bundles); the open dial is how coarse the bundle window can go before the timeline signal degrades.
 
+9. Model-scale ladder on GEMINI ("curve vs point" made literal): the same pipeline and eval at ~14M (the A100-era config, kept for cross-dataset comparability), ~60M, and ~150M parameters on the H200 -- turns "did the tabular gap close because of data, scale, or both?" into a measured figure instead of an assertion, and sizes the flagship GEMINI run on evidence. Scaling heuristics and the EHR-FM literature both say 14M is undersized for 1.2B events; our own still-climbing epoch-2 curve says it isn't saturated either -- the ladder decides.
+
 **Track B: interpretability and causality**
-9. The stage-B cost frontier: longer training, partial unfreezing, small stage-A task weight (M-series, running); acceptance test is the six-mode banded intervention suite
-10. Concept-set widening (the completeness axis: richer concept vocabulary from structured data), plus leakage metrics (CTL/ICL) reported per run
-11. Input-level counterfactual rollouts as the near-term clinician what-if
-12. Population-level causal effect estimation (exploratory; CausalPFN line)
+10. The stage-B cost frontier: longer training, partial unfreezing, small stage-A task weight (M-series, running); acceptance test is the six-mode banded intervention suite
+11. Concept-set widening (the completeness axis: richer concept vocabulary from structured data), plus leakage metrics (CTL/ICL) reported per run
+12. Input-level counterfactual rollouts as the near-term clinician what-if
+13. Population-level causal effect estimation (exploratory; CausalPFN line)
 
 **Track C: generalization**
-13. GEMINI: SQL-streaming MEDS extraction (built, first full extraction in progress), post-extraction MEDS conformance step (int64 subject ids, `metadata/`, deliberate split rule), then external validation of frozen models (`docs/gemini.md`, `scripts/gemini/`)
-14. EHRSHOT-style few-shot/transfer protocol, the pretrain-once test
+14. GEMINI: SQL-streaming MEDS extraction (built, first full extraction in progress), post-extraction MEDS conformance step (int64 subject ids, `metadata/`, deliberate split rule), then external validation of frozen models (`docs/gemini.md`, `scripts/gemini/`)
+15. EHRSHOT-style few-shot/transfer protocol, the pretrain-once test
 
 **Track D: platform and clinical interface**
-15. Reproducibility: environment fingerprints and per-checkpoint numeric canaries recorded with every run (done); landmark protocol versioning on all alert evaluations (done: `LANDMARK_PROTOCOL_VERSION`, re-evaluation wave planned in `docs/reeval_wave_v2.md`)
-16. MEDS conformance validator as a gate on every extraction output; thin MEDS-to-FHIR translator once the best model is settled (deployment readiness as an adapter at the MEDS boundary, not a rearchitecture)
-17. Phase 2: an LLM agent (e.g. MedGemma) reading the concept-annotated forecast, with retrospective clinician validation on GEMINI; gated on Tracks B and C
+16. Reproducibility: environment fingerprints and per-checkpoint numeric canaries recorded with every run (done); landmark protocol versioning on all alert evaluations (done: `LANDMARK_PROTOCOL_VERSION`, re-evaluation wave planned in `docs/reeval_wave_v2.md`)
+17. MEDS conformance validator as a gate on every extraction output; thin MEDS-to-FHIR translator once the best model is settled (deployment readiness as an adapter at the MEDS boundary, not a rearchitecture)
+18. Phase 2: an LLM agent (e.g. MedGemma) reading the concept-annotated forecast, with retrospective clinician validation on GEMINI; gated on Tracks B and C
 
 <details>
 <summary>Foundational work, complete (items 1-8, 10, 12, 13, 16, 17 of the original list)</summary>
