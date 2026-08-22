@@ -32,6 +32,7 @@ from odyssey.training.train import (
     PreparedCorpus,
     TrainingConfig,
     _atomic_torch_save,
+    _batch_config_fields,
     _combined_val_loss,
     _detach_state,
     _move_chunk_to_device,
@@ -698,3 +699,75 @@ def test_train_reaches_run_training_with_stay_supervision_and_history_recap(
 
     with pytest.raises(RuntimeError, match="stop here"):
         train(config)
+
+
+# ---------------------------------------------------------------------------
+# _batch_config_fields: the resume-compatibility check
+# ---------------------------------------------------------------------------
+
+
+def test_batch_config_fields_covers_every_resume_relevant_field() -> None:
+    """Pin the exact field set a resume checks for stream-position compatibility.
+
+    Deliberately a literal set, not derived from TrainingConfig's own
+    fields (e.g. via dataclasses.fields) -- that would auto-pass no
+    matter what changed, defeating the point. A future field that
+    changes what next_chunk() produces (another sampler knob, a new
+    backbone-selection field, etc.) must be added to
+    _batch_config_fields AND to this literal set consciously; this test
+    is what forces that second step rather than letting it be forgotten.
+    """
+    config = TrainingConfig(
+        train_shard_dir="/train", tuning_shard_dir="/tuning", output_dir="/out"
+    )
+    assert set(_batch_config_fields(config)) == {
+        "backbone",
+        "num_lanes",
+        "chunk_size",
+        "reset_prob",
+        "max_context",
+        "seed",
+    }
+
+
+def test_batch_config_fields_reflects_each_fields_actual_value() -> None:
+    """Not just the right keys -- the right values, read from the given config."""
+    config = TrainingConfig(
+        train_shard_dir="/train",
+        tuning_shard_dir="/tuning",
+        output_dir="/out",
+        backbone="transformer",
+        num_lanes=17,
+        chunk_size=99,
+        reset_prob=0.42,
+        max_context=1234,
+        seed=7,
+    )
+    assert _batch_config_fields(config) == {
+        "backbone": "transformer",
+        "num_lanes": 17,
+        "chunk_size": 99,
+        "reset_prob": 0.42,
+        "max_context": 1234,
+        "seed": 7,
+    }
+
+
+def test_batch_config_fields_excludes_non_resume_relevant_hyperparameters() -> None:
+    """learning_rate (and other model/optimizer knobs) must never appear.
+
+    They don't affect what the data stream produces at a given position,
+    so a resume must not treat a pure hyperparameter change as a reason
+    to restart an epoch from its own beginning.
+    """
+    base = TrainingConfig(
+        train_shard_dir="/train", tuning_shard_dir="/tuning", output_dir="/out"
+    )
+    different_lr = TrainingConfig(
+        train_shard_dir="/train",
+        tuning_shard_dir="/tuning",
+        output_dir="/out",
+        learning_rate=base.learning_rate * 100,
+    )
+    assert "learning_rate" not in _batch_config_fields(base)
+    assert _batch_config_fields(base) == _batch_config_fields(different_lr)
