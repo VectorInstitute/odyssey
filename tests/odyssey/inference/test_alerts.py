@@ -1516,3 +1516,96 @@ def test_score_alerts_skips_a_scorer_that_is_all_nan_for_the_kept_rows() -> None
     # "concept" was never populated on either kept (at-risk) row above
     assert not any(r.scorer == "concept" for r in results)
     assert any(r.scorer == "hazard" for r in results)
+
+
+# ---------------------------------------------------------------------------
+# _main: append-only-by-default guard for alerts.json / alerts_rows.parquet
+# ---------------------------------------------------------------------------
+
+
+def _boom(*_args: object, **_kwargs: object) -> None:
+    raise AssertionError("must not evaluate before the overwrite guard fires")
+
+
+def test_main_refuses_to_overwrite_an_existing_alerts_json(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Guard must fire before evaluate_alerts runs, not just before the write.
+
+    Real incident: an automatic eval chain silently overwrote a finished
+    run's own alerts.json/alerts_rows.parquet at their standard output
+    paths (2026-08-22) -- the row-level dump was unrecoverable.
+    """
+    existing = tmp_path / "alerts.json"
+    existing.write_text("[]")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "prog",
+            "--run-dir",
+            "/runs/x",
+            "--held-out-shard-dir",
+            "/data/held_out",
+            "--output-json",
+            str(existing),
+        ],
+    )
+    monkeypatch.setattr(alerts_module, "evaluate_alerts", _boom)
+
+    with pytest.raises(SystemExit, match="refusing to overwrite"):
+        alerts_module._main()
+
+
+def test_main_refuses_to_overwrite_an_existing_dump_rows_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    existing_rows = tmp_path / "alerts_rows.parquet"
+    existing_rows.write_bytes(b"")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "prog",
+            "--run-dir",
+            "/runs/x",
+            "--held-out-shard-dir",
+            "/data/held_out",
+            "--output-json",
+            str(tmp_path / "alerts.json"),
+            "--dump-rows",
+            str(existing_rows),
+        ],
+    )
+    monkeypatch.setattr(alerts_module, "evaluate_alerts", _boom)
+
+    with pytest.raises(SystemExit, match="refusing to overwrite"):
+        alerts_module._main()
+
+
+def test_main_allows_a_fresh_output_without_overwrite(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Negative case: no existing files at all must not trip the guard."""
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "prog",
+            "--run-dir",
+            "/runs/x",
+            "--held-out-shard-dir",
+            "/data/held_out",
+            "--output-json",
+            str(tmp_path / "alerts.json"),
+        ],
+    )
+    called = {"evaluate": False}
+
+    def _fake_evaluate(*_args: object, **_kwargs: object) -> list:
+        called["evaluate"] = True
+        return []
+
+    monkeypatch.setattr(alerts_module, "evaluate_alerts", _fake_evaluate)
+
+    alerts_module._main()
+
+    assert called["evaluate"] is True
+    assert (tmp_path / "alerts.json").read_text() == "[]"

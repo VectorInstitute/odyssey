@@ -58,6 +58,7 @@ from odyssey.inference.run_inference import (
     _CODE_TYPE_NAMES,
     _build_type_lookup,
     load_run,
+    refuse_existing_output,
 )
 from odyssey.models.concept_bottleneck import (
     BottleneckIntervention,
@@ -430,8 +431,21 @@ def _main() -> None:
     )
     parser.add_argument("--num-lanes", type=int, default=8)
     parser.add_argument("--chunk-size", type=int, default=256)
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help=(
+            "allow clobbering an existing --output-json file. Protocol-"
+            "versioned science outputs are append-only by default -- a "
+            "real, irreplaceable row-level dump was lost to a silent "
+            "overwrite on 2026-08-22. Pass this only when re-running the "
+            "same run/protocol intentionally."
+        ),
+    )
     args = parser.parse_args()
 
+    out = Path(args.output_json)
+    refuse_existing_output(out, overwrite=args.overwrite, kind="interventions")
     run_dir = Path(args.run_dir)
     results = evaluate_interventions(
         run_dir,
@@ -443,7 +457,6 @@ def _main() -> None:
         checkpoint_path=run_dir / (args.checkpoint or "checkpoint_best.pt"),
         uncertain_band=args.uncertain_band,
     )
-    out = Path(args.output_json)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps([asdict(r) for r in results], indent=2))
     logger.info("[interventions] wrote %d modes to %s", len(results), out)

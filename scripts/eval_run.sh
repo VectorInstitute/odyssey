@@ -17,6 +17,14 @@
 #                          BASELINE_SHARDS whole into memory; set for full-scale runs
 #                          (hundreds of shards), where the whole-frame path OOMs
 #   CHECKPOINT=checkpoint_best.pt
+#   OVERWRITE=0            1 = pass --overwrite to every stage, allowing it to clobber an
+#                          existing inference_results.json/interventions_band15.json/
+#                          alerts.json/alerts_rows.parquet. Protocol-versioned science
+#                          outputs are append-only by default (every stage now refuses to
+#                          overwrite an existing one and aborts) -- a real, irreplaceable
+#                          row-level alerts_rows.parquet was lost to a silent overwrite by
+#                          an automatic eval chain on 2026-08-22. Only set this when
+#                          intentionally re-running the same run/protocol.
 #   PYTHON=<path>          interpreter (default: $ODYSSEY_REPO/.venv/bin/python, else `python`)
 #   ODYSSEY_REPO=<path>    repo checkout used for the default PYTHON venv and for the
 #                          logged commit hash (default: $HOME/odyssey -- override this,
@@ -37,7 +45,10 @@ set -u
 RUN_DIR="${1:?RUN_DIR required}"; DATA_ROOT="${2:?DATA_ROOT required}"; OUT_HTML="${3:-$RUN_DIR/report.html}"
 LANES="${LANES:-64}"; CHUNK="${CHUNK:-512}"; ALERT_SHARDS="${ALERT_SHARDS:-4}"; BASELINE_SHARDS="${BASELINE_SHARDS:-30}"
 CHECKPOINT="${CHECKPOINT:-checkpoint_best.pt}"; DRY_RUN="${DRY_RUN:-0}"; STREAM_BASELINE="${STREAM_BASELINE:-0}"
+OVERWRITE="${OVERWRITE:-0}"
+OVERWRITE_FLAG=""; [ "$OVERWRITE" = "1" ] && OVERWRITE_FLAG="--overwrite"
 ALERTS_ARGS=(--run-dir "$RUN_DIR" --held-out-shard-dir "$DATA_ROOT/held_out" --baseline-shard-dir "$DATA_ROOT/train" --max-shards "$ALERT_SHARDS" --max-baseline-shards "$BASELINE_SHARDS" --num-lanes "$LANES" --chunk-size "$CHUNK" --output-json "$RUN_DIR/alerts.json" --dump-rows "$RUN_DIR/alerts_rows.parquet" --checkpoint "$CHECKPOINT")
+[ -n "$OVERWRITE_FLAG" ] && ALERTS_ARGS+=("$OVERWRITE_FLAG")
 [ "$STREAM_BASELINE" = "1" ] && ALERTS_ARGS+=(--stream-baseline-shards)
 ODYSSEY_REPO="${ODYSSEY_REPO:-$HOME/odyssey}"
 if [ -z "${PYTHON:-}" ]; then
@@ -62,10 +73,10 @@ stage() {  # stage NAME CMD...
 }
 echo "run=$RUN_DIR data=$DATA_ROOT model_kind=$MODEL_KIND lanes=$LANES chunk=$CHUNK checkpoint=$CHECKPOINT commit=$(cd "$ODYSSEY_REPO" 2>/dev/null && git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
-stage eval "$PYTHON" -m odyssey.inference.run_inference --run-dir "$RUN_DIR" --held-out-shard-dir "$DATA_ROOT/held_out" --output-json "$RUN_DIR/inference_results.json" --num-lanes "$LANES" --chunk-size "$CHUNK" --checkpoint "$CHECKPOINT"
+stage eval "$PYTHON" -m odyssey.inference.run_inference --run-dir "$RUN_DIR" --held-out-shard-dir "$DATA_ROOT/held_out" --output-json "$RUN_DIR/inference_results.json" --num-lanes "$LANES" --chunk-size "$CHUNK" --checkpoint "$CHECKPOINT" $OVERWRITE_FLAG
 
 if [ "$MODEL_KIND" = "bottleneck" ]; then
-  stage interventions "$PYTHON" -m odyssey.inference.interventions --run-dir "$RUN_DIR" --held-out-shard-dir "$DATA_ROOT/held_out" --output-json "$RUN_DIR/interventions_band15.json" --max-shards "$ALERT_SHARDS" --num-lanes "$LANES" --chunk-size "$CHUNK" --uncertain-band 0.15 --modes none truth flip random zero_known zero_unknown --checkpoint "$CHECKPOINT"
+  stage interventions "$PYTHON" -m odyssey.inference.interventions --run-dir "$RUN_DIR" --held-out-shard-dir "$DATA_ROOT/held_out" --output-json "$RUN_DIR/interventions_band15.json" --max-shards "$ALERT_SHARDS" --num-lanes "$LANES" --chunk-size "$CHUNK" --uncertain-band 0.15 --modes none truth flip random zero_known zero_unknown --checkpoint "$CHECKPOINT" $OVERWRITE_FLAG
 else
   echo "=== STAGE interventions SKIPPED (baseline model) ==="
 fi
