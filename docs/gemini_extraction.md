@@ -50,13 +50,21 @@ priority order:
    generalization claim is about. A real training-cut decision, and
    confirmation it has the same table/column shape as this cut, comes
    before any extraction is run for real.
-2. ~~**Mortality signal**~~ **Resolved**: `derived_variables_subset.in_hospital_mortality_derived`
+2. ~~**Mortality signal**~~ **Resolved, and implemented (2026-08-22)**:
+   `derived_variables_subset.in_hospital_mortality_derived`
    is essentially fully populated (fewer than 6 nulls out of 2,268,000 rows,
-   per `extract-dry`'s null-fraction check) -- use it directly as the
-   primary mortality signal rather than decoding `discharge_disposition`
-   ourselves. `discharge_disposition` remains available as a cross-check
-   (via `lookup_cihi_codes` filtered to `column_name = 'discharge_disposition'`,
-   still unconfirmed) but isn't on the critical path anymore.
+   per `extract-dry`'s null-fraction check) -- used directly as the
+   primary (and only) mortality signal rather than decoding
+   `discharge_disposition` ourselves. `extract_meds.extract_death` emits a
+   single bare `MEDS_DEATH` event (matching MIMIC-IV's own convention;
+   `vocabulary.py`'s `"MEDS_DEATH": DEMOGRAPHIC_TYPE` needed no change)
+   timed at `admdad_subset.discharge_date_time` where the derived flag is
+   true, guarded against discharge-before-admission.
+   `discharge_disposition` (candidate death codes `{7, 72, 73, 74}`) is
+   still read alongside it, but purely as a cross-check tally
+   (both-agree / derived-only / disposition-only counts, logged once per
+   extraction run) -- it never gates emission. Numbers land here once a
+   real run reports them.
 3. ~~**`lookup_vitals_concept` is genuinely empty**~~ **Resolved, and the
    opposite of what the schema report's rounded count suggested**:
    `extract-dry`'s real `EXISTS` check found all four "suspect-empty"
@@ -143,7 +151,7 @@ priority order:
 | --- | --- | --- |
 | **Subject** | `admdad_subset.patient_id_hashed` | Only table carrying it -- see open question 6. |
 | **Visit** | `genc_id` (GEMINI's encounter id; treated as MEDS' `hadm_id`-equivalent) | Present on nearly every table; the actual join key throughout. |
-| **Admission / discharge / death** | `admdad_subset`: `admission_date_time`, `discharge_date_time`; death via `derived_variables_subset.in_hospital_mortality_derived` | Mortality signal resolved, see open question 2 -- use the derived flag, not a `discharge_disposition` decode. |
+| **Admission / discharge / death** | `admdad_subset`: `admission_date_time`, `discharge_date_time`; death via `derived_variables_subset.in_hospital_mortality_derived` -> bare `MEDS_DEATH` | Implemented, see open question 2 -- the derived flag is the sole primary signal; `discharge_disposition` is a logged cross-check only, never a `discharge_disposition` decode of its own. |
 | **ED registration / triage / out** | `er_subset`: `registration_date_time` -> `ED_REGISTRATION`, `triage_date_time` -> `ED_TRIAGE` (new prefix), `left_er_date_time` -> `ED_OUT` | Resolved: three of `er_subset`'s six timestamps become events, matching MIMIC's own `ED_REGISTRATION`/`ED_OUT` prefixes (already in `odyssey/data/vocabulary.py`); `disposition_date_time`/`physician_initial_assessment_date_time`/`ambulance_arrival_date_time` stay unextracted (describe the visit, don't bound a stage transition). Same admission-window guard as pharmacy/radiology. A `genc_id` here can be missing from `admdad_subset` entirely (ED visit, no admission) -- dropped via the existing subject-lookup-miss path, not a new failure mode. |
 | **ED diagnoses** | `erdiagnosis_subset.er_diagnosis_code` -> `ED_DIAGNOSIS//<code>` (new prefix, kept distinct from `ipdiagnosis_subset`'s `DIAGNOSIS//`) | No event-level timestamp -- attributed to the encounter's admission time, same convention as `physicians_subset`. |
 | **ED procedures** | `erintervention_subset.intervention_code` -> `PROCEDURE//<code>` (reuses `ipintervention_subset`'s own prefix -- same CCI coding system, not a new ER-specific vocabulary) | Two passes: timed (own timestamp, admission-window guard) and `_untimed` (the exact complement, attributed to admission time). `intervention_episode_start_date_time` is blank (not `NULL`) on ~96.7% of coded rows -- the timed pass alone kept only ~90k of ~2.94M coded interventions; the untimed pass rescues the rest. Real incident, see "Real run, real incident, real fix" below. |
@@ -151,7 +159,7 @@ priority order:
 | **Transfers** | `lookup_transfer_subset.institution_to_mns` -> `TRANSFER_TO//<institution>` (already in `odyssey/data/vocabulary.py`, matching MIMIC's own convention) | Despite the table name, real per-encounter rows, not a static lookup. No event-level timestamp -- attributed to admission time. |
 | **Billing (CMG)** | `ipcmg_subset.cmg` -> `BILLING_CMG//<cmg>` (new prefix, `BILLING_TYPE`) | Canada's CIHI casemix-group system -- kept distinct from MIMIC's own `DRG` prefix (different vocabulary, same type bucket). No event-level timestamp -- attributed to discharge time (grouper codes finalize at stay close, same reasoning as diagnoses below). |
 | **Billing (HIG)** | `iphig_subset.hig_code` -> `BILLING_HIG//<code>` (new prefix, `BILLING_TYPE`) | CIHI's Health-based Inpatient Group system, distinct from both CMG and DRG. Same discharge-time attribution as CMG. |
-| **ICU admission / discharge** | `ipscu_subset`: `scu_admit_date_time`, `scu_discharge_date_time`, `icu_flag` | `icu_flag` gates whether a `scu_*` stay counts as ICU specifically (`scu_unit_number` suggests non-ICU special-care units exist too, e.g. step-down). |
+| **ICU admission / discharge** | `ipscu_subset`: `scu_admit_date_time`, `scu_discharge_date_time`, `icu_flag` | `icu_flag` gates whether a `scu_*` stay counts as ICU specifically (`scu_unit_number` suggests non-ICU special-care units exist too, e.g. step-down). **Open incident (2026-08-22)**: the real finalized dataset's code inventory (`scripts/gemini/out/codes_inventory.json`, 16,187 distinct codes, from the `export-codes` run at 2026-08-22T18:28:04Z) has zero `ICU_ADMISSION`/`ICU_DISCHARGE` codes despite `ipscu_subset` having ~631k rows. `extract_icu`'s `icu_flag` coercion (`_coerce_boolean_flag`, recognizing bare `t`/`f` -- Postgres `COPY`'s own boolean CSV encoding) landed in commit `d2dbb16` (2026-08-21 16:04:14), well before that `export-codes` run -- so the coercion bug alone doesn't explain this. Two real possibilities, not yet distinguished: (a) `ipscu_subset`'s manifest entry was marked complete from a run that predates the fix and was never re-touched by a later resumed run (`manifest.json` lives only on the GEMINI node's filesystem, never committed to git, so this can't be checked from repo history alone), or (b) the coercion is working correctly and genuinely (near-)all `icu_flag` values in this datacut are false. Needs Amrit's direct query against `ipscu_subset` (`SELECT icu_flag, count(*) FROM ipscu_subset GROUP BY icu_flag`, or similar) to resolve; the re-extract already planned for the death-event landing (see Status) will re-run `ipscu_subset` from scratch regardless, since a manifest wipe is part of that plan. |
 | **Labs** | `lab_subset`: code via `test_type_mapped_omop` (join `lookup_lab_concept`, deduplicated -- see open question 4), numeric parse of `result_value`, unit from `result_unit`, time from `collection_date_time` | `result_value` is `text` -- needs the same numeric-parse-with-fallback-to-categorical pattern already used for MIMIC/eICU labs. **SI units, not MIMIC/eICU's US-conventional units -- see [Units and canonical clinical ranges](#units-and-canonical-clinical-ranges).** |
 | **Vitals** | `vitals_subset`: code via `measurement_mapped_omop` (join `lookup_vitals_concept` -- confirmed real and covers the common vitals, open question 3), numeric parse of `measurement_value`, unit from `measurement_unit`, time from `measure_date_time` | Two passes: mapped (above) and `_unmapped` (the exact complement, `measurement_mapped_omop` null). ~119M of ~412M rows have no concept mapping at all -- the entire 71%-retention story, confirmed real (FiO2/oxygen-delivery/pain-score/pupillary-response/LOC names among the top unmapped) -- rescued via `measurement_name` as a fallback identity, the eICU convention. See "Real run, real incident, real fix" below. |
 | **Medications** | `pharmacy_subset`: ingredient via `rxnorm_cache`/`lookup_pharmacy_mapping` (see open question 5) or `med_id_generic_name_raw` as a fallback identity; `med_start_date_time`/`med_end_date_time` for course timing; `route`, `dose_amount`/`dose_unit`, `frequency`, `PRN_IND` as attributes | Real datetime columns exist, but their values include physically impossible year outliers (1930-9022) -- needs the admission-date guard, see open question 7. |
@@ -381,3 +389,35 @@ map for vitals *names* yet; collapsing spelling variants of the same
 measurement onto one code is future `odyssey/data/code_mapping.py` work.
 This closes every retention anomaly found in the real-run accounting so
 far.
+
+**MEDS_DEATH landed, and the sequencing plan to get it into the trained
+dataset (2026-08-22)**: `extract_death` (open question 2, MEDS mapping
+table above) is implemented and merged. Landing it in the actual dataset
+requires a full re-extract, not an incremental one -- `finalize_meds.py`
+deletes `extract`'s flat per-run layout once it rewrites it into the
+MEDS-conformant `data/` layout, so a schema addition discovered
+*after* a `finalize` has already run has no partial-update path back into
+`data/` today; the only way in is a full `extract` (all tables, from a
+wiped manifest) followed by a full `finalize`. **Sequencing (Amrit's
+order)**: (1) Amrit's direct `icu_flag` query against `ipscu_subset`
+first (see the ICU mapping row above), so any recognized-values fix lands
+in the same re-extract rather than needing a second one; (2) full
+re-extract, run concurrently with the in-flight `train-full` (`extract`'s
+flat writes never touch `data/`, so this is safe to overlap); (3)
+`finalize` strictly after both `train-full` and `eval-forecast` complete,
+since `finalize` deletes the flat layout those don't depend on but a
+concurrent `finalize` run competing for enclave I/O during eval would.
+**Determinism expectation**: subject-id remapping and the seeded
+80/10/10 split are both deterministic (stable hash / seeded RNG over the
+same subject population), so the re-finalized dataset should be
+identical to the current one *plus* death events layered into existing
+subjects' shards -- no subject should move splits, gain, or lose a shard.
+Verify, don't just assert: once the re-finalize completes, compare
+per-split subject counts against the previous run's
+`finalize_summary.json` (exact match expected) before treating the new
+`data/` layout as ready to train on.
+
+If a third schema addition after a `finalize` happens, a `finalize
+--amend` mode (partitioned-sink merge of only the new event rows into the
+existing `data/` layout, skipping the full compacting rewrite) becomes
+worth building -- not yet, this is only the second occurrence.
