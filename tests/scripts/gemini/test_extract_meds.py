@@ -810,6 +810,43 @@ def test_fetch_admission_index_drops_null_and_empty_patient_id_hashed(
     assert set(shard_by_subject) == {"pA"}
 
 
+def test_fetch_mortality_index_reads_every_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    chunk1 = pl.DataFrame(
+        {"genc_id": [1, 2], "in_hospital_mortality_derived": ["t", "f"]}
+    )
+    chunk2 = pl.DataFrame({"genc_id": [3], "in_hospital_mortality_derived": ["t"]})
+    monkeypatch.setattr(
+        mod,
+        "_stream_table",
+        _fake_stream_table({"derived_variables_subset": [chunk1, chunk2]}),
+    )
+
+    mortality_by_genc = mod.fetch_mortality_index()
+
+    assert mortality_by_genc == {1: True, 2: False, 3: True}
+
+
+def test_fetch_mortality_index_treats_null_flag_as_not_dead(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    chunk = pl.DataFrame(
+        {"genc_id": [1, 2], "in_hospital_mortality_derived": [None, "t"]}
+    )
+    monkeypatch.setattr(
+        mod,
+        "_stream_table",
+        _fake_stream_table({"derived_variables_subset": [chunk]}),
+    )
+
+    mortality_by_genc = mod.fetch_mortality_index()
+
+    assert mortality_by_genc == {1: False, 2: True}
+
+
 def test_fetch_lab_concept_lookup_uses_distinct_on(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -862,6 +899,178 @@ def test_extract_admissions_yields_admission_and_discharge(
     assert (rows["subject_id"] == "pA").all()
     assert (rows["hadm_id"] == 1).all()
     assert rows["numeric_value"].isna().all()
+
+
+def test_extract_death_emits_bare_meds_death_for_derived_true_admissions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    subject_by_genc = {1: "pA", 2: "pB", 3: "pC"}
+    admission_by_genc = {
+        1: pd.Timestamp("2020-01-01"),
+        2: pd.Timestamp("2020-01-01"),
+        3: pd.Timestamp("2020-01-01"),
+    }
+    # 1, 2 died per the derived flag; 3 did not.
+    mortality_by_genc = {1: True, 2: True, 3: False}
+    chunk = pl.DataFrame(
+        {
+            "genc_id": [1, 2, 3],
+            "discharge_disposition": [7, 72, 1],
+            "discharge_date_time": ["2020-01-05"] * 3,
+        }
+    )
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"admdad_subset": [chunk]})
+    )
+
+    rows = pd.concat(
+        [
+            b.frame
+            for b in mod.extract_death(
+                subject_by_genc, admission_by_genc, mortality_by_genc
+            )
+        ],
+        ignore_index=True,
+    )
+
+    assert rows["code"].tolist() == ["MEDS_DEATH", "MEDS_DEATH"]
+    assert set(rows["subject_id"]) == {"pA", "pB"}
+    assert rows["numeric_value"].isna().all()
+
+
+def test_extract_death_ignores_discharge_disposition_for_emission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One event stream only (derived-primary) -- disposition never gates it.
+
+    Subject 1: derived flag true but disposition says "discharged home"
+    (not a death code) -- still emitted, the derived flag alone decides.
+    Subject 2: derived flag false but disposition says "died" -- not
+    emitted. The disposition side only feeds the cross-check tally.
+    """
+    mod = _load_module()
+    subject_by_genc = {1: "pA", 2: "pB"}
+    admission_by_genc = {1: pd.Timestamp("2020-01-01"), 2: pd.Timestamp("2020-01-01")}
+    mortality_by_genc = {1: True, 2: False}
+    chunk = pl.DataFrame(
+        {
+            "genc_id": [1, 2],
+            "discharge_disposition": [1, 7],
+            "discharge_date_time": ["2020-01-05", "2020-01-05"],
+        }
+    )
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"admdad_subset": [chunk]})
+    )
+
+    rows = pd.concat(
+        [
+            b.frame
+            for b in mod.extract_death(
+                subject_by_genc, admission_by_genc, mortality_by_genc
+            )
+        ],
+        ignore_index=True,
+    )
+
+    assert rows["subject_id"].tolist() == ["pA"]
+    assert rows["code"].tolist() == ["MEDS_DEATH"]
+
+
+def test_extract_death_treats_genc_absent_from_mortality_index_as_not_dead(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    subject_by_genc = {1: "pA"}
+    admission_by_genc = {1: pd.Timestamp("2020-01-01")}
+    chunk = pl.DataFrame(
+        {
+            "genc_id": [1],
+            "discharge_disposition": [7],
+            "discharge_date_time": ["2020-01-05"],
+        }
+    )
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"admdad_subset": [chunk]})
+    )
+
+    rows = pd.concat(
+        [b.frame for b in mod.extract_death(subject_by_genc, admission_by_genc, {})],
+        ignore_index=True,
+    )
+
+    assert rows.empty
+
+
+def test_extract_death_drops_discharge_recorded_before_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load_module()
+    subject_by_genc = {1: "pA", 2: "pB"}
+    admission_by_genc = {
+        1: pd.Timestamp("2020-01-10"),
+        2: pd.Timestamp("2020-01-01"),
+    }
+    mortality_by_genc = {1: True, 2: True}
+    chunk = pl.DataFrame(
+        {
+            "genc_id": [1, 2],
+            "discharge_disposition": [7, 7],
+            # Subject 1's "death" predates their own admission -- a data
+            # artifact, not extracted. Subject 2 is a real, plausible death.
+            "discharge_date_time": ["2020-01-05", "2020-01-05"],
+        }
+    )
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"admdad_subset": [chunk]})
+    )
+
+    rows = pd.concat(
+        [
+            b.frame
+            for b in mod.extract_death(
+                subject_by_genc, admission_by_genc, mortality_by_genc
+            )
+        ],
+        ignore_index=True,
+    )
+
+    assert rows["subject_id"].tolist() == ["pB"]
+
+
+def test_extract_death_logs_the_cross_check_tally(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    mod = _load_module()
+    subject_by_genc = {1: "pA", 2: "pB", 3: "pC"}
+    admission_by_genc = {
+        1: pd.Timestamp("2020-01-01"),
+        2: pd.Timestamp("2020-01-01"),
+        3: pd.Timestamp("2020-01-01"),
+    }
+    # 1: both agree (derived true, disposition death). 2: derived-only
+    # (derived true, disposition not a death code). 3: disposition-only
+    # (derived false, disposition says death).
+    mortality_by_genc = {1: True, 2: True, 3: False}
+    chunk = pl.DataFrame(
+        {
+            "genc_id": [1, 2, 3],
+            "discharge_disposition": [7, 1, 7],
+            "discharge_date_time": ["2020-01-05"] * 3,
+        }
+    )
+    monkeypatch.setattr(
+        mod, "_stream_table", _fake_stream_table({"admdad_subset": [chunk]})
+    )
+
+    with caplog.at_level("INFO"):
+        list(mod.extract_death(subject_by_genc, admission_by_genc, mortality_by_genc))
+
+    messages = [r.message for r in caplog.records]
+    assert any("1 both agree" in m for m in messages)
+    assert any("1 derived-only" in m for m in messages)
+    assert any("1 disposition-only" in m for m in messages)
 
 
 def test_extract_icu_only_extracts_icu_flagged_rows(
@@ -1880,6 +2089,10 @@ def test_run_extraction_resumed_run_never_truncates_a_completed_tables_shard(
                     "patient_id_hashed": ["pA"],
                     "admission_date_time": ["2020-01-01"],
                     "discharge_date_time": ["2020-01-05"],
+                    # 1 = discharged home, not a death code -- admdad_subset__death
+                    # (a separate table_generators entry over this same table)
+                    # needs the column present but shouldn't add rows here.
+                    "discharge_disposition": [1],
                 }
             )
         ]
@@ -1972,6 +2185,11 @@ def test_run_extraction_skips_tables_already_marked_complete(
     # Every table except admdad_subset already "complete" -- only
     # admdad_subset's own extractor (not fetch_admission_index's separate,
     # always-rebuilt pass over the same table) should still run.
+    # admdad_subset__death is marked complete too, deliberately: it reads
+    # the same "admdad_subset" fixture table name (unlike the other
+    # not-listed-here tables, which get no fixture chunk at all and so
+    # produce zero rows harmlessly), and this fixture's chunk doesn't
+    # carry discharge_disposition -- not what this test is about.
     manifest = dict.fromkeys(
         [
             "ipscu_subset",
@@ -1981,6 +2199,7 @@ def test_run_extraction_skips_tables_already_marked_complete(
             "ipdiagnosis_subset",
             "ipintervention_subset",
             "radiology_subset",
+            "admdad_subset__death",
         ],
         "complete",
     )
@@ -2015,6 +2234,10 @@ def test_run_extraction_resumed_run_does_not_duplicate_output(
                     "patient_id_hashed": ["pA"],
                     "admission_date_time": ["2020-01-01"],
                     "discharge_date_time": ["2020-01-05"],
+                    # 1 = discharged home, not a death code -- see the same
+                    # comment in test_run_extraction_resumed_run_never_
+                    # truncates_a_completed_tables_shard.
+                    "discharge_disposition": [1],
                 }
             )
         ],

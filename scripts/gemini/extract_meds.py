@@ -397,7 +397,14 @@ def _quote_ident(name: str) -> str:
 #: genuinely numeric/boolean column; anything not listed here is wrapped,
 #: which is harmless (a no-op) for a column that happens to be safe anyway.
 _NEWLINE_SAFE_COLUMNS = frozenset(
-    {"genc_id", "test_type_mapped_omop", "measurement_mapped_omop", "icu_flag"}
+    {
+        "genc_id",
+        "test_type_mapped_omop",
+        "measurement_mapped_omop",
+        "icu_flag",
+        "in_hospital_mortality_derived",
+        "discharge_disposition",
+    }
 )
 
 #: Max characters kept per text/varchar column after
@@ -1222,6 +1229,51 @@ def fetch_admission_index() -> tuple[
     return subject_by_genc, admission_by_genc, n_dropped_null_subject
 
 
+def fetch_mortality_index() -> dict[int, bool]:
+    """One pass over ``derived_variables_subset``: ``genc_id -> mortality flag``.
+
+    Primary mortality signal (docs/gemini_extraction.md's open question 2,
+    resolved): the derived boolean is essentially fully populated (fewer
+    than 6 nulls out of 2,268,000 rows, per extract-dry's null-fraction
+    check), so it's used directly rather than decoding ``admdad_subset``'s
+    ``discharge_disposition`` ourselves -- see :func:`extract_death`.
+
+    ``in_hospital_mortality_derived`` is a real ``boolean`` column, same as
+    ``ipscu_subset.icu_flag`` -- COPY's CSV output renders it ``t``/``f``
+    text, not a value polars infers as ``Boolean`` on its own, so this
+    reuses :func:`_coerce_boolean_flag` exactly as :func:`extract_icu`
+    does. A null or missing flag is treated as "not known to have died"
+    (``False``), not dropped -- absence of a mortality signal isn't itself
+    a data-quality problem worth logging here the way an unattributable
+    genc_id is in :func:`fetch_admission_index`.
+
+    Returns
+    -------
+    dict[int, bool]
+        ``genc_id -> in_hospital_mortality_derived``.
+    """
+    mortality_by_genc: dict[int, bool] = {}
+    report_progress = _log_table_progress("derived_variables_subset (mortality index)")
+    for chunk in _stream_table(
+        "derived_variables_subset", ["genc_id", "in_hospital_mortality_derived"]
+    ):
+        frame = _filter_valid_genc_id(
+            _coerce_boolean_flag(
+                chunk, "in_hospital_mortality_derived", "derived_variables_subset"
+            ),
+            "derived_variables_subset",
+        )
+        mortality_by_genc.update(
+            zip(
+                frame["genc_id"].to_list(),
+                frame["in_hospital_mortality_derived"].fill_null(False).to_list(),
+                strict=True,
+            )
+        )
+        report_progress(chunk.height)
+    return mortality_by_genc
+
+
 _LAB_CONCEPT_LOOKUP_SQL = """
 SELECT DISTINCT ON ({concept_id}) {concept_id} AS concept_id, {concept_desc} AS concept_desc
 FROM {lookup}
@@ -1363,6 +1415,130 @@ def extract_admissions(
         )
         meds = pl.concat([admitted, discharged])
         yield ExtractedBatch(_finalize_meds_batch(meds), chunk.height)
+
+
+#: CIHI DAD's ``discharge_disposition`` codes hypothesized to mean death.
+#: Both the coarse code (7) and its more granular expansion (72/73/74) are
+#: treated as death together -- a proper superset covering either
+#: convention, since it isn't yet confirmed which one this datacut
+#: actually uses. No longer used to decide event emission (see
+#: :func:`extract_death`'s docstring) -- kept only as the comparison side
+#: of that function's derived-flag-vs-disposition cross-check tally.
+#: Revisit once real observed values are confirmed (scripts/gemini/out/
+#: codes_inventory.json, or a value-distribution query).
+DEATH_DISPOSITION_CODES = (7, 72, 73, 74)
+
+
+def extract_death(
+    subject_by_genc: dict[int, str],
+    admission_by_genc: dict[int, Optional[pd.Timestamp]],
+    mortality_by_genc: dict[int, bool],
+) -> Iterator[ExtractedBatch]:
+    """Death events from ``derived_variables_subset.in_hospital_mortality_derived``.
+
+    Load-bearing: without this, GEMINI has no mortality signal at all --
+    no death alerts, no mortality task. docs/gemini_extraction.md's open
+    question 2 already resolved which signal to trust: the derived
+    boolean (essentially fully populated -- fewer than 6 nulls out of
+    2,268,000 rows) is the PRIMARY signal, not a ``discharge_disposition``
+    decode. One event per admission where :func:`fetch_mortality_index`'s
+    flag is true, emitted as a single bare ``MEDS_DEATH`` code (no
+    ``//``-suffixed variant) -- matching MIMIC-IV MEDS's own convention
+    exactly, so cross-source event definitions stay uniform and
+    ``vocabulary.py``'s existing ``"MEDS_DEATH": DEMOGRAPHIC_TYPE`` mapping
+    applies directly with no change there.
+
+    Timed at ``admdad_subset.discharge_date_time`` -- the derived table has
+    no timestamp of its own, and ``admdad_subset`` has no
+    ``disposition_date_time`` column (that name belongs to ``er_subset``'s
+    own, unrelated column); a discharge disposition -- and thus a death --
+    is recorded at the same event as the discharge itself.
+
+    Guarded against discharge-before-admission specifically -- a distinct,
+    narrower check from the far-future/far-past artifact class
+    :func:`extract_admissions` already ruled out for this table (its own
+    docstring: timestamps land entirely in the plausible 2010-2024 range).
+    Even within that plausible range, a row could still have its discharge
+    time recorded before its admission time by data-entry error; such rows
+    are dropped, not extracted as a physically impossible death.
+
+    ``discharge_disposition`` is still read from ``admdad_subset`` here,
+    but purely for a cross-check: whether :data:`DEATH_DISPOSITION_CODES`
+    agrees with the derived flag, tallied across the whole generator's run
+    and logged once at the end (both-agree / derived-only /
+    disposition-only counts). It never gates or shapes the emitted event
+    stream -- a disagreement is a data-quality finding to record in
+    docs/gemini_extraction.md once a real run reports it, not a reason to
+    trust one signal over the other here.
+
+    Event shape: one qualifying row produces one MEDS row, ``MEDS_DEATH``
+    at ``discharge_date_time``, ``hadm_id = genc_id``, no ``numeric_value``.
+
+    Parameters
+    ----------
+    subject_by_genc, admission_by_genc : dict
+        From :func:`fetch_admission_index`.
+    mortality_by_genc : dict
+        From :func:`fetch_mortality_index`.
+
+    Yields
+    ------
+    ExtractedBatch
+    """
+    n_both_agree = 0
+    n_derived_only = 0
+    n_disposition_only = 0
+    for chunk in _stream_table(
+        "admdad_subset",
+        ["genc_id", "discharge_disposition", "discharge_date_time"],
+    ):
+        frame = _filter_valid_genc_id(chunk, "admdad_subset")
+        genc = frame["genc_id"]
+        derived_dead = genc.replace_strict(
+            mortality_by_genc, default=False, return_dtype=pl.Boolean
+        )
+        disposition_dead = (
+            frame["discharge_disposition"]
+            .is_in(DEATH_DISPOSITION_CODES)
+            .fill_null(False)
+        )
+        n_both_agree += int((derived_dead & disposition_dead).sum())
+        n_derived_only += int((derived_dead & ~disposition_dead).sum())
+        n_disposition_only += int((~derived_dead & disposition_dead).sum())
+
+        subject = genc.replace_strict(
+            subject_by_genc, default=None, return_dtype=pl.Utf8
+        )
+        admission_time = genc.replace_strict(
+            admission_by_genc, default=None, return_dtype=pl.Datetime("us")
+        )
+        death_time = _parse_datetime_series(frame["discharge_date_time"])
+        died = pl.DataFrame(
+            {
+                "subject_id": subject,
+                "time": death_time,
+                "code": "MEDS_DEATH",
+                "numeric_value": None,
+                "hadm_id": genc,
+            }
+        ).filter(
+            derived_dead
+            & death_time.is_not_null()
+            & admission_time.is_not_null()
+            & (death_time >= admission_time)
+        )
+        yield ExtractedBatch(_finalize_meds_batch(died), chunk.height)
+
+    logger.info(
+        "[extract_death] derived-flag vs discharge_disposition cross-check: "
+        "%d both agree, %d derived-only, %d disposition-only (candidate "
+        "death codes %s) -- disagreement above a trivial rate is a "
+        "data-quality finding worth recording in docs/gemini_extraction.md",
+        n_both_agree,
+        n_derived_only,
+        n_disposition_only,
+        DEATH_DISPOSITION_CODES,
+    )
 
 
 def extract_icu(subject_by_genc: dict[int, str]) -> Iterator[ExtractedBatch]:
@@ -2958,6 +3134,12 @@ def run_extraction(output_dir: Optional[Path] = None) -> dict[str, Any]:
     subject_by_genc, admission_by_genc, n_dropped_null_subject = fetch_admission_index()
     logger.info("[extract_meds] %d encounters indexed", len(subject_by_genc))
 
+    mortality_by_genc = fetch_mortality_index()
+    logger.info(
+        "[extract_meds] %d encounters with a known mortality flag",
+        len(mortality_by_genc),
+    )
+
     logger.info("[extract_meds] fetching deduplicated lab concept lookup...")
     lab_concepts = fetch_lab_concept_lookup()
 
@@ -2974,6 +3156,10 @@ def run_extraction(output_dir: Optional[Path] = None) -> dict[str, Any]:
     writer.rows_dropped_unshardable += n_dropped_null_subject
     table_generators: list[tuple[str, Iterator[ExtractedBatch]]] = [
         ("admdad_subset", extract_admissions(subject_by_genc, admission_by_genc)),
+        (
+            "admdad_subset__death",
+            extract_death(subject_by_genc, admission_by_genc, mortality_by_genc),
+        ),
         ("ipscu_subset", extract_icu(subject_by_genc)),
         ("lab_subset", extract_labs(subject_by_genc, lab_concepts)),
         ("vitals_subset", extract_vitals(subject_by_genc)),
