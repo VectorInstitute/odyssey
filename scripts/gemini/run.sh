@@ -9,8 +9,10 @@
 # Steps:
 #   probe        scripts/gemini/probe_env.sh -> scripts/gemini/out/env_probe.txt
 #   schema       scripts/gemini/explore_schema.py -> scripts/gemini/out/schema.{json,md}
-#   env-gpu      builds the H200 training venv (pinned torch cu124 + the
-#                two-step mamba-ssm CUDA rebuild, docs/gemini.md's recipe)
+#   env-gpu      builds the H200 training venv (pinned torch==2.6.0, plain
+#                PyPI -- see the install step's own comment for why not the
+#                +cu124 channel -- plus the two-step mamba-ssm CUDA
+#                rebuild, docs/gemini.md's recipe)
 #                and writes scripts/gemini/out/env_fingerprint.json. Separate
 #                from the lightweight venv the other steps use -- this one
 #                pulls in torch/mamba-ssm, which none of them need.
@@ -307,8 +309,21 @@ run_env_gpu() {
     if python -c "import torch; assert torch.__version__.startswith('2.6.0')" 2>/dev/null; then
         echo "torch==2.6.0 already installed, skipping."
     else
-        echo "Installing torch==2.6.0+cu124..."
-        pip install -q torch==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+        # Real incident (first live H200 run): the node's proxy 403s
+        # download.pytorch.org ("Tunnel connection failed") while pypi.org
+        # is demonstrably reachable -- every other install tonight went
+        # through it. Plain PyPI's linux wheel for torch==2.6.0 IS the
+        # CUDA 12.4 build (pulls its own nvidia-* runtime packages from
+        # PyPI), functionally equivalent to the +cu124 channel for the
+        # mamba-ssm compile below (which needs the system nvcc the probe
+        # above already validated, plus torch's headers) -- so drop the
+        # index entirely rather than routing around a proxy block.
+        # Version string differs (bare "2.6.0" here vs "2.6.0+cu124" from
+        # the pytorch.org channel): the startswith('2.6.0') check above
+        # matches either, and env_fingerprint's canary comparison is
+        # numeric, so nothing downstream string-matches the suffix.
+        echo "Installing torch==2.6.0 (plain PyPI -- see comment above)..."
+        pip install -q torch==2.6.0
     fi
 
     # This venv is a curated no-deps world: torch and mamba-ssm are
