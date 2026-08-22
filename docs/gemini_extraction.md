@@ -457,3 +457,35 @@ finalize a valid-but-partial file that a retry (which redoes the whole
 table from scratch) would then double-count alongside its own fresh part
 files -- left unclosed, that case still reads as a loud, footer-missing
 parquet error on next read rather than a silent duplicate.
+
+**Real incident, real fix (2026-08-22, third): two OOM kills on
+`lab_subset` (318M then 340M buffered rows, 64 GB then 96 GB jobs).**
+`SHARD_FLUSH_ROW_THRESHOLD` only bounds *each* shard's own buffer, but
+subject-hash sharding is uniform, so with ~1,118 shards and a table's
+rows arriving evenly across subjects, every shard tends to cross that
+threshold within the same processing window -- a synchronized aggregate
+high-water of up to `SHARD_FLUSH_ROW_THRESHOLD * n_shards` (a real,
+measured ~279M rows) resident at once, at ~250-400 bytes/row in a pandas
+object-dtype frame with string codes (not an earlier ~130-byte
+estimate), plus each flush's own `pd.concat` copy -- enough to exceed
+even a 96 GB job. Fixed: a new global cap,
+`WRITER_MAX_BUFFERED_ROWS` (env-tunable via
+`GEMINI_WRITER_MAX_BUFFERED_ROWS`, default 40M rows), tracks rows
+buffered across every shard and force-flushes the fullest shards first
+once exceeded -- both bounding peak memory and desynchronizing future
+waves, since a flushed shard restarts from 0 while others keep
+accumulating independently. `SHARD_FLUSH_ROW_THRESHOLD` itself and the
+`flush_all`/durability semantics from the previous incident are
+untouched. A reference-retention leak in the per-table writer lifecycle
+(frames or closed `pq.ParquetWriter` objects never actually released)
+was also suspected as a possible regression from that same commit --
+audited the exact diff line-by-line and wrote an empirical
+weakref-based regression test (feed many batches through many
+`flush_all()` cycles, assert every internal buffer structure is
+genuinely empty afterward and closed writers are actually
+garbage-collected, not just zeroed) -- the test passes, finding no such
+leak. The global cap is the fix; the leak hypothesis is not confirmed
+(kept open pending real-run RSS diagnostics, but the cap is correct
+regardless of the exact mechanism). Total buffered rows are now logged
+in the per-batch timing line so this class of question is answerable
+from logs directly next time.
