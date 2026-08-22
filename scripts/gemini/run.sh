@@ -4,7 +4,7 @@
 # nobody but Amrit can log into the node, so this is what he actually runs.
 #
 # Usage (on the GEMINI node, from the repo root):
-#   scripts/gemini/run.sh [probe|schema|env-gpu|extract-dry|extract|finalize|train|eval|all]
+#   scripts/gemini/run.sh [probe|schema|env-gpu|extract-dry|extract|finalize|train-smoke|train-smoke-2|train|eval|all]
 #
 # Steps:
 #   probe        scripts/gemini/probe_env.sh -> scripts/gemini/out/env_probe.txt
@@ -34,10 +34,25 @@
 #                not assumed) -- do not run this until told to; see
 #                scripts/gemini/finalize_meds.py's own docstring for the
 #                design and crash semantics.
-#   train        not built yet.
+#   train-smoke  proves data+env+backbone on a small slice before committing
+#                to a full run: model_kind=baseline, source=gemini,
+#                concepts/alerts off (event_hazards=False), backbone stays
+#                the default "hybrid". max_train_shards=5, max_tuning_shards=2
+#                -- output under ~/runs/gemini_smoke_1. Needs env-gpu and
+#                finalize already done. Real training, not a check -- can
+#                still take a while at full hidden_size/layers, so this too
+#                warns about tmux/screen.
+#   train-smoke-2 same as train-smoke but max_train_shards=30, no
+#                max_tuning_shards cap -- output under ~/runs/gemini_smoke_2.
+#                Run only after train-smoke completes clean end to end
+#                (train + checkpoint + provenance written); a 30-shard epoch
+#                on an untested node is a long time to wait for a crash the
+#                5-shard run would have surfaced identically.
+#   train        not built yet (the real, full-scale run).
 #   eval         not built yet.
 #   all          probe, schema, extract-dry, in order (default; deliberately
-#                excludes env-gpu, extract, and finalize -- see below)
+#                excludes env-gpu, extract, finalize, and train-smoke* --
+#                see below)
 #
 # Self-syncing: every invocation starts with `git fetch origin && git reset
 # --hard origin/main` (never `git pull` -- every mirror rewrites history, so
@@ -345,6 +360,89 @@ with open('scripts/gemini/out/env_fingerprint.json', 'w') as f:
     source "$VENV/bin/activate"
 }
 
+run_train_smoke() {
+    # Shared by train-smoke (5 shards) and train-smoke-2 (30 shards) --
+    # same config otherwise, per the two-command "fail fast, then commit"
+    # smoke sequence: a 5-shard run surfaces any data/env/backbone crash
+    # in minutes; only relaunch at 30 once that's clean end to end.
+    local max_train_shards="$1"
+    local max_tuning_shards="$2" # empty = uncapped (TrainingConfig default)
+    local run_name="$3"
+
+    echo "=== $STEP ($run_name, max_train_shards=$max_train_shards) ==="
+    echo "Proving data+env+backbone on GEMINI: model_kind=baseline,"
+    echo "source=gemini, concepts/alerts off, backbone=hybrid (default)."
+    echo "This is a real training run, not a quick check."
+    if [[ -z "${TMUX:-}" && -z "${STY:-}" ]]; then
+        echo "WARNING: this doesn't look like a tmux or screen session --" >&2
+        echo "if the SSH connection drops, training dies with it." >&2
+        echo "Run it detached instead, e.g.:" >&2
+        echo "  tmux new -s $run_name 'scripts/gemini/run.sh $STEP'" >&2
+        echo "  # or: nohup scripts/gemini/run.sh $STEP > $run_name.log 2>&1 &" >&2
+    fi
+
+    GPU_VENV="${GEMINI_GPU_VENV:-$HOME/.venvs/odyssey-gemini-gpu}"
+    if [[ ! -f "$GPU_VENV/bin/activate" ]]; then
+        echo "GPU venv not found at $GPU_VENV -- run 'scripts/gemini/run.sh env-gpu' first." >&2
+        exit 1
+    fi
+
+    MEDS_DIR="${GEMINI_MEDS_OUTPUT_DIR:-/mnt/nfs/project/subdural_hematoma_endotypes/gemini_meds_v1}"
+    TRAIN_SHARD_DIR="$MEDS_DIR/data/train"
+    TUNING_SHARD_DIR="$MEDS_DIR/data/tuning"
+    if [[ ! -d "$TRAIN_SHARD_DIR" || ! -d "$TUNING_SHARD_DIR" ]]; then
+        echo "Expected finalized MEDS data at $TRAIN_SHARD_DIR and" >&2
+        echo "$TUNING_SHARD_DIR -- run 'scripts/gemini/run.sh finalize' first." >&2
+        exit 1
+    fi
+
+    OUTPUT_DIR="$HOME/runs/$run_name"
+    mkdir -p "$OUTPUT_DIR"
+    CONFIG_JSON="$OUTPUT_DIR/smoke_config.json"
+
+    # Overrides only -- everything not listed here (backbone, hidden_size,
+    # concept_supervision, ...) stays whatever TrainingConfig's own default
+    # is, same as the reviewed draft. Passed as argv, not interpolated into
+    # the python source, so shard counts never touch string formatting.
+    python3 - "$CONFIG_JSON" "$max_train_shards" "$max_tuning_shards" <<'PY'
+import json
+import sys
+
+config_path, max_train_shards, max_tuning_shards = sys.argv[1:4]
+overrides = {
+    "model_kind": "baseline",
+    "source": "gemini",
+    "stream_shards": True,
+    "event_hazards": False,
+    "max_train_shards": int(max_train_shards),
+}
+if max_tuning_shards:
+    overrides["max_tuning_shards"] = int(max_tuning_shards)
+with open(config_path, "w") as f:
+    json.dump(overrides, f, indent=2)
+PY
+
+    echo "Run dir: $OUTPUT_DIR"
+    echo "Config ($CONFIG_JSON):"
+    cat "$CONFIG_JSON"
+    echo "Once running, tail progress with:"
+    echo "  tail -f $OUTPUT_DIR/loss_log.jsonl"
+
+    source "$GPU_VENV/bin/activate"
+    python -m odyssey.training.train \
+        --train-shard-dir "$TRAIN_SHARD_DIR" \
+        --tuning-shard-dir "$TUNING_SHARD_DIR" \
+        --output-dir "$OUTPUT_DIR" \
+        --config-json "$CONFIG_JSON"
+    deactivate
+    # Back to the lightweight venv, same reasoning as env-gpu: a later
+    # step in the same invocation (e.g. `all`) shouldn't inherit torch/
+    # mamba-ssm on its path.
+    source "$VENV/bin/activate"
+
+    echo "$STEP complete. Checkpoints and loss_log.jsonl under $OUTPUT_DIR"
+}
+
 case "$STEP" in
     probe) run_probe ;;
     schema) run_schema ;;
@@ -352,11 +450,13 @@ case "$STEP" in
     extract-dry) run_extract_dry ;;
     extract) run_extract ;;
     finalize) run_finalize ;;
+    train-smoke) run_train_smoke 5 2 gemini_smoke_1 ;;
+    train-smoke-2) run_train_smoke 30 "" gemini_smoke_2 ;;
     train) run_pending_stub train ;;
     eval) run_pending_stub eval ;;
     all) run_probe; run_schema; run_extract_dry ;;
     *)
-        echo "unknown step: $STEP (expected probe, schema, env-gpu, extract-dry, extract, finalize, train, eval, or all)" >&2
+        echo "unknown step: $STEP (expected probe, schema, env-gpu, extract-dry, extract, finalize, train-smoke, train-smoke-2, train, eval, or all)" >&2
         exit 1
         ;;
 esac
