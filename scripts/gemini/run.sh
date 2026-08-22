@@ -4,7 +4,7 @@
 # nobody but Amrit can log into the node, so this is what he actually runs.
 #
 # Usage (on the GEMINI node, from the repo root):
-#   scripts/gemini/run.sh [probe|schema|env-gpu|extract-dry|extract|finalize|train-smoke|train-smoke-2|train|eval|all]
+#   scripts/gemini/run.sh [probe|schema|env-gpu|extract-dry|extract|finalize|train-smoke|train-smoke-2|train-full|eval-forecast <run-name>|train|eval|all]
 #
 # Steps:
 #   probe        scripts/gemini/probe_env.sh -> scripts/gemini/out/env_probe.txt
@@ -50,11 +50,33 @@
 #                (train + checkpoint + provenance written); a 30-shard epoch
 #                on an untested node is a long time to wait for a crash the
 #                5-shard run would have surfaced identically.
-#   train        not built yet (the real, full-scale run).
+#   train-full   the real run: all train shards (no max_train_shards cap),
+#                num_lanes=64/chunk_size=512 (exact full_run_v8 geometry, for
+#                cross-dataset comparability -- the smokes ran at the
+#                TrainingConfig default 8x256, 1/16th this throughput, which
+#                is why they showed ~3GB/20% GPU util), model_kind=baseline,
+#                source=gemini, concepts/alerts off, num_epochs=2,
+#                checkpoint_every=2000 -- output under
+#                ~/runs/gemini_full_14m_v1. Echoes an estimated duration
+#                before launching (arithmetic, not measured -- the run's own
+#                heartbeat is the real signal, especially whether steps/s
+#                holds up at 16x the smokes' consumption rate or the CPU feed
+#                becomes the bottleneck).
+#   eval-forecast <run-name>
+#                run_inference against data/held_out for the named run under
+#                ~/runs/ (e.g. `eval-forecast gemini_full_14m_v1`) --
+#                forecast/concept/orthogonality metrics, written to
+#                ~/runs/<run-name>/eval_forecast.json. max_shards/num_lanes
+#                default to 20/16 (a first read, not the full held-out set),
+#                overridable via GEMINI_EVAL_MAX_SHARDS/GEMINI_EVAL_NUM_LANES
+#                so later ladder rungs don't need another code change. Takes
+#                the run name as a second positional argument, not a step of
+#                its own config, so it serves every ladder rung the same way.
+#   train        not built yet (a general, non-GEMINI-specific full run).
 #   eval         not built yet.
 #   all          probe, schema, extract-dry, in order (default; deliberately
-#                excludes env-gpu, extract, finalize, and train-smoke* --
-#                see below)
+#                excludes env-gpu, extract, finalize, train-smoke*,
+#                train-full, and eval-forecast -- see below)
 #
 # Self-syncing: every invocation starts with `git fetch origin && git reset
 # --hard origin/main` (never `git pull` -- every mirror rewrites history, so
@@ -555,6 +577,138 @@ PY
         echo "$STEP complete. Checkpoints and loss_log.jsonl under $OUTPUT_DIR"
     }
 
+    run_train_full() {
+        local run_name="gemini_full_14m_v1"
+
+        echo "=== train-full ($run_name) ==="
+        echo "Real training run: all train shards, num_lanes=64/chunk_size=512"
+        echo "(exact full_run_v8 geometry, for cross-dataset comparability),"
+        echo "model_kind=baseline, source=gemini, concepts/alerts off."
+        echo "Estimated (arithmetic, not measured): ~32.7k steps/epoch at"
+        echo "64 lanes x 512 chunk over ~1.07B train events; 1-1.5h/epoch if"
+        echo "throughput holds -- the heartbeat below is the real signal,"
+        echo "especially whether steps/s holds up at 16x the smokes' rate or"
+        echo "the CPU feed becomes the bottleneck."
+        if [[ -z "${TMUX:-}" && -z "${STY:-}" ]]; then
+            echo "WARNING: this doesn't look like a tmux or screen session --" >&2
+            echo "if the SSH connection drops, training dies with it." >&2
+            echo "Run it detached instead, e.g.:" >&2
+            echo "  tmux new -s $run_name 'scripts/gemini/run.sh $STEP'" >&2
+            echo "  # or: nohup scripts/gemini/run.sh $STEP > $run_name.log 2>&1 &" >&2
+        fi
+
+        GPU_VENV="${GEMINI_GPU_VENV:-$HOME/.venvs/odyssey-gemini-gpu}"
+        if [[ ! -f "$GPU_VENV/bin/activate" ]]; then
+            echo "GPU venv not found at $GPU_VENV -- run 'scripts/gemini/run.sh env-gpu' first." >&2
+            exit 1
+        fi
+
+        MEDS_DIR="${GEMINI_MEDS_OUTPUT_DIR:-/mnt/nfs/project/subdural_hematoma_endotypes/gemini_meds_v1}"
+        TRAIN_SHARD_DIR="$MEDS_DIR/data/train"
+        TUNING_SHARD_DIR="$MEDS_DIR/data/tuning"
+        if [[ ! -d "$TRAIN_SHARD_DIR" || ! -d "$TUNING_SHARD_DIR" ]]; then
+            echo "Expected finalized MEDS data at $TRAIN_SHARD_DIR and" >&2
+            echo "$TUNING_SHARD_DIR -- run 'scripts/gemini/run.sh finalize' first." >&2
+            exit 1
+        fi
+
+        OUTPUT_DIR="$HOME/runs/$run_name"
+        mkdir -p "$OUTPUT_DIR"
+        CONFIG_JSON="$OUTPUT_DIR/train_full_config.json"
+
+        # No max_train_shards key at all -- TrainingConfig's own default
+        # (None = every shard) is what "all train shards" means here.
+        cat > "$CONFIG_JSON" <<'JSON'
+{
+  "model_kind": "baseline",
+  "source": "gemini",
+  "stream_shards": true,
+  "event_hazards": false,
+  "num_lanes": 64,
+  "chunk_size": 512,
+  "num_epochs": 2,
+  "checkpoint_every": 2000
+}
+JSON
+
+        echo "Run dir: $OUTPUT_DIR"
+        echo "Config ($CONFIG_JSON):"
+        cat "$CONFIG_JSON"
+        echo "Once running, tail progress with:"
+        echo "  tail -f $OUTPUT_DIR/loss_log.jsonl"
+
+        source "$GPU_VENV/bin/activate"
+        python -m odyssey.training.train \
+            --train-shard-dir "$TRAIN_SHARD_DIR" \
+            --tuning-shard-dir "$TUNING_SHARD_DIR" \
+            --output-dir "$OUTPUT_DIR" \
+            --config-json "$CONFIG_JSON"
+        deactivate
+        source "$VENV/bin/activate"
+
+        echo "$STEP complete. Checkpoints and loss_log.jsonl under $OUTPUT_DIR"
+    }
+
+    run_eval_forecast() {
+        local run_name="$1"
+        if [[ -z "$run_name" ]]; then
+            echo "eval-forecast needs a run name: scripts/gemini/run.sh eval-forecast <run-name>" >&2
+            echo "e.g.: scripts/gemini/run.sh eval-forecast gemini_full_14m_v1" >&2
+            exit 1
+        fi
+        local max_shards="${GEMINI_EVAL_MAX_SHARDS:-20}"
+        local num_lanes="${GEMINI_EVAL_NUM_LANES:-16}"
+
+        echo "=== eval-forecast ($run_name) ==="
+        echo "Forecast/concept/orthogonality metrics against data/held_out."
+        echo "max_shards=$max_shards, num_lanes=$num_lanes (override via"
+        echo "GEMINI_EVAL_MAX_SHARDS/GEMINI_EVAL_NUM_LANES for later ladder rungs)."
+        if [[ -z "${TMUX:-}" && -z "${STY:-}" ]]; then
+            echo "WARNING: this doesn't look like a tmux or screen session --" >&2
+            echo "if the SSH connection drops, eval dies with it." >&2
+            echo "Run it detached instead, e.g.:" >&2
+            echo "  tmux new -s eval-$run_name 'scripts/gemini/run.sh $STEP $run_name'" >&2
+            echo "  # or: nohup scripts/gemini/run.sh $STEP $run_name > eval-$run_name.log 2>&1 &" >&2
+        fi
+
+        GPU_VENV="${GEMINI_GPU_VENV:-$HOME/.venvs/odyssey-gemini-gpu}"
+        if [[ ! -f "$GPU_VENV/bin/activate" ]]; then
+            echo "GPU venv not found at $GPU_VENV -- run 'scripts/gemini/run.sh env-gpu' first." >&2
+            exit 1
+        fi
+
+        RUN_DIR="$HOME/runs/$run_name"
+        if [[ ! -d "$RUN_DIR" ]]; then
+            echo "No run directory at $RUN_DIR -- run the training step that" >&2
+            echo "produces it first (e.g. train-full)." >&2
+            exit 1
+        fi
+
+        MEDS_DIR="${GEMINI_MEDS_OUTPUT_DIR:-/mnt/nfs/project/subdural_hematoma_endotypes/gemini_meds_v1}"
+        HELD_OUT_SHARD_DIR="$MEDS_DIR/data/held_out"
+        if [[ ! -d "$HELD_OUT_SHARD_DIR" ]]; then
+            echo "Expected finalized MEDS data at $HELD_OUT_SHARD_DIR -- run" >&2
+            echo "'scripts/gemini/run.sh finalize' first." >&2
+            exit 1
+        fi
+
+        OUTPUT_JSON="$RUN_DIR/eval_forecast.json"
+        echo "Run dir: $RUN_DIR"
+        echo "Output: $OUTPUT_JSON"
+
+        source "$GPU_VENV/bin/activate"
+        python -m odyssey.inference.run_inference \
+            --run-dir "$RUN_DIR" \
+            --held-out-shard-dir "$HELD_OUT_SHARD_DIR" \
+            --output-json "$OUTPUT_JSON" \
+            --max-shards "$max_shards" \
+            --num-lanes "$num_lanes"
+        deactivate
+        source "$VENV/bin/activate"
+
+        echo "$STEP complete. Results at $OUTPUT_JSON"
+    }
+
     case "$STEP" in
         probe) run_probe ;;
         schema) run_schema ;;
@@ -564,11 +718,13 @@ PY
         finalize) run_finalize ;;
         train-smoke) run_train_smoke 5 2 gemini_smoke_1 ;;
         train-smoke-2) run_train_smoke 30 "" gemini_smoke_2 ;;
+        train-full) run_train_full ;;
+        eval-forecast) run_eval_forecast "${2:-}" ;;
         train) run_pending_stub train ;;
         eval) run_pending_stub eval ;;
         all) run_probe; run_schema; run_extract_dry ;;
         *)
-            echo "unknown step: $STEP (expected probe, schema, env-gpu, extract-dry, extract, finalize, train-smoke, train-smoke-2, train, eval, or all)" >&2
+            echo "unknown step: $STEP (expected probe, schema, env-gpu, extract-dry, extract, finalize, train-smoke, train-smoke-2, train-full, eval-forecast, train, eval, or all)" >&2
             exit 1
             ;;
     esac
