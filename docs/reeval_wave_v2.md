@@ -40,10 +40,20 @@ against the corrected row set.
   (0.908 exact) plus to-the-digit matches on `vasopressor_start@8h` 0.862,
   `icu_admission@8h` 0.802, `AKI@8h` 0.681, on the rebuilt mamba-ssm +
   restored transformers env. No drift.
-- **MEDS-Tab v1 run landed** (6e's pipeline glue, `47c7925`, is in; the
-  actual run + registry entry is not yet done as of this draft) -- needed
-  so the v2 wave scores against a MEDS-Tab baseline that already exists,
-  rather than blocking this wave on a second in-flight piece of work.
+  **Re-running 2026-08-22**: a `uv sync` landed on VM2 since the above run --
+  the strict same-env rule this canary exists to enforce means a dependency
+  sync counts as a possible environment change same as anything else, so
+  the pinned-commit re-cert is being redone post-sync before being trusted
+  again, not assumed still valid from yesterday's run.
+- **MEDS-Tab v1 run landed** -- **scope amended 2026-08-22**: gates *only*
+  the MEDS-Tab rescoring row (section 2's MEDS-Tab table entry and any
+  MEDS-Tab-baseline comparison in section 3+); everything else in this wave
+  gates on the reproducibility canary above alone. The eICU leg
+  (re-certification + v2 dump regeneration + every non-MEDS-Tab rescore) is
+  starting today on VM2 without waiting for MEDS-Tab v1 -- the shared-grid
+  tabularization MEDS-Tab needs costs ~16h of CPU time that has no reason to
+  idle the A100 while it waits. (6e's pipeline glue, `47c7925`, is in; the
+  actual run + registry entry is not yet done as of this amendment.)
 - `env_fingerprint.py`'s numeric canary for the checkpoint(s) being
   re-evaluated should show no mismatch (`verify_run_provenance`) --
   confirms the environment driving re-eval is the one the checkpoint was
