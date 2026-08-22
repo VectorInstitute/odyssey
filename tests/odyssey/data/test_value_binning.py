@@ -406,3 +406,14 @@ def test_clinical_ranges_skips_a_prefix_whose_unit_tag_is_not_curated(
     # the real F/C prefixes for the same LOINC are unaffected by the injection
     assert ranges["LAB//223761//"] == CLINICAL_RANGES["LAB//223761//"]
     assert ranges["LAB//223762//"] == CLINICAL_RANGES["LAB//223762//"]
+
+
+def test_gemini_creatinine_uses_si_clinical_range() -> None:
+    """The umol/L range spec, not the mg/dL one, binds GEMINI's creatinine.
+
+    mg/dL cuts applied to umol/L values would label nearly every reading
+    CRITICAL (a normal 80 umol/L is far above the 4.0 mg/dL cut).
+    """
+    ranges, fallback = clinical_ranges_for_source("gemini")
+    assert ranges["LAB//3020564//"] == [(132.6, "NORMAL"), (353.7, "HIGH")]
+    assert fallback["LAB//3020564//"] == "CRITICAL"

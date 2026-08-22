@@ -76,8 +76,15 @@ CANONICAL_CLINICAL_RANGES: Dict[str, Dict[Optional[str], _RangeSpec]] = {
         "F": ([(96.8, "LOW"), (100.4, "NORMAL")], "HIGH"),
         "C": ([(36.0, "LOW"), (38.0, "NORMAL")], "HIGH"),
     },
-    # creatinine: NORMAL / HIGH (aki_stage_1) / CRITICAL (aki_stage_3)
-    "2160-0": {None: ([(1.5, "NORMAL"), (4.0, "HIGH")], "CRITICAL")},
+    # creatinine: NORMAL / HIGH (aki_stage_1) / CRITICAL (aki_stage_3).
+    # umol/L entry = mg/dL cuts x 88.42 (SI conversion), for sources whose
+    # creatinine prefix carries the umol/L unit tag (GEMINI; see
+    # code_mapping._PREFIX_UNITS) -- applying the mg/dL cuts to umol/L
+    # values would label nearly every reading CRITICAL.
+    "2160-0": {
+        None: ([(1.5, "NORMAL"), (4.0, "HIGH")], "CRITICAL"),
+        "umol/L": ([(132.6, "NORMAL"), (353.7, "HIGH")], "CRITICAL"),
+    },
     # lactate
     "32693-4": {None: ([(2.0, "NORMAL")], "HIGH")},
 }

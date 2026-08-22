@@ -335,13 +335,23 @@ class LoincSustained:
 
 @dataclass(frozen=True)
 class LoincBaselineRelative:
-    """Canonical form of :class:`BaselineRelativeRule`."""
+    """Canonical form of :class:`BaselineRelativeRule`.
+
+    ``unit_deltas`` overrides ``delta`` per unit tag the way
+    :class:`LoincThreshold.unit_thresholds` overrides ``threshold``: an
+    absolute delta is unit-sensitive (KDIGO's "rose by 0.3" means mg/dL;
+    the same clinical rule is "rose by 26.5" in umol/L), while ``ratio``
+    is unit-free and never needs this. A prefix whose unit tag has no
+    entry falls back to ``delta`` (the canonical mg/dL number), matching
+    the untagged-prefix case.
+    """
 
     loincs: Tuple[str, ...]
     direction: TrendDirection
     window_hours: float
     delta: Optional[float] = None
     ratio: Optional[float] = None
+    unit_deltas: Optional[Tuple[Tuple[str, float], ...]] = None
 
 
 @dataclass(frozen=True)
@@ -467,16 +477,25 @@ def _expand_rule(rule: CanonicalRule, source: str) -> List[ComponentRule]:
             for prefix in prefixes
         ]
     if isinstance(rule, LoincBaselineRelative):
-        return [
-            BaselineRelativeRule(
-                prefix,
-                direction=rule.direction,
-                window_hours=rule.window_hours,
-                delta=rule.delta,
-                ratio=rule.ratio,
+        expanded: List[ComponentRule] = []
+        for prefix in prefixes:
+            delta = rule.delta
+            if rule.unit_deltas is not None:
+                unit = unit_for(prefix, source=source)
+                for tagged_unit, tagged_delta in rule.unit_deltas:
+                    if tagged_unit == unit:
+                        delta = tagged_delta
+                        break
+            expanded.append(
+                BaselineRelativeRule(
+                    prefix,
+                    direction=rule.direction,
+                    window_hours=rule.window_hours,
+                    delta=delta,
+                    ratio=rule.ratio,
+                )
             )
-            for prefix in prefixes
-        ]
+        return expanded
     raise TypeError(f"unknown canonical rule type: {type(rule)!r}")
 
 
@@ -627,7 +646,11 @@ CANONICAL_CONCEPTS: List[AnyCanonicalConcept] = [
         "acute_kidney_injury",
         (
             LoincBaselineRelative(
-                _CREATININE, delta=0.3, direction="above", window_hours=48.0
+                _CREATININE,
+                delta=0.3,
+                unit_deltas=(("umol/L", 26.5),),
+                direction="above",
+                window_hours=48.0,
             ),
             LoincBaselineRelative(
                 _CREATININE, ratio=1.5, direction="above", window_hours=168.0
