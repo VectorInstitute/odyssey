@@ -283,6 +283,21 @@ def test_assign_output_shards_is_deterministic_and_per_split() -> None:
     assert again == shard_by_subject
 
 
+# --- suppressed summary counts ----------------------------------------
+
+
+def test_suppressed_rounds_or_masks_small_counts() -> None:
+    mod = _load_module("finalize_meds")
+
+    assert mod._suppressed(0) == "<6"
+    assert mod._suppressed(5) == "<6"
+    assert mod._suppressed(6) == "0"
+    assert mod._suppressed(30) == "0"
+    assert mod._suppressed(499) == "0"
+    assert mod._suppressed(501) == "1000"
+    assert mod._suppressed(1_500_499) == "1500000"
+
+
 # --- hospital lookup ------------------------------------------------------
 
 
@@ -738,11 +753,23 @@ def test_run_finalize_end_to_end_produces_a_conformant_dataset(
     _fake_hospital_query(
         monkeypatch, mod, hadm_ids=[i * 10 + j for i in range(30) for j in range(2)]
     )
+    # SUMMARY_PATH is a fixed repo-relative path (matching extract_meds.py's
+    # own SUMMARY_PATH convention) -- redirected here so this test writes to
+    # tmp_path, not the real scripts/gemini/out/finalize_summary.json.
+    summary_path = tmp_path / "summary_out" / "finalize_summary.json"
+    monkeypatch.setattr(mod, "SUMMARY_PATH", summary_path)
 
     summary = mod.run_finalize(output_dir=tmp_path)
 
-    assert summary["n_subjects"] == 30
-    assert sum(summary["splits"].values()) == 30
+    # n_subjects/splits are suppressed (small-cell governance, see
+    # _suppressed) -- the real per-subject counts live in
+    # metadata/subject_splits.parquet, not the suppressed json summary.
+    assert summary["n_subjects"] == mod._suppressed(30)
+    real_splits = pl.read_parquet(tmp_path / "metadata" / "subject_splits.parquet")
+    assert real_splits.height == 30
+    assert set(summary["splits"]) == set(mod.FINALIZE_SPLIT_FRACS)
+    assert summary_path.is_file()
+    assert json.loads(summary_path.read_text()) == summary
     assert (tmp_path / "metadata" / ".finalize_complete").is_file()
     assert not list(tmp_path.glob("shard_*.parquet"))  # old flat layout deleted
     assert not (tmp_path / "extract_manifest.json").exists()
@@ -799,5 +826,5 @@ def test_run_finalize_wipes_a_partial_attempt_before_redoing(
 
     summary = mod.run_finalize(output_dir=tmp_path)
 
-    assert summary["n_subjects"] == 10
+    assert summary["n_subjects"] == mod._suppressed(10)
     assert not (tmp_path / "data" / "train" / "shard_9999.parquet").exists()
