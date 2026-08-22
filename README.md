@@ -205,17 +205,18 @@ Organized by research track; the foundational plumbing that is finished lives in
 10. The stage-B cost frontier: longer training, partial unfreezing, small stage-A task weight (M-series, running); acceptance test is the six-mode banded intervention suite
 11. Concept-set widening (the completeness axis: richer concept vocabulary from structured data), plus leakage metrics (CTL/ICL) reported per run
 12. Input-level counterfactual rollouts as the near-term clinician what-if
-13. Population-level causal effect estimation (exploratory; CausalPFN line)
+13. Distributional time head as a frozen-backbone probe: a log-normal mixture over inter-event time fit post-hoc on frozen features (zero pretraining cost), vs the binned hazard on NLL and calibration -- smooth predictive densities and closed-form quantiles for clinician-facing intervals, and the principled sampling machinery the counterfactual rollouts (item 12) need; negative-binomial per-window count head noted as optional utilization output. Completes the Doctor AI arc (their failed L2-on-log-time -> our bins -> mixture densities).
+14. Population-level causal effect estimation (exploratory; CausalPFN line)
 
 **Track C: generalization**
-14. GEMINI: SQL-streaming MEDS extraction (built, first full extraction in progress), post-extraction MEDS conformance step (int64 subject ids, `metadata/`, deliberate split rule), then external validation of frozen models (`docs/gemini.md`, `scripts/gemini/`)
-15. EHRSHOT-style few-shot/transfer protocol, the pretrain-once test
-16. Hospital-holdout generalization on eICU-CRD (200+ US ICUs, public and reproducible where GEMINI is governed): subject-to-hospital sidecar from the raw tables (multi-hospital subjects assigned by an explicit rule, not accident), site-holdout evaluation built and debugged here first, then applied unchanged to GEMINI's ~30 hospitals -- two independent multi-site tests with the hierarchy stated honestly (within-dataset cross-site < cross-system external)
+15. GEMINI: SQL-streaming MEDS extraction (built, first full extraction in progress), post-extraction MEDS conformance step (int64 subject ids, `metadata/`, deliberate split rule), then external validation of frozen models (`docs/gemini.md`, `scripts/gemini/`)
+16. EHRSHOT-style few-shot/transfer protocol, the pretrain-once test
+17. Hospital-holdout generalization on eICU-CRD (200+ US ICUs, public and reproducible where GEMINI is governed): subject-to-hospital sidecar from the raw tables (multi-hospital subjects assigned by an explicit rule, not accident), site-holdout evaluation built and debugged here first, then applied unchanged to GEMINI's ~30 hospitals -- two independent multi-site tests with the hierarchy stated honestly (within-dataset cross-site < cross-system external)
 
 **Track D: platform and clinical interface**
-17. Reproducibility: environment fingerprints and per-checkpoint numeric canaries recorded with every run (done); landmark protocol versioning on all alert evaluations (done: `LANDMARK_PROTOCOL_VERSION`, re-evaluation wave planned in `docs/reeval_wave_v2.md`)
-18. MEDS conformance validator as a gate on every extraction output; thin MEDS-to-FHIR translator once the best model is settled (deployment readiness as an adapter at the MEDS boundary, not a rearchitecture)
-19. Phase 2: an LLM agent (e.g. MedGemma) reading the concept-annotated forecast, with retrospective clinician validation on GEMINI; gated on Tracks B and C
+18. Reproducibility: environment fingerprints and per-checkpoint numeric canaries recorded with every run (done); landmark protocol versioning on all alert evaluations (done: `LANDMARK_PROTOCOL_VERSION`, re-evaluation wave planned in `docs/reeval_wave_v2.md`)
+19. MEDS conformance validator as a gate on every extraction output; thin MEDS-to-FHIR translator once the best model is settled (deployment readiness as an adapter at the MEDS boundary, not a rearchitecture)
+20. Phase 2: an LLM agent (e.g. MedGemma) reading the concept-annotated forecast, with retrospective clinician validation on GEMINI; gated on Tracks B and C
 
 <details>
 <summary>Foundational work, complete (items 1-8, 10, 12, 13, 16, 17 of the original list)</summary>
