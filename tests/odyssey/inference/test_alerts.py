@@ -16,6 +16,7 @@ from odyssey.data.alert_events import (
     all_event_times,
 )
 from odyssey.data.concepts import concepts_for_source
+from odyssey.data.sequences import BIRTH_CODE
 from odyssey.data.streaming import NO_SUBJECT
 from odyssey.data.value_binning import add_value_tokens
 from odyssey.data.vocabulary import Vocabulary
@@ -657,6 +658,85 @@ def test_baseline_features_shape_and_content() -> None:
     assert not np.isnan(x[0, -6:]).any()  # counts present
 
 
+def test_baseline_features_ignores_a_code_with_an_unrecognized_bin_suffix() -> None:
+    """A code::SUFFIX where SUFFIX isn't LOW/NORMAL/HIGH/CRITICAL must not crash or bin.
+
+    add_value_tokens never produces this today (every clinical-range label
+    is one of the four), but a hand-edited or future-format code could --
+    _SubjectHistory must skip it rather than silently substituting some
+    default ordinal.
+    """
+    events = pl.DataFrame(
+        {
+            "subject_id": [1],
+            "time": [T0],
+            "code": ["LAB//220045//bpm::WEIRD"],
+            "numeric_value": [130.0],
+            "hadm_id": [1001],
+        },
+        schema={
+            "subject_id": pl.Int64,
+            "time": pl.Datetime,
+            "code": pl.Utf8,
+            "numeric_value": pl.Float32,
+            "hadm_id": pl.Int64,
+        },
+    )
+    x = baseline_features(events, [IndexRow(1, 1001, 0.0)])
+    prefixes_start = 2
+    # the malformed bin was never recorded against the heart-rate prefix,
+    # so its ordinal feature stays unset (NaN), not some arbitrary default
+    assert np.isnan(x[0, prefixes_start:-6]).all()
+
+
+def test_baseline_features_leaves_a_historyless_subject_all_nan() -> None:
+    """An index row for a subject absent from events_binned entirely."""
+    events = pl.DataFrame(
+        {
+            "subject_id": [1],
+            "time": [T0],
+            "code": ["LAB//220045//bpm"],
+            "numeric_value": [80.0],
+            "hadm_id": [1001],
+        },
+        schema={
+            "subject_id": pl.Int64,
+            "time": pl.Datetime,
+            "code": pl.Utf8,
+            "numeric_value": pl.Float32,
+            "hadm_id": pl.Int64,
+        },
+    )
+    x = baseline_features(events, [IndexRow(999, 1, 5.0)])
+    assert x.shape == (1, x.shape[1])
+    assert np.isnan(x[0]).all()
+
+
+def test_baseline_features_computes_age_when_birth_and_origin_both_known() -> None:
+    """The age column is only ever filled when both birth and origin resolve."""
+    events = pl.DataFrame(
+        {
+            "subject_id": [5, 5],
+            "time": [datetime(1970, 1, 1), datetime(2020, 1, 1)],
+            "code": [BIRTH_CODE, "LAB//220045//bpm"],
+            "numeric_value": [None, 80.0],
+            "hadm_id": [None, 2005],
+        },
+        schema={
+            "subject_id": pl.Int64,
+            "time": pl.Datetime,
+            "code": pl.Utf8,
+            "numeric_value": pl.Float32,
+            "hadm_id": pl.Int64,
+        },
+    )
+    x = baseline_features(events, [IndexRow(5, 2005, 0.0)])
+    expected_age_years = (
+        (datetime(2020, 1, 1) - datetime(1970, 1, 1)).total_seconds() / 3600.0
+    ) / (24 * 365.25)
+    assert x[0, 1] == pytest.approx(expected_age_years, abs=1e-6)
+
+
 def test_subject_scoped_event_ignores_visit() -> None:
     times = EventTimes(
         onset={(7, -1): 30.0}, censor={(7, -1): 40.0}, subject_scoped=True
@@ -755,12 +835,47 @@ def test_strong_baseline_fits_tunes_and_records_metadata() -> None:
     assert gbm.baseline_params and "learning_rate" in gbm.baseline_params
 
 
+def test_fit_baselines_skips_an_alert_with_no_index_rows() -> None:
+    """An alert with an empty row list must be skipped, not fit on nothing.
+
+    _index_rows_from_events never actually produces this (every alert
+    shares the same row list), but fit_baselines's own signature accepts
+    any per-alert row list, so a caller building train_rows another way
+    can legitimately hit this -- the guard is exercised directly rather
+    than only through that one caller.
+    """
+    events = _events(n_subjects=40)
+    binned = add_value_tokens(events, None, source="mimic_iv")
+    times = all_event_times(binned, ALERT_EVENTS, "mimic_iv")
+    rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+    rows = {**rows, "vasopressor_start": []}
+
+    baselines = fit_baselines(
+        binned, rows, times, horizons=(8.0,), feature_set="basic", tune=False
+    )
+
+    assert not any(name == "vasopressor_start" for name, _ in baselines)
+    # icu_admission (planted for 1/4 of subjects) still fits normally
+    assert any(name == "icu_admission" for name, _ in baselines)
+
+
 def test_unknown_feature_set_is_rejected() -> None:
     events = _events(n_subjects=4)
     binned = add_value_tokens(events, None, source="mimic_iv")
     rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
     with pytest.raises(ValueError):
         features_for_events(binned, rows, feature_set="bogus")
+
+
+def test_features_for_events_returns_empty_dict_when_no_rows_at_all() -> None:
+    """No index rows for any event (an empty landmark set) must not crash."""
+    events = _events(n_subjects=4)
+    binned = add_value_tokens(events, None, source="mimic_iv")
+    assert features_for_events(binned, {}, feature_set="basic") == {}
+    assert (
+        features_for_events(binned, {"vasopressor_start": []}, feature_set="basic")
+        == {}
+    )
 
 
 def test_index_row_table_has_scores_outcomes_and_gbm_columns() -> None:
@@ -896,6 +1011,38 @@ def test_tuning_survives_a_column_missing_only_inside_the_training_fold() -> Non
     x[np.isin(groups, val_groups), 3] = 1.0
     params, n_rounds = _tune_gbm(x, y, groups, seed=0)
     assert n_rounds >= 1 and "learning_rate" in params
+
+
+def test_tune_gbm_subsamples_when_over_the_row_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rows beyond GBM_TUNE_MAX_ROWS are subsampled before tuning, not fit whole."""
+    monkeypatch.setattr(alerts_module, "GBM_TUNE_MAX_ROWS", 200)
+    rng = np.random.default_rng(0)
+    n = 400
+    groups = np.repeat(np.arange(40), 10)
+    x = rng.standard_normal((n, 4)).astype(np.float32)
+    y = (x[:, 0] > 0).astype(int)
+    params, n_rounds = _tune_gbm(x, y, groups, seed=0)
+    assert n_rounds >= 1 and "learning_rate" in params
+
+
+def test_tune_gbm_returns_default_params_when_validation_split_is_degenerate() -> None:
+    """One subject group can't be split into disjoint train/val folds.
+
+    n_val = max(1, round(0.1 * n_groups)) with a single group means every
+    row's group is the validation group -- is_val.all() must fire and fall
+    back to the documented default rather than fitting on an empty or
+    single-class fold.
+    """
+    x = np.ones((20, 4), dtype=np.float32)
+    y = np.array([0, 1] * 10)
+    groups = np.zeros(20, dtype=int)  # one subject, all 20 rows
+
+    params, n_rounds = _tune_gbm(x, y, groups, seed=0)
+
+    assert params == dict(alerts_module.GBM_GRID[0])
+    assert n_rounds == 200
 
 
 def test_sparse_columns_are_filled_at_fit_and_predict() -> None:
@@ -1104,6 +1251,76 @@ def test_fit_baselines_streaming_empty_shards_returns_no_models(
     assert models == {}
 
 
+def _no_visit_shard(path: Path) -> None:
+    """One subject, every event hadm_id-null: zero landmark rows for any alert.
+
+    _index_rows_from_events requires hadm_id.is_not_null(), so a shard
+    like this (a subject-scoped-only record, or a static-facts-only
+    fragment) contributes nothing to any alert's landmark set.
+    """
+    pl.DataFrame(
+        [(1, "LAB//220045//bpm", T0, 80.0, None)],
+        schema={
+            "subject_id": pl.Int64,
+            "code": pl.Utf8,
+            "time": pl.Datetime,
+            "numeric_value": pl.Float32,
+            "hadm_id": pl.Int64,
+        },
+        orient="row",
+    ).write_parquet(path)
+
+
+def test_fit_baselines_streaming_skips_a_shard_with_no_landmark_rows(
+    tmp_path: Path,
+) -> None:
+    """A shard contributing zero landmark rows must not break the rest of the run."""
+    shard_dir = tmp_path / "train"
+    shard_dir.mkdir()
+    _no_visit_shard(shard_dir / "0.parquet")  # contributes nothing
+    _events(n_subjects=20).write_parquet(shard_dir / "1.parquet")
+
+    paths = shard_paths(shard_dir)
+    prepare = make_preparer(
+        normalize_medications=False, history_recap=False, source="mimic_iv"
+    )
+    models = fit_baselines_streaming(
+        paths,
+        prepare,
+        None,
+        alerts=ALERT_EVENTS,
+        horizons=(8.0,),
+        feature_set="basic",
+        tune=False,
+    )
+    # the real shard's planted signal still fits despite the empty one
+    assert ("vasopressor_start", 8.0) in models
+
+
+def test_fit_baselines_streaming_returns_no_models_when_every_shard_is_empty(
+    tmp_path: Path,
+) -> None:
+    """Every shard contributing zero landmark rows: return early, not crash."""
+    shard_dir = tmp_path / "train"
+    shard_dir.mkdir()
+    _no_visit_shard(shard_dir / "0.parquet")
+
+    paths = shard_paths(shard_dir)
+    prepare = make_preparer(
+        normalize_medications=False, history_recap=False, source="mimic_iv"
+    )
+    models = fit_baselines_streaming(
+        paths,
+        prepare,
+        None,
+        alerts=ALERT_EVENTS,
+        horizons=(8.0,),
+        feature_set="basic",
+        tune=False,
+    )
+    assert models == {}
+
+
 def test_fit_baseline_grid_caps_rows_before_the_final_fit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1222,3 +1439,80 @@ def test_index_row_table_extra_baselines_adds_a_named_column() -> None:
     assert "tabicl@8h" in table.columns
     vaso = table.filter(pl.col("event") == "vasopressor_start")
     assert (vaso["tabicl@8h"] == 0.5).all()
+
+
+def test_index_row_table_extra_baselines_missing_cell_is_skipped_not_erroring() -> None:
+    """Mirrors score_alerts' identical guard: an (event, horizon) with no model."""
+    events = _events(24)
+    binned = add_value_tokens(events)
+    times = all_event_times(binned, ALERT_EVENTS, "mimic_iv")
+    rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+
+    table = index_row_table(
+        rows,
+        times,
+        horizons=(8.0,),
+        extra_baselines={"tabicl": ({}, {})},
+    )
+    assert "tabicl@8h" not in table.columns
+
+
+def test_score_alerts_skips_an_alert_with_no_index_rows() -> None:
+    results = score_alerts(
+        {"vasopressor_start": []},
+        {"vasopressor_start": EventTimes(onset={}, censor={}, subject_scoped=False)},
+    )
+    assert results == []
+
+
+def test_index_row_table_skips_an_alert_with_no_index_rows() -> None:
+    table = index_row_table(
+        {"vasopressor_start": []},
+        {"vasopressor_start": EventTimes(onset={}, censor={}, subject_scoped=False)},
+    )
+    assert table.is_empty()
+
+
+def test_index_row_table_returns_empty_frame_when_every_alert_is_empty() -> None:
+    """No alert contributes any rows at all: the concat-nothing path."""
+    table = index_row_table(
+        {"vasopressor_start": [], "death": []},
+        {
+            "vasopressor_start": EventTimes(onset={}, censor={}, subject_scoped=False),
+            "death": EventTimes(onset={}, censor={}, subject_scoped=True),
+        },
+    )
+    assert table.is_empty()
+    assert table.columns == ["event"]
+
+
+def test_score_alerts_skips_a_scorer_that_is_all_nan_for_the_kept_rows() -> None:
+    """A scorer present on some rows but NaN/missing on every at-risk one.
+
+    scorer_names is the union across all of an event's rows, so a scorer
+    only ever populated on a not-at-risk (already-happened) row still gets
+    a scoring attempt for every horizon -- ok.sum()==0 among the KEPT rows
+    must skip it, not divide by zero or crash roc_auc_score on an empty
+    array. Outcomes are engineered to still give the two classes score_alerts
+    needs to get past its own y.min()==y.max() guard first, so this
+    isolates the scorer-level guard specifically.
+    """
+    times = EventTimes(
+        onset={(1, 1): 5.0}, censor={(1, 1): 100.0, (2, 1): 8.0}, subject_scoped=False
+    )
+    rows = [
+        # kept, positive (onset 5.0 falls in [0, 8])
+        IndexRow(1, 1, 0.0, scores={"hazard@8h": 0.9}),
+        # not at risk (onset already happened by time_hours=20) -- dropped
+        # from `keep` entirely, but still contributes "concept" to
+        # scorer_names for this event
+        IndexRow(1, 1, 20.0, scores={"concept": 0.7}),
+        # kept, negative (no onset, follow-up exactly reaches the horizon)
+        IndexRow(2, 1, 0.0, scores={"hazard@8h": 0.2}),
+    ]
+    results = score_alerts(
+        {"vasopressor_start": rows}, {"vasopressor_start": times}, horizons=(8.0,)
+    )
+    # "concept" was never populated on either kept (at-risk) row above
+    assert not any(r.scorer == "concept" for r in results)
+    assert any(r.scorer == "hazard" for r in results)
