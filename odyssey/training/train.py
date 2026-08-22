@@ -6,7 +6,11 @@ Usage (on a CUDA host, from the repo root)::
         --train-shard-dir /path/to/data/train \\
         --tuning-shard-dir /path/to/data/tuning \\
         --output-dir runs/exp1 \\
-        --max-train-shards 20 --max-tuning-shards 5
+        --config-json '{"max_train_shards": 20, "max_tuning_shards": 5}'
+
+Those four are the only real CLI flags; every other
+:class:`TrainingConfig` field is set through ``--config-json`` (inline
+JSON or a path to a JSON file), never through its own flag.
 
 Every loss component (task, concept, orthogonality, observability) is
 logged per step to ``<output_dir>/loss_log.jsonl``, one JSON object per
