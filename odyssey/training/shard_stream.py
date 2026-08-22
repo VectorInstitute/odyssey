@@ -48,6 +48,7 @@ from odyssey.training.data import (
     build_visit_concept_label_dicts,
     iter_patient_sequences,
     load_meds_shard,
+    shard_sort_key,
 )
 
 
@@ -60,7 +61,7 @@ def shard_paths(
     shard_dir: Union[str, Path], max_shards: Optional[int] = None
 ) -> List[Path]:
     """Numerically ordered shard paths of a split (same rule as load_meds_shards)."""
-    paths = sorted(Path(shard_dir).glob("*.parquet"), key=lambda p: int(p.stem))
+    paths = sorted(Path(shard_dir).glob("*.parquet"), key=shard_sort_key)
     if max_shards is not None:
         paths = paths[:max_shards]
     if not paths:
