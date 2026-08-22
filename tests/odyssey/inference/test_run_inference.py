@@ -5,6 +5,7 @@ test_run_inference_gpu.py.
 """
 
 import json
+import math
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -13,8 +14,10 @@ import pytest
 import torch
 
 import odyssey.inference.run_inference as ri
+from odyssey.data.concepts import ConceptDefinition, ConceptRule
 from odyssey.data.packed_context import PackedContextSampler
 from odyssey.data.streaming import PackedLaneSampler
+from odyssey.data.value_binning import QuantileBinner
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.run_inference import (
     InferenceResults,
@@ -29,8 +32,15 @@ from odyssey.inference.run_inference import (
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
 from odyssey.models.backbones.transformer import TransformerBackbone
 from odyssey.models.concept_bottleneck import ConceptBottleneck
-from odyssey.models.sequence_model import BaselineSequenceModel
+from odyssey.models.sequence_model import (
+    BaselineSequenceModel,
+    ConceptBottleneckSequenceModel,
+)
 from odyssey.models.time_to_event import DEFAULT_TIME_BIN_EDGES_HOURS
+from odyssey.training.data import (
+    build_concept_label_dicts,
+    build_visit_concept_label_dicts,
+)
 from odyssey.training.metrics import (
     TaskMetrics,
     compute_task_metrics,
@@ -50,6 +60,97 @@ def _vocab() -> Vocabulary:
         ],
         min_count=1,
     )
+
+
+def test_load_and_bin_held_out_applies_the_given_binner_not_a_fresh_one(
+    tmp_path: Path,
+) -> None:
+    """Held-out data must be binned with the train-fit binner, never re-fit.
+
+    Re-fitting on held-out data would leak its own value distribution
+    into the bin boundaries -- the exact leakage load_and_bin_held_out's
+    docstring says this function exists to avoid.
+    """
+    shard_dir = tmp_path / "held_out"
+    shard_dir.mkdir()
+    pl.DataFrame(
+        [(1, "LAB//UNMAPPED//x", datetime(2024, 1, 1), 999.0, 101)],
+        schema={
+            "subject_id": pl.Int64,
+            "code": pl.Utf8,
+            "time": pl.Datetime,
+            "numeric_value": pl.Float32,
+            "hadm_id": pl.Int64,
+        },
+        orient="row",
+    ).write_parquet(shard_dir / "0.parquet")
+
+    # a binner whose boundaries were never fit on this value (999.0 is
+    # far outside them) -- if this got re-fit on the held-out data
+    # itself, the value would land in a normal middle bucket instead
+    binner = QuantileBinner(boundaries={"LAB//UNMAPPED//x": [1.0, 2.0]}, n_bins=3)
+
+    out = ri.load_and_bin_held_out(shard_dir, binner)
+
+    assert out["code"].to_list() == ["LAB//UNMAPPED//x::Q3"]
+
+
+def test_build_category_lookup_groups_icd_codes_by_three_character_category() -> None:
+    """I5023 and I50 (the icd3 backoff token) must share one category id."""
+    vocab = Vocabulary.build(
+        [
+            "DIAGNOSIS//ICD//10//I5023",
+            "DIAGNOSIS//ICD//10//I50",
+            "DIAGNOSIS//ICD//10//J449",
+            "LAB//220045//bpm",  # not ICD-shaped: must get -1
+        ],
+        min_count=1,
+    )
+    lookup, n_categories = ri._build_category_lookup(vocab, "cpu")
+
+    i5023 = vocab.token_to_id["DIAGNOSIS//ICD//10//I5023"]
+    i50 = vocab.token_to_id["DIAGNOSIS//ICD//10//I50"]
+    j449 = vocab.token_to_id["DIAGNOSIS//ICD//10//J449"]
+    lab = vocab.token_to_id["LAB//220045//bpm"]
+
+    assert lookup[i5023] == lookup[i50]
+    assert lookup[i5023] != lookup[j449]
+    assert lookup[lab] == -1
+    assert n_categories == 2  # I50 and J449, the two distinct categories seen
+
+
+def test_running_time_metrics_update_with_no_valid_positions_is_a_noop() -> None:
+    """A chunk where every position is invalid (all-padding) must not perturb state."""
+    stats = ri._RunningTimeMetrics(DEFAULT_TIME_BIN_EDGES_HOURS)
+    n_bins = len(DEFAULT_TIME_BIN_EDGES_HOURS) + 1
+    stats.update(
+        hazard_logits=torch.zeros(4, n_bins),
+        gap_hours=torch.zeros(4),
+        valid=torch.zeros(4, dtype=torch.bool),
+    )
+    assert stats.n == 0
+    assert stats.finalize() is None
+
+
+def test_running_time_metrics_finalize_on_no_updates_returns_none() -> None:
+    """Nothing was ever accumulated (an empty held-out split): finalize is None."""
+    assert ri._RunningTimeMetrics(DEFAULT_TIME_BIN_EDGES_HOURS).finalize() is None
+
+
+def test_running_bucket_update_with_empty_targets_is_a_noop() -> None:
+    bucket = ri._RunningBucket()
+    bucket.update(
+        logits=torch.zeros(0, 10),
+        targets=torch.zeros(0, dtype=torch.long),
+        top_k=(1, 5),
+    )
+    assert bucket.n == 0
+
+
+def test_running_bucket_finalize_with_nothing_accumulated_raises() -> None:
+    """A bucket that never saw a non-ignored prediction must fail loudly."""
+    with pytest.raises(ValueError, match="no non-ignored predictions"):
+        ri._RunningBucket().finalize()
 
 
 def test_running_task_metrics_matches_computing_over_the_whole_tensor_at_once() -> None:
@@ -390,6 +491,150 @@ def test_streaming_inference_scores_a_baseline_model() -> None:
     assert results.time_metrics is not None and results.time_metrics.n_positions > 0
 
 
+def _concepts() -> list:
+    return [
+        ConceptDefinition(
+            "tachycardia", [ConceptRule("LAB//220045//", 100.0, "above")], "HR > 100"
+        ),
+    ]
+
+
+def _bottleneck_events(hadm_ids: dict) -> pl.DataFrame:
+    """Two subjects, HR readings (one tachycardic, one not), plus filler codes."""
+    codes = ["LAB//220045//bpm", "DIAGNOSIS//A", "MEDICATION//B"]
+    rows = []
+    for sid, hr in ((1, 120.0), (2, 80.0)):
+        for i in range(6):
+            code = codes[i % 3]
+            rows.append(
+                (
+                    sid,
+                    code,
+                    datetime(2024, 1, 1) + timedelta(hours=i),
+                    hr if code == "LAB//220045//bpm" else None,
+                    hadm_ids[sid],
+                )
+            )
+    return pl.DataFrame(
+        rows,
+        schema={
+            "subject_id": pl.Int64,
+            "code": pl.Utf8,
+            "time": pl.Datetime,
+            "numeric_value": pl.Float32,
+            "hadm_id": pl.Int64,
+        },
+        orient="row",
+    )
+
+
+def _bottleneck_model(
+    vocab: Vocabulary, num_concepts: int
+) -> ConceptBottleneckSequenceModel:
+    torch.manual_seed(0)
+    return ConceptBottleneckSequenceModel(
+        backbone=TinyGRUBackbone(
+            vocab_size=len(vocab), hidden_size=8, num_layers=1, padding_idx=0
+        ),
+        vocab_size=len(vocab),
+        num_concepts=num_concepts,
+        embedding_dim=4,
+        padding_idx=0,
+    )
+
+
+def test_streaming_inference_stay_supervision_scores_concept_metrics() -> None:
+    """A real bottleneck model, stay-scoped pooling: the entirely-untested pooled path.
+
+    Every other CPU streaming test in this file uses a no-bottleneck
+    BaselineSequenceModel, so _StreamingAccumulators' bottleneck-pooling
+    branch and _finalize_inference_results' concept/observability/
+    orthogonality computation had zero coverage.
+    """
+    concepts = _concepts()
+    events = _bottleneck_events({1: 101, 2: 102})
+    vocab = Vocabulary.build(events["code"].unique().to_list(), min_count=1)
+    labels, masks = build_concept_label_dicts(events, concepts)
+    model = _bottleneck_model(vocab, len(concepts))
+
+    results = run_streaming_inference(
+        model,
+        events,
+        vocab,
+        labels,
+        masks,
+        num_lanes=1,
+        chunk_size=8,
+        device="cpu",
+        supervision="stay",
+        concepts=concepts,
+    )
+
+    assert results.n_patient_ends_scored == 2
+    assert len(results.concept_metrics) == 1
+    assert math.isfinite(results.orthogonality)
+
+
+def test_streaming_inference_visit_supervision_scores_concept_metrics() -> None:
+    """Same as the stay-scoped test, but exercising the visit-id gather branch."""
+    concepts = _concepts()
+    events = _bottleneck_events({1: 101, 2: 102})
+    vocab = Vocabulary.build(events["code"].unique().to_list(), min_count=1)
+    labels, masks = build_visit_concept_label_dicts(events, concepts)
+    model = _bottleneck_model(vocab, len(concepts))
+
+    results = run_streaming_inference(
+        model,
+        events,
+        vocab,
+        labels,
+        masks,
+        num_lanes=1,
+        chunk_size=8,
+        device="cpu",
+        supervision="visit",
+        concepts=concepts,
+    )
+
+    assert results.n_patient_ends_scored == 2
+    assert len(results.concept_metrics) == 1
+
+
+def test_streaming_inference_bottleneck_model_with_no_pooled_positions_warns(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """visit-scoped pooling with no real hadm_id anywhere: no crash, a warning instead.
+
+    Forecasting metrics must still come back (they never depend on
+    pooling); concept/observability/orthogonality come back empty since
+    chunk.visit_end never fires without a real visit boundary.
+    """
+    concepts = _concepts()
+    events = _bottleneck_events({1: None, 2: None})  # type: ignore[dict-item]
+    vocab = Vocabulary.build(events["code"].unique().to_list(), min_count=1)
+    labels, masks = build_concept_label_dicts(events, concepts)
+    model = _bottleneck_model(vocab, len(concepts))
+
+    with caplog.at_level("WARNING"):
+        results = run_streaming_inference(
+            model,
+            events,
+            vocab,
+            labels,
+            masks,
+            num_lanes=1,
+            chunk_size=8,
+            device="cpu",
+            supervision="visit",
+            concepts=concepts,
+        )
+
+    assert results.task_metrics.n_predictions > 0
+    assert results.n_patient_ends_scored == 0
+    assert results.concept_metrics == []
+    assert any("no visit-scoped pool positions" in r.message for r in caplog.records)
+
+
 # ---------------------------------------------------------------------------
 # backbone="transformer": PackedContextSampler dispatch and tail-slice reporting
 # ---------------------------------------------------------------------------
@@ -663,6 +908,60 @@ def test_unknown_dim_round_trips_for_the_non_global_pairs_unequal_width_case(
 
     assert seen["concept_global_pairs"] is False
     assert seen["unknown_dim"] == unknown_dim
+
+
+def test_recency_features_reconstructs_for_a_baseline_model_kind(
+    tmp_path: Path,
+) -> None:
+    """load_run's recency-shape check has a separate base for model_kind='baseline'.
+
+    Bottleneck models measure the head input against
+    n_concepts*embedding_dim + unknown_dim; a baseline (no bottleneck)
+    model measures it against hidden_size directly instead -- that
+    second branch had zero test coverage. Same monkeypatch-build_model
+    technique as test_unknown_dim_round_trips_..., not a real model.
+    """
+    from odyssey.models.sequence_model import RECENCY_DIM  # noqa: PLC0415
+
+    hidden_size = 16
+    run_dir = tmp_path
+    config = TrainingConfig(
+        train_shard_dir="a",
+        tuning_shard_dir="b",
+        output_dir="c",
+        model_kind="baseline",
+        hidden_size=hidden_size,
+    )
+    (run_dir / "config.json").write_text(json.dumps(config.__dict__))
+    Vocabulary({"[PAD]": 0, "[UNK]": 1, "LAB//220045//bpm": 2}).save(
+        run_dir / "vocabulary.json"
+    )
+    (run_dir / "quantile_binner.json").write_text(
+        json.dumps({"n_bins": 5, "boundaries": {}})
+    )
+    # in_features = hidden_size + RECENCY_DIM: the shape a real
+    # recency-enabled baseline model's time head would have (see
+    # BaselineSequenceModel.__init__'s head_in computation).
+    state = {"time_head.proj.weight": torch.zeros(3, hidden_size + RECENCY_DIM)}
+    torch.save({"model": state}, run_dir / "checkpoint_final.pt")
+
+    seen = {}
+
+    def fake_build_model(cfg, *, vocab_size, num_concepts):  # noqa: ARG001
+        seen["recency_features"] = cfg.recency_features
+        seen["model_kind"] = cfg.model_kind
+        raise RuntimeError("stop here")
+
+    original = ri.build_model
+    ri.build_model = fake_build_model
+    try:
+        with pytest.raises(RuntimeError, match="stop here"):
+            load_run(run_dir, device="cpu")
+    finally:
+        ri.build_model = original
+
+    assert seen["model_kind"] == "baseline"
+    assert seen["recency_features"] is True
 
 
 def test_default_checkpoint_prefers_best_matching_the_clis(tmp_path: Path) -> None:
