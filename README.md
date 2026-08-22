@@ -210,11 +210,12 @@ Organized by research track; the foundational plumbing that is finished lives in
 **Track C: generalization**
 14. GEMINI: SQL-streaming MEDS extraction (built, first full extraction in progress), post-extraction MEDS conformance step (int64 subject ids, `metadata/`, deliberate split rule), then external validation of frozen models (`docs/gemini.md`, `scripts/gemini/`)
 15. EHRSHOT-style few-shot/transfer protocol, the pretrain-once test
+16. Hospital-holdout generalization on eICU-CRD (200+ US ICUs, public and reproducible where GEMINI is governed): subject-to-hospital sidecar from the raw tables (multi-hospital subjects assigned by an explicit rule, not accident), site-holdout evaluation built and debugged here first, then applied unchanged to GEMINI's ~30 hospitals -- two independent multi-site tests with the hierarchy stated honestly (within-dataset cross-site < cross-system external)
 
 **Track D: platform and clinical interface**
-16. Reproducibility: environment fingerprints and per-checkpoint numeric canaries recorded with every run (done); landmark protocol versioning on all alert evaluations (done: `LANDMARK_PROTOCOL_VERSION`, re-evaluation wave planned in `docs/reeval_wave_v2.md`)
-17. MEDS conformance validator as a gate on every extraction output; thin MEDS-to-FHIR translator once the best model is settled (deployment readiness as an adapter at the MEDS boundary, not a rearchitecture)
-18. Phase 2: an LLM agent (e.g. MedGemma) reading the concept-annotated forecast, with retrospective clinician validation on GEMINI; gated on Tracks B and C
+17. Reproducibility: environment fingerprints and per-checkpoint numeric canaries recorded with every run (done); landmark protocol versioning on all alert evaluations (done: `LANDMARK_PROTOCOL_VERSION`, re-evaluation wave planned in `docs/reeval_wave_v2.md`)
+18. MEDS conformance validator as a gate on every extraction output; thin MEDS-to-FHIR translator once the best model is settled (deployment readiness as an adapter at the MEDS boundary, not a rearchitecture)
+19. Phase 2: an LLM agent (e.g. MedGemma) reading the concept-annotated forecast, with retrospective clinician validation on GEMINI; gated on Tracks B and C
 
 <details>
 <summary>Foundational work, complete (items 1-8, 10, 12, 13, 16, 17 of the original list)</summary>
