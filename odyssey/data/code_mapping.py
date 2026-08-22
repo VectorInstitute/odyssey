@@ -214,10 +214,48 @@ EICU_TO_LOINC: Dict[str, str] = {
 # Per-source tables. GEMINI remains a Phase 2 placeholder (README roadmap
 # item 10): empty until that extraction exists to build a real, verified
 # mapping against, deliberately not guessed ahead of time.
+# code_prefix -> LOINC code for the GEMINI extraction
+# (scripts/gemini/extract_meds.py). GEMINI codes carry OMOP standard
+# concept ids with the unit folded in (``LAB//<omop_id>//<unit>``,
+# ``VITALS//<omop_id>//<unit>``); prefixes here stop before the unit
+# segment so every unit variant of a concept matches. OMOP ids verified
+# against the datacut's own lookup descriptions and row counts in
+# scripts/gemini/out/extract_dry.md (the "Lab/Vitals concept frequencies"
+# tables), not assumed from vocabulary files.
+GEMINI_TO_LOINC: Dict[str, str] = {
+    # -- Vitals (measurement_mapped_omop) --
+    "VITALS//3027018//": "8867-4",  # Heart rate (55.5M rows)
+    "VITALS//3024171//": "9279-1",  # Respiratory rate (50.3M)
+    "VITALS//3020891//": "8310-5",  # Body temperature, Celsius (39.1M)
+    "VITALS//3004249//": "8480-6",  # Systolic blood pressure (22.5M)
+    # Oxygen saturation: OMOP 3013502 is "Oxygen saturation in Blood"
+    # (OMOP-strict source LOINC 2708-6, arterial); mapped to the
+    # registry's pulse-oximetry LOINC 59408-5 as institutional
+    # translation, the same role MIMIC's chartevents itemid 220277 plays
+    # -- GEMINI ward vitals are overwhelmingly pulse-ox readings.
+    "VITALS//3013502//": "59408-5",  # O2 saturation (60.6M)
+    # -- Labs (test_type_mapped_omop) --
+    # Leukocytes [#/volume] in Blood; the datacut's lookup carries a
+    # duplicate description row ("[Presence] in Urine") for this id --
+    # known lookup artifact (see extract_meds.fetch_lab_concept_lookup),
+    # the id itself is the blood WBC count. Units are the x10^9/L family
+    # (canonicalized at extraction), numerically identical to MIMIC's
+    # K/uL, so canonical thresholds apply unchanged.
+    "LAB//3010813//": "6690-2",  # WBC (15.4M)
+    # Creatinine [Moles/volume] -- umol/L, see _PREFIX_UNITS.
+    "LAB//3020564//": "2160-0",  # Creatinine (14.7M)
+    # Lactate: three OMOP ids (arterial/venous/serum), all Moles/volume
+    # (mmol/L), the same unit the canonical 32693-4 thresholds use.
+    "LAB//3018405//": "32693-4",  # Lactate, arterial (1.27M)
+    "LAB//3008037//": "32693-4",  # Lactate, venous (1.22M)
+    "LAB//3020138//": "32693-4",  # Lactate, serum/plasma (0.76M)
+}
+
+
 _SOURCE_TABLES: Dict[str, Dict[str, str]] = {
     "mimic_iv": MIMIC_IV_TO_LOINC,
     "eicu": EICU_TO_LOINC,
-    "gemini": {},
+    "gemini": GEMINI_TO_LOINC,
 }
 
 
@@ -238,7 +276,16 @@ _PREFIX_UNITS: Dict[str, Dict[str, str]] = {
         "VITALS//PERIODIC//TEMPERATURE": "C",
         "LAB//CRP//": "mg/dL",
     },
-    "gemini": {},
+    "gemini": {
+        # Creatinine is charted in umol/L across the network (SI; verified
+        # server-side: 12.9M+ rows, zero mg/dL) -- the canonical mg/dL
+        # thresholds/ranges must NOT apply; see CANONICAL_CLINICAL_RANGES'
+        # umol/L entry and the AKI rule's unit_deltas.
+        "LAB//3020564//": "umol/L",
+        # Body temperature: Canadian network, Celsius (no Fahrenheit rows
+        # observed in the vitals unit sampling).
+        "VITALS//3020891//": "C",
+    },
 }
 
 

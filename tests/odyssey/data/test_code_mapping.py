@@ -8,6 +8,7 @@ import pytest
 from odyssey.data import code_mapping
 from odyssey.data.code_mapping import (
     EICU_TO_LOINC,
+    GEMINI_TO_LOINC,
     MIMIC_IV_TO_LOINC,
     assert_all_mapped,
     loinc_for,
@@ -208,3 +209,23 @@ def test_every_unit_tagged_prefix_is_also_mapped() -> None:
     for source, tags in code_mapping._PREFIX_UNITS.items():
         for prefix in tags:
             assert loinc_for(prefix, source=source) is not None, (source, prefix)
+
+
+# ---------------------------------------------------------------------------
+# GEMINI source table
+# ---------------------------------------------------------------------------
+
+
+def test_gemini_prefixes_resolve_to_registry_loincs() -> None:
+    """Every registry LOINC the GEMINI table claims is reachable both ways."""
+    for prefix, loinc in GEMINI_TO_LOINC.items():
+        assert loinc_for(prefix, source="gemini") == loinc
+        assert prefix in prefixes_for_loinc(loinc, source="gemini")
+    # the three lactate ids collapse onto one canonical LOINC
+    assert prefixes_for_loinc("32693-4", source="gemini") == frozenset(
+        {"LAB//3018405//", "LAB//3008037//", "LAB//3020138//"}
+    )
+    # unit-split signals carry their tags; unambiguous ones do not
+    assert unit_for("LAB//3020564//", source="gemini") == "umol/L"
+    assert unit_for("VITALS//3020891//", source="gemini") == "C"
+    assert unit_for("VITALS//3027018//", source="gemini") is None

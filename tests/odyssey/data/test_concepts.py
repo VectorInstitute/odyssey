@@ -10,6 +10,7 @@ import pytest
 
 from odyssey.data import code_mapping
 from odyssey.data.concepts import (
+    CANONICAL_CONCEPTS,
     CONCEPTS,
     AnyOf,
     BaselineRelativeRule,
@@ -18,7 +19,9 @@ from odyssey.data.concepts import (
     ConceptDefinition,
     ConceptRule,
     DerivedGcsTotalRule,
+    LoincBaselineRelative,
     SustainedRule,
+    _expand_rule,
     concepts_for_source,
     label_concepts,
     label_concepts_by_visit,
@@ -1091,3 +1094,44 @@ def test_first_time_respects_visit_scoping() -> None:
         T0,
         T0 + timedelta(days=30, hours=4),
     ]
+
+
+# ---------------------------------------------------------------------------
+# GEMINI expansion
+# ---------------------------------------------------------------------------
+
+
+def test_gemini_source_resolves_all_but_gcs_dependent_concepts() -> None:
+    """15 of 16 canonical concepts resolve on GEMINI; only GCS-dependent parts drop.
+
+    Mirrors the eICU situation (no GCS source yet): qsofa keeps 2 of 3
+    criteria, everything else resolves fully -- including sirs with all
+    four criteria, which never resolved before the GEMINI mapping table
+    existed (the smoke runs logged 20+ dropped-concept warnings).
+    """
+    names = sorted(c.name for c in concepts_for_source("gemini"))
+    assert "sirs" in names and "qsofa" in names
+    assert "acute_kidney_injury" in names and "aki_stage_3" in names
+    assert len(names) == 15
+
+
+def test_aki_delta_is_unit_converted_per_source() -> None:
+    """KDIGO's 0.3 mg/dL rise becomes 26.5 umol/L on GEMINI, unchanged elsewhere.
+
+    Applying the mg/dL delta to umol/L values would make stage-1 AKI
+    trigger on ordinary assay noise (0.3 umol/L is ~1/90th of the real
+    criterion), so the unit_deltas override is load-bearing, not
+    cosmetic.
+    """
+    delta_rules = [
+        rr
+        for c in CANONICAL_CONCEPTS
+        for r in (getattr(c, "rules", None) or getattr(c, "components", []) or [])
+        for rr in (getattr(r, "rules", None) or [r])
+        if isinstance(rr, LoincBaselineRelative) and rr.delta == 0.3
+    ]
+    assert len(delta_rules) == 1
+    rule = delta_rules[0]
+    assert [e.delta for e in _expand_rule(rule, "mimic_iv")] == [0.3]
+    assert [e.delta for e in _expand_rule(rule, "eicu")] == [0.3]
+    assert [e.delta for e in _expand_rule(rule, "gemini")] == [26.5]
