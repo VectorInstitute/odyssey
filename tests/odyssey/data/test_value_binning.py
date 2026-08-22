@@ -5,6 +5,7 @@ from typing import List, Optional, Tuple
 import polars as pl
 import pytest
 
+from odyssey.data import code_mapping
 from odyssey.data.concepts import (
     CONCEPTS,
     AnyOf,
@@ -255,6 +256,36 @@ def test_quantile_binner_apply_on_empty_events_frame() -> None:
     assert binner.apply(_events([])).to_list() == []
 
 
+def test_quantile_binner_apply_with_no_fitted_boundaries_returns_all_null() -> None:
+    """An unfit (or fit-on-nothing-eligible) binner must not crash on real events."""
+    binner = QuantileBinner(boundaries={}, n_bins=5)
+    events = _events([("LAB//UNMAPPED//x", 1.0), ("LAB//UNMAPPED//x", 2.0)])
+    out = binner.apply(events)
+    assert out.to_list() == [None, None]
+    assert out.dtype == pl.Utf8
+
+
+def test_quantile_binner_standardize_with_no_value_stats_returns_all_null() -> None:
+    """A binner saved before value_stats existed (or fit on nothing eligible)."""
+    binner = QuantileBinner(boundaries={}, n_bins=5, value_stats={})
+    events = _events([("LAB//UNMAPPED//x", 1.0), ("LAB//UNMAPPED//x", 2.0)])
+    out = binner.standardize(events)
+    assert out.to_list() == [None, None]
+    assert out.dtype == pl.Float32
+
+
+def test_quantile_binner_standardize_missing_value_column_returns_all_null() -> None:
+    """Standardize on a frame with no numeric_value column at all, not a KeyError."""
+    events = _events([("LAB//UNMAPPED//x", float(v)) for v in range(100)])
+    binner = QuantileBinner.fit(events, n_bins=5, min_count=50)
+    assert binner.value_stats  # sanity: this binner did fit real stats
+
+    codes_only = pl.DataFrame({"code": ["LAB//UNMAPPED//x", "LAB//UNMAPPED//x"]})
+    out = binner.standardize(codes_only)
+    assert out.to_list() == [None, None]
+    assert out.dtype == pl.Float32
+
+
 def test_quantile_binner_handles_constant_values_via_deduped_boundaries() -> None:
     # Every observation is identical, so every quantile collapses to one
     # cut point -- fewer than n_bins - 1. apply() must not index out of range.
@@ -332,3 +363,46 @@ def test_eicu_events_get_clinical_bins_via_source_parameter() -> None:
     # Without the source, eICU prefixes are unknown and pass through.
     untouched = add_value_tokens(events)
     assert untouched["code"].to_list() == events["code"].to_list()
+
+
+def test_clinical_ranges_skips_a_prefix_whose_unit_tag_is_not_curated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A unit-split LOINC (temperature: F/C) with a prefix tagged some other unit.
+
+    Not reachable through any currently-registered source (every real
+    prefix mapped to 8310-5 is tagged F or C), but a future or
+    partially-configured source could add one -- prefixes_for_loinc and
+    unit_for are wrapped (not replaced) to inject exactly one such prefix
+    while every other LOINC's real expansion is untouched, so this tests
+    the skip in isolation rather than emptying the whole result. The
+    injected prefix must be silently excluded, not crash or fall back to
+    the wrong cut points; the real F/C prefixes for the same LOINC must
+    still come through normally.
+    """
+    real_prefixes_for_loinc = code_mapping.prefixes_for_loinc
+    real_unit_for = code_mapping.unit_for
+
+    def fake_prefixes_for_loinc(loinc: str, *, source: str) -> frozenset[str]:
+        prefixes = real_prefixes_for_loinc(loinc, source=source)
+        if loinc == "8310-5":
+            prefixes = prefixes | {"LAB//TEMP//KELVIN"}
+        return prefixes
+
+    def fake_unit_for(prefix: str, *, source: str) -> Optional[str]:
+        if prefix == "LAB//TEMP//KELVIN":
+            return "K"
+        return real_unit_for(prefix, source=source)
+
+    monkeypatch.setattr(
+        "odyssey.data.value_binning.prefixes_for_loinc", fake_prefixes_for_loinc
+    )
+    monkeypatch.setattr("odyssey.data.value_binning.unit_for", fake_unit_for)
+
+    ranges, fallbacks = clinical_ranges_for_source("mimic_iv")
+
+    assert "LAB//TEMP//KELVIN" not in ranges
+    assert "LAB//TEMP//KELVIN" not in fallbacks
+    # the real F/C prefixes for the same LOINC are unaffected by the injection
+    assert ranges["LAB//223761//"] == CLINICAL_RANGES["LAB//223761//"]
+    assert ranges["LAB//223762//"] == CLINICAL_RANGES["LAB//223762//"]
