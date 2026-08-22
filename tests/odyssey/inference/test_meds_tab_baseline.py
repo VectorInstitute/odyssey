@@ -20,7 +20,8 @@ from odyssey.inference.alerts import IndexRow
 from odyssey.inference.meds_tab_baseline import (
     MedsTabBaselineModel,
     _prediction_times,
-    assert_no_held_out_subject_in_training_features,
+    assert_label_feature_alignment,
+    assert_no_split_leakage,
     export_task_labels,
     index_matrix_by_event,
     verify_cached_label_count,
@@ -224,33 +225,309 @@ def test_verify_cached_label_count_raises_when_nothing_was_cached(
 
 
 # ---------------------------------------------------------------------------
-# assert_no_held_out_subject_in_training_features: item (e)
+# assert_label_feature_alignment: standalone-path replacement for
+# verify_cached_label_count when meds-tab-cache-task never runs
 # ---------------------------------------------------------------------------
 
 
-def test_split_assert_passes_when_no_held_out_subject_leaks(tmp_path: Path) -> None:
-    train_dir = tmp_path / "train"
-    train_dir.mkdir(parents=True)
-    pl.DataFrame({"subject_id": [1, 2, 3]}).write_parquet(train_dir / "0.parquet")
-    assert_no_held_out_subject_in_training_features(
-        tmp_path, held_out_subject_ids={4, 5}
+def _write_fake_npz(fp: Path, n_rows: int, n_cols: int = 3) -> None:
+    """Real MEDS-Tab npz shape.
+
+    An "array" key (row-major nonzero triplets,
+    contents irrelevant here) and a "shape" key -- confirmed directly
+    against a real finished tabularize-time-series run's own .npz files
+    (np.load(fp).keys() == ['array', 'shape']), not assumed from the
+    scipy.sparse.save_npz format (which MEDS-Tab does NOT use -- its own
+    load_matrix reads these two keys itself, not scipy's own loader).
+    """
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(fp, array=np.zeros((0, 3)), shape=np.array([n_rows, n_cols]))
+
+
+def test_alignment_assert_passes_when_rows_match(tmp_path: Path) -> None:
+    tab_dir = tmp_path / "tabularize"
+    label_dir = tmp_path / "labels"
+    label_dir.mkdir(parents=True)
+    pl.DataFrame({"subject_id": [1, 2, 3]}).write_parquet(label_dir / "0.parquet")
+    _write_fake_npz(tab_dir / "0" / "1d" / "code" / "count.npz", n_rows=3)
+    assert_label_feature_alignment(tab_dir, label_dir)  # no raise
+
+
+def test_alignment_assert_raises_on_row_count_mismatch(tmp_path: Path) -> None:
+    tab_dir = tmp_path / "tabularize"
+    label_dir = tmp_path / "labels"
+    label_dir.mkdir(parents=True)
+    pl.DataFrame({"subject_id": [1, 2, 3]}).write_parquet(label_dir / "0.parquet")
+    _write_fake_npz(tab_dir / "0" / "1d" / "code" / "count.npz", n_rows=5)
+    with pytest.raises(AssertionError, match="label rows=3, feature rows=5"):
+        assert_label_feature_alignment(tab_dir, label_dir)
+
+
+def test_alignment_assert_raises_when_no_label_files_exist(tmp_path: Path) -> None:
+    with pytest.raises(AssertionError, match="no label files found"):
+        assert_label_feature_alignment(tmp_path / "tabularize", tmp_path / "labels")
+
+
+def test_alignment_assert_raises_when_npz_missing_for_a_shard(tmp_path: Path) -> None:
+    label_dir = tmp_path / "labels"
+    label_dir.mkdir(parents=True)
+    pl.DataFrame({"subject_id": [1]}).write_parquet(label_dir / "0.parquet")
+    with pytest.raises(
+        AssertionError, match="expected tabularized feature file not found"
+    ):
+        assert_label_feature_alignment(tmp_path / "tabularize", label_dir)
+
+
+# ---------------------------------------------------------------------------
+# assert_no_split_leakage: item (e)
+# ---------------------------------------------------------------------------
+
+
+def _make_raw_split_dirs(
+    root: Path,
+    *,
+    train_subjects: list[int],
+    held_out_subjects: list[int],
+    tuning_subjects: list[int] | None = None,
+) -> Path:
+    (root / "train").mkdir(parents=True)
+    pl.DataFrame({"subject_id": train_subjects}).write_parquet(
+        root / "train" / "0.parquet"
     )
+    (root / "held_out").mkdir(parents=True)
+    pl.DataFrame({"subject_id": held_out_subjects}).write_parquet(
+        root / "held_out" / "0.parquet"
+    )
+    (root / "tuning").mkdir(parents=True)
+    pl.DataFrame({"subject_id": tuning_subjects or []}).write_parquet(
+        root / "tuning" / "0.parquet"
+    )
+    return root
 
 
-def test_split_assert_raises_when_a_held_out_subject_leaks(tmp_path: Path) -> None:
-    train_dir = tmp_path / "train"
-    train_dir.mkdir(parents=True)
-    pl.DataFrame({"subject_id": [1, 2, 3]}).write_parquet(train_dir / "0.parquet")
-    with pytest.raises(AssertionError, match="held-out subject_id.* present"):
-        assert_no_held_out_subject_in_training_features(
-            tmp_path, held_out_subject_ids={2, 99}
+def test_split_assert_passes_when_no_leak_at_either_level(tmp_path: Path) -> None:
+    tab_data_dir = _make_raw_split_dirs(
+        tmp_path / "data",
+        train_subjects=[1, 2, 3],
+        held_out_subjects=[4, 5],
+        tuning_subjects=[6, 7],
+    )
+    label_dir = tmp_path / "labels" / "train"
+    label_dir.mkdir(parents=True)
+    pl.DataFrame({"subject_id": [1, 2, 3]}).write_parquet(label_dir / "0.parquet")
+    assert_no_split_leakage(
+        tab_data_dir,
+        held_out_subject_ids={4, 5},
+        tuning_subject_ids={6, 7},
+        train_label_dir=label_dir,
+    )  # no raise
+
+
+def test_split_assert_raises_when_raw_shard_leaks_held_out(tmp_path: Path) -> None:
+    tab_data_dir = _make_raw_split_dirs(
+        tmp_path / "data",
+        train_subjects=[1, 2, 99],
+        held_out_subjects=[99, 5],
+        tuning_subjects=[6],
+    )
+    label_dir = tmp_path / "labels" / "train"
+    label_dir.mkdir(parents=True)
+    pl.DataFrame({"subject_id": [1, 2]}).write_parquet(label_dir / "0.parquet")
+    with pytest.raises(AssertionError, match="raw training shards"):
+        assert_no_split_leakage(
+            tab_data_dir,
+            held_out_subject_ids={99, 5},
+            tuning_subject_ids={6},
+            train_label_dir=label_dir,
         )
 
 
-def test_split_assert_raises_when_no_training_files_exist(tmp_path: Path) -> None:
-    with pytest.raises(AssertionError, match="no tabularized training feature files"):
-        assert_no_held_out_subject_in_training_features(
-            tmp_path, held_out_subject_ids={1}
+def test_split_assert_raises_when_raw_shard_leaks_tuning(tmp_path: Path) -> None:
+    tab_data_dir = _make_raw_split_dirs(
+        tmp_path / "data",
+        train_subjects=[1, 2, 6],
+        held_out_subjects=[5],
+        tuning_subjects=[6, 7],
+    )
+    label_dir = tmp_path / "labels" / "train"
+    label_dir.mkdir(parents=True)
+    pl.DataFrame({"subject_id": [1, 2]}).write_parquet(label_dir / "0.parquet")
+    with pytest.raises(AssertionError, match="raw training shards"):
+        assert_no_split_leakage(
+            tab_data_dir,
+            held_out_subject_ids={5},
+            tuning_subject_ids={6, 7},
+            train_label_dir=label_dir,
+        )
+
+
+def test_split_assert_raises_when_label_leaks(tmp_path: Path) -> None:
+    # Raw shards are clean -- this proves the label-level check is a real,
+    # independent second gate, not just a rephrasing of the raw check.
+    tab_data_dir = _make_raw_split_dirs(
+        tmp_path / "data",
+        train_subjects=[1, 2, 3],
+        held_out_subjects=[99],
+        tuning_subjects=[6],
+    )
+    label_dir = tmp_path / "labels" / "train"
+    label_dir.mkdir(parents=True)
+    pl.DataFrame({"subject_id": [1, 2, 99]}).write_parquet(label_dir / "0.parquet")
+    with pytest.raises(AssertionError, match="train-split task labels"):
+        assert_no_split_leakage(
+            tab_data_dir,
+            held_out_subject_ids={99},
+            tuning_subject_ids={6},
+            train_label_dir=label_dir,
+        )
+
+
+def test_split_assert_raises_when_held_out_and_tuning_overlap(tmp_path: Path) -> None:
+    tab_data_dir = _make_raw_split_dirs(
+        tmp_path / "data",
+        train_subjects=[1, 2],
+        held_out_subjects=[4, 5],
+        tuning_subjects=[5, 6],  # 5 leaked into both eval-only splits
+    )
+    label_dir = tmp_path / "labels" / "train"
+    label_dir.mkdir(parents=True)
+    pl.DataFrame({"subject_id": [1, 2]}).write_parquet(label_dir / "0.parquet")
+    with pytest.raises(AssertionError, match="both the raw held_out and tuning splits"):
+        assert_no_split_leakage(
+            tab_data_dir,
+            held_out_subject_ids={4, 5},
+            tuning_subject_ids={5, 6},
+            train_label_dir=label_dir,
+        )
+
+
+def test_split_assert_raises_when_no_raw_training_files_exist(tmp_path: Path) -> None:
+    (tmp_path / "data" / "held_out").mkdir(parents=True)
+    (tmp_path / "data" / "tuning").mkdir(parents=True)
+    label_dir = tmp_path / "labels" / "train"
+    label_dir.mkdir(parents=True)
+    pl.DataFrame({"subject_id": [1]}).write_parquet(label_dir / "0.parquet")
+    with pytest.raises(AssertionError, match="no parquet files found"):
+        assert_no_split_leakage(
+            tmp_path / "data",
+            held_out_subject_ids={1},
+            tuning_subject_ids=set(),
+            train_label_dir=label_dir,
+        )
+
+
+def test_split_assert_eval_label_dirs_pass_when_clean(tmp_path: Path) -> None:
+    tab_data_dir = _make_raw_split_dirs(
+        tmp_path / "data",
+        train_subjects=[1, 2],
+        held_out_subjects=[4, 5],
+        tuning_subjects=[6, 7],
+    )
+    label_dir = tmp_path / "labels" / "train"
+    label_dir.mkdir(parents=True)
+    pl.DataFrame({"subject_id": [1, 2]}).write_parquet(label_dir / "0.parquet")
+    held_out_label_dir = tmp_path / "labels" / "held_out"
+    held_out_label_dir.mkdir(parents=True)
+    pl.DataFrame({"subject_id": [4, 5]}).write_parquet(held_out_label_dir / "0.parquet")
+    tuning_label_dir = tmp_path / "labels" / "tuning"
+    tuning_label_dir.mkdir(parents=True)
+    pl.DataFrame({"subject_id": [6, 7]}).write_parquet(tuning_label_dir / "0.parquet")
+    assert_no_split_leakage(
+        tab_data_dir,
+        held_out_subject_ids={4, 5},
+        tuning_subject_ids={6, 7},
+        train_label_dir=label_dir,
+        held_out_label_dir=held_out_label_dir,
+        tuning_label_dir=tuning_label_dir,
+    )  # no raise
+
+
+def test_split_assert_raises_on_stray_subject_in_held_out_labels(
+    tmp_path: Path,
+) -> None:
+    tab_data_dir = _make_raw_split_dirs(
+        tmp_path / "data",
+        train_subjects=[1, 2],
+        held_out_subjects=[4, 5],
+        tuning_subjects=[6],
+    )
+    label_dir = tmp_path / "labels" / "train"
+    label_dir.mkdir(parents=True)
+    pl.DataFrame({"subject_id": [1, 2]}).write_parquet(label_dir / "0.parquet")
+    held_out_label_dir = tmp_path / "labels" / "held_out"
+    held_out_label_dir.mkdir(parents=True)
+    # 42 is not in the raw held-out split at all -- a stray subject.
+    pl.DataFrame({"subject_id": [4, 5, 42]}).write_parquet(
+        held_out_label_dir / "0.parquet"
+    )
+    with pytest.raises(AssertionError, match="not in the raw held-out split"):
+        assert_no_split_leakage(
+            tab_data_dir,
+            held_out_subject_ids={4, 5},
+            tuning_subject_ids={6},
+            train_label_dir=label_dir,
+            held_out_label_dir=held_out_label_dir,
+        )
+
+
+def test_split_assert_raises_on_stray_subject_in_tuning_labels(
+    tmp_path: Path,
+) -> None:
+    tab_data_dir = _make_raw_split_dirs(
+        tmp_path / "data",
+        train_subjects=[1, 2],
+        held_out_subjects=[4],
+        tuning_subjects=[6, 7],
+    )
+    label_dir = tmp_path / "labels" / "train"
+    label_dir.mkdir(parents=True)
+    pl.DataFrame({"subject_id": [1, 2]}).write_parquet(label_dir / "0.parquet")
+    tuning_label_dir = tmp_path / "labels" / "tuning"
+    tuning_label_dir.mkdir(parents=True)
+    # 42 is not in the raw tuning split at all -- a stray subject.
+    pl.DataFrame({"subject_id": [6, 7, 42]}).write_parquet(
+        tuning_label_dir / "0.parquet"
+    )
+    with pytest.raises(AssertionError, match="not in the raw tuning split"):
+        assert_no_split_leakage(
+            tab_data_dir,
+            held_out_subject_ids={4},
+            tuning_subject_ids={6, 7},
+            train_label_dir=label_dir,
+            tuning_label_dir=tuning_label_dir,
+        )
+
+
+def test_split_assert_regression_memorial_npz_only_tabularize_dir(
+    tmp_path: Path,
+) -> None:
+    """The original bug.
+
+    assert_no_held_out_subject_in_training_features
+    globbed **/*.parquet under MEDS-Tab's own tabularize/ output, which is
+    exclusively .npz on every real run (confirmed on a real 11.3h
+    tabularize-time-series run: 0 .parquet, 930 .npz under
+    tabularize/train) -- so that glob could never match anything, and the
+    check always failed with "no files found" regardless of real leakage.
+    If the same mistake is repeated -- pointing tab_data_dir at an
+    npz-bearing tabularize output dir instead of the raw scoped shard
+    input dir -- this must still fail loudly, not silently accept.
+    """
+    old_wrong_dir = tmp_path / "meds_tab_out" / "some_task" / "tabularize"
+    npz_shard_dir = old_wrong_dir / "train" / "0" / "1d" / "code"
+    npz_shard_dir.mkdir(parents=True)
+    (npz_shard_dir / "count.npz").write_bytes(
+        b"\x00not a real npz, just marking the file exists"
+    )
+    label_dir = tmp_path / "labels" / "train"
+    label_dir.mkdir(parents=True)
+    pl.DataFrame({"subject_id": [1]}).write_parquet(label_dir / "0.parquet")
+    with pytest.raises(AssertionError, match="no parquet files found"):
+        assert_no_split_leakage(
+            old_wrong_dir,
+            held_out_subject_ids={1},
+            tuning_subject_ids=set(),
+            train_label_dir=label_dir,
         )
 
 
