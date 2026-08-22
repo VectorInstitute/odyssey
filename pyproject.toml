@@ -82,6 +82,12 @@ dependencies = [
 # exiting 0.
 cuda = [
     "mamba-ssm==2.3.0",
+    # odyssey.models.backbones.hybrid imports einops (deferred, since it's
+    # only needed by the hybrid-Mamba backbone) -- TrainingConfig's own
+    # default is backbone="hybrid", so this is load-bearing for the
+    # ordinary default path, not an edge case. Found missing from this
+    # file entirely during the env-gpu hardening audit (2026-08-18).
+    "einops>=0.7.0",
 ]
 
 # GEMINI database access (odyssey/data/gemini/). Optional: nobody but Amrit
