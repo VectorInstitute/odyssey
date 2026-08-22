@@ -180,6 +180,15 @@ OUTPUT_DIR = Path(
     )
 )
 
+#: Same convention as extract_meds.SUMMARY_PATH: a small, suppressed
+#: (no patient-level detail) summary under the repo's own scripts/gemini/out/,
+#: so run.sh's commit-and-push step can ride it back to git the same way
+#: extraction_summary.json already does. Real incident this exists to fix:
+#: a completed finalize run's tail showed the summary on stdout, then
+#: "Nothing to commit" -- the summary was never written to a tracked path
+#: at all, so it never made it back to git.
+SUMMARY_PATH = Path(__file__).resolve().parent / "out" / "finalize_summary.json"
+
 #: Matches extract_meds.SUBJECTS_PER_SHARD -- duplicated, not imported.
 FINALIZE_SUBJECTS_PER_SHARD = 1000
 
@@ -244,6 +253,23 @@ def _quote_ident(name: str) -> str:
     docstring on why GEMINI-facing scripts don't cross-import.
     """
     return '"' + name.replace('"', '""') + '"'
+
+
+def _suppressed(n: int) -> str:
+    """Round ``n`` to the nearest 1000, or mask small counts.
+
+    Mirrors ``extract_meds._suppressed``/``explore_schema.suppressed_row_count``/
+    ``extract_dry._suppressed`` exactly (small-cell suppression) -- duplicated,
+    not imported, see the module docstring.
+
+    Returns
+    -------
+    str
+        ``"<6"`` under 6, otherwise rounded to the nearest 1000.
+    """
+    if n < 6:
+        return "<6"
+    return str(round(n / 1000) * 1000)
 
 
 def _shard_count(
@@ -738,10 +764,13 @@ def run_finalize(output_dir: Optional[Path] = None) -> dict[str, Any]:
     Returns
     -------
     dict[str, Any]
-        Summary: subject/shard counts per split, warning count. Raises
-        (does not return) if the resulting dataset fails conformance --
-        see the module docstring's "Crash semantics" section for what
-        state that leaves on disk.
+        Summary: suppressed subject/split counts, shard count, warning
+        count -- the same dict written to :data:`SUMMARY_PATH` (small
+        enough, and suppressed enough via :func:`_suppressed`, to commit
+        to git the way ``extract_meds.py``'s own ``extraction_summary.json``
+        already does). Raises (does not return) if the resulting dataset
+        fails conformance -- see the module docstring's "Crash semantics"
+        section for what state that leaves on disk.
     """
     root = output_dir if output_dir is not None else OUTPUT_DIR
     # Checked before the manifest: a successful finalize deletes
@@ -833,23 +862,28 @@ def run_finalize(output_dir: Optional[Path] = None) -> dict[str, Any]:
             path.unlink()
     manifest_path.unlink()
 
-    return {
-        "n_subjects": len(subject_id_mapping),
+    summary = {
+        "n_subjects": _suppressed(len(subject_id_mapping)),
         "n_output_shards": n_output_shards_total,
         "splits": {
-            name: sum(1 for s in split_by_subject.values() if s == name)
+            name: _suppressed(sum(1 for s in split_by_subject.values() if s == name))
             for name in FINALIZE_SPLIT_FRACS
         },
         "warnings": len(findings) - len(error_findings),
     }
+    SUMMARY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SUMMARY_PATH.write_text(json.dumps(summary, indent=2) + "\n")
+    logger.info("[finalize] wrote %s", SUMMARY_PATH)
+    return summary
 
 
 def main() -> None:
-    """Run finalize and print a summary."""
+    """Run finalize and print where the summary landed."""
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
     summary = run_finalize()
+    print(f"Wrote {SUMMARY_PATH}")
     print(json.dumps(summary, indent=2))
 
 
