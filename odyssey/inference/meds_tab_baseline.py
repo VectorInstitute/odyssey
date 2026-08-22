@@ -286,14 +286,17 @@ def _subject_ids_in_parquet_dir(d: Path, *, column: str = "subject_id") -> set[i
 def assert_no_split_leakage(
     tab_data_dir: Path,
     held_out_subject_ids: set[int],
+    tuning_subject_ids: set[int],
     *,
     train_label_dir: Path,
     held_out_label_dir: Path | None = None,
+    tuning_label_dir: Path | None = None,
     subject_id_column: str = "subject_id",
 ) -> None:
-    """(e): held-out subjects must be unreachable at fit time.
+    """(e): eval-only subjects must be unreachable at fit time.
 
-    Checked at both levels that could leak them.
+    Held-out and tuning subjects must not leak into training, and must not
+    leak into each other either. Checked at both levels that could leak them.
 
     Originally (as ``assert_no_held_out_subject_in_training_features``)
     this globbed ``**/*.parquet`` under MEDS-Tab's own ``tabularize/``
@@ -305,65 +308,96 @@ def assert_no_split_leakage(
     "no files found" regardless of whether a real leak existed -- it never
     once actually verified anything.
 
-    Checks two levels instead, both over real parquet with a real
-    ``subject_id`` column:
+    ``tuning`` exists because ``meds-tab-xgboost`` hardcodes a real tuning
+    split for its own early-stopping validation during the fit itself
+    (confirmed from ``xgboost_model.py``'s ``_build``: ``XGBIterator(cfg,
+    split="tuning")``, unconditional, not gated by ``prediction_splits`` --
+    that config only controls the separate final-prediction stage). A
+    subject used for early-stopping/model-selection is a leak vector just
+    like a training subject, so it gets the same scrutiny as held_out here,
+    plus one more: held_out and tuning must not overlap each other either,
+    or model selection would implicitly peek at the held-out cohort.
+
+    Checks (all over real parquet with a real ``subject_id`` column, never
+    MEDS-Tab's own ``.npz`` tabularized output):
 
     1. Raw input level: every subject in ``tab_data_dir/train/*.parquet``
        (our own scoped shard partitioning, the thing actually under our
        control -- MEDS-Tab's tabularization is a deterministic function of
        whichever shards we feed it, so it cannot introduce leakage beyond
        what's already in our own input partitioning) must be absent from
-       ``held_out_subject_ids``.
+       both ``held_out_subject_ids`` and ``tuning_subject_ids``.
     2. Label level: every subject in ``train_label_dir``'s task-label files
        -- what ``meds-tab-xgboost`` actually trains against, via
-       ``meds-tab-cache-task``'s own join -- must also be absent from
-       ``held_out_subject_ids``. This is the vector level (1) alone cannot
-       see: a bug in MEDS-Tab's own label/cache-task join mixing splits.
+       ``meds-tab-cache-task``'s own join -- must also be absent from both.
+       This is the vector level (1) alone cannot see: a bug in MEDS-Tab's
+       own label/cache-task join mixing splits.
+    3. Raw held_out vs raw tuning: the two eval-only splits' raw subjects
+       must be disjoint from each other.
 
-    If ``held_out_label_dir`` is given, also checks the mirror-image leak:
-    every subject in the held-out label files must be a member of the raw
-    held-out split (not a stray non-held-out subject that leaked in).
+    If ``held_out_label_dir``/``tuning_label_dir`` are given, also checks
+    each one's mirror-image leak: every subject in that split's label files
+    must be a member of its own raw split (not a stray subject from
+    elsewhere that leaked in).
     """
+    eval_subject_ids = held_out_subject_ids | tuning_subject_ids
+
     raw_train_subjects = _subject_ids_in_parquet_dir(
         tab_data_dir / "train", column=subject_id_column
     )
-    leaked_raw = raw_train_subjects & held_out_subject_ids
+    leaked_raw = raw_train_subjects & eval_subject_ids
     if leaked_raw:
         sample = sorted(leaked_raw)[:5]
         raise AssertionError(
-            f"{len(leaked_raw)} held-out subject_id(s) present in raw training "
-            f"shards under {tab_data_dir / 'train'} (e.g. {sample}) -- shard "
-            "partitioning leaked held-out subjects into train"
+            f"{len(leaked_raw)} eval-only (held-out/tuning) subject_id(s) present "
+            f"in raw training shards under {tab_data_dir / 'train'} (e.g. {sample}) "
+            "-- shard partitioning leaked eval-only subjects into train"
         )
 
     label_train_subjects = _subject_ids_in_parquet_dir(
         train_label_dir, column=subject_id_column
     )
-    leaked_label = label_train_subjects & held_out_subject_ids
+    leaked_label = label_train_subjects & eval_subject_ids
     if leaked_label:
         sample = sorted(leaked_label)[:5]
         raise AssertionError(
-            f"{len(leaked_label)} held-out subject_id(s) present in train-split "
-            f"task labels under {train_label_dir} (e.g. {sample}) -- split "
-            "enforcement failed in the label/cache-task join, held-out subjects "
-            "were reachable at fit time"
+            f"{len(leaked_label)} eval-only (held-out/tuning) subject_id(s) "
+            f"present in train-split task labels under {train_label_dir} "
+            f"(e.g. {sample}) -- split enforcement failed in the label/"
+            "cache-task join, eval-only subjects were reachable at fit time"
         )
 
-    if held_out_label_dir is not None:
-        raw_held_out_subjects = _subject_ids_in_parquet_dir(
-            tab_data_dir / "held_out", column=subject_id_column
+    raw_held_out_subjects = _subject_ids_in_parquet_dir(
+        tab_data_dir / "held_out", column=subject_id_column
+    )
+    raw_tuning_subjects = _subject_ids_in_parquet_dir(
+        tab_data_dir / "tuning", column=subject_id_column
+    )
+    overlap = raw_held_out_subjects & raw_tuning_subjects
+    if overlap:
+        sample = sorted(overlap)[:5]
+        raise AssertionError(
+            f"{len(overlap)} subject_id(s) present in both the raw held_out and "
+            f"tuning splits (e.g. {sample}) -- tuning (used for model selection) "
+            "and held_out (used for final scoring) must be disjoint"
         )
-        label_held_out_subjects = _subject_ids_in_parquet_dir(
-            held_out_label_dir, column=subject_id_column
+
+    for label_dir, raw_subjects, name in (
+        (held_out_label_dir, raw_held_out_subjects, "held-out"),
+        (tuning_label_dir, raw_tuning_subjects, "tuning"),
+    ):
+        if label_dir is None:
+            continue
+        label_subjects = _subject_ids_in_parquet_dir(
+            label_dir, column=subject_id_column
         )
-        stray = label_held_out_subjects - raw_held_out_subjects
+        stray = label_subjects - raw_subjects
         if stray:
             sample = sorted(stray)[:5]
             raise AssertionError(
-                f"{len(stray)} subject_id(s) in held-out task labels under "
-                f"{held_out_label_dir} are not in the raw held-out split under "
-                f"{tab_data_dir / 'held_out'} (e.g. {sample}) -- held-out label "
-                "file contains subjects outside the held-out cohort"
+                f"{len(stray)} subject_id(s) in {name} task labels under "
+                f"{label_dir} are not in the raw {name} split (e.g. {sample}) "
+                f"-- {name} label file contains subjects outside its own cohort"
             )
 
 
