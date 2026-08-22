@@ -190,7 +190,7 @@ Organized by research track; the foundational plumbing that is finished lives in
 
 **Track A: performance and probes**
 1. Recency/staleness inputs to the hazard heads (done: improves 9/12 pairs on eICU, AKI@8h 0.681 to 0.697, about a third of the probe-localized gap, at a small set-forecast cost); next lever: curated-signal staleness and last-value channels (v10)
-2. Second epoch of full-scale MIMIC-IV training (running; learning curve still monotone after one)
+2. Second epoch of full-scale MIMIC-IV training (done 2026-08-22: 275,090 steps, best val loss 2.029; final eval numbers in the registry)
 3. MEDS-Tab as the field-standard external baseline on our own MEDS data (pipeline glue merged, driver in progress)
 4. Comparator suite on eICU (done: tuned GBM strongest overall; TabICL wins AKI and two ICU pairs; EBM and SurvivalPFN not competitive; registry has full tables); MIMIC repeat under the v2 landmark protocol in the re-evaluation wave (`docs/reeval_wave_v2.md`)
 5. Backbone control: a modern-vanilla decoder-only transformer (RoPE, pre-norm, SwiGLU; no LLM pre/post-training extras) swapped in behind the same tokenization, losses, heads, and matched parameter and compute budget -- prices the hybrid Mamba-2 + attention choice the way the no-bottleneck variant prices the bottleneck. Subset scale first; full scale only if the subset result is interesting in either direction. If it matches the hybrid, simplicity wins and we switch; if it loses, the architecture choice finally has a measured receipt.
@@ -202,7 +202,7 @@ Organized by research track; the foundational plumbing that is finished lives in
 9. Model-scale ladder on GEMINI ("curve vs point" made literal): the same pipeline and eval at ~14M (the A100-era config, kept for cross-dataset comparability), ~60M, and ~150M parameters on the H200 -- turns "did the tabular gap close because of data, scale, or both?" into a measured figure instead of an assertion, and sizes the flagship GEMINI run on evidence. Scaling heuristics and the EHR-FM literature both say 14M is undersized for 1.2B events; our own still-climbing epoch-2 curve says it isn't saturated either -- the ladder decides.
 
 **Track B: interpretability and causality**
-10. The stage-B cost frontier: longer training, partial unfreezing, small stage-A task weight (M-series, running); acceptance test is the six-mode banded intervention suite
+10. The stage-B cost frontier: longer training, partial unfreezing, small stage-A task weight (M-series, done -- M3b is the working point: 77% of the task gap recovered with a correctly-signed lever; L2-L4 six-mode completion runs queued); acceptance test is the six-mode banded intervention suite
 11. Concept-set widening (the completeness axis: richer concept vocabulary from structured data), plus leakage metrics (CTL/ICL) reported per run
 12. Input-level counterfactual rollouts as the near-term clinician what-if
 13. Distributional time head as a frozen-backbone probe: a log-normal mixture over inter-event time fit post-hoc on frozen features (zero pretraining cost), vs the binned hazard on NLL and calibration -- smooth predictive densities and closed-form quantiles for clinician-facing intervals, and the principled sampling machinery the counterfactual rollouts (item 12) need; negative-binomial per-window count head noted as optional utilization output. Completes the Doctor AI arc (their failed L2-on-log-time -> our bins -> mixture densities).

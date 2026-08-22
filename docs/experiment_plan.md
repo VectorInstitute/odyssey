@@ -63,7 +63,7 @@ attached does not launch.
 - **Missingness stress protocol** (Track A item 6): all families on identical
   degraded records, v2 dumps. Design doc first; runs mostly CPU. Gate: wave
   tables closed.
-- **eICU subject-to-hospital sidecar** (Track C item 16): built locally from
+- **eICU subject-to-hospital sidecar** (Track C item 17): built locally from
   raw tables on /Volumes/clinical-data; site-holdout eval machinery
   developed on eICU, then inherited by GEMINI. Gate: none (parallel).
 - **Registry/README/paper updates**: v2 tables + cleaned recency claims land
