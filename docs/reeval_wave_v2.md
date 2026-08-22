@@ -45,6 +45,19 @@ against the corrected row set.
   sync counts as a possible environment change same as anything else, so
   the pinned-commit re-cert is being redone post-sync before being trusted
   again, not assumed still valid from yesterday's run.
+  **VM1 (MIMIC leg), SATISFIED 2026-08-22 by different means, documented so
+  the asymmetry with VM2 isn't silent**: no separate pinned-commit historical
+  reproduction was run. VM2's canary exists to size an *actual incident*
+  (the mamba-ssm ABI break); VM1 has had no documented environment change
+  this session -- no `uv sync`, nothing analogous. The M1 auto eval chain
+  (`eval`/`interventions`/`alerts`/`cases`/`report`, all exit 0) completed
+  cleanly on this exact environment minutes before the M2 v2 dump started,
+  which is real, direct operational evidence the environment is healthy
+  right now, not a proxy for it. `env_fingerprint.py`'s stored-checkpoint
+  canary was checked and came back a silent no-op (`full_run_v8` predates
+  the provenance-file feature, so `verify_run_provenance` has nothing
+  stored to compare against) -- inconclusive, not a confirmed pass, noted
+  for completeness rather than treated as the basis for this call.
 - **MEDS-Tab v1 run landed** -- **scope amended 2026-08-22**: gates *only*
   the MEDS-Tab rescoring row (section 2's MEDS-Tab table entry and any
   MEDS-Tab-baseline comparison in section 3+); everything else in this wave
