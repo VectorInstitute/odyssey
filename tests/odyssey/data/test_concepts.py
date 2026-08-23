@@ -1156,6 +1156,10 @@ _V3_NEW_NAMES = (
     "metabolic_acidosis",
     "shock",
 )
+# Added later, in the same task set, but derived from SOFA signals rather
+# than a plain LOINC threshold -- so, like sepsis3, they only expand on
+# sources with SOFA's non-LOINC ingredients (see the eicu test below).
+_V3_DERIVED_NAMES = ("hypoxemic_respiratory_failure", "oliguria")
 
 
 def test_v1_and_v2_expansions_are_unchanged_by_the_v3_addition() -> None:
@@ -1198,10 +1202,10 @@ def test_v1_and_v2_expansions_are_unchanged_by_the_v3_addition() -> None:
     ]
 
 
-def test_v3_adds_exactly_the_eleven_new_concepts_on_top_of_v2() -> None:
+def test_v3_adds_exactly_the_new_concepts_on_top_of_v2() -> None:
     v2_names = {c.name for c in concepts_for_source("mimic_iv", task_set="v2")}
     v3_names = [c.name for c in concepts_for_source("mimic_iv", task_set="v3")]
-    assert set(v3_names) - v2_names == set(_V3_NEW_NAMES)
+    assert set(v3_names) - v2_names == set(_V3_NEW_NAMES) | set(_V3_DERIVED_NAMES)
     assert len(v3_names) == len(set(v3_names))  # no accidental duplicate names
 
 
@@ -1363,12 +1367,16 @@ def test_shock_is_not_defined_in_terms_of_on_vasopressors() -> None:
 def test_v3_eicu_expansion_resolves_every_new_concept() -> None:
     """Confirm none of the new concepts are dropped for eicu.
 
-    Every v3 LOINC is already mapped for eicu (code_mapping.py) -- unlike
-    sepsis3, none of the new concepts should be dropped there.
+    Every v3 LOINC-threshold concept is already mapped for eicu
+    (code_mapping.py), so none of those should be dropped there. The
+    SOFA-derived ones are dropped, like sepsis3: they need ventilation
+    codes and urine-output mappings eicu's spec does not provide.
     """
     eicu_names = {c.name for c in concepts_for_source("eicu", task_set="v3")}
     for name in _V3_NEW_NAMES:
         assert name in eicu_names, f"{name} unexpectedly dropped for eicu"
+    for name in _V3_DERIVED_NAMES:
+        assert name not in eicu_names, f"{name} unexpectedly present for eicu"
 
 
 # ---------------------------------------------------------------------------
