@@ -18,6 +18,15 @@ GAMs = "GAMs"
 # scripts/gemini/extract_dry.py's TOP_LAB_CONCEPTS, not a typo for "MUCH".
 MCH = "MCH"
 
+[default.extend-identifiers]
+# get_rolling_window_indicies is MEDS-Tab's own real, upstream function name
+# (genuinely misspelled there, not by us) -- referenced in prose in
+# odyssey/inference/meds_tab_baseline.py and its test to explain a real
+# workaround for its behavior. Scoped to the exact identifier rather than
+# whitelisting the bare word "indicies" globally, so a real typo of that
+# word elsewhere in the codebase still gets caught.
+get_rolling_window_indicies = "get_rolling_window_indicies"
+
 [files]
 # scripts/gemini/out/ holds verbatim reports of GEMINI's own database
 # catalog (schema/extract-dry reports) -- real external column/table names
