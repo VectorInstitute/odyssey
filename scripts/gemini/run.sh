@@ -104,6 +104,16 @@
 #                launch report prints the exact command. Takes the run name
 #                as a second positional argument, not a step of its own
 #                config, so it serves every ladder rung the same way.
+#                Also exports this run's own aggregate-only metrics to
+#                scripts/gemini/out/evals/<run-name>_eval_forecast.json
+#                (picked up by the usual small-output commit+push, same
+#                mechanism as extraction_summary.json) after validating it
+#                contains only known InferenceResults keys -- whitelist,
+#                never blacklist, so anything unrecognized refuses loudly
+#                instead of exporting. Also backfills any other
+#                ~/runs/*/eval_forecast.json not yet exported (e.g. earlier
+#                runs evaluated before this existed), so results stop
+#                arriving in the shared record by manual paste.
 #   train        not built yet (a general, non-GEMINI-specific full run).
 #   eval         not built yet.
 #   all          probe, schema, extract-dry, in order (default; deliberately
@@ -842,6 +852,182 @@ JSON
         echo "Eval: GEMINI_EVAL_HELD_OUT_DIR=$LADDER_DATA_DIR/held_out scripts/gemini/run.sh eval-forecast $run_name"
     }
 
+    _export_eval_summary() {
+        # Validates a run's eval_forecast.json contains ONLY known,
+        # whitelisted aggregate InferenceResults keys (odyssey/inference/
+        # run_inference.py's own dataclass shape) -- whitelist, never
+        # blacklist, so anything not explicitly known refuses loudly instead
+        # of silently passing through. If it passes, copies it verbatim to
+        # scripts/gemini/out/evals/<run>_eval_forecast.json, where the
+        # generic "commit and push only the small, allowed outputs" step at
+        # the end of this script picks it up automatically -- the same
+        # mechanism extraction_summary.json already rides, no new commit/push
+        # logic needed here.
+        #
+        # Real motivation: eval numbers have been arriving in the shared
+        # record by manual paste (sometimes in multiple fragments) because
+        # nothing copies them out of ~/runs/ automatically -- this closes
+        # that permanently, the same way extraction_summary.json already
+        # closed it for extraction.
+        local run_name="$1"
+        local source_json="$2"
+        local dest_json="scripts/gemini/out/evals/${run_name}_eval_forecast.json"
+
+        mkdir -p scripts/gemini/out/evals
+        if ! python3 - "$source_json" <<'PY'
+import json
+import sys
+
+# Mirrors odyssey/inference/run_inference.py's InferenceResults/
+# odyssey/training/metrics.py's TaskMetrics/ConceptMetrics/
+# ObservabilityMetrics/TimeMetrics dataclasses exactly -- keep in sync by
+# hand if those ever gain a field; the whole point of a whitelist is that
+# an unrecognized field refuses instead of silently passing through.
+TASK_METRICS_KEYS = {
+    "cross_entropy", "perplexity", "top1_accuracy", "top5_accuracy",
+    "n_predictions", "set_top1_accuracy",
+}
+CONCEPT_METRICS_KEYS = {
+    "name", "n_observed", "prevalence", "auroc", "auprc",
+    "brier_score", "accuracy_at_0_5",
+}
+OBSERVABILITY_METRICS_KEYS = {
+    "name", "n_subjects", "observed_rate", "auroc", "accuracy_at_0_5",
+}
+TIME_METRICS_KEYS = {
+    "nll", "n_positions", "same_instant_accuracy", "same_instant_rate",
+    "calibration", "calibration_after_bundle",
+}
+CALIBRATION_ENTRY_KEYS = {"predicted", "observed"}
+TOP_LEVEL_KEYS = {
+    "task_metrics", "task_metrics_by_code_type", "concept_metrics",
+    "observability_metrics", "orthogonality", "n_patient_ends_scored",
+    "time_metrics", "tail_slice",
+}
+
+
+def _require_dict(obj, label):
+    if not isinstance(obj, dict):
+        raise ValueError(f"{label}: expected an object, got {type(obj).__name__}")
+
+
+def _check_no_extra_keys(obj, allowed, label):
+    _require_dict(obj, label)
+    extra = set(obj) - allowed
+    if extra:
+        raise ValueError(
+            f"{label}: unexpected key(s) {sorted(extra)} -- not in the known "
+            "aggregate-metric whitelist"
+        )
+
+
+def _check_task_metrics(obj, label):
+    if obj is None:
+        return
+    _check_no_extra_keys(obj, TASK_METRICS_KEYS, label)
+
+
+def _check_calibration_map(obj, label):
+    if obj is None:
+        return
+    _require_dict(obj, label)
+    for horizon, entry in obj.items():
+        _check_no_extra_keys(entry, CALIBRATION_ENTRY_KEYS, f"{label}[{horizon!r}]")
+
+
+def _check_time_metrics(obj, label):
+    if obj is None:
+        return
+    _check_no_extra_keys(obj, TIME_METRICS_KEYS, label)
+    _check_calibration_map(obj.get("calibration"), f"{label}.calibration")
+    _check_calibration_map(
+        obj.get("calibration_after_bundle"), f"{label}.calibration_after_bundle"
+    )
+
+
+def validate(obj, label="root"):
+    _check_no_extra_keys(obj, TOP_LEVEL_KEYS, label)
+    _check_task_metrics(obj.get("task_metrics"), f"{label}.task_metrics")
+
+    by_code_type = obj.get("task_metrics_by_code_type")
+    if by_code_type is not None:
+        _require_dict(by_code_type, f"{label}.task_metrics_by_code_type")
+        for code_type, entry in by_code_type.items():
+            _check_task_metrics(
+                entry, f"{label}.task_metrics_by_code_type[{code_type!r}]"
+            )
+
+    concept_metrics = obj.get("concept_metrics")
+    if concept_metrics is not None:
+        if not isinstance(concept_metrics, list):
+            raise ValueError(f"{label}.concept_metrics: expected a list")
+        for i, entry in enumerate(concept_metrics):
+            _check_no_extra_keys(
+                entry, CONCEPT_METRICS_KEYS, f"{label}.concept_metrics[{i}]"
+            )
+
+    observability_metrics = obj.get("observability_metrics")
+    if observability_metrics is not None:
+        if not isinstance(observability_metrics, list):
+            raise ValueError(f"{label}.observability_metrics: expected a list")
+        for i, entry in enumerate(observability_metrics):
+            _check_no_extra_keys(
+                entry,
+                OBSERVABILITY_METRICS_KEYS,
+                f"{label}.observability_metrics[{i}]",
+            )
+
+    _check_time_metrics(obj.get("time_metrics"), f"{label}.time_metrics")
+
+    tail_slice = obj.get("tail_slice")
+    if tail_slice is not None:
+        validate(tail_slice, f"{label}.tail_slice")
+
+
+source_path = sys.argv[1]
+with open(source_path) as f:
+    data = json.load(f)
+try:
+    validate(data)
+except ValueError as exc:
+    print(f"REFUSING to export: {exc}", file=sys.stderr)
+    sys.exit(1)
+PY
+        then
+            echo "WARNING: not exporting eval summary for $run_name --" >&2
+            echo "it contains something outside the known aggregate-metric" >&2
+            echo "whitelist (see above); continuing without it rather than" >&2
+            echo "failing this step, but this needs a human look." >&2
+            return 1
+        fi
+
+        cp "$source_json" "$dest_json"
+        echo "Exported aggregate eval summary: $dest_json"
+    }
+
+    _backfill_eval_summaries() {
+        # Sweeps every ~/runs/*/eval_forecast.json not yet exported to
+        # scripts/gemini/out/evals/ -- runs evaluated before this export step
+        # existed (gemini_smoke_2, gemini_full_14m_v1) had their results
+        # reach the shared record only by manual paste. Runs every time
+        # eval-forecast does (cheap: a handful of run dirs at most), so it
+        # backfills on the first invocation after this step exists without
+        # needing a separate one-off script -- and stays a correct no-op on
+        # every later invocation once everything is caught up.
+        local eval_json run_dir run_name dest_json
+        for eval_json in "$HOME"/runs/*/eval_forecast.json; do
+            [[ -e "$eval_json" ]] || continue
+            run_dir=$(dirname "$eval_json")
+            run_name=$(basename "$run_dir")
+            dest_json="scripts/gemini/out/evals/${run_name}_eval_forecast.json"
+            [[ -f "$dest_json" ]] && continue
+            echo "Backfilling eval summary for $run_name (found on node, never exported)..."
+            if ! _export_eval_summary "$run_name" "$eval_json"; then
+                echo "WARNING: backfill skipped for $run_name (see above)." >&2
+            fi
+        done
+    }
+
     run_eval_forecast() {
         local run_name="$1"
         if [[ -z "$run_name" ]]; then
@@ -911,6 +1097,11 @@ JSON
         source "$VENV/bin/activate"
 
         echo "$STEP complete. Results at $OUTPUT_JSON"
+
+        if ! _export_eval_summary "$run_name" "$OUTPUT_JSON"; then
+            echo "WARNING: this run's own eval summary was not exported (see above)." >&2
+        fi
+        _backfill_eval_summaries
     }
 
     case "$STEP" in
