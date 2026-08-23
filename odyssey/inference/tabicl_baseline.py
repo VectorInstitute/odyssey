@@ -279,6 +279,7 @@ def fit_tabicl_baselines(
     n_estimators: int = 8,
     device: str | None = None,
     cache: Optional[FitCache] = None,
+    features: Optional[dict[str, np.ndarray]] = None,
 ) -> dict[tuple[str, float], TabICLBaselineModel]:
     """One TabICLv2 context per (event, horizon), on the same features as the GBM.
 
@@ -296,12 +297,17 @@ def fit_tabicl_baselines(
     instructions if it is not installed, the first time a context would
     actually be fit -- not merely on import of this module. ``cache``, if
     given, is consulted/updated per (event, horizon) -- see
-    :mod:`odyssey.inference.fit_cache`.
+    :mod:`odyssey.inference.fit_cache`.  ``features``, if given, is the
+    precomputed per-event feature dict for this function's
+    ``feature_set`` (see
+    :func:`odyssey.inference.baseline_prep.prepare_baseline_data`);
+    ``train_events_binned`` is then unused and may be empty.
     """
     models: dict[tuple[str, float], TabICLBaselineModel] = {}
-    features = features_for_events(
-        train_events_binned, train_rows, source=source, feature_set=feature_set
-    )
+    if features is None:
+        features = features_for_events(
+            train_events_binned, train_rows, source=source, feature_set=feature_set
+        )
     for name, rows in train_rows.items():
         if not rows:
             continue
