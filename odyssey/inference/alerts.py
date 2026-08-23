@@ -2321,6 +2321,7 @@ def evaluate_alerts(  # noqa: PLR0912, PLR0915
     stream_baseline: bool = False,
     dump_rows_path: Optional[Union[str, Path]] = None,
     index_mode: str = "landmark",
+    unscoreable_out: Optional[Set[Tuple[int, int, float]]] = None,
 ) -> List[AlertMetrics]:
     """End to end: model scores + optional GBM baselines, scored on held-out.
 
@@ -2354,6 +2355,12 @@ def evaluate_alerts(  # noqa: PLR0912, PLR0915
     labels exactly match a saved clean dump -- the acceptance criterion
     for a degraded cell's alerts pass -- immediately after the existing
     :func:`verify_packed_landmark_rows` self-consistency check.
+
+    ``unscoreable_out`` (a mutable set, same convention as
+    ``fitted_baselines_out``) receives the (subject, visit, time) keys of
+    clean rows that could not be scored on a degraded record (see
+    :func:`collect_model_scores_at_rows`); rows are shared across events,
+    so one set describes the cell.
 
     ``prefit_baselines``/``fitted_baselines_out`` are the sweep's other
     hook (see :func:`_fit_and_score_gbm_baselines`): pass the dict a
@@ -2473,6 +2480,8 @@ def evaluate_alerts(  # noqa: PLR0912, PLR0915
             index_mode=index_mode,
             max_context=getattr(config, "max_context", 4096),
         )
+    if unscoreable_out is not None:
+        unscoreable_out.update(unscoreable_keys)
     if verify_against_dump is not None:
         verify_rows_match_dump(
             rows,
