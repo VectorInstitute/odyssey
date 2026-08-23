@@ -8,25 +8,32 @@ implemented as MEDS-row-level transforms on the raw shard -- Principle 2's
 construction or tokenization" holds uniformly across all three, so no family
 (baseline or the flagship sequence model) needs axis-specific glue code:
 
-- **A. MCAR event dropout** (:func:`apply_mcar`): drop each non-anchor row
-  independently with probability ``p``. Anchor rows (admission/discharge/
-  demographic statics, :func:`odyssey.data.vocabulary.is_anchor`) are never
-  dropped -- a record with no visit envelope is a different task, not a
-  degraded one.
-- **B. Family blackout** (:func:`apply_family_blackout`): remove every row
-  of one family (labs, vitals/charting, medications;
+- **A. MCAR event dropout** (:func:`apply_mcar`): drop each non-anchor,
+  non-origin row independently with probability ``p``. Anchor rows
+  (admission/discharge/demographic statics,
+  :func:`odyssey.data.vocabulary.is_anchor`) are never dropped -- a record
+  with no visit envelope is a different task, not a degraded one.
+- **B. Family blackout** (:func:`apply_family_blackout`): remove every
+  non-origin row of one family (labs, vitals/charting, medications;
   :func:`odyssey.data.vocabulary.row_family`).
 - **C. Lab availability lag** (:func:`apply_lab_lag`): shift every
   lab-family event's ``time`` forward by ``lag_hours`` -- the result
   "returns from the lab" later, and every family's existing "strictly
   before index time" visibility rule (already how baseline feature
   lookups and token ordering both work) does the rest, no separate filter
-  needed. Two hard constraints, both enforced here: a subject's origin
-  (first timed non-birth event) must never move, so a lab row sitting
-  exactly at that time is exempted from the shift; and static/anchor rows
-  are never shifted either. Verified post-transform, not just designed in:
-  :func:`apply_lab_lag` asserts every subject's minimum non-birth time is
-  unchanged before returning.
+  needed. Non-origin only, same as A/B.
+
+Every axis protects each subject's time origin (first timed non-birth
+event, :func:`_origin_row_mask`) BY CONSTRUCTION, not just by chance:
+anchor rows are typically the origin but not always (a subject's very
+first charted event can legitimately be a lab), so all three transforms
+explicitly exempt the origin row regardless of what else they touch. A
+cell must never fail downstream at scoring time
+(:func:`odyssey.inference.baseline_prep._verify_matching_origins`) because
+of a rare unlucky draw -- that check is now a belt-and-suspenders guard,
+not the only line of defense. Verified here too, not just designed in:
+every transform asserts (:func:`_assert_origin_preserved`) every subject's
+origin is unchanged before returning.
 
 Every degraded shard directory carries a ``metadata.json`` (written by
 :func:`generate_cell`) recording the transform, seed, params, and a sha256
@@ -131,33 +138,122 @@ def _shard_seed(base_seed: int, path: Path) -> Tuple[int, int]:
     return (base_seed, shard_sort_key(path))
 
 
+def _origin_row_mask(events: pl.DataFrame) -> np.ndarray:
+    """Per-row: True where the row IS that subject's own time origin.
+
+    "Origin" = each subject's first timed non-birth event
+    (:func:`odyssey.data.alert_events.origin_hours`'s own definition) --
+    the row every downstream ``_hours`` computation (landmark buckets,
+    feature lookups) is relative to. Shared by every axis A/B/C transform
+    so "never touch the origin row" means the same thing everywhere.
+    """
+    n = events.height
+    non_birth = pl.col("code") != BIRTH_CODE
+    origins = (
+        events.filter(non_birth)
+        .group_by("subject_id")
+        .agg(pl.col("time").min().alias("_origin"))
+    )
+    if not origins.height:
+        return np.zeros(n, dtype=bool)
+    origin_map = dict(
+        zip(origins["subject_id"].to_list(), origins["_origin"].to_list())
+    )
+    subject_ids = events["subject_id"].to_list()
+    times = events["time"].to_list()
+    return np.fromiter(
+        (times[i] == origin_map.get(subject_ids[i]) for i in range(n)),
+        dtype=bool,
+        count=n,
+    )
+
+
+def _assert_origin_preserved(
+    before: pl.DataFrame, after: pl.DataFrame, *, caller: str
+) -> None:
+    """Fail loud if any subject's time origin moved between ``before``/``after``.
+
+    Belt-and-suspenders, not the only line of defense: each transform
+    already protects the origin row by construction (never dropped in
+    :func:`apply_mcar`/:func:`apply_family_blackout`, exempted from the
+    shift in :func:`apply_lab_lag`) -- this catches a bug in that
+    protection immediately, at generation time, rather than downstream in
+    :func:`odyssey.inference.baseline_prep._verify_matching_origins` at
+    scoring time.
+    """
+    non_birth = pl.col("code") != BIRTH_CODE
+    origin_before = (
+        before.filter(non_birth)
+        .group_by("subject_id")
+        .agg(pl.col("time").min().alias("_origin"))
+        .sort("subject_id")
+    )
+    origin_after = (
+        after.filter(non_birth)
+        .group_by("subject_id")
+        .agg(pl.col("time").min().alias("_origin"))
+        .sort("subject_id")
+    )
+    if not origin_before.equals(origin_after):
+        raise RuntimeError(
+            f"{caller} moved at least one subject's time origin -- this must "
+            "never happen (the origin-row protection has a bug); refusing to "
+            "return a corrupted degraded shard."
+        )
+
+
 def apply_mcar(
     events: pl.DataFrame, *, p: float, seed: Union[int, Tuple[int, int]]
 ) -> pl.DataFrame:
-    """Drop each non-anchor row independently with probability ``p`` (axis A)."""
+    """Drop each non-anchor, non-origin row independently with probability ``p``.
+
+    Axis A.
+
+    The origin row (:func:`_origin_row_mask`) is protected the same way
+    anchor rows are: a record whose very first event vanished isn't a
+    degraded record, it's a different time base entirely. Anchor rows are
+    typically the origin in practice, but not always (a subject's very
+    first charted event can legitimately be a lab) -- protecting both by
+    construction means a rare unlucky draw can never produce a broken cell.
+    """
     if not 0.0 <= p <= 1.0:
         raise ValueError(f"p must be in [0, 1], got {p}")
     codes = events["code"].to_list()
     anchor = np.fromiter((is_anchor(c) for c in codes), dtype=bool, count=len(codes))
+    is_origin = _origin_row_mask(events)
     rng = np.random.default_rng(seed)
     draws = rng.random(len(codes))
-    keep = anchor | (draws >= p)
-    return events.filter(pl.Series(keep))
+    keep = anchor | is_origin | (draws >= p)
+    degraded = events.filter(pl.Series(keep))
+    _assert_origin_preserved(events, degraded, caller="apply_mcar")
+    return degraded
 
 
 def apply_family_blackout(
     events: pl.DataFrame, *, family: str, source: str
 ) -> pl.DataFrame:
-    """Remove every row of ``family`` (axis B)."""
+    """Remove every row of ``family`` (axis B), except the origin row.
+
+    Same protection as :func:`apply_mcar`: if the blacked-out family
+    happens to be the family of a subject's very first charted event, that
+    one row survives anyway -- the origin must never move, regardless of
+    which axis is doing the removing.
+    """
     if family not in ROW_FAMILIES:
         raise ValueError(f"unknown family {family!r}, expected one of {ROW_FAMILIES}")
     codes = events["code"].to_list()
-    keep = np.fromiter(
-        (row_family(c, source=source) != family for c in codes),
-        dtype=bool,
-        count=len(codes),
+    is_origin = _origin_row_mask(events)
+    keep = (
+        np.fromiter(
+            (row_family(c, source=source) != family for c in codes),
+            dtype=bool,
+            count=len(codes),
+        )
+        | is_origin
     )
-    return events.filter(pl.Series(keep))
+    degraded = events.filter(pl.Series(keep))
+    _assert_origin_preserved(events, degraded, caller="apply_family_blackout")
+    return degraded
 
 
 def apply_lab_lag(
@@ -168,12 +264,10 @@ def apply_lab_lag(
     Not by editing the shard's row set (axis A/B's mechanism) -- every row
     survives, only lab-family timestamps move, so a lab "returns from the
     lab" ``lag_hours`` later than it really was drawn. Two exemptions, both
-    required so a subject's time origin (first timed non-birth event,
-    :func:`odyssey.data.alert_events.origin_hours`) never moves: a
-    lab-family row sitting exactly at that subject's minimum non-birth
-    time, and any anchor/static row (never lab-family in practice, kept as
-    a belt-and-suspenders check). Verified, not just designed in: asserts
-    every subject's minimum non-birth time is unchanged before returning.
+    required so a subject's time origin never moves: a lab-family row
+    sitting exactly at that subject's origin (:func:`_origin_row_mask`),
+    and any anchor/static row (never lab-family in practice, kept as a
+    belt-and-suspenders check).
     """
     if lag_hours < 0:
         raise ValueError(f"lag_hours must be >= 0, got {lag_hours}")
@@ -186,50 +280,16 @@ def apply_lab_lag(
     is_protected = np.fromiter(
         (is_anchor(c) for c in codes), dtype=bool, count=len(codes)
     )
+    is_origin = _origin_row_mask(events)
 
-    non_birth = pl.col("code") != BIRTH_CODE
-    origin_before = (
-        events.filter(non_birth)
-        .group_by("subject_id")
-        .agg(pl.col("time").min().alias("_origin"))
-    )
-
-    is_origin_row = np.zeros(len(codes), dtype=bool)
-    if origin_before.height:
-        origin_map = dict(
-            zip(
-                origin_before["subject_id"].to_list(),
-                origin_before["_origin"].to_list(),
-            )
-        )
-        subject_ids = events["subject_id"].to_list()
-        times = events["time"].to_list()
-        is_origin_row = np.fromiter(
-            (times[i] == origin_map.get(subject_ids[i]) for i in range(len(codes))),
-            dtype=bool,
-            count=len(codes),
-        )
-
-    shift = is_lab & ~is_protected & ~is_origin_row
+    shift = is_lab & ~is_protected & ~is_origin
     shifted = events.with_columns(
         pl.when(pl.Series(shift))
         .then(pl.col("time") + pl.duration(hours=lag_hours))
         .otherwise(pl.col("time"))
         .alias("time")
     )
-
-    origin_after = (
-        shifted.filter(non_birth)
-        .group_by("subject_id")
-        .agg(pl.col("time").min().alias("_origin"))
-        .sort("subject_id")
-    )
-    if not origin_before.sort("subject_id").equals(origin_after):
-        raise RuntimeError(
-            "apply_lab_lag moved at least one subject's time origin -- this "
-            "must never happen (a shifted lab row's exemption logic has a "
-            "bug); refusing to return a corrupted degraded shard."
-        )
+    _assert_origin_preserved(events, shifted, caller="apply_lab_lag")
     return shifted
 
 
