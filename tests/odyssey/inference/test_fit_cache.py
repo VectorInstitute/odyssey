@@ -1,6 +1,7 @@
 """Tests for the fit-result cache used by the optional baseline fitters."""
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -126,3 +127,33 @@ def test_env_fingerprint_reports_none_for_an_uninstalled_package() -> None:
     # must report None rather than raise.
     for pkg in ("tabicl", "interpret", "survivalpfn", "torch", "numpy"):
         assert pkg in fp
+
+
+@dataclass
+class _Fit:
+    """A stand-in fitted model carrying only the attribute the cache checks."""
+
+    feature_set: str
+
+
+def test_load_for_feature_set_treats_a_mismatch_as_a_miss(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A fit is bound to its feature matrix; a mismatched cache entry is refit.
+
+    The key already encodes the feature set, but layouts change and caches
+    get migrated by hand (both happened on 2026-08-23), so the cached
+    object's own feature_set is checked too.
+    """
+    import logging  # noqa: PLC0415
+
+    cache = FitCache(cache_dir=tmp_path)
+    cache.save("ebm/strong/death/8h", _Fit("strong"))
+    assert cache.load_for_feature_set("ebm/strong/death/8h", "strong") == _Fit("strong")
+    with caplog.at_level(logging.WARNING):
+        assert cache.load_for_feature_set("ebm/strong/death/8h", "basic") is None
+    assert any("cached fit is on" in r.message for r in caplog.records)
+    # an object without the attribute is still usable (older entries)
+    cache.save("ebm/strong/death/24h", "opaque-model")
+    assert cache.load_for_feature_set("ebm/strong/death/24h", "basic") == "opaque-model"
+    assert cache.load_for_feature_set("ebm/strong/nope/8h", "strong") is None
