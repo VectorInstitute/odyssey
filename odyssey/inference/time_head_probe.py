@@ -61,7 +61,7 @@ from odyssey.models.time_to_event import (
     gap_survival_valid_mask,
     gap_to_bin,
 )
-from odyssey.training.data import iter_patient_sequences, load_meds_shards
+from odyssey.training.data import iter_patient_sequences
 from odyssey.training.train import _move_chunk_to_device
 
 
@@ -81,7 +81,7 @@ class FeatureBank:
     """Frozen head-input features with their gap targets for one split."""
 
     features: torch.Tensor
-    """``(N, D)`` float32, on CPU."""
+    """``(N, D)`` float16 at rest (banks are large), on CPU."""
     gaps: torch.Tensor
     """``(N,)`` hours to the next event (0 = same bundle)."""
     n_positions_seen: int
@@ -92,12 +92,30 @@ class FeatureBank:
         return int(self.gaps.numel())
 
     def to(self, device: str) -> "FeatureBank":
-        """Copy to ``device`` (for fitting)."""
+        """Copy to ``device`` (for fitting); features stay fp16 until batched."""
         return FeatureBank(
             self.features.to(device),
             self.gaps.to(device),
             self.n_positions_seen,
             self.sample_rate,
+        )
+
+    @staticmethod
+    def concat(
+        banks: Sequence["FeatureBank"], max_positions: Optional[int]
+    ) -> "FeatureBank":
+        """Stack per-shard banks (same sample rate), capped at ``max_positions``."""
+        if not banks:
+            raise ValueError("no banks to concatenate")
+        feats = torch.cat([b.features for b in banks])
+        gaps = torch.cat([b.gaps for b in banks])
+        if max_positions is not None:
+            feats, gaps = feats[:max_positions], gaps[:max_positions]
+        return FeatureBank(
+            feats,
+            gaps,
+            n_positions_seen=sum(b.n_positions_seen for b in banks),
+            sample_rate=banks[0].sample_rate,
         )
 
 
@@ -153,7 +171,9 @@ def collect_feature_bank(
                 valid = valid & draw.to(valid.device)
             if not bool(valid.any()):
                 continue
-            feats.append(fwd.features[valid].float().cpu())
+            # fp16 at rest: a bank is millions of rows x hundreds of dims;
+            # heads upcast per batch when fitting/scoring.
+            feats.append(fwd.features[valid].to(torch.float16).cpu())
             gaps_out.append(gap[valid].float().clamp_min(0.0).cpu())
             kept += int(valid.sum().item())
             if max_positions is not None and kept >= max_positions:
@@ -213,6 +233,10 @@ class ProbeHead(nn.Module):
         target = gap_to_bin(gaps, self.edges)
         return -self.log_bin_probs(features).gather(-1, target.unsqueeze(-1)).mean()
 
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        """Alias of :meth:`log_bin_probs` on float32-upcast features."""
+        return self.log_bin_probs(features.float())
+
 
 class HazardProbe(ProbeHead):
     """The production head's parameterization: one hazard logit per bin."""
@@ -234,7 +258,7 @@ class HazardProbe(ProbeHead):
 
     def log_bin_probs(self, features: torch.Tensor) -> torch.Tensor:
         """Return per-bin log mass from the hazards (the open bin takes the rest)."""
-        logits = self.net(features)
+        logits = self.net(features.float())
         log_h = F.logsigmoid(logits)
         log_1mh = F.logsigmoid(-logits)
         cum = torch.cumsum(log_1mh, dim=-1)
@@ -255,7 +279,7 @@ class CategoricalProbe(ProbeHead):
 
     def log_bin_probs(self, features: torch.Tensor) -> torch.Tensor:
         """Log-softmax over bins."""
-        return F.log_softmax(self.net(features), dim=-1)
+        return F.log_softmax(self.net(features.float()), dim=-1)
 
 
 class LogNormalMixtureProbe(ProbeHead):
@@ -276,6 +300,7 @@ class LogNormalMixtureProbe(ProbeHead):
     def _params(
         self, features: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        features = features.float()
         log_p_zero = F.logsigmoid(self.zero(features)).squeeze(-1)
         log_p_pos = F.logsigmoid(-self.zero(features)).squeeze(-1)
         log_pi = F.log_softmax(self.mix(features), dim=-1)
@@ -567,26 +592,41 @@ def _bank_from_shards(
 ) -> FeatureBank:
     from odyssey.data.code_normalization import maybe_normalize  # noqa: PLC0415
     from odyssey.data.history_recap import maybe_history_recap  # noqa: PLC0415
+    from odyssey.training.data import load_meds_shard  # noqa: PLC0415
+    from odyssey.training.shard_stream import shard_paths  # noqa: PLC0415
 
+    # One shard at a time (subjects never span shards): the whole-split
+    # frame for 10 MIMIC shards plus value tokens was ~30M rows and
+    # OOM-killed the first N2 attempt at ~45 GB RSS. Peak is now one shard's
+    # frames plus the accumulated fp16 banks.
     source = getattr(config, "source", "mimic_iv")
-    raw = load_meds_shards(shard_dir, max_shards=max_shards)
-    raw = maybe_normalize(
-        raw, enabled=getattr(config, "normalize_medications", False), source=source
-    )
-    raw = maybe_history_recap(raw, enabled=getattr(config, "history_recap", False))
-    binned = add_value_tokens(raw, binner, source=source)  # type: ignore[arg-type]
-    del raw
-    return collect_feature_bank(
-        model,
-        binned,
-        vocab,
-        sample_rate=sample_rate,
-        seed=seed,
-        num_lanes=num_lanes,
-        chunk_size=chunk_size,
-        device=device,
-        max_positions=max_positions,
-    )
+    banks: List[FeatureBank] = []
+    kept = 0
+    for k, path in enumerate(shard_paths(shard_dir, max_shards=max_shards)):
+        raw = load_meds_shard(path)
+        raw = maybe_normalize(
+            raw, enabled=getattr(config, "normalize_medications", False), source=source
+        )
+        raw = maybe_history_recap(raw, enabled=getattr(config, "history_recap", False))
+        binned = add_value_tokens(raw, binner, source=source)  # type: ignore[arg-type]
+        del raw
+        bank = collect_feature_bank(
+            model,
+            binned,
+            vocab,
+            sample_rate=sample_rate,
+            seed=seed * 7919 + k,
+            num_lanes=num_lanes,
+            chunk_size=chunk_size,
+            device=device,
+            max_positions=(max_positions - kept) if max_positions else None,
+        )
+        del binned
+        banks.append(bank)
+        kept += len(bank)
+        if max_positions is not None and kept >= max_positions:
+            break
+    return FeatureBank.concat(banks, max_positions)
 
 
 def _main() -> None:
@@ -603,6 +643,10 @@ def _main() -> None:
     parser.add_argument("--max-held-out-shards", type=int, default=4)
     parser.add_argument("--train-sample-rate", type=float, default=0.1)
     parser.add_argument("--max-train-positions", type=int, default=2_000_000)
+    parser.add_argument("--tuning-sample-rate", type=float, default=0.2)
+    parser.add_argument("--max-tuning-positions", type=int, default=1_000_000)
+    parser.add_argument("--held-out-sample-rate", type=float, default=0.3)
+    parser.add_argument("--max-held-out-positions", type=int, default=3_000_000)
     parser.add_argument("--heads", nargs="+", default=list(DEFAULT_HEADS))
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--num-lanes", type=int, default=16)
@@ -649,9 +693,9 @@ def _main() -> None:
             config,
             args.tuning_shard_dir,
             max_shards=args.max_tuning_shards,
-            sample_rate=1.0,
-            seed=args.seed,
-            max_positions=None,
+            sample_rate=args.tuning_sample_rate,
+            seed=args.seed + 1,
+            max_positions=args.max_tuning_positions,
             **common,
         ),
         "held_out": _bank_from_shards(
@@ -661,9 +705,9 @@ def _main() -> None:
             config,
             args.held_out_shard_dir,
             max_shards=args.max_held_out_shards,
-            sample_rate=1.0,
-            seed=args.seed,
-            max_positions=None,
+            sample_rate=args.held_out_sample_rate,
+            seed=args.seed + 2,
+            max_positions=args.max_held_out_positions,
             **common,
         ),
     }
