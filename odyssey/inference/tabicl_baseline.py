@@ -38,6 +38,7 @@ authors validated it in.
 """
 
 import logging
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -70,6 +71,28 @@ logger = logging.getLogger(__name__)
 # module's own architecture (the context is fixed at fit time, independent
 # of whatever query batch predict_proba is later called with).
 _PREDICT_BATCH_SIZE = 8192
+
+# Peak inference memory scales with (context rows x query rows) per forward
+# pass, times the ensemble size: a fixed query batch is therefore NOT a
+# memory bound, because the context size varies per fit (up to
+# TABICL_MAX_ROWS). A second real OOM-kill (2026-08-23, MIMIC rescore, ~71
+# GB RSS, no traceback -- the kernel killed it) came from an 8192-row query
+# batch against a ~50k-row context. The effective batch is capped so that
+# context x query stays under this budget, with a floor so a huge context
+# cannot drive the batch to 1. Override with ODYSSEY_TABICL_PAIR_BUDGET
+# when profiling; the default is deliberately conservative (a ~50k context
+# gives a 2048-row batch).
+_PAIR_BUDGET = int(os.environ.get("ODYSSEY_TABICL_PAIR_BUDGET", "100000000"))
+_MIN_PREDICT_BATCH = 512
+
+
+def predict_batch_size(n_context_rows: int) -> int:
+    """Query rows per forward pass for a fit with ``n_context_rows`` context."""
+    if n_context_rows <= 0:
+        return _PREDICT_BATCH_SIZE
+    budgeted = _PAIR_BUDGET // max(n_context_rows, 1)
+    return int(max(_MIN_PREDICT_BATCH, min(_PREDICT_BATCH_SIZE, budgeted)))
+
 
 # Cap on the in-context training set TabICL actually sees, per (event,
 # horizon). Well inside the ~100K-row range the authors report strong,
@@ -153,10 +176,11 @@ class TabICLBaselineModel:
     def predict_proba(self, x: np.ndarray) -> np.ndarray:
         """Positive-class (label ``1``) probabilities, ``(n,)``.
 
-        Batched over the query dimension in chunks of
-        :data:`_PREDICT_BATCH_SIZE` -- see that constant's comment for why
-        (a real, confirmed OOM crash on an unbatched large query set, not
-        a hypothetical). Asserts the batched output length matches the
+        Batched over the query dimension, in chunks sized by
+        :func:`predict_batch_size` against this fit's own context size --
+        see :data:`_PAIR_BUDGET` (two real, confirmed OOM crashes: an
+        unbatched query set, then a fixed 8192-row batch against a ~50k
+        context). Asserts the batched output length matches the
         input length, since a silent row drop here would be far worse
         than the crash this exists to prevent.
         """
@@ -165,9 +189,10 @@ class TabICLBaselineModel:
             x[:, self.all_nan_cols] = 0.0
         if x.shape[0] == 0:
             return np.empty((0,), dtype=np.float64)
+        batch = predict_batch_size(int(self.params.get("n_context_rows", 0)))
         chunks = []
-        for start in range(0, x.shape[0], _PREDICT_BATCH_SIZE):
-            chunk = x[start : start + _PREDICT_BATCH_SIZE]
+        for start in range(0, x.shape[0], batch):
+            chunk = x[start : start + batch]
             proba = self.clf.predict_proba(chunk)  # type: ignore[attr-defined]
             chunks.append(_positive_class_proba(self.clf, proba))
         result = np.concatenate(chunks)

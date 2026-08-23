@@ -41,6 +41,7 @@ Usage:
 """
 
 import argparse
+import gc
 import json
 import logging
 from pathlib import Path
@@ -86,6 +87,18 @@ def _rows_frame(
                     data[key] = per_horizon[event][key]
         frames.append(pl.DataFrame(data))
     return pl.concat(frames, how="diagonal") if frames else pl.DataFrame()
+
+
+def _rss_human() -> str:
+    """Return the current process RSS as a human string (from /proc)."""
+    try:
+        with open("/proc/self/status") as f:  # noqa: PTH123
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return line.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    return "unknown"
 
 
 def main() -> None:  # noqa: PLR0915
@@ -232,6 +245,12 @@ def main() -> None:  # noqa: PLR0915
         "ebm": {},
         "survivalpfn": {},
     }
+    # One model at a time: score it, then drop the reference and collect.
+    # A fitted TabICL model holds its whole in-context training set, and
+    # inference allocates against it; keeping all 12 resident while scoring
+    # 138k held-out rows each was part of a real OOM-kill (~71 GB RSS,
+    # 2026-08-23). Released models are never needed again -- their scores
+    # are already in `scores`.
     for event, rows in held_rows.items():
         if not rows:
             continue
@@ -239,17 +258,26 @@ def main() -> None:  # noqa: PLR0915
         scores["ebm"][event] = {}
         scores["survivalpfn"][event] = {}
         for h in horizons:
-            if (event, h) in tabicl_models:
-                p = tabicl_models[(event, h)].predict_proba(strong_features[event])
-                scores["tabicl"][event][f"tabicl@{h:g}h"] = [float(v) for v in p]
-            if (event, h) in ebm_models:
-                p = ebm_models[(event, h)].predict_proba(strong_features[event])
-                scores["ebm"][event][f"ebm@{h:g}h"] = [float(v) for v in p]
-            if (event, h) in survivalpfn_models:
-                p = survivalpfn_models[(event, h)].predict_proba(basic_features[event])
-                scores["survivalpfn"][event][f"survivalpfn@{h:g}h"] = [
-                    float(v) for v in p
-                ]
+            for name, models, feats in (
+                ("tabicl", tabicl_models, strong_features),
+                ("ebm", ebm_models, strong_features),
+                ("survivalpfn", survivalpfn_models, basic_features),
+            ):
+                model = models.pop((event, h), None)
+                if model is None:
+                    continue
+                p = model.predict_proba(feats[event])
+                scores[name][event][f"{name}@{h:g}h"] = [float(v) for v in p]
+                del model
+                gc.collect()
+                logger.info(
+                    "[rescore] %s %s@%gh scored (%d rows, rss %s)",
+                    name,
+                    event,
+                    h,
+                    len(rows),
+                    _rss_human(),
+                )
 
     new_cols = _rows_frame(held_rows, scores, horizons)
     joined = existing.join(
