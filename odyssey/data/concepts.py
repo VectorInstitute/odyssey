@@ -70,7 +70,13 @@ import polars as pl
 
 from odyssey.data.code_mapping import prefixes_for_loinc, unit_for
 from odyssey.data.sidecars import ANTIBIOTIC_ORDERS, MICROBIOLOGY, active_sidecar
-from odyssey.data.sofa import assessable_keys, sofa_supported, sofa_timeseries
+from odyssey.data.sofa import (
+    assessable_keys,
+    pf_ratio_readings,
+    sofa_supported,
+    sofa_timeseries,
+    urine_output_24h,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -252,6 +258,31 @@ ANTIBIOTIC_ROUTE_EXCLUDE = (
 
 
 @dataclass(frozen=True)
+class DerivedSofaSignalRule:
+    """A threshold on a signal derived by :mod:`odyssey.data.sofa`.
+
+    Two clinical states need a derivation the plain rule types cannot
+    express, and both already exist (and are tested) inside the SOFA
+    scorer, so they are called rather than re-derived here:
+
+    - ``pf_ratio``: PaO2/FiO2, pairing each arterial gas with the most
+      recent FiO2 (:func:`~odyssey.data.sofa.pf_ratio_readings`);
+    - ``urine_24h``: millilitres voided in the trailing 24 hours, only
+      once a key has 24 hours of record (:func:`~odyssey.data.sofa.urine_output_24h`).
+
+    ``source`` is fixed at expansion time, like :class:`Sepsis3Rule`: the
+    derivation needs that source's non-LOINC ingredients (ventilation
+    codes) and only sources with a :data:`~odyssey.data.sofa.SOFA_SOURCE_CONFIG`
+    entry can expand it.
+    """
+
+    signal: Literal["pf_ratio", "urine_24h"]
+    threshold: float
+    direction: Direction
+    source: str
+
+
+@dataclass(frozen=True)
 class Sepsis3Rule:
     """Sepsis-3 onset (Singer 2016) as operationalized by mimic-code's ``sepsis3``.
 
@@ -288,6 +319,7 @@ ComponentRule = Union[
     DerivedGcsTotalRule,
     CodeOccurrenceRule,
     Sepsis3Rule,
+    DerivedSofaSignalRule,
 ]
 
 
@@ -436,6 +468,15 @@ class LoincGcsTotal:
 # code strings / text_value, not institution item ids), so it doubles as
 # its own canonical form.
 @dataclass(frozen=True)
+class CanonicalSofaSignal:
+    """Canonical form of :class:`DerivedSofaSignalRule` (source-agnostic)."""
+
+    signal: Literal["pf_ratio", "urine_24h"]
+    threshold: float
+    direction: Direction = "below"
+
+
+@dataclass(frozen=True)
 class CanonicalSepsis3:
     """Canonical Sepsis-3: expands to :class:`Sepsis3Rule` where SOFA is scorable."""
 
@@ -449,6 +490,7 @@ CanonicalRule = Union[
     LoincGcsTotal,
     CodeOccurrenceRule,
     CanonicalSepsis3,
+    CanonicalSofaSignal,
 ]
 
 
@@ -515,6 +557,17 @@ def _expand_non_loinc(
     """Expand the non-LOINC-keyed rules; ``None`` when ``rule`` is LOINC-keyed."""
     if isinstance(rule, CodeOccurrenceRule):
         return [rule]
+    if isinstance(rule, CanonicalSofaSignal):
+        if not sofa_supported(source):
+            return []
+        return [
+            DerivedSofaSignalRule(
+                signal=rule.signal,
+                threshold=rule.threshold,
+                direction=rule.direction,
+                source=source,
+            )
+        ]
     if isinstance(rule, CanonicalSepsis3):
         # Needs vasopressor rates and ventilation intervals (SOFA's
         # non-LOINC ingredients) and the microbiology sidecar: MIMIC-IV
@@ -552,7 +605,9 @@ def _expand_rule(rule: CanonicalRule, source: str) -> List[ComponentRule]:
                 max_component_gap_minutes=rule.max_component_gap_minutes,
             )
         ]
-    assert not isinstance(rule, (CodeOccurrenceRule, CanonicalSepsis3))  # for mypy
+    assert not isinstance(  # for mypy
+        rule, (CodeOccurrenceRule, CanonicalSepsis3, CanonicalSofaSignal)
+    )
     prefixes = _loinc_prefixes(rule.loincs, source)
     if isinstance(rule, LoincThreshold):
         return [
@@ -643,6 +698,10 @@ TASK_SETS["v3"] = TASK_SETS["v2"] + (
     "coagulopathy",
     "metabolic_acidosis",
     "shock",
+    # Derived-signal concepts: only on sources with SOFA ingredients (the
+    # LOINC layer drops them elsewhere, like sepsis3).
+    "hypoxemic_respiratory_failure",
+    "oliguria",
 )
 DEFAULT_TASK_SET = "v1"
 
@@ -913,6 +972,24 @@ CANONICAL_CONCEPTS: List[AnyCanonicalConcept] = [
         "infusion events rather than a numeric threshold. 'Observed' means "
         "the subject has any medication/infusion data at all, so an absent "
         "match is a genuine negative, not missingness.",
+    ),
+    CanonicalConcept(
+        "hypoxemic_respiratory_failure",
+        (CanonicalSofaSignal(signal="pf_ratio", threshold=300.0, direction="below"),),
+        "PaO2/FiO2 < 300 mmHg (the Berlin definition's mild-ARDS oxygenation "
+        "threshold, and SOFA's respiration level 2), each arterial gas paired "
+        "with the most recent FiO2 within 4 hours. Ventilation status is not "
+        "required here (unlike the Berlin definition's PEEP criterion), so this "
+        "is an oxygenation-failure marker, not an ARDS diagnosis. 'Observed' "
+        "means a gas with a pairable FiO2 exists.",
+    ),
+    CanonicalConcept(
+        "oliguria",
+        (CanonicalSofaSignal(signal="urine_24h", threshold=500.0, direction="below"),),
+        "Under 500 mL of urine over the trailing 24 hours (SOFA's renal "
+        "level 3), scored only once a key has 24 hours of record so a partial "
+        "window cannot read as oliguria. Absolute volume, not KDIGO's "
+        "weight-normalized mL/kg/h: per-key weight is not reliably extracted.",
     ),
     CanonicalConcept(
         "sepsis3",
@@ -1241,7 +1318,7 @@ def _derived_gcs_total_ids(
     return observed, triggered
 
 
-def _component_ids(
+def _component_ids(  # noqa: PLR0911
     events: pl.DataFrame,
     rule: ComponentRule,
     *,
@@ -1294,6 +1371,15 @@ def _component_ids(
             code_col=code_col,
             time_col=time_col,
         )
+    if isinstance(rule, DerivedSofaSignalRule):
+        return _sofa_signal_ids(
+            events,
+            rule,
+            subject_id_col=subject_id_col,
+            code_col=code_col,
+            value_col=value_col,
+            time_col=time_col,
+        )
     if isinstance(rule, Sepsis3Rule):
         return _sepsis3_ids(
             events,
@@ -1304,6 +1390,33 @@ def _component_ids(
             time_col=time_col,
         )
     raise TypeError(f"unknown component rule type: {type(rule)!r}")
+
+
+def _sofa_signal_ids(
+    events: pl.DataFrame,
+    rule: DerivedSofaSignalRule,
+    *,
+    subject_id_col: str,
+    code_col: str,
+    value_col: str,
+    time_col: str,
+) -> Tuple[Set[int], FirstTimes]:
+    """Observed keys and first-trigger times for a SOFA-derived signal."""
+    readings = (pf_ratio_readings if rule.signal == "pf_ratio" else urine_output_24h)(
+        events,
+        source=rule.source,
+        key=subject_id_col,
+        code_col=code_col,
+        value_col=value_col,
+        time_col=time_col,
+    )
+    observed = set(readings[subject_id_col].to_list())
+    if readings.height == 0:
+        return observed, {}
+    fired = readings.filter(
+        _threshold_expr(pl.col("value"), rule.threshold, rule.direction)
+    )
+    return observed, _first_times(fired, subject_id_col, time_col)
 
 
 _SIDECAR_WARNED: Set[str] = set()
