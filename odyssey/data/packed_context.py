@@ -51,9 +51,9 @@ not something to average away. ``truncation_boundaries`` accumulates
 alongside it: each truncated subject's kept-window start, in that
 subject's own original time frame (see
 :attr:`PackedContextSampler.truncation_boundaries`) -- needed by any
-caller that has to reconcile the packed path's rebased-to-0 timestamps
-against something computed in the original frame, notably
-``odyssey.inference.alerts``' landmark/outcome logic.
+caller that has to know where a truncated subject's visible history
+starts, notably ``odyssey.inference.alerts``' landmark verifier (timestamps
+themselves stay in the original frame; nothing is rebased).
 """
 
 from dataclasses import dataclass, field
@@ -74,14 +74,22 @@ _NAN_SIGNAL_ROW = np.full(2 * N_PANEL_SIGNALS, np.nan, dtype=np.float32)
 
 
 def _truncate_head(seq: PatientSequence, max_context: int) -> PatientSequence:
-    """Keep ``seq``'s most recent ``max_context`` tokens, timestamps rebased to 0.
+    """Keep ``seq``'s most recent ``max_context`` tokens, timestamps UNCHANGED.
 
-    Rebasing restores the "hours since this sequence's first event"
-    convention :class:`PatientSequence` documents -- this patient is, from
-    here on, effectively a fresh sequence starting at the truncation point.
-    See :meth:`PatientSequence.tail`.
+    The kept window keeps its true "hours since this subject's first
+    event" timestamps. The backbone never needs a 0-based window
+    (:class:`~odyssey.models.backbones.transformer.TransformerBackbone`
+    derives deltas from ``reset_mask`` and
+    :class:`~odyssey.models.embeddings.TimeEmbeddingLayer` reads deltas),
+    and every consumer of ``time_hours`` downstream (landmark buckets,
+    visit starts, outcomes) works in the true frame. An earlier version
+    rebased the window to 0 and had the alerts harness add the boundary
+    back; the float64 round trip ``(t - b) + b`` differed from ``t`` by
+    ~1e-13 h, enough to flip a landmark bucket exactly on a boundary
+    (~22 rows per real MIMIC shard, research journal entry 44's CPU
+    integration pass). See :meth:`PatientSequence.tail`.
     """
-    return seq.tail(max_context, rebase_times=True)
+    return seq.tail(max_context)
 
 
 @dataclass
@@ -241,13 +249,11 @@ class PackedContextSampler:
         """subject_id -> the truncation boundary, in that subject's own
         original time frame ("hours since this sequence's first event",
         the same convention :func:`~odyssey.data.alert_events.origin_hours`
-        uses) -- the raw time of the first token this sampler kept, before
-        :func:`_truncate_head` rebases the kept window to start at 0. A
-        caller needing to compare this subject's packed-path timestamps
-        against anything computed in the original frame (e.g.
-        ``odyssey.inference.alerts``' landmark/outcome logic) adds this
-        back; nothing in this module needs to un-rebase, since the
-        backbone only ever needs relative deltas within one row."""
+        uses) -- the time of the first token this sampler kept. Timestamps
+        are NOT rebased (see :func:`_truncate_head`); the boundary is kept
+        for the tail-slice bookkeeping and the landmark verifier, which
+        needs to know which landmarks a truncated subject legitimately
+        lost."""
 
     def _next_patient(self) -> Optional[PatientSequence]:
         if self._held is not None:
