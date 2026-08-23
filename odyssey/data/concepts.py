@@ -622,6 +622,23 @@ TASK_SETS: Dict[str, Tuple[str, ...]] = {
     ),
 }
 TASK_SETS["v2"] = TASK_SETS["v1"] + ("sepsis3",)
+# "v3" adds structurally-derived electrolyte/metabolic/hematologic concepts
+# (Track B item 11) -- see their CANONICAL_CONCEPTS entries for thresholds
+# and sources. v1/v2 are untouched by this addition (concepts_for_source
+# only ever reads the names listed for the task_set actually requested).
+TASK_SETS["v3"] = TASK_SETS["v2"] + (
+    "hyperkalemia",
+    "hypokalemia",
+    "hyponatremia",
+    "hypernatremia",
+    "hypoglycemia",
+    "hyperglycemia",
+    "anemia",
+    "thrombocytopenia",
+    "coagulopathy",
+    "metabolic_acidosis",
+    "shock",
+)
 DEFAULT_TASK_SET = "v1"
 
 
@@ -701,6 +718,21 @@ _TEMP = ("8310-5",)  # body temperature (unit-split: F or C by source/itemid)
 _LACTATE = ("32693-4",)
 _CREATININE = ("2160-0",)
 _WBC = ("6690-2",)
+
+# v3 additions (Track B item 11): every LOINC below is already mapped for
+# mimic_iv and eicu in odyssey/data/code_mapping.py (none needed a new
+# mapping-table entry) and none of them is unit-split there (no entry in
+# code_mapping._PREFIX_UNITS), so plain single-``threshold`` LoincThreshold
+# rules apply directly, same as _LACTATE/_CREATININE/_WBC above.
+_POTASSIUM = ("2823-3",)
+_SODIUM = ("2951-2",)
+_GLUCOSE = ("2345-7",)
+_BICARBONATE = ("1963-8",)
+_HEMOGLOBIN = ("718-7",)
+_PLATELETS = ("777-3",)
+_INR = ("6301-6",)
+_PH = ("11558-4",)
+_MAP = ("76536-2", "8478-0")  # mean arterial pressure: non-invasive OR arterial
 
 _TEMP_HIGH = (("F", 100.4), ("C", 38.0))
 _TEMP_LOW = (("F", 96.8), ("C", 36.0))
@@ -889,6 +921,98 @@ CANONICAL_CONCEPTS: List[AnyCanonicalConcept] = [
         "odyssey.data.sofa. 'Observed' = the visit has at least one SOFA "
         "component reading, so the score could have been assessed. MIMIC-IV "
         "only until another source has SOFA ingredients and a sidecar.",
+    ),
+    # -- v3 additions (Track B item 11, concept-set widening): structurally-
+    # derived electrolyte/metabolic/hematologic abnormalities, all plain
+    # instantaneous thresholds (no known over-triggering problem reported
+    # for any of these in ICU practice, unlike v1's tachypnea) -- no new
+    # rule machinery. None of these is a mimic-code concept-library query
+    # (mimic-code's queries are scores/staging systems -- SOFA, SIRS,
+    # sepsis3, KDIGO -- not raw lab-abnormality flags); each threshold
+    # below is a standard, independently-citable clinical cutoff, sourced
+    # in its own description rather than attributed to mimic-code.
+    CanonicalConcept(
+        "hyperkalemia",
+        (LoincThreshold(_POTASSIUM, "above", 5.5),),
+        "Serum/plasma potassium > 5.5 mEq/L -- a standard severe-"
+        "hyperkalemia threshold (cardiac-risk cutoff used across ICU "
+        "electrolyte-repletion protocols).",
+    ),
+    CanonicalConcept(
+        "hypokalemia",
+        (LoincThreshold(_POTASSIUM, "below", 3.0),),
+        "Serum/plasma potassium < 3.0 mEq/L -- a standard severe-"
+        "hypokalemia threshold.",
+    ),
+    CanonicalConcept(
+        "hyponatremia",
+        (LoincThreshold(_SODIUM, "below", 130.0),),
+        "Serum/plasma sodium < 130 mEq/L -- a standard moderate/severe-"
+        "hyponatremia threshold.",
+    ),
+    CanonicalConcept(
+        "hypernatremia",
+        (LoincThreshold(_SODIUM, "above", 150.0),),
+        "Serum/plasma sodium > 150 mEq/L -- a standard hypernatremia threshold.",
+    ),
+    CanonicalConcept(
+        "hypoglycemia",
+        (LoincThreshold(_GLUCOSE, "below", 70.0),),
+        "Serum/plasma glucose < 70 mg/dL -- the ADA (American Diabetes "
+        "Association) hypoglycemia threshold.",
+    ),
+    CanonicalConcept(
+        "hyperglycemia",
+        (LoincThreshold(_GLUCOSE, "above", 250.0),),
+        "Serum/plasma glucose > 250 mg/dL -- a standard marked-"
+        "hyperglycemia threshold, well above routine stress-hyperglycemia "
+        "noise and below DKA-range values.",
+    ),
+    CanonicalConcept(
+        "anemia",
+        (LoincThreshold(_HEMOGLOBIN, "below", 7.0),),
+        "Hemoglobin < 7 g/dL -- the restrictive-transfusion-strategy "
+        "trigger (TRICC/TRISS-style ICU threshold), the more specific of "
+        "the two commonly-cited cutoffs (7 vs. 8 g/dL).",
+    ),
+    CanonicalConcept(
+        "thrombocytopenia",
+        (LoincThreshold(_PLATELETS, "below", 100.0),),
+        "Platelet count < 100 x10^9/L -- the SOFA coagulation-component "
+        "Stage-2 threshold (odyssey.data.sofa), a standard clinically-"
+        "significant cutoff independent of the SOFA score itself.",
+    ),
+    CanonicalConcept(
+        "coagulopathy",
+        (LoincThreshold(_INR, "above", 1.5),),
+        "INR > 1.5 -- a standard clinically-significant coagulopathy "
+        "threshold (e.g. the King's College hepatic-coagulopathy cutoff).",
+    ),
+    CanonicalConcept(
+        "metabolic_acidosis",
+        (
+            LoincThreshold(_BICARBONATE, "below", 18.0),
+            LoincThreshold(_PH, "below", 7.3),
+        ),
+        "Serum bicarbonate < 18 mEq/L OR arterial/venous pH < 7.3 -- "
+        "either criterion alone triggers (a plain concept's rules are "
+        "OR'd, see the module docstring); both are standard metabolic-"
+        "acidosis thresholds, and using both catches partially-"
+        "compensated cases a single measure would miss.",
+    ),
+    CanonicalConcept(
+        "shock",
+        (LoincSustained(_MAP, 65.0, "below", min_gap_hours=1.0),),
+        "Mean arterial pressure < 65 mmHg, recurring (not a single "
+        "transient reading, same SustainedRule operationalization as "
+        "sustained_tachypnea) -- the standard MAP-based shock/hemodynamic-"
+        "instability threshold. Deliberately NOT also OR'd with "
+        "vasopressor administration (the concept's other common trigger "
+        "in clinical use): that would make it near-redundant with the "
+        "existing on_vasopressors concept (almost every vasopressor start "
+        "co-occurs with it) while adding little 'was this patient "
+        "actually hypotensive' signal of its own -- see the v3 report for "
+        "the overlap check this dropped.",
     ),
 ]
 
