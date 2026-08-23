@@ -339,7 +339,22 @@ class PackedLaneSampler:
 
         concept_ids_full = _stack("concept_ids", torch.long)
         type_ids_full = _stack("type_ids", torch.long)
-        time_stamps_full = _stack("time_stamps", torch.float)
+        # double, not float: _landmark_mask reads this same tensor back
+        # for landmark bucket/time bookkeeping, compared against
+        # _index_rows_from_events' float64 polars computation elsewhere.
+        # float32 loses enough precision at real-data time magnitudes
+        # (hundreds of hours since origin) to introduce ~1e-6h noise --
+        # this backbone's own bucket-index comparison tolerates that
+        # (see _landmark_mask), but the emitted IndexRow.time_hours
+        # values benefit from the same precision as the packed-context
+        # path (packed_context.py), kept symmetric rather than leaving
+        # this path alone just because its own check happens not to
+        # notice (root-caused via backbone="transformer" 2026-08-23).
+        # The model's own TimeEmbeddingLayer.forward() already does its
+        # own .float() cast before use, so this is purely additive
+        # precision for the landmark-bookkeeping path, not a model-input
+        # dtype change.
+        time_stamps_full = _stack("time_stamps", torch.double)
         ages_full = _stack("ages", torch.float)
         visit_orders_full = _stack("visit_orders", torch.long)
         visit_segments_full = _stack("visit_segments", torch.long)

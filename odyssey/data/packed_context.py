@@ -320,7 +320,18 @@ class PackedContextSampler:
 
         concept_ids_full = _stack("concept_ids", torch.long)
         type_ids_full = _stack("type_ids", torch.long)
-        time_stamps_full = _stack("time_stamps", torch.float)
+        # double, not float: _landmark_mask/_unrebase_truncated_times and
+        # the final IndexRow.time_hours all read this same tensor back for
+        # exact comparison against _index_rows_from_events' float64 polars
+        # computation -- float32 loses enough precision at real-data time
+        # magnitudes (hundreds of hours since origin) to occasionally flip
+        # the 6th decimal digit verify_packed_landmark_rows compares on,
+        # confirmed via a real-eICU-data repro (root-caused 2026-08-23).
+        # The model's own TimeEmbeddingLayer.forward() already does its
+        # own .float() cast before use, so this is purely additive
+        # precision for the landmark-bookkeeping path, not a model-input
+        # dtype change.
+        time_stamps_full = _stack("time_stamps", torch.double)
         ages_full = _stack("ages", torch.float)
         visit_orders_full = _stack("visit_orders", torch.long)
         visit_segments_full = _stack("visit_segments", torch.long)
