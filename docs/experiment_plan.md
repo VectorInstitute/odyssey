@@ -129,7 +129,7 @@ attached does not launch.
   v3 from the start), E5 rerun + E4/E7 v3 labels after E1.
   Earlier note for the record: lane path exposed -- -- collect_model_scores builds rows
   through one unconditional code path for both backbones (e6, confirmed by
-  reading), so every v2 dump carries ~1.4% duplicate landmarks. **Ruling: the
+  reading), so every v2 dump carries duplicate landmarks (measured 1.4% on the transformer repro subset; 5.2% on the full eICU v9 64x512 dump -- population-dependent). **Ruling: the
   fix bumps LANDMARK_PROTOCOL_VERSION to 3** (same doctrine as v1->v2), and
   the lane path gains a production row-set assertion against the group-by
   ground truth. Regen queue once v3 merges: E1 dumps + rescores, E5 mechanical
