@@ -539,3 +539,48 @@ def test_sequences_without_visit_fields_default_to_no_supervision() -> None:
     c1 = sampler.next_chunk()
     assert c1.visit_ids[0].tolist() == [-1, -1, -1]
     assert not c1.visit_end.any()
+
+
+# ---------------------------------------------------------------------------
+# Time precision (real-data scale)
+# ---------------------------------------------------------------------------
+
+
+def test_time_stamps_survive_real_data_magnitude_at_double_precision() -> None:
+    """time_stamps must stay float64 through packing, not silently narrow to float32.
+
+    Same root cause and same real-data value as
+    tests/odyssey/data/test_packed_context.py's twin test (434.416667h,
+    the literal value observed in a real-eICU-data repro of
+    verify_packed_landmark_rows' disagreement) -- streaming.py's
+    PackedLaneSampler stacks time_stamps the same way
+    PackedContextSampler does. This backbone's own _landmark_mask
+    compares integer bucket indices across chunks, which tolerates the
+    ~1e-6h float32 noise without ever disagreeing, so this precision loss
+    was real but invisible here; kept symmetric with the packed-context
+    path rather than left alone just because nothing currently notices.
+    """
+    real_data_hours = 434.416667
+    seq = PatientSequence(
+        subject_id=1,
+        concept_ids=[1000, 1001],
+        type_ids=[1, 1],
+        time_stamps=[0.0, real_data_hours],
+        ages=[30.0, 30.0],
+        visit_orders=[0, 0],
+        visit_segments=[0, 0],
+    )
+    # chunk_size=3, not 2: StreamingChunk.batch drops the window's last
+    # position (time_stamps_full[:, :-1], reserved for the next-token
+    # target side), so the 2 real events need one position of headroom
+    # to both survive that slice.
+    sampler = PackedLaneSampler(_patients([seq]), num_lanes=1, chunk_size=3)
+
+    chunk = sampler.next_chunk()
+    assert chunk is not None
+
+    assert chunk.batch.aux.time_stamps.dtype == torch.double
+    recovered = float(chunk.batch.aux.time_stamps[0, 1])
+    assert round(recovered, 6) == real_data_hours, (
+        f"time_stamps lost precision in packing: {real_data_hours} -> {recovered}"
+    )
