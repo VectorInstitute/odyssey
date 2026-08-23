@@ -2029,3 +2029,131 @@ def test_verify_packed_landmark_rows_agrees_on_real_mimic_data_landmark_mode() -
         f"landmark-mode packed-path/ground-truth disagreement on real data "
         f"(see this test's docstring): {problems}"
     )
+
+
+# ---------------------------------------------------------------------------
+# collect_model_scores_at_rows: the missingness protocol's fixed-row scoring
+# ---------------------------------------------------------------------------
+
+
+def _rows_by_key(rows: List[IndexRow]) -> Dict[Tuple[int, int, float], IndexRow]:
+    return {(r.subject_id, r.visit_id, round(r.time_hours, 6)): r for r in rows}
+
+
+@pytest.mark.parametrize(
+    "backbone,chunk_size,max_context",
+    [("hybrid", 16, 4096), ("hybrid", 200, 4096), ("transformer", 256, 4096)],
+)
+def test_scoring_at_the_clean_rows_reproduces_landmark_scoring_exactly(
+    backbone: str, chunk_size: int, max_context: int
+) -> None:
+    """On the clean record, fixed-row scoring must equal the landmark pass."""
+    from odyssey.inference.alerts import collect_model_scores_at_rows  # noqa: PLC0415
+
+    events = _events(12)
+    binned = add_value_tokens(events)
+    vocab = _vocab(binned)
+    concepts = concepts_for_source("mimic_iv")
+    model = (
+        _transformer_model(len(vocab), len(concepts))
+        if backbone == "transformer"
+        else _model(len(vocab), len(concepts))
+    )
+    common = {
+        "visit_start": _visit_starts(events),
+        "landmark_hours": 4.0,
+        "num_lanes": 2,
+        "chunk_size": chunk_size,
+        "device": "cpu",
+        "backbone": backbone,
+        "max_context": max_context,
+    }
+    landmark = collect_model_scores(
+        model, binned, vocab, [c.name for c in concepts], ALERT_EVENTS, **common
+    )
+    fixed, unscoreable = collect_model_scores_at_rows(
+        model,
+        binned,
+        vocab,
+        [c.name for c in concepts],
+        ALERT_EVENTS,
+        index_rows=landmark["vasopressor_start"],
+        num_lanes=2,
+        chunk_size=chunk_size,
+        device="cpu",
+        backbone=backbone,
+        max_context=max_context,
+    )
+    assert unscoreable == 0
+    for alert in ALERT_EVENTS:
+        a, b = _rows_by_key(landmark[alert.name]), _rows_by_key(fixed[alert.name])
+        assert set(a) == set(b) and len(a) == len(landmark[alert.name])
+        for key, row in a.items():
+            for name, value in row.scores.items():
+                assert b[key].scores[name] == pytest.approx(value, abs=1e-6), (
+                    alert.name,
+                    key,
+                    name,
+                )
+
+
+def test_scoring_at_the_clean_rows_on_a_degraded_record_keeps_the_row_set() -> None:
+    """Dropped rows / shifted labs never change the row set: scores move, keys do not."""
+    from odyssey.inference.alerts import collect_model_scores_at_rows  # noqa: PLC0415
+
+    events = _events(8)
+    binned = add_value_tokens(events)
+    vocab = _vocab(binned)
+    concepts = concepts_for_source("mimic_iv")
+    model = _model(len(vocab), len(concepts))
+    clean = collect_model_scores(
+        model,
+        binned,
+        vocab,
+        [c.name for c in concepts],
+        ALERT_EVENTS,
+        visit_start=_visit_starts(events),
+        landmark_hours=4.0,
+        num_lanes=2,
+        chunk_size=16,
+        device="cpu",
+    )
+    clean_rows = clean["vasopressor_start"]
+    # degrade: drop every third heart-rate row (never a subject's first, the
+    # origin row -- degrade.py protects it by construction) and shift the rest
+    # 0.5h later, except the first row of each subject (origin preserved)
+    hr = pl.col("code").str.starts_with("LAB//220045")
+    first_of_subject = pl.col("time") == pl.col("time").min().over("subject_id")
+    degraded = (
+        events.with_row_index("_i")
+        .filter(~(hr & (pl.col("_i") % 3 == 1) & ~first_of_subject))
+        .with_columns(
+            pl.when(hr & ~first_of_subject)
+            .then(pl.col("time") + pl.duration(minutes=30))
+            .otherwise(pl.col("time"))
+            .alias("time")
+        )
+        .drop("_i")
+    )
+    degraded_binned = add_value_tokens(degraded)
+    fixed, unscoreable = collect_model_scores_at_rows(
+        model,
+        degraded_binned,
+        vocab,
+        [c.name for c in concepts],
+        ALERT_EVENTS,
+        index_rows=clean_rows,
+        num_lanes=2,
+        chunk_size=16,
+        device="cpu",
+    )
+    # every clean row is scored with its CLEAN key (origins preserved, so every
+    # row has a visible token at/before it)
+    want = _rows_by_key(clean_rows)
+    got = _rows_by_key(fixed["vasopressor_start"])
+    assert set(got) == set(want) and unscoreable == 0
+    # and the degraded scores are not simply the clean scores
+    assert any(
+        got[k].scores["next_mass"] != pytest.approx(want[k].scores["next_mass"])
+        for k in got
+    )
