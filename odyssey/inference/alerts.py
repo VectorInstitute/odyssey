@@ -725,7 +725,10 @@ def baseline_features(
 # ``basic`` = the original hand features (latest clinical bin per curated
 # signal, 24h family counts, hours into visit, age); ``strong`` = the
 # best-effort panel of :mod:`odyssey.inference.baseline_features`.
-BASELINE_FEATURE_SETS: Tuple[str, ...] = ("basic", "strong")
+# "strong_text" = the strong panel plus note-embedding features from the
+# active note_embeddings sidecar (odyssey.text.note_features): the
+# text-modality probe (Track A item 7).
+BASELINE_FEATURE_SETS: Tuple[str, ...] = ("basic", "strong", "strong_text")
 
 
 def strong_baseline_features(
@@ -741,6 +744,26 @@ def strong_baseline_features(
         [r.visit_id for r in index_rows],
         [r.time_hours for r in index_rows],
     )
+
+
+def strong_text_baseline_features(
+    events_binned: pl.DataFrame,
+    index_rows: Sequence[IndexRow],
+    *,
+    source: str = "mimic_iv",
+) -> np.ndarray:
+    """Strong panel + note-embedding block (needs the note_embeddings sidecar)."""
+    from odyssey.text.note_features import note_features_for_rows  # noqa: PLC0415
+
+    strong = strong_baseline_features(events_binned, index_rows, source=source)
+    starts = _visit_starts(events_binned)
+    notes, _ = note_features_for_rows(
+        events_binned,
+        [r.subject_id for r in index_rows],
+        [starts.get((r.subject_id, r.visit_id), r.time_hours) for r in index_rows],
+        [r.time_hours for r in index_rows],
+    )
+    return np.concatenate([strong, notes], axis=1)
 
 
 def features_for_events(
@@ -770,6 +793,8 @@ def features_for_events(
         return {}
     if feature_set == "strong":
         feats = strong_baseline_features(events_binned, union, source=source)
+    elif feature_set == "strong_text":
+        feats = strong_text_baseline_features(events_binned, union, source=source)
     else:
         feats = baseline_features(events_binned, union, source=source)
     return {
@@ -1094,6 +1119,8 @@ def fit_baselines_streaming(
             continue
         if feature_set == "strong":
             feats = strong_baseline_features(binned, shard_rows, source=source)
+        elif feature_set == "strong_text":
+            feats = strong_text_baseline_features(binned, shard_rows, source=source)
         else:
             feats = baseline_features(binned, shard_rows, source=source)
         all_rows.extend(shard_rows)
@@ -2148,8 +2175,11 @@ def evaluate_alerts(
     if dump_rows_path is not None:
         context_cols = None
         context_names: Optional[List[str]] = None
-        if features_by_event is not None and baseline_feature_set == "strong":
-            all_names = strong_feature_names()
+        if features_by_event is not None and baseline_feature_set in (
+            "strong",
+            "strong_text",
+        ):
+            all_names = strong_feature_names()  # context columns lead either set
             keep_idx = [all_names.index(c) for c in ROW_DUMP_CONTEXT if c in all_names]
             context_names = [all_names[i] for i in keep_idx]
             context_cols = {k: v[:, keep_idx] for k, v in features_by_event.items()}
