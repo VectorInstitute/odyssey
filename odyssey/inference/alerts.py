@@ -401,7 +401,9 @@ def collect_model_scores(
         else {}
     )
     rows: Dict[str, List[IndexRow]] = {a.name: [] for a in alerts}
-    patients = iter_patient_sequences(events_binned, vocab)
+    patients = iter_patient_sequences(
+        events_binned, vocab, signal_panel=getattr(model, "signal_panel", None)
+    )
     packed = backbone == "transformer"
     sampler: Union[PackedLaneSampler, PackedContextSampler] = (
         PackedContextSampler(patients, batch_size=num_lanes, max_context=max_context)

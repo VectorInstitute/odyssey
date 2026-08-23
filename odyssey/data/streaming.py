@@ -64,9 +64,11 @@ target to begin with.
 from dataclasses import dataclass, field
 from typing import Iterator, List, NamedTuple, Optional
 
+import numpy as np
 import torch
 
 from odyssey.data.sequences import N_RECENCY_FAMILIES, NO_VISIT, PatientSequence
+from odyssey.data.signal_panel import N_PANEL_SIGNALS
 from odyssey.data.types import AuxiliaryInputs, ClinicalSequenceBatch
 from odyssey.data.vocabulary import PAD_ID
 
@@ -74,6 +76,8 @@ from odyssey.data.vocabulary import PAD_ID
 # Sentinel `subject_ids` value at padding positions.
 NO_SUBJECT = -1
 _NAN = float("nan")
+# Shared read-only all-NaN signal-state row for padding / channel-less patients.
+_NAN_SIGNAL_ROW = np.full(2 * N_PANEL_SIGNALS, np.nan, dtype=np.float32)
 
 
 class StreamingChunk(NamedTuple):
@@ -107,6 +111,9 @@ class _LaneBuffer:
     values: List[float] = field(default_factory=list)
     static: List[bool] = field(default_factory=list)
     family_recency: List[List[float]] = field(default_factory=list)
+    signal_state: List[np.ndarray] = field(default_factory=list)
+    """One ``(2 * N_PANEL_SIGNALS,)`` float32 row per token (all-NaN for
+    patients built without the channel)."""
 
     def __len__(self) -> int:
         """Return the number of unconsumed tokens in this lane."""
@@ -150,6 +157,11 @@ class _LaneBuffer:
             if len(seq.family_recency) == n
             else [[_NAN] * N_RECENCY_FAMILIES] * n
         )
+        self.signal_state.extend(
+            list(seq.signal_state)
+            if seq.signal_state is not None and len(seq.signal_state) == n
+            else [_NAN_SIGNAL_ROW] * n
+        )
 
         resets = [False] * n
         resets[0] = True
@@ -183,6 +195,7 @@ class _LaneBuffer:
         del self.values[:n]
         del self.static[:n]
         del self.family_recency[:n]
+        del self.signal_state[:n]
 
     def peek_padded(self, k: int) -> "_Window":
         """Return the first ``k`` tokens, padded if fewer than ``k`` remain."""
@@ -205,6 +218,7 @@ class _LaneBuffer:
             static=self.static[:n_real] + [False] * pad,
             family_recency=self.family_recency[:n_real]
             + [[_NAN] * N_RECENCY_FAMILIES] * pad,
+            signal_state=self.signal_state[:n_real] + [_NAN_SIGNAL_ROW] * pad,
             n_real=n_real,
         )
 
@@ -234,6 +248,7 @@ def _repad(window: "_Window", real_len: int) -> "_Window":
         static=window.static[:real_len] + [False] * pad,
         family_recency=window.family_recency[:real_len]
         + [[_NAN] * N_RECENCY_FAMILIES] * pad,
+        signal_state=window.signal_state[:real_len] + [_NAN_SIGNAL_ROW] * pad,
         n_real=real_len,
     )
 
@@ -256,6 +271,7 @@ class _Window:
     values: List[float]
     static: List[bool]
     family_recency: List[List[float]]
+    signal_state: List[np.ndarray]
     n_real: int
 
 
@@ -366,6 +382,9 @@ class PackedLaneSampler:
         values_full = _stack("values", torch.float)
         static_full = _stack("static", torch.bool)
         family_recency_full = _stack("family_recency", torch.float)
+        signal_state_full = torch.from_numpy(
+            np.stack([np.stack(w.signal_state) for w in windows])
+        )
 
         input_ids = concept_ids_full[:, :-1]
         # A target position that is itself a reset is the first token of a
@@ -401,6 +420,7 @@ class PackedLaneSampler:
                 visit_segments=visit_segments_full[:, :-1],
                 values=values_full[:, :-1],
                 family_recency=family_recency_full[:, :-1],
+                signal_state=signal_state_full[:, :-1],
             ),
         )
         return StreamingChunk(

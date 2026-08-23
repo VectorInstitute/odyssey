@@ -10,9 +10,11 @@ then pads/collates many subjects into a
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 import polars as pl
 import torch
 
+from odyssey.data.signal_panel import N_PANEL_SIGNALS, SignalPanelResolver
 from odyssey.data.types import AuxiliaryInputs, ClinicalSequenceBatch
 from odyssey.data.value_binning import VALUE_Z_COL
 from odyssey.data.vocabulary import PAD_ID, Vocabulary, code_type
@@ -69,6 +71,10 @@ class PatientSequence:
     False)."""
 
     values: List[float] = field(default_factory=list)
+    """Standardized numeric value per token (the ``numeric_z`` column of
+    :func:`~odyssey.data.value_binning.add_value_tokens`), ``nan`` where
+    the event carries none; empty on sequences built without that column
+    (treated as all-``nan``). Input-side only: targets stay bin tokens."""
     family_recency: List[List[float]] = field(default_factory=list)
     """Per token: hours since the previous event of each code family
     (``nan`` if that family has not occurred yet), aligned with
@@ -77,14 +83,58 @@ class PatientSequence:
     sequences built before this field existed. Consumed only by models
     with ``recency_features`` on (timing metadata for the time/event
     heads; never routed through the concept bottleneck)."""
-    """Standardized numeric value per token (the ``numeric_z`` column of
-    :func:`~odyssey.data.value_binning.add_value_tokens`), ``nan`` where
-    the event carries none; empty on sequences built without that column
-    (treated as all-``nan``). Input-side only: targets stay bin tokens."""
+    signal_state: Optional[np.ndarray] = field(default=None, compare=False)
+    """``(n, 2 * N_PANEL_SIGNALS)`` float32, or ``None`` on sequences built
+    without a :class:`~odyssey.data.signal_panel.SignalPanelResolver`. For
+    each curated panel signal k: column ``k`` = hours since that signal's
+    previous observation (strictly before this token, like
+    ``family_recency``; ``nan`` until first seen), column ``K + k`` = the
+    standardized value of that previous observation (``nan`` if none or
+    valueless). Exact per patient regardless of chunking. Consumed only by
+    models with ``signal_channels`` on, at the time/event heads, never
+    through the concept bottleneck -- the per-signal staleness and
+    last-value inputs the tuned GBM baseline reads."""
 
     def __len__(self) -> int:
         """Return the number of events in this sequence."""
         return len(self.concept_ids)
+
+    def tail(self, n: int, *, rebase_times: bool = False) -> "PatientSequence":
+        """Return the most recent ``n`` tokens (the whole sequence if shorter).
+
+        Optional per-token fields that were never populated stay empty.
+        ``rebase_times`` subtracts the kept window's first timestamp so the
+        result again obeys the "hours since this sequence's first event"
+        convention (the packed-context path needs that; the streaming path
+        keeps absolute offsets). ``family_recency`` and ``signal_state``
+        store differences/last values, invariant under that shift.
+        """
+        total = len(self)
+        if total <= n:
+            return self
+
+        def _tail(values: List[object]) -> List[object]:
+            return values[-n:] if len(values) == total else []
+
+        times = self.time_stamps[-n:]
+        if rebase_times:
+            first = times[0]
+            times = [t - first for t in times]
+        return PatientSequence(
+            subject_id=self.subject_id,
+            concept_ids=self.concept_ids[-n:],
+            type_ids=self.type_ids[-n:],
+            time_stamps=times,
+            ages=self.ages[-n:],
+            visit_orders=self.visit_orders[-n:],
+            visit_segments=self.visit_segments[-n:],
+            visit_ids=_tail(list(self.visit_ids)),  # type: ignore[arg-type]
+            visit_ends=_tail(list(self.visit_ends)),  # type: ignore[arg-type]
+            static_mask=_tail(list(self.static_mask)),  # type: ignore[arg-type]
+            values=_tail(list(self.values)),  # type: ignore[arg-type]
+            family_recency=_tail(list(self.family_recency)),  # type: ignore[arg-type]
+            signal_state=None if self.signal_state is None else self.signal_state[-n:],
+        )
 
 
 def _assign_visits(
@@ -150,14 +200,51 @@ def _family_recency(type_ids: List[int], time_stamps: List[float]) -> List[List[
     return out
 
 
+def _signal_state(
+    signal_ids: List[int], time_stamps: List[float], values: List[float]
+) -> np.ndarray:
+    """Per-position panel-signal staleness and last value (see ``signal_state``).
+
+    Vectorized: for each signal, the index of its latest observation at or
+    before every position is a running maximum; shifting it down one row
+    makes the state exclusive of the current token, matching
+    :func:`_family_recency`.
+    """
+    n = len(signal_ids)
+    k = N_PANEL_SIGNALS
+    out = np.full((n, 2 * k), np.nan, dtype=np.float32)
+    if n == 0:
+        return out
+    sid = np.asarray(signal_ids, dtype=np.int64)
+    t = np.asarray(time_stamps, dtype=np.float64)
+    vals = (
+        np.asarray(values, dtype=np.float64)
+        if len(values) == n
+        else np.full(n, np.nan, dtype=np.float64)
+    )
+    positions = np.arange(n, dtype=np.int64)
+    obs = np.where(sid[:, None] == np.arange(k)[None, :], positions[:, None], -1)
+    last = np.maximum.accumulate(obs, axis=0)
+    last = np.vstack([np.full((1, k), -1, dtype=np.int64), last[:-1]])
+    seen = last >= 0
+    safe = np.where(seen, last, 0)
+    out[:, :k] = np.where(seen, t[:, None] - t[safe], np.nan)
+    out[:, k:] = np.where(seen, vals[safe], np.nan)
+    return out
+
+
 def build_patient_sequence(
     events: pl.DataFrame,
     vocabulary: Vocabulary,
     *,
     max_seq_len: Optional[int] = None,
     max_num_visits: int = 512,
+    signal_panel: Optional[SignalPanelResolver] = None,
 ) -> PatientSequence:
     """Build one subject's tokenized sequence from their raw MEDS events.
+
+    ``signal_panel`` (a resolver for the run's source) switches on the
+    per-signal ``signal_state`` channel; ``None`` leaves it unset.
 
     ``events`` must contain a single ``subject_id``. Static, timeless facts
     (``time`` is null, e.g. ``GENDER//...``) are placed as the first tokens
@@ -276,21 +363,12 @@ def build_patient_sequence(
     static_mask = [i < n_static for i in range(len(concept_ids))]
 
     family_recency = _family_recency(type_ids, time_stamps)
+    signal_state: Optional[np.ndarray] = None
+    if signal_panel is not None:
+        signal_ids = [signal_panel.resolve(c) for c in codes]
+        signal_state = _signal_state(signal_ids, time_stamps, values)
 
-    if max_seq_len is not None and len(concept_ids) > max_seq_len:
-        static_mask = static_mask[-max_seq_len:]
-        family_recency = family_recency[-max_seq_len:]
-        concept_ids = concept_ids[-max_seq_len:]
-        type_ids = type_ids[-max_seq_len:]
-        time_stamps = time_stamps[-max_seq_len:]
-        ages = ages[-max_seq_len:]
-        visit_orders = visit_orders[-max_seq_len:]
-        visit_segments = visit_segments[-max_seq_len:]
-        visit_ids = visit_ids[-max_seq_len:]
-        visit_ends = visit_ends[-max_seq_len:]
-        values = values[-max_seq_len:]
-
-    return PatientSequence(
+    seq = PatientSequence(
         subject_id=subject_id,
         concept_ids=concept_ids,
         type_ids=type_ids,
@@ -303,7 +381,11 @@ def build_patient_sequence(
         static_mask=static_mask,
         values=values,
         family_recency=family_recency,
+        signal_state=signal_state,
     )
+    if max_seq_len is not None:
+        seq = seq.tail(max_seq_len)
+    return seq
 
 
 def collate_patient_sequences(

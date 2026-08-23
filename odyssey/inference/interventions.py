@@ -208,7 +208,12 @@ def run_streaming_intervention(
         concept_first_times = {}
     model.eval()
     num_concepts = model.bottleneck.num_concepts
-    patients = iter_patient_sequences(events_binned, vocab, max_seq_len=max_seq_len)
+    patients = iter_patient_sequences(
+        events_binned,
+        vocab,
+        max_seq_len=max_seq_len,
+        signal_panel=getattr(model, "signal_panel", None),
+    )
     sampler = PackedLaneSampler(
         patients, num_lanes=num_lanes, chunk_size=chunk_size, reset_prob=0.0
     )

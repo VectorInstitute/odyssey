@@ -59,54 +59,29 @@ against something computed in the original frame, notably
 from dataclasses import dataclass, field
 from typing import Dict, Iterator, List, Optional
 
+import numpy as np
 import torch
 
 from odyssey.data.sequences import N_RECENCY_FAMILIES, NO_VISIT, PatientSequence
+from odyssey.data.signal_panel import N_PANEL_SIGNALS
 from odyssey.data.streaming import NO_SUBJECT, StreamingChunk
 from odyssey.data.types import AuxiliaryInputs, ClinicalSequenceBatch
 from odyssey.data.vocabulary import PAD_ID
 
 
 _NAN = float("nan")
+_NAN_SIGNAL_ROW = np.full(2 * N_PANEL_SIGNALS, np.nan, dtype=np.float32)
 
 
 def _truncate_head(seq: PatientSequence, max_context: int) -> PatientSequence:
     """Keep ``seq``'s most recent ``max_context`` tokens, timestamps rebased to 0.
 
-    Rebasing (subtracting the kept window's own first timestamp) restores
-    the "hours since this sequence's first event" convention
-    :class:`PatientSequence` documents for its own ``time_stamps`` field --
-    this patient is, from here on, effectively a fresh sequence starting
-    at the truncation point. ``family_recency`` needs no equivalent
-    adjustment: it already stores differences (hours since each family's
-    last occurrence), invariant under adding the same constant to every
-    timestamp.
+    Rebasing restores the "hours since this sequence's first event"
+    convention :class:`PatientSequence` documents -- this patient is, from
+    here on, effectively a fresh sequence starting at the truncation point.
+    See :meth:`PatientSequence.tail`.
     """
-    n = len(seq)
-    if n <= max_context:
-        return seq
-
-    def _tail(values: List[object]) -> List[object]:
-        return values[-max_context:] if len(values) == n else []
-
-    kept_times = seq.time_stamps[-max_context:]
-    first = kept_times[0]
-    rebased_times = [t - first for t in kept_times]
-
-    return PatientSequence(
-        subject_id=seq.subject_id,
-        concept_ids=seq.concept_ids[-max_context:],
-        type_ids=seq.type_ids[-max_context:],
-        time_stamps=rebased_times,
-        ages=seq.ages[-max_context:],
-        visit_orders=seq.visit_orders[-max_context:],
-        visit_segments=seq.visit_segments[-max_context:],
-        visit_ids=_tail(list(seq.visit_ids)),  # type: ignore[arg-type]
-        visit_ends=_tail(list(seq.visit_ends)),  # type: ignore[arg-type]
-        static_mask=_tail(list(seq.static_mask)),  # type: ignore[arg-type]
-        values=_tail(list(seq.values)),  # type: ignore[arg-type]
-        family_recency=_tail(list(seq.family_recency)),  # type: ignore[arg-type]
-    )
+    return seq.tail(max_context, rebase_times=True)
 
 
 @dataclass
@@ -127,6 +102,7 @@ class _RowBuilder:
     values: List[float] = field(default_factory=list)
     static: List[bool] = field(default_factory=list)
     family_recency: List[List[float]] = field(default_factory=list)
+    signal_state: List[np.ndarray] = field(default_factory=list)
 
     def __len__(self) -> int:
         """Return the number of tokens packed into this row so far."""
@@ -166,6 +142,11 @@ class _RowBuilder:
             if len(seq.family_recency) == n
             else [[_NAN] * N_RECENCY_FAMILIES] * n
         )
+        self.signal_state.extend(
+            list(seq.signal_state)
+            if seq.signal_state is not None and len(seq.signal_state) == n
+            else [_NAN_SIGNAL_ROW] * n
+        )
 
         resets = [False] * n
         resets[0] = True
@@ -195,6 +176,7 @@ class _RowBuilder:
             values=self.values + [_NAN] * pad,
             static=self.static + [False] * pad,
             family_recency=self.family_recency + [[_NAN] * N_RECENCY_FAMILIES] * pad,
+            signal_state=self.signal_state + [_NAN_SIGNAL_ROW] * pad,
             n_real=n,
         )
 
@@ -217,6 +199,7 @@ class _Row:
     values: List[float]
     static: List[bool]
     family_recency: List[List[float]]
+    signal_state: List[np.ndarray]
     n_real: int
 
 
@@ -343,6 +326,9 @@ class PackedContextSampler:
         values_full = _stack("values", torch.float)
         static_full = _stack("static", torch.bool)
         family_recency_full = _stack("family_recency", torch.float)
+        signal_state_full = torch.from_numpy(
+            np.stack([np.stack(r.signal_state) for r in rows])
+        )
 
         # Same-window shift by one (not the +1-lookahead-token convention
         # PackedLaneSampler uses): max_context means exactly the window
@@ -365,6 +351,7 @@ class PackedContextSampler:
                 visit_segments=visit_segments_full,
                 values=values_full,
                 family_recency=family_recency_full,
+                signal_state=signal_state_full,
             ),
         )
         return StreamingChunk(
