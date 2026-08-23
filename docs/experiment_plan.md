@@ -119,7 +119,15 @@ attached does not launch.
   per-lane `{visit_id: last_bucket_emitted}` state cleared at subject
   boundaries, persisted across chunks; acceptance = all verifier classes zero
   on the real repro + literal interleaved-pattern regression test.
-  **RESOLVED (Aug 23): lane path exposed** -- collect_model_scores builds rows
+  **CLOSED (Aug 23): v3 merged as dbfd447** -- interleaved-visit fix +
+  unconditional both-backbone verification + sequences.py time-derivation
+  alignment. Known residual: ~2 invented / ~22 dropped verifier warnings on
+  transformer/packed runs only (float64 (a-b)+b truncation-rebase
+  round-trip, ~1e-13); true-time-threading follow-up tracked P2, gated
+  before any paper-grade transformer dump; no version bump when it lands.
+  Regen queue is ACTIVE: E1 (6e, after current legs finish), M2 (e6, under
+  v3 from the start), E5 rerun + E4/E7 v3 labels after E1.
+  Earlier note for the record: lane path exposed -- -- collect_model_scores builds rows
   through one unconditional code path for both backbones (e6, confirmed by
   reading), so every v2 dump carries ~1.4% duplicate landmarks. **Ruling: the
   fix bumps LANDMARK_PROTOCOL_VERSION to 3** (same doctrine as v1->v2), and
