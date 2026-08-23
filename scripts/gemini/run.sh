@@ -4,7 +4,7 @@
 # nobody can log into the node directly, so this is what actually runs there.
 #
 # Usage (on the GEMINI node, from the repo root):
-#   scripts/gemini/run.sh [probe|schema|env-gpu|extract-dry|extract|finalize|export-codes|train-smoke|train-smoke-2|train-full|eval-forecast <run-name>|train|eval|all]
+#   scripts/gemini/run.sh [probe|schema|env-gpu|extract-dry|extract|finalize|export-codes|train-smoke|train-smoke-2|train-full|train-rung2|eval-forecast <run-name>|train|eval|all]
 #
 # Steps:
 #   probe        scripts/gemini/probe_env.sh -> scripts/gemini/out/env_probe.txt
@@ -72,6 +72,22 @@
 #                heartbeat is the real signal, especially whether steps/s
 #                holds up at 16x the smokes' consumption rate or the CPU feed
 #                becomes the bottleneck).
+#   train-rung2  ladder rung 2 (G4, docs/experiment_plan.md): same geometry
+#                as train-full, one deliberate delta -- hidden_size 256->512,
+#                an estimated ~60M parameters (the real, measured count logs
+#                at training init, same as every step). CRITICAL: trains on
+#                the quarantined 12-table dataset G2/G3 already used
+#                (GEMINI_MEDS_OUTPUT_DIR/data_12table_trainfull by default,
+#                overridable via GEMINI_LADDER_DATA_DIR), never the newer
+#                18-table finalize output -- the scaling curve holds data
+#                fixed while varying model scale, so a schema change here
+#                would confound the comparison. Output under
+#                ~/runs/gemini_rung2_60m_v1. Periodic (non-best/final/epoch)
+#                checkpoints beyond the most recent
+#                GEMINI_RUNG2_KEEP_CHECKPOINTS (default 3) are pruned in the
+#                background as training runs, since a ~60M model's
+#                checkpoints are large enough at checkpoint_every=2000 to
+#                threaten disk over a full 2-epoch run.
 #   eval-forecast <run-name>
 #                run_inference against data/held_out for the named run under
 #                ~/runs/ (e.g. `eval-forecast gemini_full_14m_v1`) --
@@ -79,14 +95,20 @@
 #                ~/runs/<run-name>/eval_forecast.json. max_shards/num_lanes
 #                default to 20/16 (a first read, not the full held-out set),
 #                overridable via GEMINI_EVAL_MAX_SHARDS/GEMINI_EVAL_NUM_LANES
-#                so later ladder rungs don't need another code change. Takes
-#                the run name as a second positional argument, not a step of
-#                its own config, so it serves every ladder rung the same way.
+#                so later ladder rungs don't need another code change. The
+#                held-out dir itself defaults to data/held_out under
+#                GEMINI_MEDS_OUTPUT_DIR but is overridable via
+#                GEMINI_EVAL_HELD_OUT_DIR -- ladder runs (train-rung2 and
+#                later) must point this at the same quarantined 12-table
+#                held_out the training run itself used; train-rung2's own
+#                launch report prints the exact command. Takes the run name
+#                as a second positional argument, not a step of its own
+#                config, so it serves every ladder rung the same way.
 #   train        not built yet (a general, non-GEMINI-specific full run).
 #   eval         not built yet.
 #   all          probe, schema, extract-dry, in order (default; deliberately
 #                excludes env-gpu, extract, finalize, train-smoke*,
-#                train-full, and eval-forecast -- see below)
+#                train-full, train-rung2, and eval-forecast -- see below)
 #
 # Self-syncing: every invocation starts with `git fetch origin && git reset
 # --hard origin/main` (never `git pull` -- every mirror rewrites history, so
@@ -666,6 +688,160 @@ JSON
         echo "$STEP complete. Checkpoints and loss_log.jsonl under $OUTPUT_DIR"
     }
 
+    _prune_step_checkpoints() {
+        # Deletes all but the KEEP most recent checkpoint_<N>.pt files under
+        # DIR, by numeric global_step (not mtime -- a resumed run's mtimes
+        # don't necessarily sort the same way its steps do). Can only ever
+        # match checkpoint_<digits>.pt: checkpoint_best.pt/checkpoint_final.pt/
+        # checkpoint_epoch_<N>.pt all have a non-digit character right after
+        # "checkpoint_", so the glob below never matches them -- this must
+        # never prune any of those three.
+        #
+        # Deliberately avoids `ls | ...` (a real pitfall hit writing this: an
+        # interactive shell's own `ls` alias reformatted the listing and
+        # silently broke the parsing) and GNU-only `head -n -N` (not
+        # guaranteed on GEMINI's actual coreutils) -- a plain glob loop plus
+        # `head -n <positive count>` is portable to both GNU and BSD.
+        local dir="$1"
+        local keep="$2"
+        local f n pairs sorted total to_delete old
+        pairs=""
+        for f in "$dir"/checkpoint_[0-9]*.pt; do
+            [[ -e "$f" ]] || continue
+            n="${f##*/checkpoint_}"
+            n="${n%.pt}"
+            pairs="$pairs$n $f
+"
+        done
+        [[ -z "$pairs" ]] && return 0
+        sorted=$(printf '%s' "$pairs" | sort -n)
+        total=$(printf '%s\n' "$sorted" | grep -c .)
+        to_delete=$((total - keep))
+        if [[ "$to_delete" -gt 0 ]]; then
+            printf '%s\n' "$sorted" | head -n "$to_delete" | awk '{print $2}' | while IFS= read -r old; do
+                rm -f -- "$old"
+            done
+        fi
+    }
+
+    _start_checkpoint_pruner() {
+        # Backgrounds a loop that calls _prune_step_checkpoints every
+        # $interval seconds; prints the loop's own PID so the caller can
+        # kill it once training exits (success or failure) -- it must never
+        # outlive the training process it was started for.
+        local dir="$1"
+        local keep="$2"
+        local interval="${3:-300}"
+        (
+            while true; do
+                sleep "$interval"
+                _prune_step_checkpoints "$dir" "$keep"
+            done
+        ) &
+        echo $!
+    }
+
+    run_train_rung2() {
+        local run_name="gemini_rung2_60m_v1"
+        local keep_checkpoints="${GEMINI_RUNG2_KEEP_CHECKPOINTS:-3}"
+
+        echo "=== train-rung2 ($run_name) ==="
+        echo "Ladder rung 2 (G4, docs/experiment_plan.md): same geometry as"
+        echo "train-full (num_lanes=64/chunk_size=512, model_kind=baseline,"
+        echo "source=gemini, concepts/alerts off, num_epochs=2), one"
+        echo "deliberate delta -- hidden_size 256 -> 512, an ESTIMATED ~60M"
+        echo "parameters (arithmetic, not measured -- the real, measured"
+        echo "count logs at training init: \"[model] N.NM parameters...\", same"
+        echo "as every step)."
+        echo "Pruning periodic checkpoints beyond the most recent"
+        echo "$keep_checkpoints in the background (override via"
+        echo "GEMINI_RUNG2_KEEP_CHECKPOINTS) -- checkpoint_best.pt,"
+        echo "checkpoint_final.pt, and checkpoint_epoch_*.pt are never pruned."
+        if [[ -z "${TMUX:-}" && -z "${STY:-}" ]]; then
+            echo "WARNING: this doesn't look like a tmux or screen session --" >&2
+            echo "if the SSH connection drops, training dies with it." >&2
+            echo "Run it detached instead, e.g.:" >&2
+            echo "  tmux new -s $run_name 'scripts/gemini/run.sh $STEP'" >&2
+            echo "  # or: nohup scripts/gemini/run.sh $STEP > $run_name.log 2>&1 &" >&2
+        fi
+
+        GPU_VENV="${GEMINI_GPU_VENV:-$HOME/.venvs/odyssey-gemini-gpu}"
+        if [[ ! -f "$GPU_VENV/bin/activate" ]]; then
+            echo "GPU venv not found at $GPU_VENV -- run 'scripts/gemini/run.sh env-gpu' first." >&2
+            exit 1
+        fi
+
+        # CRITICAL: the scaling curve holds data fixed while varying model
+        # scale -- G2's 14M point (train-full) trained on this same
+        # quarantined 12-table dataset, so rung 2/3 must too, never the newer
+        # 18-table finalize output, or model scale and schema change get
+        # confounded. Pinnable via GEMINI_LADDER_DATA_DIR since the exact
+        # directory name is a real, one-off operator artifact (Amrit's
+        # finalize-quarantine step), not something derivable from code.
+        MEDS_DIR="${GEMINI_MEDS_OUTPUT_DIR:-/mnt/nfs/project/subdural_hematoma_endotypes/gemini_meds_v1}"
+        LADDER_DATA_DIR="${GEMINI_LADDER_DATA_DIR:-$MEDS_DIR/data_12table_trainfull}"
+        TRAIN_SHARD_DIR="$LADDER_DATA_DIR/train"
+        TUNING_SHARD_DIR="$LADDER_DATA_DIR/tuning"
+        if [[ ! -d "$TRAIN_SHARD_DIR" || ! -d "$TUNING_SHARD_DIR" ]]; then
+            echo "Expected the quarantined 12-table MEDS data at" >&2
+            echo "$TRAIN_SHARD_DIR and $TUNING_SHARD_DIR -- override the path" >&2
+            echo "via GEMINI_LADDER_DATA_DIR if the quarantine snapshot lives" >&2
+            echo "somewhere else." >&2
+            exit 1
+        fi
+        echo "Data: $LADDER_DATA_DIR (quarantined 12-table dataset -- NOT"
+        echo "the current finalize output; override via GEMINI_LADDER_DATA_DIR)"
+
+        OUTPUT_DIR="$HOME/runs/$run_name"
+        mkdir -p "$OUTPUT_DIR"
+        CONFIG_JSON="$OUTPUT_DIR/train_rung2_config.json"
+
+        # Same as train-full's config, plus hidden_size -- the one
+        # deliberate delta this rung exists to measure.
+        cat > "$CONFIG_JSON" <<'JSON'
+{
+  "model_kind": "baseline",
+  "source": "gemini",
+  "stream_shards": true,
+  "event_hazards": false,
+  "num_lanes": 64,
+  "chunk_size": 512,
+  "num_epochs": 2,
+  "checkpoint_every": 2000,
+  "hidden_size": 512
+}
+JSON
+
+        echo "Run dir: $OUTPUT_DIR"
+        echo "Config ($CONFIG_JSON):"
+        cat "$CONFIG_JSON"
+        echo "Once running, tail progress with:"
+        echo "  tail -f $OUTPUT_DIR/loss_log.jsonl"
+
+        PRUNER_PID=""
+        if [[ "$keep_checkpoints" -gt 0 ]]; then
+            PRUNER_PID=$(_start_checkpoint_pruner "$OUTPUT_DIR" "$keep_checkpoints" 300)
+        fi
+
+        source "$GPU_VENV/bin/activate"
+        python -m odyssey.training.train \
+            --train-shard-dir "$TRAIN_SHARD_DIR" \
+            --tuning-shard-dir "$TUNING_SHARD_DIR" \
+            --output-dir "$OUTPUT_DIR" \
+            --config-json "$CONFIG_JSON"
+        TRAIN_EXIT=$?
+        [[ -n "$PRUNER_PID" ]] && kill "$PRUNER_PID" 2>/dev/null
+        deactivate
+        source "$VENV/bin/activate"
+
+        if [[ "$TRAIN_EXIT" -ne 0 ]]; then
+            echo "$STEP failed (exit $TRAIN_EXIT)" >&2
+            exit "$TRAIN_EXIT"
+        fi
+        echo "$STEP complete. Checkpoints and loss_log.jsonl under $OUTPUT_DIR"
+        echo "Eval: GEMINI_EVAL_HELD_OUT_DIR=$LADDER_DATA_DIR/held_out scripts/gemini/run.sh eval-forecast $run_name"
+    }
+
     run_eval_forecast() {
         local run_name="$1"
         if [[ -z "$run_name" ]]; then
@@ -677,9 +853,13 @@ JSON
         local num_lanes="${GEMINI_EVAL_NUM_LANES:-16}"
 
         echo "=== eval-forecast ($run_name) ==="
-        echo "Forecast/concept/orthogonality metrics against data/held_out."
+        echo "Forecast/concept/orthogonality metrics against held_out."
         echo "max_shards=$max_shards, num_lanes=$num_lanes (override via"
         echo "GEMINI_EVAL_MAX_SHARDS/GEMINI_EVAL_NUM_LANES for later ladder rungs)."
+        echo "Held-out dir defaults to data/held_out under GEMINI_MEDS_OUTPUT_DIR;"
+        echo "override via GEMINI_EVAL_HELD_OUT_DIR for a ladder run (must match"
+        echo "the quarantined dataset that run trained on) -- resolved path"
+        echo "printed below once computed."
         if [[ -z "${TMUX:-}" && -z "${STY:-}" ]]; then
             echo "WARNING: this doesn't look like a tmux or screen session --" >&2
             echo "if the SSH connection drops, eval dies with it." >&2
@@ -702,15 +882,22 @@ JSON
         fi
 
         MEDS_DIR="${GEMINI_MEDS_OUTPUT_DIR:-/mnt/nfs/project/subdural_hematoma_endotypes/gemini_meds_v1}"
-        HELD_OUT_SHARD_DIR="$MEDS_DIR/data/held_out"
+        # Ladder runs (train-rung2 and later) must point this at the same
+        # quarantined 12-table held_out their training run used, never the
+        # current finalize output -- see train-rung2's own launch report,
+        # which prints the exact GEMINI_EVAL_HELD_OUT_DIR command.
+        HELD_OUT_SHARD_DIR="${GEMINI_EVAL_HELD_OUT_DIR:-$MEDS_DIR/data/held_out}"
         if [[ ! -d "$HELD_OUT_SHARD_DIR" ]]; then
             echo "Expected finalized MEDS data at $HELD_OUT_SHARD_DIR -- run" >&2
-            echo "'scripts/gemini/run.sh finalize' first." >&2
+            echo "'scripts/gemini/run.sh finalize' first (or, for a ladder" >&2
+            echo "run, check GEMINI_EVAL_HELD_OUT_DIR points at the right" >&2
+            echo "quarantined dataset)." >&2
             exit 1
         fi
 
         OUTPUT_JSON="$RUN_DIR/eval_forecast.json"
         echo "Run dir: $RUN_DIR"
+        echo "Held-out: $HELD_OUT_SHARD_DIR"
         echo "Output: $OUTPUT_JSON"
 
         source "$GPU_VENV/bin/activate"
@@ -737,12 +924,13 @@ JSON
         train-smoke) run_train_smoke 5 2 gemini_smoke_1 ;;
         train-smoke-2) run_train_smoke 30 "" gemini_smoke_2 ;;
         train-full) run_train_full ;;
+        train-rung2) run_train_rung2 ;;
         eval-forecast) run_eval_forecast "${2:-}" ;;
         train) run_pending_stub train ;;
         eval) run_pending_stub eval ;;
         all) run_probe; run_schema; run_extract_dry ;;
         *)
-            echo "unknown step: $STEP (expected probe, schema, env-gpu, extract-dry, extract, finalize, export-codes, train-smoke, train-smoke-2, train-full, eval-forecast, train, eval, or all)" >&2
+            echo "unknown step: $STEP (expected probe, schema, env-gpu, extract-dry, extract, finalize, export-codes, train-smoke, train-smoke-2, train-full, train-rung2, eval-forecast, train, eval, or all)" >&2
             exit 1
             ;;
     esac
