@@ -240,6 +240,7 @@ def test_task_sets_are_versioned_and_backward_compatible() -> None:
     with pytest.raises(ValueError, match="unknown task_set"):
         concepts_for_source("mimic_iv", task_set="v9")
     assert ALERT_EVENTS is ALERT_EVENTS_V1 and alert_events_for("v1") is ALERT_EVENTS_V1
+    assert alert_events_for("v3") is ALERT_EVENTS_V2  # v3 widens concepts only
     assert [a.name for a in ALERT_EVENTS_V2] == [
         "vasopressor_start",
         "icu_admission",
