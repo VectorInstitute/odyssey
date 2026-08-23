@@ -12,9 +12,11 @@ import torch
 from odyssey.data.sequences import (
     HOURS_PER_YEAR,
     NO_VISIT,
+    _signal_state,
     build_patient_sequence,
     collate_patient_sequences,
 )
+from odyssey.data.signal_panel import N_PANEL_SIGNALS
 from odyssey.data.vocabulary import PAD_ID, UNK_ID, Vocabulary
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
 from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
@@ -447,3 +449,29 @@ def test_static_events_lead_the_sequence_at_the_first_timestamp() -> None:
     # a static-only subject still yields an empty sequence
     only_static = events.filter(pl.col("time").is_null())
     assert len(build_patient_sequence(only_static, vocab)) == 0
+
+
+# ---------------------------------------------------------------------------
+# signal_state (real-data finding, research_journal/experiments/44_real_data_checks)
+# ---------------------------------------------------------------------------
+
+
+def test_signal_state_ignores_null_valued_repeat_readings() -> None:
+    """A same-prefix row without a number is not an observation of the signal.
+
+    Real-data finding (research_journal/experiments/44_real_data_checks.html):
+    a panel signal charted twice close together, the second time with a null
+    ``numeric_value``. Ruling: only VALUED readings count, for both the
+    staleness and the last-value channel -- the same rule the GBM panel
+    applies (baseline_features._build_subject skips NaN-valued rows), so the
+    two families see identical signal histories.
+    """
+    signal_ids = [0, 0, -1]  # NO_SIGNAL sentinel for the third, unrelated row
+    time_stamps = [0.0, 1.0, 2.0]
+    values = [1.5, None, 0.0]
+
+    state = _signal_state(signal_ids, time_stamps, values)
+    staleness_col, last_value_col = 0, N_PANEL_SIGNALS
+
+    assert state[2, staleness_col] == 2.0  # last VALUED reading was at t=0h
+    assert state[2, last_value_col] == 1.5

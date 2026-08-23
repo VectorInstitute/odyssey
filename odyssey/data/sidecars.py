@@ -33,6 +33,9 @@ SIDECAR_DIRNAME = "sidecars"
 # Sidecar name: one row per culture specimen (subject_id, hadm_id nullable,
 # time, spec_type_desc, positive_culture).
 MICROBIOLOGY = "microbiology"
+# Sidecar name: antibacterial prescription orders (subject_id, hadm_id, time,
+# stoptime, drug, route) -- mimic-code's suspicion-of-infection anchor.
+ANTIBIOTIC_ORDERS = "antibiotic_orders"
 
 _ACTIVE: Dict[str, pl.DataFrame] = {}
 _ACTIVE_ROOT: Optional[Path] = None
@@ -107,6 +110,7 @@ def sidecar_context(tables: Mapping[str, pl.DataFrame]) -> Iterator[None]:
 
 
 __all__ = [
+    "ANTIBIOTIC_ORDERS",
     "MICROBIOLOGY",
     "SIDECAR_DIRNAME",
     "activate_sidecars",

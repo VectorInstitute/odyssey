@@ -17,7 +17,9 @@ Usage::
         --mimic-root /Volumes/clinical-data/physionet.org/files/mimiciv/3.1 \
         --meds-root /Volumes/clinical-data/meds/mimiciv_3.1_v1
 
-writes ``<meds-root>/sidecars/microbiology.parquet`` with one row per
+writes ``<meds-root>/sidecars/microbiology.parquet`` (one row per
+specimen) and ``antibiotic_orders.parquet`` (antibacterial prescription
+orders: ``subject_id, hadm_id, time, stoptime, drug, route``), with one row per
 specimen (``micro_specimen_id``): ``subject_id``, ``hadm_id`` (nullable),
 ``time`` (``charttime``, falling back to ``chartdate`` at midnight when the
 time is missing, as mimic-code does), ``spec_type_desc``, and
@@ -98,6 +100,49 @@ def _midnight_fraction(micro: pl.DataFrame) -> float:
     return float(at_midnight.sum()) / max(micro.height, 1)
 
 
+def build_antibiotic_orders_sidecar(mimic_root: Path) -> pl.DataFrame:
+    """Antibacterial prescription ORDERS (hosp/prescriptions), one row per order.
+
+    mimic-code's ``suspicion_of_infection`` anchors on prescription orders
+    (start time, route); the MEDS extraction tokenizes only pharmacy/eMAR
+    events, which under-call suspicion (entry 43: 1,189 vs 1,462 admissions
+    with suspected infection on the held-out validation scope). The
+    sidecar carries every order whose drug name matches the antibacterial
+    pattern the Sepsis-3 rule uses; route exclusions are applied by the
+    rule, not here, so the same table serves any future route policy.
+    """
+    from odyssey.data.concepts import ANTIBIOTIC_PATTERN  # noqa: PLC0415
+
+    path = mimic_root / "hosp" / "prescriptions.csv.gz"
+    lf = pl.scan_csv(
+        path,
+        schema_overrides={
+            "subject_id": pl.Int64,
+            "hadm_id": pl.Int64,
+            "starttime": pl.Utf8,
+            "stoptime": pl.Utf8,
+            "drug": pl.Utf8,
+            "route": pl.Utf8,
+        },
+    )
+    orders = (
+        lf.select("subject_id", "hadm_id", "starttime", "stoptime", "drug", "route")
+        .filter(pl.col("drug").str.contains("(?i)" + ANTIBIOTIC_PATTERN))
+        .with_columns(
+            pl.col("starttime").str.strptime(
+                pl.Datetime("us"), "%Y-%m-%d %H:%M:%S", strict=False
+            ),
+            pl.col("stoptime").str.strptime(
+                pl.Datetime("us"), "%Y-%m-%d %H:%M:%S", strict=False
+            ),
+        )
+        .filter(pl.col("starttime").is_not_null())
+        .rename({"starttime": "time"})
+        .sort(["subject_id", "time"])
+    )
+    return orders.collect()
+
+
 def main() -> None:
     """CLI entry point."""
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -111,6 +156,15 @@ def main() -> None:
     micro = build_microbiology_sidecar(args.mimic_root)
     out = out_dir / "microbiology.parquet"
     micro.write_parquet(out)
+    orders = build_antibiotic_orders_sidecar(args.mimic_root)
+    orders_out = out_dir / "antibiotic_orders.parquet"
+    orders.write_parquet(orders_out)
+    logger.info(
+        "[sidecars] antibiotic_orders: %d orders, %d subjects -> %s",
+        orders.height,
+        orders["subject_id"].n_unique(),
+        orders_out,
+    )
     logger.info(
         "[sidecars] microbiology: %d specimens, %d subjects, %.1f%% with charttime-less "
         "dates -> %s",
