@@ -77,6 +77,24 @@ attached does not launch.
 2. Ladder rung specs (G4/G5) sized from G2's measured throughput.
 3. Wave table assembly + protocol-delta write-up as legs complete.
 
+## Active defects (affect gates above)
+
+- **Interleaved-visit landmark duplication** (found Aug 23 by
+  `verify_packed_landmark_rows` after the float64 fix c147b9f cleared the
+  precision classes): same-timestamp event bundles spanning two hadm_ids with
+  alternating token order make the adjacency-based `_landmark_mask` emit a
+  landmark per visit-boundary *crossing* instead of per (subject, visit,
+  bucket) -- ~0.35% phantom extras on the eICU repro, and the likely cause of
+  the surviving truncated-subject classes. Fix owner: e6. Approved design:
+  per-lane `{visit_id: last_bucket_emitted}` state cleared at subject
+  boundaries, persisted across chunks; acceptance = all verifier classes zero
+  on the real repro + literal interleaved-pattern regression test. **Open
+  question gating dump regen:** does the lane/streaming collect path share the
+  adjacency mask (then E1/E2/E3/M2 v2 dumps carry the extras and regen after
+  the fix; rescores rerun mechanically) or build rows from the group-by side
+  (immune, packed-only)? e6 reporting the mechanism. Until answered, new E5/E7
+  registry rows note "main @ c147b9f, pre-interleaving-fix".
+
 ## Standing gates recap
 
 - Nothing launches without a row here or an explicit lead go.
