@@ -1,5 +1,6 @@
 """Tests for converting raw MEDS events into patient token sequences."""
 
+import math
 import os
 import subprocess
 from datetime import datetime, timedelta
@@ -12,9 +13,11 @@ import torch
 from odyssey.data.sequences import (
     HOURS_PER_YEAR,
     NO_VISIT,
+    _signal_state,
     build_patient_sequence,
     collate_patient_sequences,
 )
+from odyssey.data.signal_panel import N_PANEL_SIGNALS
 from odyssey.data.vocabulary import PAD_ID, UNK_ID, Vocabulary
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
 from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
@@ -447,3 +450,46 @@ def test_static_events_lead_the_sequence_at_the_first_timestamp() -> None:
     # a static-only subject still yields an empty sequence
     only_static = events.filter(pl.col("time").is_null())
     assert len(build_patient_sequence(only_static, vocab)) == 0
+
+
+# ---------------------------------------------------------------------------
+# signal_state (real-data finding, research_journal/experiments/44_real_data_checks.html)
+# ---------------------------------------------------------------------------
+
+
+def test_signal_state_last_value_goes_nan_after_a_null_valued_repeat_reading() -> None:
+    """Pins signal_state's current (surprising) last_value behavior -- NOT
+    asserted as correct, flagged as an open design question.
+
+    Real-data finding: a real held-out shard has cases where a panel
+    signal is charted twice close together, the second time with a null
+    numeric_value (e.g. an order/duplicate row under the same resolvable
+    prefix). _signal_state's staleness channel correctly reports "this
+    signal was seen recently" in that case, but the last_value channel
+    goes NaN even though a real earlier value exists -- because "last
+    occurrence" is tracked by position regardless of whether that
+    occurrence's own value was null, then that position's (null) value is
+    what gets read back.
+
+    Minimal repro: signal 0 (e.g. creatinine) observed at t=0h with a real
+    value, then again at t=1h with NO value, then an unrelated event at
+    t=2h. At t=2h, staleness correctly says "1h" (last occurrence: t=1h),
+    but last_value is NaN, not the real 1.5 from t=0h.
+
+    Whether this should instead carry forward the last NON-null value is a
+    real design question (a null reading could itself be meaningful, e.g.
+    "ordered but not yet resulted") -- this test documents current
+    behavior precisely so a deliberate choice can be made, not so this
+    assertion is treated as the desired outcome.
+    """
+    signal_ids = [0, 0, -1]  # NO_SIGNAL sentinel for the third, unrelated row
+    time_stamps = [0.0, 1.0, 2.0]
+    values = [1.5, None, 0.0]
+
+    state = _signal_state(signal_ids, time_stamps, values)
+    staleness_col, last_value_col = 0, N_PANEL_SIGNALS
+
+    assert state[2, staleness_col] == 1.0  # staleness: correctly "1h ago"
+    # current behavior: the real t=0h value (1.5) is lost, not carried
+    # forward through the null-valued t=1h occurrence.
+    assert math.isnan(state[2, last_value_col])
