@@ -1,0 +1,73 @@
+"""Tests for the fit-result cache used by the optional baseline fitters."""
+
+from pathlib import Path
+from typing import Dict, Optional
+
+from odyssey.inference.fit_cache import FitCache, env_fingerprint
+
+
+def test_load_returns_none_when_nothing_cached(tmp_path: Path) -> None:
+    cache = FitCache(cache_dir=tmp_path)
+    assert cache.load("tabicl/vasopressor_start/8h") is None
+
+
+def test_save_then_load_round_trips_the_model(tmp_path: Path) -> None:
+    cache = FitCache(cache_dir=tmp_path)
+    cache.save("ebm/death/24h", {"weights": [1, 2, 3]})
+    assert cache.load("ebm/death/24h") == {"weights": [1, 2, 3]}
+
+
+def test_load_returns_none_when_the_fingerprint_does_not_match(
+    tmp_path: Path,
+) -> None:
+    writer = FitCache(cache_dir=tmp_path, fingerprint={"tabicl": "1.0.0"})
+    writer.save("tabicl/death/8h", "a-fitted-model")
+
+    reader = FitCache(cache_dir=tmp_path, fingerprint={"tabicl": "2.0.0"})
+    assert reader.load("tabicl/death/8h") is None
+
+
+def test_load_returns_the_model_when_the_fingerprint_matches(tmp_path: Path) -> None:
+    fp: Dict[str, Optional[str]] = {"tabicl": "1.0.0"}
+    writer = FitCache(cache_dir=tmp_path, fingerprint=dict(fp))
+    writer.save("tabicl/death/8h", "a-fitted-model")
+
+    reader = FitCache(cache_dir=tmp_path, fingerprint=dict(fp))
+    assert reader.load("tabicl/death/8h") == "a-fitted-model"
+
+
+def test_keys_that_share_a_prefix_do_not_collide(tmp_path: Path) -> None:
+    cache = FitCache(cache_dir=tmp_path)
+    cache.save("tabicl/vasopressor_start/8h", "model-a")
+    cache.save("tabicl/vasopressor_start/24h", "model-b")
+    assert cache.load("tabicl/vasopressor_start/8h") == "model-a"
+    assert cache.load("tabicl/vasopressor_start/24h") == "model-b"
+
+
+def test_a_slash_in_a_key_becomes_a_real_subdirectory(tmp_path: Path) -> None:
+    cache = FitCache(cache_dir=tmp_path)
+    cache.save("ebm/death/8h", "model")
+    assert (tmp_path / "ebm" / "death" / "8h.pkl").exists()
+
+
+def test_save_creates_the_cache_dir_if_missing(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "nested" / "rescore_cache"
+    cache = FitCache(cache_dir=cache_dir)
+    cache.save("ebm/death/8h", "model")
+    assert cache_dir.exists()
+    assert cache.load("ebm/death/8h") == "model"
+
+
+def test_env_fingerprint_includes_python_version() -> None:
+    fp = env_fingerprint()
+    assert "python" in fp
+    assert fp["python"]
+
+
+def test_env_fingerprint_reports_none_for_an_uninstalled_package() -> None:
+    fp = env_fingerprint()
+    # none of tabicl/interpret/survivalpfn/torch/numpy are guaranteed
+    # installed in every environment this test runs in; whichever aren't
+    # must report None rather than raise.
+    for pkg in ("tabicl", "interpret", "survivalpfn", "torch", "numpy"):
+        assert pkg in fp

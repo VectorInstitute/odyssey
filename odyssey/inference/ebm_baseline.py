@@ -30,7 +30,7 @@ import logging
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 import polars as pl
@@ -42,6 +42,7 @@ from odyssey.inference.alerts import (
     features_for_events,
     outcome_at_horizon,
 )
+from odyssey.inference.fit_cache import FitCache
 
 
 logger = logging.getLogger(__name__)
@@ -158,6 +159,7 @@ def _fit_one_ebm(
     n_jobs: int,
     max_rows: int,
     outer_bags: int,
+    cache: Optional[FitCache] = None,
 ) -> dict[float, EBMBaselineModel]:
     """Fit one EBM per horizon for a single event, given a feature matrix.
 
@@ -168,12 +170,25 @@ def _fit_one_ebm(
     ``outer_bags`` controls the ensemble size EBM's own default (14) would
     otherwise use -- see :data:`EBM_MAX_ROWS` and :data:`DEFAULT_OUTER_BAGS`
     for why the speed-tuned defaults differ from EBM's own.
+
+    ``cache``, if given, is checked per horizon before fitting and written
+    to immediately after -- individual EBM fits here have run past an
+    hour each at full project scale (see :data:`EBM_MAX_ROWS`'s note), so
+    this is where losing an in-progress run costs the most -- see
+    :mod:`odyssey.inference.fit_cache`.
     """
-    ebm_classifier_cls = _load_ebm_classifier()
+    ebm_classifier_cls = None
     groups_all = np.array([r.subject_id for r in rows])
     rng = np.random.default_rng(seed)
     out: dict[float, EBMBaselineModel] = {}
     for h in horizons:
+        cache_key = f"ebm/{event_name}/{h:g}h"
+        if cache is not None:
+            cached = cache.load(cache_key)
+            if cached is not None:
+                out[h] = cached
+                continue
+
         y = np.array(
             [outcome_at_horizon(r, times, h) for r in rows],
             dtype=object,
@@ -198,6 +213,8 @@ def _fit_one_ebm(
             n_jobs,
         )
         t0 = time.time()
+        if ebm_classifier_cls is None:
+            ebm_classifier_cls = _load_ebm_classifier()
         clf = ebm_classifier_cls(
             random_state=seed, n_jobs=n_jobs, outer_bags=outer_bags
         )
@@ -214,6 +231,8 @@ def _fit_one_ebm(
                 "fit_seconds": elapsed,
             },
         )
+        if cache is not None:
+            cache.save(cache_key, out[h])
         logger.info(
             "[ebm] %s@%gh: done in %.1fs",
             event_name,
@@ -235,6 +254,7 @@ def fit_ebm_baselines(
     n_jobs: int = 12,
     max_rows: int | None = None,
     outer_bags: int | None = None,
+    cache: Optional[FitCache] = None,
 ) -> dict[tuple[str, float], EBMBaselineModel]:
     """One ``ExplainableBoostingClassifier`` per (event, horizon).
 
@@ -256,7 +276,9 @@ def fit_ebm_baselines(
 
     Requires the optional ``interpret`` package (see the module
     docstring); raises ``ImportError`` with install instructions if it is
-    not installed, the first time a model would actually be fit.
+    not installed, the first time a model would actually be fit. ``cache``,
+    if given, is consulted/updated per (event, horizon) -- see
+    :mod:`odyssey.inference.fit_cache`.
     """
     resolved_max_rows = EBM_MAX_ROWS if max_rows is None else max_rows
     resolved_outer_bags = DEFAULT_OUTER_BAGS if outer_bags is None else outer_bags
@@ -278,6 +300,7 @@ def fit_ebm_baselines(
             n_jobs=n_jobs,
             max_rows=resolved_max_rows,
             outer_bags=resolved_outer_bags,
+            cache=cache,
         )
         for h, model in per_horizon.items():
             models[(name, h)] = model

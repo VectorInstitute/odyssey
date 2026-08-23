@@ -15,6 +15,7 @@ environment.
 """
 
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -30,6 +31,7 @@ from odyssey.inference.ebm_baseline import (
     _load_ebm_classifier,
     fit_ebm_baselines,
 )
+from odyssey.inference.fit_cache import FitCache
 
 
 T0 = datetime(2024, 1, 1)
@@ -257,3 +259,56 @@ def test_fit_one_ebm_caps_rows_and_records_it(monkeypatch: pytest.MonkeyPatch) -
     fit = _RecordingFakeClassifier.instances[0]
     assert fit.x_fit is not None
     assert fit.x_fit.shape[0] <= 50
+
+
+# ---------------------------------------------------------------------------
+# fit_ebm_baselines + FitCache: cache hit skips the fit, cache miss saves
+# ---------------------------------------------------------------------------
+
+
+def test_fit_ebm_baselines_skips_fitting_on_a_cache_hit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(ebm_module, "EBM_MIN_ROWS", 10)
+    events = _events(24)
+    binned = add_value_tokens(events)
+    times = all_event_times(binned, ALERT_EVENTS, "mimic_iv")
+    rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+    cache = FitCache(cache_dir=tmp_path)
+
+    fit_ebm_baselines(
+        binned, rows, times, horizons=(8.0,), feature_set="basic", cache=cache
+    )
+    assert len(_RecordingFakeClassifier.instances) == 1
+
+    def _boom() -> None:
+        raise AssertionError("should not load the classifier on a cache hit")
+
+    monkeypatch.setattr(ebm_module, "_load_ebm_classifier", _boom)
+    models = fit_ebm_baselines(
+        binned, rows, times, horizons=(8.0,), feature_set="basic", cache=cache
+    )
+    assert ("vasopressor_start", 8.0) in models
+    assert len(_RecordingFakeClassifier.instances) == 1
+
+
+def test_fit_ebm_baselines_refits_when_the_cache_is_from_a_different_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(ebm_module, "EBM_MIN_ROWS", 10)
+    events = _events(24)
+    binned = add_value_tokens(events)
+    times = all_event_times(binned, ALERT_EVENTS, "mimic_iv")
+    rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+
+    writer = FitCache(cache_dir=tmp_path, fingerprint={"interpret": "1.0.0"})
+    fit_ebm_baselines(
+        binned, rows, times, horizons=(8.0,), feature_set="basic", cache=writer
+    )
+    assert len(_RecordingFakeClassifier.instances) == 1
+
+    reader = FitCache(cache_dir=tmp_path, fingerprint={"interpret": "2.0.0"})
+    fit_ebm_baselines(
+        binned, rows, times, horizons=(8.0,), feature_set="basic", cache=reader
+    )
+    assert len(_RecordingFakeClassifier.instances) == 2
