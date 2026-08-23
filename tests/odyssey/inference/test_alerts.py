@@ -42,6 +42,7 @@ from odyssey.inference.alerts import (
     score_alerts,
     sparse_columns,
     verify_packed_landmark_rows,
+    verify_rows_match_dump,
 )
 from odyssey.inference.baseline_features import feature_names
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
@@ -990,6 +991,97 @@ def test_load_index_row_table_warns_on_mixed_versions(
 
     assert any(
         "mixed landmark_protocol_version" in r.message
+        for r in caplog.records
+        if r.levelname == "WARNING"
+    )
+
+
+def _write_dump(
+    path: Path, rows: Dict[str, List[IndexRow]], times, horizons=(8.0,)
+) -> None:
+    index_row_table(rows, times, horizons=horizons).write_parquet(path)
+
+
+def test_verify_rows_match_dump_passes_on_an_exact_match(tmp_path: Path) -> None:
+    rows = {
+        "death": [
+            IndexRow(subject_id=1, visit_id=10, time_hours=0.0),
+            IndexRow(subject_id=2, visit_id=20, time_hours=4.0),
+        ]
+    }
+    times = {
+        "death": EventTimes(
+            onset={(1, 10): 4.0}, censor={(2, 20): 30.0}, subject_scoped=False
+        )
+    }
+    path = tmp_path / "rows.parquet"
+    _write_dump(path, rows, times)
+
+    verify_rows_match_dump(rows, times, path, horizons=(8.0,))  # no raise
+
+
+def test_verify_rows_match_dump_raises_on_a_missing_row(tmp_path: Path) -> None:
+    rows = {
+        "death": [
+            IndexRow(subject_id=1, visit_id=10, time_hours=0.0),
+            IndexRow(subject_id=2, visit_id=20, time_hours=4.0),
+        ]
+    }
+    times = {
+        "death": EventTimes(
+            onset={(1, 10): 4.0}, censor={(2, 20): 30.0}, subject_scoped=False
+        )
+    }
+    path = tmp_path / "rows.parquet"
+    _write_dump(path, rows, times)
+
+    extra_rows = {
+        "death": rows["death"] + [IndexRow(subject_id=3, visit_id=30, time_hours=1.0)]
+    }
+    extra_times = {
+        "death": EventTimes(
+            onset={(1, 10): 4.0},
+            censor={(2, 20): 30.0, (3, 30): 30.0},
+            subject_scoped=False,
+        )
+    }
+    with pytest.raises(AssertionError, match="reconstructed rows do not match"):
+        verify_rows_match_dump(extra_rows, extra_times, path, horizons=(8.0,))
+
+
+def test_verify_rows_match_dump_raises_on_a_label_disagreement(tmp_path: Path) -> None:
+    rows = {"death": [IndexRow(subject_id=1, visit_id=10, time_hours=0.0)]}
+    times = {"death": EventTimes(onset={(1, 10): 4.0}, censor={}, subject_scoped=False)}
+    path = tmp_path / "rows.parquet"
+    _write_dump(path, rows, times)  # dump has y@8h=1 (onset at 4h, within 8h)
+
+    # Same row keys, but reconstructed with different onset -> y@8h=0 instead of 1.
+    mismatched_times = {
+        "death": EventTimes(onset={}, censor={(1, 10): 30.0}, subject_scoped=False)
+    }
+    with pytest.raises(AssertionError, match="y@h disagrees"):
+        verify_rows_match_dump(rows, mismatched_times, path, horizons=(8.0,))
+
+
+def test_verify_rows_match_dump_ignores_a_landmark_protocol_version_mismatch(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Row/label identity is orthogonal to protocol version -- a version
+    # mismatch still warns (via load_index_row_table) but must not raise,
+    # as long as the rows and labels genuinely agree.
+    rows = {"death": [IndexRow(subject_id=1, visit_id=10, time_hours=0.0)]}
+    times = {"death": EventTimes(onset={(1, 10): 4.0}, censor={}, subject_scoped=False)}
+    path = tmp_path / "rows.parquet"
+    table = index_row_table(rows, times, horizons=(8.0,)).with_columns(
+        pl.lit(1).alias("landmark_protocol_version")
+    )
+    table.write_parquet(path)
+
+    with caplog.at_level("WARNING"):
+        verify_rows_match_dump(rows, times, path, horizons=(8.0,))  # no raise
+
+    assert any(
+        "landmark_protocol_version=1" in r.message
         for r in caplog.records
         if r.levelname == "WARNING"
     )
