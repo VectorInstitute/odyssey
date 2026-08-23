@@ -77,6 +77,7 @@ from odyssey.inference.meds_tab_baseline import (  # noqa: E402
 )
 from odyssey.training.data import load_meds_shards  # noqa: E402
 from odyssey.training.train import TrainingConfig  # noqa: E402
+from odyssey.utils.joblib_tmp import ensure_joblib_temp_folder  # noqa: E402
 
 
 # Pinned per item (f): recorded here, not left at MEDS-Tab's own defaults
@@ -300,6 +301,7 @@ def run_cache_task(
 
 def main() -> None:  # noqa: PLR0915
     """Run the standalone (per-task) MEDS-Tab pipeline end to end."""
+    ensure_joblib_temp_folder()
     run_dir = Path(sys.argv[1])
     data_root = Path(sys.argv[2])
     out_json = Path(sys.argv[3])

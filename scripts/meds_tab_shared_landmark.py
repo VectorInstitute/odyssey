@@ -78,6 +78,7 @@ from odyssey.inference.meds_tab_baseline import (  # noqa: E402
 )
 from odyssey.training.data import load_meds_shards  # noqa: E402
 from odyssey.training.train import TrainingConfig  # noqa: E402
+from odyssey.utils.joblib_tmp import ensure_joblib_temp_folder  # noqa: E402
 from scripts.meds_tab_alerts_baseline import (  # noqa: E402
     PINNED_NTHREAD,
     PINNED_SEED,
@@ -140,6 +141,7 @@ def assert_no_incomplete_tabularize_outputs(tab_out: Path) -> None:
 
 def main() -> None:  # noqa: PLR0915
     """Run the shared-landmark-grid MEDS-Tab pipeline through tabularization."""
+    ensure_joblib_temp_folder()
     run_dir = Path(sys.argv[1])
     data_root = Path(sys.argv[2])
     out_json = Path(sys.argv[3])

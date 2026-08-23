@@ -65,6 +65,7 @@ from odyssey.reporting.missingness_report import (
     write_markdown,
 )
 from odyssey.training.data import shard_sort_key
+from odyssey.utils.joblib_tmp import ensure_joblib_temp_folder
 
 
 logger = logging.getLogger(__name__)
@@ -345,6 +346,7 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
     """CLI entry point: run the full sweep and write the degradation table."""
+    ensure_joblib_temp_folder()
     args = _parse_args(argv)
     json_path, md_path = run_sweep(
         args.run_dir,
