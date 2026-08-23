@@ -423,27 +423,44 @@ def test_fit_tabicl_baselines_refits_when_the_cache_is_from_a_different_env(
     assert len(_RecordingFakeClassifier.instances) == 2
 
 
-def test_predict_batch_size_bounds_context_times_query() -> None:
-    """The query batch shrinks as the fit's context grows (the OOM bound).
+def test_inference_cost_guard_matches_the_measured_configurations() -> None:
+    """Peak memory is set at FIT time by context x features, not query batching.
 
-    Two real OOM crashes came from query batching that ignored context
-    size: an unbatched call, then a fixed 8192-row batch against a ~50k-row
-    context (2026-08-23, ~71 GB RSS). Inference cost scales with
-    context x query, so only their product can be bounded.
+    Three OOM-kills on 2026-08-23 walked this down: an unbatched query set,
+    then 8192-row batches, then 2000-row batches, and finally a single
+    isolated 2000-row call against a 50,000 x 609 context that reached
+    ~70 GB before returning. The cost shape this module documents,
+    O(n^2 + n*m^2) per ensemble member with the whole context re-read every
+    call, reproduces both that number and the ~8 GB of the eICU
+    configurations that have run to completion here.
     """
     from odyssey.inference.tabicl_baseline import (  # noqa: PLC0415
-        _MIN_PREDICT_BATCH,
-        _PAIR_BUDGET,
-        _PREDICT_BATCH_SIZE,
+        check_inference_cost,
+        estimate_peak_gb,
         predict_batch_size,
     )
 
-    assert predict_batch_size(0) == _PREDICT_BATCH_SIZE  # unknown: unchanged
-    assert predict_batch_size(1_000) == _PREDICT_BATCH_SIZE  # small context: no cap
-    for context in (20_000, 50_000, 200_000):
-        batch = predict_batch_size(context)
-        assert batch >= _MIN_PREDICT_BATCH
-        assert batch * context <= max(_PAIR_BUDGET, _MIN_PREDICT_BATCH * context)
-    # monotone non-increasing in context size
-    sizes = [predict_batch_size(c) for c in (1_000, 20_000, 50_000, 200_000)]
-    assert sizes == sorted(sizes, reverse=True)
+    assert estimate_peak_gb(50_000, 609, 8) == pytest.approx(70.0, rel=0.01)
+    assert estimate_peak_gb(50_000, 17, 8) == pytest.approx(8.4, rel=0.05)
+    # the query batch is not a memory lever: it does not enter the estimate
+    assert predict_batch_size(50_000) == predict_batch_size(1_000)
+    # the completed configuration passes; the one that never has is refused
+    check_inference_cost(50_000, 17, 8, context="basic")
+    with pytest.raises(ValueError, match="per predict_proba call"):
+        check_inference_cost(50_000, 609, 8, context="strong")
+    # a smaller context rescues the wide feature set (the other lever)
+    check_inference_cost(5_000, 609, 8, context="strong, small context")
+
+
+def test_fit_cache_keys_include_the_feature_set() -> None:
+    """A fit is only reusable for the feature matrix it was fit on."""
+    import inspect  # noqa: PLC0415
+
+    from odyssey.inference import ebm_baseline, tabicl_baseline  # noqa: PLC0415
+
+    for module in (tabicl_baseline, ebm_baseline):
+        source = inspect.getsource(module)
+        key_lines = [ln for ln in source.splitlines() if "cache_key = f" in ln]
+        assert key_lines, module.__name__
+        for line in key_lines:
+            assert "{feature_set}" in line, (module.__name__, line)
