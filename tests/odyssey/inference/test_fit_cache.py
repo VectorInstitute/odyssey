@@ -1,7 +1,10 @@
 """Tests for the fit-result cache used by the optional baseline fitters."""
 
+import logging
 from pathlib import Path
 from typing import Dict, Optional
+
+import pytest
 
 from odyssey.inference.fit_cache import FitCache, env_fingerprint
 
@@ -56,6 +59,58 @@ def test_save_creates_the_cache_dir_if_missing(tmp_path: Path) -> None:
     cache.save("ebm/death/8h", "model")
     assert cache_dir.exists()
     assert cache.load("ebm/death/8h") == "model"
+
+
+def test_save_does_not_raise_when_the_model_is_unpicklable(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Regression test for a real incident.
+
+    A survivalpfn.SurvivalEstimator instance holds a lambda as an
+    attribute (from its own InContextModel.__init__), which stdlib
+    pickle cannot serialize (only module-level, importable-by-reference
+    callables survive it) -- this raised AttributeError deep inside
+    pickle.dump and crashed the whole fitting script, discarding a fit
+    that had already completed successfully. save() must fail soft:
+    caching is a pure optimization applied after the fit is already done
+    and usable, not a correctness requirement.
+    """
+
+    class _HasUnpicklableAttr:
+        def __init__(self) -> None:
+            self.fn = lambda x: x  # noqa: E731 -- the exact shape being regression-tested
+
+    cache = FitCache(cache_dir=tmp_path)
+    with caplog.at_level(logging.WARNING):
+        cache.save("survivalpfn/death/8h", _HasUnpicklableAttr())  # must not raise
+
+    assert any(
+        "could not pickle" in r.message
+        for r in caplog.records
+        if r.levelname == "WARNING"
+    )
+
+
+def test_save_leaves_no_truncated_file_when_pickling_fails(tmp_path: Path) -> None:
+    class _Unpicklable:
+        def __init__(self) -> None:
+            self.fn = lambda x: x  # noqa: E731
+
+    cache = FitCache(cache_dir=tmp_path)
+    cache.save("ebm/death/8h", _Unpicklable())
+    assert not (tmp_path / "ebm" / "death" / "8h.pkl").exists()
+
+
+def test_save_failure_for_one_key_does_not_affect_another(tmp_path: Path) -> None:
+    class _Unpicklable:
+        def __init__(self) -> None:
+            self.fn = lambda x: x  # noqa: E731
+
+    cache = FitCache(cache_dir=tmp_path)
+    cache.save("tabicl/death/8h", _Unpicklable())
+    cache.save("tabicl/death/24h", "a-fitted-model")
+    assert cache.load("tabicl/death/8h") is None  # never cached, not corrupted
+    assert cache.load("tabicl/death/24h") == "a-fitted-model"
 
 
 def test_env_fingerprint_includes_python_version() -> None:
