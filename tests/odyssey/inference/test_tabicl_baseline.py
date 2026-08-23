@@ -421,3 +421,29 @@ def test_fit_tabicl_baselines_refits_when_the_cache_is_from_a_different_env(
         binned, rows, times, horizons=(8.0,), feature_set="basic", cache=reader
     )
     assert len(_RecordingFakeClassifier.instances) == 2
+
+
+def test_predict_batch_size_bounds_context_times_query() -> None:
+    """The query batch shrinks as the fit's context grows (the OOM bound).
+
+    Two real OOM crashes came from query batching that ignored context
+    size: an unbatched call, then a fixed 8192-row batch against a ~50k-row
+    context (2026-08-23, ~71 GB RSS). Inference cost scales with
+    context x query, so only their product can be bounded.
+    """
+    from odyssey.inference.tabicl_baseline import (  # noqa: PLC0415
+        _MIN_PREDICT_BATCH,
+        _PAIR_BUDGET,
+        _PREDICT_BATCH_SIZE,
+        predict_batch_size,
+    )
+
+    assert predict_batch_size(0) == _PREDICT_BATCH_SIZE  # unknown: unchanged
+    assert predict_batch_size(1_000) == _PREDICT_BATCH_SIZE  # small context: no cap
+    for context in (20_000, 50_000, 200_000):
+        batch = predict_batch_size(context)
+        assert batch >= _MIN_PREDICT_BATCH
+        assert batch * context <= max(_PAIR_BUDGET, _MIN_PREDICT_BATCH * context)
+    # monotone non-increasing in context size
+    sizes = [predict_batch_size(c) for c in (1_000, 20_000, 50_000, 200_000)]
+    assert sizes == sorted(sizes, reverse=True)
