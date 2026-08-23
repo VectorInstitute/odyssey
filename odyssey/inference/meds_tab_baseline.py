@@ -144,6 +144,19 @@ def export_task_labels(
     requirement; the second half (meds-tab-cache-task's own joined count)
     is :func:`verify_cached_label_count`, checked after the CLI stage runs,
     not here.
+
+    Sorts by ``(subject_id, prediction_time)`` immediately before writing.
+    Confirmed root cause: ``rows`` traces back to
+    :func:`~odyssey.inference.alerts._index_rows_from_events`'s
+    ``timed.group_by("subject_id", "hadm_id", "_bucket")``, which has no
+    ``maintain_order=True`` -- polars' multi-threaded hash-partition
+    group_by does not guarantee row order across runs on identical input
+    (confirmed: two exports of the same input produced byte-different
+    parquet files, but row-content-identical once both were sorted by this
+    same key). Rather than chase order-preservation through every upstream
+    step that might reorder rows, this write boundary is the one place a
+    canonical order is enforced -- every caller gets a deterministic file
+    regardless of what happens upstream.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     paths: dict[tuple[str, float], Path] = {}
@@ -169,7 +182,7 @@ def export_task_labels(
                     "prediction_time": [pred_times[i] for i in keep],
                     "boolean_value": [bool(outcomes[i]) for i in keep],
                 }
-            )
+            ).sort(["subject_id", "prediction_time"])
             task_dir = output_dir / f"{event_name}_{h:g}h"
             task_dir.mkdir(parents=True, exist_ok=True)
             out_path = task_dir / "0.parquet"
