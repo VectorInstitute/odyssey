@@ -124,13 +124,19 @@ def test_generate_cells_skips_already_generated_unless_overwrite(
 
 
 def _fake_alerts_json(
-    path: Path, *, cell: str, transform: Optional[str], auroc: float
+    path: Path,
+    *,
+    cell: str,
+    transform: Optional[str],
+    auroc: float,
+    n_unscoreable: Optional[int] = None,
 ) -> None:
     payload = {
         "cell": cell,
         "cell_metadata": {"transform": transform} if transform else None,
         "run_dir": "/fake/run",
         "held_out_shard_dir": "/fake/held_out",
+        "n_unscoreable": n_unscoreable,
         "metrics": [
             {
                 "event": "icu_admission",
@@ -175,3 +181,31 @@ def test_aggregate_builds_a_table_from_per_cell_json(tmp_path: Path) -> None:
     assert row["cell"] == "blackout_labs"
     assert row["transform"] == "family_blackout"
     assert abs(row["auroc_delta"] - (-0.2)) < 1e-9
+    assert row["n_unscoreable"] == 0  # the fake JSON above didn't set one
+
+
+def test_aggregate_carries_n_unscoreable_into_the_table_and_markdown_note(
+    tmp_path: Path,
+) -> None:
+    results_dir = tmp_path / "results"
+    clean_json = results_dir / "clean_alerts.json"
+    cell_json = results_dir / "lag_4h_alerts.json"
+    _fake_alerts_json(clean_json, cell="clean", transform=None, auroc=0.9)
+    _fake_alerts_json(
+        cell_json,
+        cell="lag_4h",
+        transform="lab_lag",
+        auroc=0.8,
+        n_unscoreable=129,
+    )
+
+    json_path, md_path = missingness_sweep.aggregate(
+        results_dir,
+        {"clean": clean_json, "lag_4h": cell_json},
+        tmp_path,
+    )
+    table = json.loads(json_path.read_text())
+    assert table[0]["n_unscoreable"] == 129
+    md = md_path.read_text()
+    assert "Reduced row sets" in md
+    assert "lag_4h: 129 rows unscoreable" in md
