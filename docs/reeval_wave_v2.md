@@ -215,3 +215,42 @@ check is one line against both dumps' `.height`.
   forward pass is unaffected (`TimeEmbeddingLayer.forward` already casts
   to float32 internally before use); this only touches the
   landmark-bookkeeping and `IndexRow.time_hours` path.
+- **v2->v3, 2026-08-23**: `LANDMARK_PROTOCOL_VERSION` bumped to 3.
+  `_landmark_mask` tracked only the immediately-preceding token position,
+  so a patient's own token order interleaving two visits at one shared
+  timestamp (e.g. a discharge instant stopping medication orders under
+  both an ending and a starting admission id -- a real, observed pattern)
+  re-triggered a landmark on every interleave step even though that
+  visit's bucket had already been landmarked. v3 tracks the last-emitted
+  bucket per visit directly (matching `_index_rows_from_events`' own
+  per-(subject, visit, bucket) group-by semantics), so token order no
+  longer matters. Confirmed at ~1.4% of rows on a real eICU repro;
+  affected every backbone, not just `backbone="transformer"` --
+  `verify_packed_landmark_rows` now runs unconditionally for both, not
+  gated to transformer only.
+- **Known residual (transformer/packed only), tracked as a P2 follow-up,
+  not a blocker**: on real eICU-scale data, `backbone="transformer"` runs
+  still show approximately 2 invented / 22 dropped-at-boundary
+  `verify_packed_landmark_rows` warnings for TRUNCATED subjects
+  specifically (non-truncated subjects are exact: 0 missing, 0 extra).
+  Mechanism: `PackedContextSampler`'s truncation rebases a truncated
+  subject's kept-window time_stamps to start at 0, then
+  `_unrebase_truncated_times` restores them by adding the boundary back
+  -- `(a - b) + b` is not bit-exact in float64, and the ~1e-13 residual
+  is occasionally enough to flip a `floor()` right at a bucket boundary.
+  Real fix (not implemented here -- touches five layers of plumbing:
+  `PatientSequence` -> `_Row` -> `PackedContextSampler` ->
+  `StreamingChunk` -> `collect_model_scores`): compute each event's true,
+  never-rebased `time_hours` once at `build_patient_sequence` time and
+  thread it through truncation unchanged as a landmark-bookkeeping-only
+  field; the model's own input tensor keeps the rebased-for-locality
+  convention untouched. **Operator note: this residual only ever affects
+  `backbone="transformer"` (`PackedLaneSampler`/`backbone="hybrid"` never
+  truncates, so it never triggers this path) -- treat ~2/~22-scale
+  warnings on a transformer run as this known, already-diagnosed issue,
+  but INVESTIGATE if the counts grow beyond that scale, since that would
+  mean a different or additional bug.** Gates: this follow-up is a
+  precondition for any paper-grade transformer-backbone dump; the tf1
+  alerts rerun for the provisional control table may proceed under the
+  known residual. No further protocol-version bump when the follow-up
+  lands -- it is a fix toward the v3 spec, not a spec change.
