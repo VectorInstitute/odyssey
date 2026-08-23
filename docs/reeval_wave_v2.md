@@ -71,6 +71,26 @@ against the corrected row set.
   re-evaluated should show no mismatch (`verify_run_provenance`) --
   confirms the environment driving re-eval is the one the checkpoint was
   actually trained in, independent of the landmark fix.
+- **Fetch-reset-before-launch, hard precondition (added 2026-08-22, after
+  the second stale-checkout incident in one night -- VM2's E6 gate, then
+  VM1's M2 leg)**: before launching ANY wave-relevant run on either VM,
+  `git fetch origin main && git log HEAD..origin/main --oneline` and
+  confirm the checkout is actually current, not just "on a branch called
+  main". VM1's `main` sat 40 commits behind origin (predating the landmark
+  fix itself, `85dde80`) for the entire M1/M2 leg without anyone noticing
+  -- two "v2" dumps were quietly run under v1-protocol code as a result
+  (see the stamp-check ritual below, which is how it was finally caught).
+  A branch name is not a promise the code on it is current; check the
+  commit, every time, before trusting a run.
+- **Stamp-check ritual, hard precondition on every reported row count
+  (added 2026-08-22)**: before a dump's row counts get reported to
+  anyone, confirm `alerts_rows.parquet`'s `landmark_protocol_version`
+  column is present and equals `2` (`pl.read_parquet(path)
+  ["landmark_protocol_version"].unique()`) -- its *absence* was the tell
+  in tonight's incident, noticed and then wrongly dismissed as
+  not-crucial. State the stamp value in the report line itself (e.g. "1.12M
+  rows, protocol v2 confirmed") so the check can't be silently skipped by
+  whoever reads the report later, including the person who ran it.
 
 ## 2. Regeneration: v2-protocol `alerts_rows.parquet` dumps
 
