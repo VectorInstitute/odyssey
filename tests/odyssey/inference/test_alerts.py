@@ -2098,7 +2098,7 @@ def test_scoring_at_the_clean_rows_reproduces_landmark_scoring_exactly(
 
 
 def test_scoring_at_the_clean_rows_on_a_degraded_record_keeps_the_row_set() -> None:
-    """Dropped rows / shifted labs never change the row set: scores move, keys do not."""
+    """Dropped or shifted rows never change the row set (scores move, keys do not)."""
     from odyssey.inference.alerts import collect_model_scores_at_rows  # noqa: PLC0415
 
     events = _events(8)
