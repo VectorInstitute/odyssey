@@ -152,8 +152,17 @@ def _grouped_subsample(
     return result
 
 
+class _CapAtMaxHorizon:
+    """Sentinel: cap follow-up at the largest scored horizon (the default)."""
+
+
+_CAP_AT_MAX_HORIZON: Any = _CapAtMaxHorizon()
+
+
 def _survival_targets(
-    rows: Sequence[IndexRow], times: EventTimes
+    rows: Sequence[IndexRow],
+    times: EventTimes,
+    followup_cap_hours: Optional[float] = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Per-row ``(T, delta, keep_idx)`` for a survival-native fit.
 
@@ -165,6 +174,21 @@ def _survival_targets(
     :func:`odyssey.inference.alerts.outcome_at_horizon` uses, so the same
     rows are "at risk" here as for every horizon-binned baseline; this
     just does not further split them by horizon.
+
+    ``followup_cap_hours`` administratively censors follow-up at that
+    horizon: any row whose event or censoring time lies beyond it becomes
+    censored AT the cap. This is not a convenience -- without it, a
+    subject-scoped event's fit is on a different question than the one the
+    alerts are scored on. Measured on MIMIC-IV (2026-08-23): death's
+    time-to-event has a median of 6,915 h and a maximum of 131,272 h,
+    with only 3.3% of events inside 72 h, so an uncapped fit puts the
+    entire 8/24/72 h alert window at the very start of the survival curve
+    and ``1 - S(h)`` came back as a literal constant 0.0 at every horizon
+    (a degenerate column, AUROC exactly 0.5). The visit-scoped events, whose
+    follow-up is a stay rather than a record, have medians of 60-100 h and
+    were unaffected -- as were the eICU fits, whose records are ICU stays.
+    Capping at the largest scored horizon asks the survival model the same
+    question the horizon-binned baselines answer.
     """
     t_list: list[float] = []
     delta_list: list[float] = []
@@ -175,14 +199,16 @@ def _survival_targets(
         if onset is not None and onset <= r.time_hours:
             continue  # already happened: not at risk
         if onset is not None:
-            t_list.append(onset - r.time_hours)
-            delta_list.append(1.0)
+            gap, observed = onset - r.time_hours, 1.0
         else:
             censor = times.censor.get(key)
             if censor is None or censor <= r.time_hours:
                 continue  # no observed follow-up past the index time
-            t_list.append(censor - r.time_hours)
-            delta_list.append(0.0)
+            gap, observed = censor - r.time_hours, 0.0
+        if followup_cap_hours is not None and gap > followup_cap_hours:
+            gap, observed = followup_cap_hours, 0.0  # administratively censored
+        t_list.append(gap)
+        delta_list.append(observed)
         keep.append(i)
     return (
         np.array(t_list, dtype=np.float32),
@@ -261,6 +287,7 @@ def _fit_one_survivalpfn(
     event_name: str,
     device: str,
     max_rows: int,
+    followup_cap_hours: Optional[float],
     cache: Optional[FitCache] = None,
 ) -> dict[float, SurvivalPFNBaselineModel]:
     """Fit one SurvivalPFN context for a single event, shared across every horizon.
@@ -286,12 +313,17 @@ def _fit_one_survivalpfn(
             f"got {x_all.shape[1]} columns (feature_set={feature_set!r}). "
             "Use feature_set='basic' (16 columns), not 'strong'."
         )
-    cache_key = f"survivalpfn/{event_name}"
+    # The cap is part of the key: a fit made against a different follow-up
+    # window answers a different question (see _survival_targets).
+    cap_tag = (
+        "uncapped" if followup_cap_hours is None else f"cap{followup_cap_hours:g}h"
+    )
+    cache_key = f"survivalpfn/{cap_tag}/{event_name}"
     cached = cache.load(cache_key) if cache is not None else None
     if cached is not None:
         estimator, n_context_rows, elapsed, row_capped = cached
     else:
-        t_all, delta_all, keep_idx = _survival_targets(rows, times)
+        t_all, delta_all, keep_idx = _survival_targets(rows, times, followup_cap_hours)
         if (
             len(keep_idx) < SURVIVALPFN_MIN_ROWS
             or delta_all.sum() < 1
@@ -324,13 +356,14 @@ def _fit_one_survivalpfn(
         row_capped = len(keep_idx) < n_at_risk
         logger.info(
             "[survivalpfn] %s: fit on %d rows (%.1f%% event, %.1f%% censored) "
-            "in %.1fs, serves %d horizons",
+            "in %.1fs, serves %d horizons, follow-up %s",
             event_name,
             n_context_rows,
             100 * float(delta_all.mean()),
             100 * (1 - float(delta_all.mean())),
             elapsed,
             len(horizons),
+            cap_tag,
         )
         if cache is not None:
             cache.save(cache_key, (estimator, n_context_rows, elapsed, row_capped))
@@ -362,6 +395,7 @@ def fit_survivalpfn_baselines(
     feature_set: str = "basic",
     device: str = "cpu",
     max_rows: int | None = None,
+    followup_cap_hours: Optional[float] = _CAP_AT_MAX_HORIZON,
     cache: Optional[FitCache] = None,
     features: Optional[dict[str, np.ndarray]] = None,
 ) -> dict[tuple[str, float], SurvivalPFNBaselineModel]:
@@ -376,6 +410,12 @@ def fit_survivalpfn_baselines(
     h)`` key for a given event rather than one context per key -- see the
     module docstring for why.
 
+    ``followup_cap_hours`` administratively censors every fit's follow-up
+    at that horizon; the default caps at ``max(horizons)`` so the survival
+    fit answers the same question the horizon-binned baselines do. Pass
+    ``None`` for the uncapped fit, which produced a degenerate (constant)
+    death column on MIMIC-IV -- see :func:`_survival_targets`.
+
     Requires the optional ``survivalpfn`` package (see the module
     docstring); raises ``ImportError`` with install instructions if it is
     not installed, the first time a context would actually be fit -- not
@@ -388,6 +428,11 @@ def fit_survivalpfn_baselines(
     """
     resolved_max_rows = SURVIVALPFN_MAX_ROWS if max_rows is None else max_rows
     models: dict[tuple[str, float], SurvivalPFNBaselineModel] = {}
+    resolved_cap = (
+        max(horizons)
+        if followup_cap_hours is _CAP_AT_MAX_HORIZON
+        else followup_cap_hours
+    )
     if features is None:
         features = features_for_events(
             train_events_binned, train_rows, source=source, feature_set=feature_set
@@ -405,6 +450,7 @@ def fit_survivalpfn_baselines(
             event_name=name,
             device=device,
             max_rows=resolved_max_rows,
+            followup_cap_hours=resolved_cap,
             cache=cache,
         )
         for h, model in per_horizon.items():
