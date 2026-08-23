@@ -322,3 +322,71 @@ def test_sepsis3_prefers_the_antibiotic_orders_sidecar_with_route_policy() -> No
     ):
         row = label_concepts_by_visit(visit, concepts).to_dicts()[0]
     assert row["sepsis3"] == 0  # a nasal-route order is not systemic therapy
+
+
+# ---------------------------------------------------------------------------
+# Derived-signal concepts (PF ratio, urine output)
+# ---------------------------------------------------------------------------
+
+FIO2 = "LAB//223835//UNK"
+URINE = "SUBJECT_FLUID_OUTPUT//226559//mL"
+
+
+def _derived_concepts(*names: str):
+    return [
+        c for c in concepts_for_source("mimic_iv", task_set="v3") if c.name in names
+    ]
+
+
+def test_hypoxemic_respiratory_failure_pairs_each_gas_with_a_recent_fio2() -> None:
+    rows = [
+        (1, 10, T0, "HOSPITAL_ADMISSION//EMERGENCY", None),
+        (1, 10, T0 + H, FIO2, 50.0),  # 0.5
+        (1, 10, T0 + 2 * H, PAO2, 200.0),  # PF 400: no trigger
+        (1, 10, T0 + 3 * H, PAO2, 100.0),  # PF 200: triggers
+        # a gas with no FiO2 within 4h is not assessable
+        (2, 20, T0, "HOSPITAL_ADMISSION//EMERGENCY", None),
+        (2, 20, T0 + 20 * H, PAO2, 60.0),
+    ]
+    labeled = label_concepts_by_visit(
+        _frame(rows),
+        _derived_concepts("hypoxemic_respiratory_failure"),
+        include_first_time=True,
+    )
+    by_subject = {r["subject_id"]: r for r in labeled.to_dicts()}
+    assert by_subject[1]["hypoxemic_respiratory_failure"] == 1
+    assert by_subject[1]["hypoxemic_respiratory_failure_observed"] == 1
+    assert by_subject[1]["hypoxemic_respiratory_failure_first_time"] == T0 + 3 * H
+    assert (
+        by_subject[2]["hypoxemic_respiratory_failure_observed"] == 0
+    )  # no pairable FiO2
+
+
+def test_oliguria_needs_a_full_day_of_record_and_sums_the_window() -> None:
+    # 10 mL/h for 40 hours: 240 mL per trailing 24h once 24h have passed
+    rows = [(1, 10, T0, "HOSPITAL_ADMISSION//EMERGENCY", None)] + [
+        (1, 10, T0 + k * H, URINE, 10.0) for k in range(1, 41)
+    ]
+    labeled = label_concepts_by_visit(
+        _frame(rows), _derived_concepts("oliguria"), include_first_time=True
+    )
+    row = labeled.to_dicts()[0]
+    assert row["oliguria"] == 1 and row["oliguria_observed"] == 1
+    assert row["oliguria_first_time"] >= T0 + 24 * H  # never inside the partial window
+    # a well-voiding patient does not trigger
+    wet = [(1, 10, T0, "HOSPITAL_ADMISSION//EMERGENCY", None)] + [
+        (1, 10, T0 + k * H, URINE, 100.0) for k in range(1, 41)
+    ]
+    assert (
+        label_concepts_by_visit(_frame(wet), _derived_concepts("oliguria")).to_dicts()[
+            0
+        ]["oliguria"]
+        == 0
+    )
+
+
+def test_derived_signal_concepts_are_dropped_where_sofa_is_unsupported() -> None:
+    v3 = [c.name for c in concepts_for_source("mimic_iv", task_set="v3")]
+    assert {"hypoxemic_respiratory_failure", "oliguria"} <= set(v3)
+    eicu = [c.name for c in concepts_for_source("eicu", task_set="v3")]
+    assert not ({"hypoxemic_respiratory_failure", "oliguria"} & set(eicu))

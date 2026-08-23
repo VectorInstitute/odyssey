@@ -377,49 +377,24 @@ def component_observations(  # noqa: PLR0912, PLR0915
             )
 
     # -- respiration: PaO2 / FiO2 (FiO2 within the previous 4h), ventilation
-    pao2 = num([_PAO2])
-    fio2 = num([_FIO2]).rename({"value": "_fio2"})
-    if pao2.height and fio2.height:
-        pf = pao2.join_asof(
-            fio2,
-            on=time_col,
-            by=key,
-            strategy="backward",
-            tolerance="4h",
-        ).filter(pl.col("_fio2").is_not_null() & (pl.col("_fio2") > 0))
-        # FiO2 charted as a percentage (21-100) or a fraction (0.21-1.0).
-        pf = pf.with_columns(
-            pl.when(pl.col("_fio2") > 1.0)
-            .then(pl.col("_fio2") / 100.0)
-            .otherwise(pl.col("_fio2"))
-            .alias("_fio2")
-        ).with_columns((pl.col("value") / pl.col("_fio2")).alias("_pf"))
-        vent = _intervals_to_points(
-            events.filter(_starts_with_any(code_col, cfg.ventilation_start)).select(
-                key, time_col
-            ),
-            events.filter(_starts_with_any(code_col, cfg.ventilation_end)).select(
-                key, time_col
-            ),
-            key=key,
-            time_col=time_col,
-        )
-        if vent.height:
-            vent = vent.with_columns(pl.lit(True).alias("_vent")).sort([key, time_col])
-            pf = pf.sort([key, time_col]).join_asof(
-                vent, on=time_col, by=key, strategy="backward", tolerance="1h"
-            )
-            vent_flag = pl.col("_vent").fill_null(False)
-        else:
-            vent_flag = pl.lit(False)
+    pf = pf_ratio_readings(
+        events,
+        source=source,
+        key=key,
+        code_col=code_col,
+        value_col=value_col,
+        time_col=time_col,
+    )
+    if pf.height:
+        vent_flag = pl.col("ventilated")
         score = (
-            pl.when(vent_flag & (pl.col("_pf") < 100))
+            pl.when(vent_flag & (pl.col("value") < 100))
             .then(4)
-            .when(vent_flag & (pl.col("_pf") < 200))
+            .when(vent_flag & (pl.col("value") < 200))
             .then(3)
-            .when(pl.col("_pf") < 300)
+            .when(pl.col("value") < 300)
             .then(2)
-            .when(pl.col("_pf") < 400)
+            .when(pl.col("value") < 400)
             .then(1)
             .otherwise(0)
         )
@@ -450,22 +425,15 @@ def component_observations(  # noqa: PLR0912, PLR0915
         )
 
     # -- renal: urine output < 500 / < 200 mL over the trailing 24h
-    urine = num([_URINE])
-    if urine.height:
-        first_time = (
-            events.filter(pl.col(time_col).is_not_null())
-            .group_by(key)
-            .agg(pl.col(time_col).min().alias("_first"))
-        )
-        rolled = (
-            urine.sort([key, time_col])
-            .rolling(index_column=time_col, period="24h", group_by=key)
-            .agg(pl.col("value").sum().alias("_uo24"))
-            .join(first_time, on=key, how="left")
-            .filter(
-                (pl.col(time_col) - pl.col("_first")) >= pl.duration(hours=WINDOW_HOURS)
-            )
-        )
+    rolled = urine_output_24h(
+        events,
+        source=source,
+        key=key,
+        code_col=code_col,
+        value_col=value_col,
+        time_col=time_col,
+    ).rename({"value": "_uo24"})
+    if rolled.height:
         parts.append(
             _scored(
                 rolled,
@@ -530,6 +498,118 @@ def assessable_keys(
         time_col=time_col,
     )
     return set(readings[key].to_list())
+
+
+@_quiet_asof
+def pf_ratio_readings(
+    events: pl.DataFrame,
+    *,
+    source: str = "mimic_iv",
+    key: str = "subject_id",
+    code_col: str = "code",
+    value_col: str = "numeric_value",
+    time_col: str = "time",
+    fio2_tolerance: str = "4h",
+) -> pl.DataFrame:
+    """(key, time, value=PaO2/FiO2, ventilated) per arterial blood gas.
+
+    Each PaO2 is paired with the most recent FiO2 charted within
+    ``fio2_tolerance`` before it (no FiO2 in range: the gas is not
+    assessable and is dropped); FiO2 is accepted as a percentage (21-100)
+    or a fraction (0.21-1.0). ``ventilated`` is True when an invasive or
+    non-invasive ventilation episode
+    (:class:`SofaSourceConfig`) is active at that time, which the SOFA
+    respiration bands need for the two most severe levels.
+    """
+    cfg = SOFA_SOURCE_CONFIG[source]
+
+    def num(loincs: Sequence[str]) -> pl.DataFrame:
+        return _numeric(
+            events,
+            _loinc_prefixes(loincs, source),
+            key=key,
+            code_col=code_col,
+            value_col=value_col,
+            time_col=time_col,
+        )
+
+    pao2 = num([_PAO2])
+    fio2 = num([_FIO2]).rename({"value": "_fio2"})
+    if pao2.height == 0 or fio2.height == 0:
+        return pao2.head(0).with_columns(pl.lit(False).alias("ventilated"))
+    pf = pao2.join_asof(
+        fio2, on=time_col, by=key, strategy="backward", tolerance=fio2_tolerance
+    ).filter(pl.col("_fio2").is_not_null() & (pl.col("_fio2") > 0))
+    pf = pf.with_columns(
+        pl.when(pl.col("_fio2") > 1.0)
+        .then(pl.col("_fio2") / 100.0)
+        .otherwise(pl.col("_fio2"))
+        .alias("_fio2")
+    ).with_columns((pl.col("value") / pl.col("_fio2")).alias("value"))
+    vent = _intervals_to_points(
+        events.filter(_starts_with_any(code_col, cfg.ventilation_start)).select(
+            key, time_col
+        ),
+        events.filter(_starts_with_any(code_col, cfg.ventilation_end)).select(
+            key, time_col
+        ),
+        key=key,
+        time_col=time_col,
+    )
+    if vent.height:
+        vent = vent.with_columns(pl.lit(True).alias("ventilated")).sort([key, time_col])
+        pf = pf.sort([key, time_col]).join_asof(
+            vent, on=time_col, by=key, strategy="backward", tolerance="1h"
+        )
+        pf = pf.with_columns(pl.col("ventilated").fill_null(False))
+    else:
+        pf = pf.with_columns(pl.lit(False).alias("ventilated"))
+    return pf.select(key, time_col, "value", "ventilated")
+
+
+def urine_output_24h(
+    events: pl.DataFrame,
+    *,
+    source: str = "mimic_iv",
+    key: str = "subject_id",
+    code_col: str = "code",
+    value_col: str = "numeric_value",
+    time_col: str = "time",
+) -> pl.DataFrame:
+    """(key, time, value=mL voided in the trailing 24h) per urine-output reading.
+
+    Only at times with at least :data:`WINDOW_HOURS` of record behind them:
+    a partial window sums less urine simply because less time has passed,
+    which would read as oliguria. Weight-normalized rates
+    (mL/kg/h, KDIGO's own form) are not used -- weight is not reliably
+    present per key in the extractions -- so this is the absolute-volume
+    form SOFA's renal component uses.
+    """
+    urine = _numeric(
+        events,
+        _loinc_prefixes([_URINE], source),
+        key=key,
+        code_col=code_col,
+        value_col=value_col,
+        time_col=time_col,
+    )
+    if urine.height == 0:
+        return urine
+    first_time = (
+        events.filter(pl.col(time_col).is_not_null())
+        .group_by(key)
+        .agg(pl.col(time_col).min().alias("_first"))
+    )
+    return (
+        urine.sort([key, time_col])
+        .rolling(index_column=time_col, period="24h", group_by=key)
+        .agg(pl.col("value").sum().alias("value"))
+        .join(first_time, on=key, how="left")
+        .filter(
+            (pl.col(time_col) - pl.col("_first")) >= pl.duration(hours=WINDOW_HOURS)
+        )
+        .select(key, time_col, "value")
+    )
 
 
 @_quiet_asof
@@ -698,6 +778,8 @@ def sofa_timeseries(
 
 __all__ = [
     "COMPONENTS",
+    "pf_ratio_readings",
+    "urine_output_24h",
     "assessable_keys",
     "SOFA_SOURCE_CONFIG",
     "SofaSourceConfig",
