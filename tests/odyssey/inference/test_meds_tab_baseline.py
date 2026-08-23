@@ -197,6 +197,43 @@ def test_export_task_labels_skips_a_horizon_with_no_at_risk_rows(
     assert paths == {}
 
 
+def test_export_task_labels_or_aggregates_colliding_subject_and_time(
+    tmp_path: Path,
+) -> None:
+    """Colliding hadm_ids for one subject at one prediction_time must OR.
+
+    eICU: concurrent/transferred ICU unit stays within one hospitalization
+    must collapse to one row, true if EITHER says at-risk-positive -- not an
+    arbitrary pick of one hadm_id's outcome over the other's.
+    """
+    rows = {
+        "icu_admission": [
+            IndexRow(subject_id=1, visit_id=10, time_hours=0.0),  # positive
+            IndexRow(subject_id=1, visit_id=11, time_hours=0.0),  # negative
+            IndexRow(subject_id=2, visit_id=20, time_hours=0.0),  # negative only
+        ]
+    }
+    times = {
+        "icu_admission": EventTimes(
+            onset={(1, 10): 4.0},  # subject 1, visit 10: observed within 8h
+            censor={(1, 11): 30.0, (2, 20): 30.0},
+            subject_scoped=False,
+        )
+    }
+    events = _events_binned([1, 2])
+
+    paths = export_task_labels(
+        rows, times, events, horizons=(8.0,), output_dir=tmp_path
+    )
+    df = pl.read_parquet(paths[("icu_admission", 8.0)])
+    assert df.height == 2  # subject 1's two colliding rows collapsed to one
+    row1 = df.filter(pl.col("subject_id") == 1)
+    assert row1.height == 1
+    assert row1["boolean_value"][0] is True  # OR: True wins over False
+    row2 = df.filter(pl.col("subject_id") == 2)
+    assert row2["boolean_value"][0] is False
+
+
 def test_export_task_labels_output_order_is_deterministic_regardless_of_input_order(
     tmp_path: Path,
 ) -> None:
