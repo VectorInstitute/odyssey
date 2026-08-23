@@ -25,7 +25,7 @@ import argparse
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Set, Tuple
 
 import polars as pl
 
@@ -113,30 +113,50 @@ def main() -> None:  # noqa: PLR0915
     )
 
     existing = pl.read_parquet(args.existing_dump)
-    existing_keys = set(
+    existing_key_rows = list(
         existing.select(["event", "subject_id", "visit_id", "time_hours"]).iter_rows()
     )
-    held_keys = {
+    existing_keys = set(existing_key_rows)
+    held_key_rows = [
         (event, float(r.subject_id), float(r.visit_id), r.time_hours)
         for event, rows in held_rows.items()
         for r in rows
-    }
-    overlap = len(held_keys & existing_keys)
-    logger.info(
-        "[rescore] key overlap with existing dump: %d / %d held-out rows "
-        "(%.2f%%), %d / %d existing rows matched",
-        overlap,
-        len(held_keys),
-        100.0 * overlap / len(held_keys) if held_keys else 0.0,
-        overlap,
-        len(existing_keys),
-    )
-    if overlap / max(len(held_keys), 1) < 0.99:
+    ]
+    held_keys = set(held_key_rows)
+
+    missing_from_existing = held_keys - existing_keys
+    extra_in_existing = existing_keys - held_keys
+    duplicate_in_existing = len(existing_key_rows) != len(existing_keys)
+    duplicate_in_held = len(held_key_rows) != len(held_keys)
+
+    if (
+        missing_from_existing
+        or extra_in_existing
+        or duplicate_in_existing
+        or duplicate_in_held
+    ):
+
+        def _sample(
+            keys: Set[Tuple[str, float, float, float]], n: int = 10
+        ) -> List[Tuple[str, float, float, float]]:
+            return sorted(keys)[:n]
+
         raise RuntimeError(
-            f"only {overlap}/{len(held_keys)} model-free rows match the existing "
-            "dump's keys -- landmark derivation has diverged, refusing to join "
-            "scores onto a mismatched row set. Investigate before proceeding."
+            "model-free row set does not exactly match the existing dump's "
+            f"keys -- held-out: {len(held_key_rows)} rows / {len(held_keys)} "
+            f"unique keys, dump: {len(existing_key_rows)} rows / "
+            f"{len(existing_keys)} unique keys. "
+            f"{len(missing_from_existing)} keys in held-out but not in dump "
+            f"(sample: {_sample(missing_from_existing)}). "
+            f"{len(extra_in_existing)} keys in dump but not in held-out "
+            f"(sample: {_sample(extra_in_existing)}). "
+            "Landmark derivation has diverged from the dump (or the row set "
+            "contains duplicate keys) -- refusing to join scores onto a "
+            "mismatched row set."
         )
+    logger.info(
+        "[rescore] key match with existing dump: exact, %d rows", len(held_keys)
+    )
 
     logger.info("[rescore] preparing baseline training events (model-free)")
     train_binned = _prepare(
