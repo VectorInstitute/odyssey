@@ -170,8 +170,12 @@ def test_compute_ctl_detects_embedding_leak_beyond_probs() -> None:
 
     assert result.embeddings_only.accuracy > 0.9
     assert result.probs_only.accuracy < 1.0 / NUM_CLASSES + 0.15
-    assert result.ctl_accuracy > 0.5
-    assert result.ctl_cross_entropy < -0.5  # embeddings' CE is much lower
+    assert result.ctl_vs_probs_accuracy > 0.5
+    assert result.ctl_vs_probs_cross_entropy < -0.5  # embeddings' CE is much lower
+    # the capacity-controlled reading agrees: this is real leakage, not just
+    # embeddings_only having more inputs than probs_only
+    assert result.ctl_vs_projected_accuracy > 0.5
+    assert result.ctl_vs_projected_cross_entropy < -0.5
     assert result.n_held_out == len(held)
     assert result.probs_only.n == len(held)
 
@@ -180,9 +184,26 @@ def test_compute_ctl_near_zero_when_neither_channel_carries_the_task() -> None:
     train, tune, held = _three_splits(leak_slot=None)
     result = compute_ctl(train, tune, held, seed=0, **FIT_KW)
 
-    assert abs(result.ctl_accuracy) < 0.15
+    assert abs(result.ctl_vs_probs_accuracy) < 0.15
+    assert abs(result.ctl_vs_projected_accuracy) < 0.15
     assert result.embeddings_only.accuracy < 1.0 / NUM_CLASSES + 0.15
     assert result.probs_only.accuracy < 1.0 / NUM_CLASSES + 0.15
+
+
+def test_compute_ctl_capacity_control_on_pure_noise() -> None:
+    """Check that embeddings_only does not beat the capacity-matched control.
+
+    On a bank with no real signal, even though the uncontrolled probs_only
+    comparison has no such guarantee (probs_projected -- same information
+    as probs_only, more inputs -- may score higher than probs_only purely
+    from capacity; that's exactly the effect ctl_vs_projected exists to
+    absorb rather than report as leakage).
+    """
+    train, tune, held = _three_splits(leak_slot=None)
+    result = compute_ctl(train, tune, held, seed=0, **FIT_KW)
+
+    assert result.ctl_vs_projected_accuracy <= 0.08
+    assert result.ctl_vs_projected_cross_entropy >= -0.08
 
 
 # ---------------------------------------------------------------------------

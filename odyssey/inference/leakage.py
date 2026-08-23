@@ -18,23 +18,36 @@ here; do not cite them as the source of these formulas.
 
 - **CTL (concept-task leakage)**: how much task-predictive information the
   concept channel carries *beyond* the concept values a clinician would
-  read off (:data:`ConceptBottleneckOutput.concept_probs`). Three
+  read off (:data:`ConceptBottleneckOutput.concept_probs`). Four
   multinomial-logistic probes -- from the concept probabilities alone, from
-  the known-concept embedding block alone, and from the unknown/residual
-  embedding alone -- predict a compact per-position task label: the
-  next-token's code-family id (:func:`odyssey.data.vocabulary.code_type`,
-  the same 8-way family taxonomy :mod:`odyssey.training.metrics` reports
-  task accuracy by). Chosen over the raw next-token id itself because a
-  vocab-sized softmax probe would mostly measure memorization capacity, not
-  leaked task-relevant structure; the family id is compact, always defined,
-  and already the codebase's own notion of "what kind of thing is
-  happening next". CTL is ``embeddings_only - probs_only``, in accuracy and
-  in cross-entropy (held-out); a positive accuracy delta and a *negative*
-  cross-entropy delta (lower CE is better) both mean the soft embeddings
-  predict the next event family better than their own probabilities do --
-  i.e. leak information beyond what is shown to a clinician. The
-  unknown-only probe is reported alongside as the residual channel's own
-  share of that same task signal.
+  the known-concept embedding block alone, from the unknown/residual
+  embedding alone, and from the probabilities passed through a fixed random
+  projection to the embedding block's own width -- predict a compact
+  per-position task label: the next-token's code-family id
+  (:func:`odyssey.data.vocabulary.code_type`, the same 8-way family
+  taxonomy :mod:`odyssey.training.metrics` reports task accuracy by).
+  Chosen over the raw next-token id itself because a vocab-sized softmax
+  probe would mostly measure memorization capacity, not leaked
+  task-relevant structure; the family id is compact, always defined, and
+  already the codebase's own notion of "what kind of thing is happening
+  next".
+
+  ``embeddings_only`` has ``num_concepts * embedding_dim`` inputs (often
+  hundreds) against ``probs_only``'s ``num_concepts`` -- a naive
+  ``embeddings_only - probs_only`` delta is confounded with probe
+  *capacity*, not just leaked information, since a wider linear probe can
+  fit more even when its extra inputs carry nothing new. ``probs_projected``
+  (:func:`_random_projection`, a fixed, seeded, non-trainable
+  semi-orthogonal map -- information-preserving, dimension-matching) is the
+  capacity control: it carries exactly what ``probs_only`` carries, at
+  ``embeddings_only``'s width. Two deltas are reported, in both accuracy
+  and cross-entropy: ``ctl_vs_probs = embeddings_only - probs_only`` (the
+  uncontrolled upper bound -- capacity and leakage both contribute) and
+  ``ctl_vs_projected = embeddings_only - probs_projected`` (**the leakage
+  reading** -- capacity is matched, so a positive accuracy delta / negative
+  CE delta here can only mean the embeddings carry information the
+  probabilities did not). The unknown-only probe is reported alongside as
+  the residual channel's own share of that same task signal.
 
   This complements, not replaces, the ``zero_known``/``zero_unknown``
   ablation in :mod:`odyssey.inference.interventions`: that measures how
@@ -536,9 +549,10 @@ class ProbeScore:
 
 @dataclass
 class CTLResult:
-    """Concept-task leakage: three probes of the next-token family.
+    """Concept-task leakage: four probes of the next-token family.
 
-    From ``concept_probs``/``concept_embeddings``/``unknown_embedding``.
+    From ``concept_probs``/``concept_embeddings``/``unknown_embedding``/a
+    fixed random projection of ``concept_probs`` (the capacity control).
     """
 
     n_classes: int
@@ -546,17 +560,50 @@ class CTLResult:
     probs_only: ProbeScore
     embeddings_only: ProbeScore
     unknown_only: ProbeScore
-    ctl_accuracy: float
-    """``embeddings_only.accuracy - probs_only.accuracy``: positive means the
-    soft embeddings predict the next-event family better than their own
-    probabilities do."""
-    ctl_cross_entropy: float
-    """``embeddings_only.cross_entropy - probs_only.cross_entropy``: lower CE
-    is better, so a *negative* value here means the same direction of
-    leakage as a positive ``ctl_accuracy``."""
+    probs_projected: ProbeScore
+    """``probs_only`` passed through a fixed, seeded, non-trainable
+    semi-orthogonal projection to ``embeddings_only``'s own input width
+    (:func:`_random_projection`) -- carries no information ``probs_only``
+    didn't already have, only matches its dimensionality."""
+    ctl_vs_probs_accuracy: float
+    """``embeddings_only.accuracy - probs_only.accuracy``: the UNCONTROLLED
+    upper bound -- a positive value can come from leaked information, from
+    ``embeddings_only`` simply having more probe capacity, or both."""
+    ctl_vs_probs_cross_entropy: float
+    """``embeddings_only.cross_entropy - probs_only.cross_entropy`` (lower CE
+    is better, so a *negative* value here is the same direction as a
+    positive ``ctl_vs_probs_accuracy``); same capacity caveat."""
+    ctl_vs_projected_accuracy: float
+    """``embeddings_only.accuracy - probs_projected.accuracy``: THE LEAKAGE
+    READING. Capacity is matched (both probes have the same input width),
+    so a positive value can only mean the embeddings carry next-event
+    information the probabilities did not."""
+    ctl_vs_projected_cross_entropy: float
+    """``embeddings_only.cross_entropy - probs_projected.cross_entropy``;
+    same capacity-controlled leakage reading, in cross-entropy (negative =
+    leakage, matching a positive ``ctl_vs_projected_accuracy``)."""
     n_train: int
     n_tuning: int
     n_held_out: int
+
+
+def _random_projection(in_dim: int, out_dim: int, seed: int) -> torch.Tensor:
+    """Build a fixed ``(in_dim, out_dim)`` semi-orthogonal projection, seeded.
+
+    CTL's capacity control (see the module docstring): a QR decomposition
+    of a seeded Gaussian matrix gives orthonormal columns, so the map is
+    information-preserving (linearly invertible on its range) -- it
+    cannot manufacture information ``concept_probs`` didn't have, only
+    re-express it at ``out_dim`` width to match ``embeddings_only``'s
+    input dimensionality. Deterministic and self-contained: uses a local
+    :class:`torch.Generator`, never the global RNG, so it has no side
+    effect on any other seeded call in this module.
+    """
+    gen = torch.Generator().manual_seed(seed)
+    raw = torch.randn(out_dim, in_dim, generator=gen)
+    q, _ = torch.linalg.qr(raw)
+    out: torch.Tensor = q.T
+    return out
 
 
 def compute_ctl(
@@ -570,7 +617,7 @@ def compute_ctl(
     seed: int = 0,
     device: str = "cpu",
 ) -> CTLResult:
-    """Fit and score the three CTL probes; see the module docstring.
+    """Fit and score the four CTL probes; see the module docstring.
 
     ``batch_size`` matters more than it looks: Adam's step size is close
     to ``lr`` regardless of gradient magnitude, so total optimizer steps
@@ -583,6 +630,7 @@ def compute_ctl(
     class_names = dict(_CODE_TYPE_NAMES)
     num_concepts = train_bank.concept_probs.shape[1]
     embedding_dim = train_bank.concept_embeddings.shape[-1]
+    projection = _random_projection(num_concepts, num_concepts * embedding_dim, seed)
 
     def flat(bank: LeakageBank) -> Dict[str, torch.Tensor]:
         return {
@@ -591,6 +639,7 @@ def compute_ctl(
                 len(bank), num_concepts * embedding_dim
             ),
             "unknown_only": bank.unknown_embedding.float(),
+            "probs_projected": bank.concept_probs.float() @ projection,
         }
 
     train_x = flat(train_bank)
@@ -639,9 +688,19 @@ def compute_ctl(
         probs_only=scores["probs_only"],
         embeddings_only=scores["embeddings_only"],
         unknown_only=scores["unknown_only"],
-        ctl_accuracy=scores["embeddings_only"].accuracy - scores["probs_only"].accuracy,
-        ctl_cross_entropy=(
+        probs_projected=scores["probs_projected"],
+        ctl_vs_probs_accuracy=(
+            scores["embeddings_only"].accuracy - scores["probs_only"].accuracy
+        ),
+        ctl_vs_probs_cross_entropy=(
             scores["embeddings_only"].cross_entropy - scores["probs_only"].cross_entropy
+        ),
+        ctl_vs_projected_accuracy=(
+            scores["embeddings_only"].accuracy - scores["probs_projected"].accuracy
+        ),
+        ctl_vs_projected_cross_entropy=(
+            scores["embeddings_only"].cross_entropy
+            - scores["probs_projected"].cross_entropy
         ),
         n_train=len(train_bank),
         n_tuning=len(tuning_bank),
