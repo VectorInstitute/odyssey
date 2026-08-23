@@ -22,8 +22,13 @@ fits best?
 
 Every head is scored on the same discrete-bin negative log-likelihood
 (the mixture's bin masses are exact CDF differences), so the comparison
-is in one currency, plus same-instant accuracy and P(within 1h/8h/24h)
-calibration including the after-bundle cells the design doc singles out;
+is in one currency (note: the ``hazard`` control treats the open bin as
+absorbing so its masses sum to 1, whereas the production likelihood in
+:func:`odyssey.models.time_to_event.hazard_log_likelihood` keeps a
+deliberate leftover ``(1 - h_last) * S(last-1)`` -- probe NLLs are
+comparable among heads, not digit-for-digit with registry time NLLs),
+plus same-instant accuracy and P(within 1h/8h/24h) calibration including
+the after-bundle cells the design doc singles out;
 the mixture additionally reports its continuous log-likelihood and the
 median-gap absolute error. Features are collected once per split from a
 streaming pass (positions Bernoulli-subsampled to bound memory), heads
