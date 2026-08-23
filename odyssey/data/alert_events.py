@@ -13,6 +13,7 @@ on the sequence time origin (the subject's first timed non-birth event),
 so they line up with chunk time stamps position for position.
 """
 
+import warnings
 from dataclasses import dataclass
 from typing import Dict, Optional, Sequence, Tuple
 
@@ -41,8 +42,13 @@ class AlertEvent:
     """Regex over vocabulary tokens naming this event's own next-event
     tokens, for the next-event-mass score. Defaults to ``^code_prefix``."""
 
+    next_visit: bool = False
+    """Onset is the first occurrence of ``code_prefix`` strictly AFTER the
+    visit's last event (the next admission); follow-up runs to the end of
+    the subject's record, not the visit's (30-day readmission)."""
 
-ALERT_EVENTS: Tuple[AlertEvent, ...] = (
+
+ALERT_EVENTS_V1: Tuple[AlertEvent, ...] = (
     AlertEvent(
         "vasopressor_start",
         concept="on_vasopressors",
@@ -61,6 +67,34 @@ ALERT_EVENTS: Tuple[AlertEvent, ...] = (
     AlertEvent("acute_kidney_injury", concept="acute_kidney_injury"),
     AlertEvent("death", code_prefix="MEDS_DEATH", subject_scoped=True),
 )
+
+ALERT_EVENTS_V2: Tuple[AlertEvent, ...] = ALERT_EVENTS_V1 + (
+    # Sepsis-3 onset from the sepsis3 concept (suspected infection + SOFA
+    # >= 2; see odyssey.data.concepts.Sepsis3Rule). MIMIC-IV only today.
+    AlertEvent("sepsis3", concept="sepsis3"),
+    # 30-day readmission: the next hospital admission after this visit's
+    # last event; scored at discharge-anchored index rows with a 720h
+    # horizon (the hazard head trains on every position's gap to it).
+    AlertEvent("readmission_30d", code_prefix="HOSPITAL_ADMISSION//", next_visit=True),
+)
+
+ALERT_TASK_SETS: Dict[str, Tuple[AlertEvent, ...]] = {
+    "v1": ALERT_EVENTS_V1,
+    "v2": ALERT_EVENTS_V2,
+}
+
+# The v1 set, kept as the module-level default every pre-task-set caller
+# reads (run configs without a task_set are v1 by definition).
+ALERT_EVENTS: Tuple[AlertEvent, ...] = ALERT_EVENTS_V1
+
+
+def alert_events_for(task_set: str = "v1") -> Tuple[AlertEvent, ...]:
+    """Return the alert events a run with ``task_set`` trains heads for / scores."""
+    if task_set not in ALERT_TASK_SETS:
+        raise ValueError(
+            f"unknown task_set {task_set!r}; known: {sorted(ALERT_TASK_SETS)}"
+        )
+    return ALERT_TASK_SETS[task_set]
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +135,41 @@ def hours_since_origin(
     )
 
 
+def _next_visit_onsets(
+    timed: pl.DataFrame, code_prefix: str, origins: pl.DataFrame
+) -> Dict[Tuple[int, int], float]:
+    """(subject, visit) -> hours of the first ``code_prefix`` event after the visit."""
+    visits = (
+        timed.filter(pl.col("hadm_id").is_not_null())
+        .group_by("subject_id", "hadm_id")
+        .agg(pl.col("time").max().alias("_end"))
+        .sort(["subject_id", "_end"])
+    )
+    hits = (
+        timed.filter(pl.col("code").str.starts_with(code_prefix))
+        .select("subject_id", pl.col("time").alias("_next"))
+        .sort(["subject_id", "_next"])
+    )
+    # strictly after the visit's last event: asof "forward" on _end finds the
+    # first hit at or after _end, so exclude ties by shifting the key.
+    shifted = visits.with_columns(
+        (pl.col("_end") + pl.duration(microseconds=1)).alias("_k")
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message="Sortedness of columns cannot be checked"
+        )
+        joined = shifted.sort(["subject_id", "_k"]).join_asof(
+            hits, left_on="_k", right_on="_next", by="subject_id", strategy="forward"
+        )
+    joined = joined.filter(pl.col("_next").is_not_null())
+    joined = hours_since_origin(joined, "_next", origins)
+    return {
+        (int(s), int(v)): float(t)
+        for s, v, t in zip(joined["subject_id"], joined["hadm_id"], joined["_next"])
+    }
+
+
 def event_times(
     events: pl.DataFrame,
     alert: AlertEvent,
@@ -127,6 +196,14 @@ def event_times(
         last = visits.group_by("subject_id", "hadm_id").agg(
             pl.col("time").max().alias("_last")
         )
+        if alert.next_visit:
+            # Follow-up for "the next admission" is the subject's whole
+            # record: a visit with nothing after it is censored at the
+            # subject's last event, not at its own discharge.
+            subject_last = timed.group_by("subject_id").agg(
+                pl.col("time").max().alias("_last")
+            )
+            last = last.drop("_last").join(subject_last, on="subject_id", how="left")
         last = hours_since_origin(last, "_last", origins)
         censor = {
             (int(s), int(v)): float(t)
@@ -146,6 +223,8 @@ def event_times(
             (int(s), int(v)): float(t)
             for s, v, t in zip(frame["subject_id"], frame["hadm_id"], frame[col])
         }
+    elif alert.code_prefix is not None and alert.next_visit:
+        onset = _next_visit_onsets(timed, alert.code_prefix, origins)
     elif alert.code_prefix is not None:
         hits = timed.filter(pl.col("code").str.starts_with(alert.code_prefix))
         if alert.subject_scoped:
@@ -172,10 +251,14 @@ def event_times(
 
 
 def all_event_times(
-    raw_events: pl.DataFrame, alerts: Sequence[AlertEvent], source: str
+    raw_events: pl.DataFrame,
+    alerts: Sequence[AlertEvent],
+    source: str,
+    *,
+    task_set: str = "v1",
 ) -> Dict[str, EventTimes]:
     """Onset/censoring times for every alert, labeling concepts once."""
-    concepts = concepts_for_source(source)
+    concepts = concepts_for_source(source, task_set=task_set)
     needed = [c for c in concepts if any(a.concept == c.name for a in alerts)]
     first = (
         label_concepts_by_visit(raw_events, needed, include_first_time=True)
@@ -188,6 +271,10 @@ def all_event_times(
 
 
 __all__ = [
+    "ALERT_EVENTS_V1",
+    "ALERT_EVENTS_V2",
+    "ALERT_TASK_SETS",
+    "alert_events_for",
     "ALERT_EVENTS",
     "AlertEvent",
     "EventTimes",

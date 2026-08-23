@@ -63,6 +63,7 @@ from odyssey.data.alert_events import (
     ALERT_EVENTS,
     AlertEvent,
     EventTimes,
+    alert_events_for,
     all_event_times,
     hours_since_origin,
     origin_hours,
@@ -72,6 +73,7 @@ from odyssey.data.concepts import concepts_for_source
 from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.packed_context import PackedContextSampler
 from odyssey.data.sequences import BIRTH_CODE
+from odyssey.data.sidecars import activate_sidecars
 from odyssey.data.streaming import NO_SUBJECT, PackedLaneSampler
 from odyssey.data.value_binning import (
     QuantileBinner,
@@ -1003,6 +1005,7 @@ def fit_baselines_streaming(
     seed: int = 0,
     feature_set: str = "strong",
     tune: bool = True,
+    task_set: str = "v1",
 ) -> Dict[Tuple[str, float], BaselineModel]:
     """Fit the same models as :func:`fit_baselines`, but shard by shard.
 
@@ -1027,7 +1030,9 @@ def fit_baselines_streaming(
     for path in paths:
         raw = prepare(load_meds_shard(path))
         binned = add_value_tokens(raw, binner, source=source)
-        merge_event_times(event_times, all_event_times(raw, alerts, source))
+        merge_event_times(
+            event_times, all_event_times(raw, alerts, source, task_set=task_set)
+        )
         shard_rows = _index_rows_from_events(
             binned, alerts, landmark_hours=landmark_hours
         )[alerts[0].name]
@@ -1770,6 +1775,7 @@ def _fit_and_score_gbm_baselines(
     tune_baselines: bool,
     binned: pl.DataFrame,
     rows: Dict[str, List[IndexRow]],
+    task_set: str = "v1",
 ) -> Tuple[
     Optional[Dict[Tuple[str, float], BaselineModel]], Optional[Dict[str, np.ndarray]]
 ]:
@@ -1803,13 +1809,14 @@ def _fit_and_score_gbm_baselines(
             landmark_hours=landmark_hours,
             feature_set=baseline_feature_set,
             tune=tune_baselines,
+            task_set=task_set,
         )
     else:
         logger.info("[alerts] fitting GBM baselines on %s", baseline_shard_dir)
         train_raw = _load_prepared_raw(
             baseline_shard_dir, max_baseline_shards, config, source
         )
-        train_times = all_event_times(train_raw, alerts, source)
+        train_times = all_event_times(train_raw, alerts, source, task_set=task_set)
         train_binned = add_value_tokens(train_raw, binner, source=source)
         del train_raw
         train_rows = _index_rows_from_events(
@@ -1839,7 +1846,7 @@ def evaluate_alerts(
     verify_against_dump: Optional[Union[str, Path]] = None,
     max_shards: Optional[int] = None,
     max_baseline_shards: Optional[int] = None,
-    alerts: Sequence[AlertEvent] = ALERT_EVENTS,
+    alerts: Optional[Sequence[AlertEvent]] = None,
     horizons: Sequence[float] = HORIZONS_HOURS,
     landmark_hours: float = 4.0,
     num_lanes: int = 8,
@@ -1889,10 +1896,16 @@ def evaluate_alerts(
         run_dir, device=device, checkpoint_path=checkpoint_path
     )
     source = getattr(config, "source", "mimic_iv")
-    concept_names = [c.name for c in concepts_for_source(source)]
+    task_set = getattr(config, "task_set", "v1")
+    activate_sidecars(held_out_shard_dir)
+    concept_names = [c.name for c in concepts_for_source(source, task_set=task_set)]
+    if alerts is None:
+        # The run's own task set, minus events that are not landmark-scored
+        # (discharge-anchored readmission has its own index scheme).
+        alerts = [a for a in alert_events_for(task_set) if not a.next_visit]
 
     raw = _load_prepared_raw(held_out_shard_dir, max_shards, config, source)
-    times = all_event_times(raw, alerts, source)
+    times = all_event_times(raw, alerts, source, task_set=task_set)
     visit_start = _visit_starts(raw)
     if degraded_shard_dir is not None:
         logger.info(
@@ -1962,6 +1975,7 @@ def evaluate_alerts(
         tune_baselines=tune_baselines,
         binned=binned,
         rows=rows,
+        task_set=task_set,
     )
 
     if dump_rows_path is not None:
