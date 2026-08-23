@@ -98,6 +98,36 @@ def test_load_cell_metrics_computes_every_field(tmp_path: Path) -> None:
     assert r.auroc == 0.9
     assert r.ece is not None and abs(r.ece - 0.1) < 1e-9
     assert r.auprc is not None
+    assert r.n_unscoreable == 0  # default when the caller doesn't pass one
+
+
+def test_load_cell_metrics_stamps_n_unscoreable_on_every_row() -> None:
+    metrics = [
+        {
+            "event": "icu_admission",
+            "horizon_hours": 8.0,
+            "scorer": "hazard",
+            "n_at_risk": 20,
+            "n_positive": 5,
+            "n_censored": 0,
+            "auroc": 0.8,
+            "calibration": None,
+        },
+        {
+            "event": "icu_admission",
+            "horizon_hours": 24.0,
+            "scorer": "hazard",
+            "n_at_risk": 20,
+            "n_positive": 5,
+            "n_censored": 0,
+            "auroc": 0.7,
+            "calibration": None,
+        },
+    ]
+    rows = load_cell_metrics(
+        "lag_4h", metrics, transform="lab_lag", rows_path=None, n_unscoreable=129
+    )
+    assert [r.n_unscoreable for r in rows] == [129, 129]
 
 
 def test_build_degradation_table_computes_deltas_against_matching_clean_row() -> None:
@@ -134,6 +164,38 @@ def test_build_degradation_table_computes_deltas_against_matching_clean_row() ->
     assert abs(row["auroc_delta"] - (-0.15)) < 1e-9
     assert abs(row["auprc_delta"] - (-0.10)) < 1e-9
     assert abs(row["ece_delta"] - 0.07) < 1e-9
+
+
+def test_build_degradation_table_carries_n_unscoreable_through() -> None:
+    clean = [
+        CellMetricRow(
+            cell=CLEAN_CELL,
+            transform=None,
+            scorer="hazard",
+            event="icu_admission",
+            horizon_hours=8.0,
+            n_at_risk=100,
+            auroc=0.90,
+            auprc=0.60,
+            ece=0.05,
+        )
+    ]
+    degraded = [
+        CellMetricRow(
+            cell="lag_4h",
+            transform="lab_lag",
+            scorer="hazard",
+            event="icu_admission",
+            horizon_hours=8.0,
+            n_at_risk=100,
+            auroc=0.80,
+            auprc=0.55,
+            ece=0.08,
+            n_unscoreable=129,
+        )
+    ]
+    table = build_degradation_table(clean, {"lag_4h": degraded})
+    assert table[0]["n_unscoreable"] == 129
 
 
 def test_build_degradation_table_none_delta_when_no_matching_clean_row() -> None:
@@ -188,3 +250,64 @@ def test_write_json_and_markdown_round_trip(tmp_path: Path) -> None:
     assert "-" in md  # the None auprc_delta renders as a placeholder, not "None"
     rendered_directly = render_markdown(table)
     assert rendered_directly == md
+
+
+def test_render_markdown_notes_reduced_row_sets_when_unscoreable() -> None:
+    table = [
+        {
+            "cell": "lag_4h",
+            "transform": "lab_lag",
+            "scorer": "hazard",
+            "event": "vasopressor_start",
+            "horizon_hours": 8.0,
+            "n_at_risk": 50,
+            "n_unscoreable": 129,
+            "auroc": 0.8,
+            "auroc_delta": -0.05,
+            "auprc": 0.3,
+            "auprc_delta": None,
+            "ece": 0.02,
+            "ece_delta": 0.01,
+        },
+        {
+            "cell": "mcar_0_3",
+            "transform": "mcar",
+            "scorer": "hazard",
+            "event": "vasopressor_start",
+            "horizon_hours": 8.0,
+            "n_at_risk": 50,
+            "n_unscoreable": 0,
+            "auroc": 0.8,
+            "auroc_delta": -0.05,
+            "auprc": 0.3,
+            "auprc_delta": None,
+            "ece": 0.02,
+            "ece_delta": 0.01,
+        },
+    ]
+    md = render_markdown(table)
+    assert "129" in md
+    assert "Reduced row sets" in md
+    assert "lag_4h: 129 rows unscoreable" in md
+    assert "mcar_0_3: 0 rows unscoreable" not in md
+
+
+def test_render_markdown_no_note_when_no_cell_has_unscoreable_rows() -> None:
+    table = [
+        {
+            "cell": "mcar_0_3",
+            "transform": "mcar",
+            "scorer": "hazard",
+            "event": "vasopressor_start",
+            "horizon_hours": 8.0,
+            "n_at_risk": 50,
+            "n_unscoreable": 0,
+            "auroc": 0.8,
+            "auroc_delta": -0.05,
+            "auprc": 0.3,
+            "auprc_delta": None,
+            "ece": 0.02,
+            "ece_delta": 0.01,
+        }
+    ]
+    assert "Reduced row sets" not in render_markdown(table)

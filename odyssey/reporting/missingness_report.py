@@ -24,7 +24,13 @@ Three metrics per (cell, scorer, event, horizon):
 Every metric also gets a delta (cell value minus the matching clean-baseline
 value, same scorer/event/horizon) -- valid because the row set is identical
 across every cell by construction (docs/missingness_protocol.md, Principle 3;
-enforced by ``evaluate_alerts``'s own ``verify_against_dump``).
+enforced by ``evaluate_alerts``'s own ``verify_against_dump``), except for
+rows a degraded record makes unscoreable (no visible token at/before the
+row's time), which that same ``verify_against_dump`` path excludes rather
+than treats as a mismatch. ``CellMetricRow.n_unscoreable`` and the
+degradation table's own ``n_unscoreable`` column carry that count so a
+cell scored on a reduced row set is never silently compared as if it
+weren't.
 """
 
 from __future__ import annotations
@@ -115,6 +121,12 @@ class CellMetricRow:
     auroc: Optional[float]
     auprc: Optional[float]
     ece: Optional[float]
+    n_unscoreable: int = 0
+    """Clean rows dropped because the degraded record had no visible token
+    at/before the row's time (0 for the clean baseline and for any cell that
+    didn't need to drop rows). When nonzero, this row's metrics -- and thus
+    its delta from clean -- are over a reduced row set, not the full one
+    ``verify_against_dump`` otherwise guarantees (see the module docstring)."""
 
 
 def load_cell_metrics(
@@ -123,12 +135,16 @@ def load_cell_metrics(
     *,
     transform: Optional[str],
     rows_path: Optional[Path],
+    n_unscoreable: int = 0,
 ) -> List[CellMetricRow]:
     """Build one cell's CellMetricRow list from its parsed AlertMetrics records.
 
     ``metrics`` is the ``"metrics"`` list a ``{cell}_alerts.json`` written by
     scripts/missingness_sweep.py carries (``AlertMetrics`` as dicts) --
     parsing the wrapper JSON is the caller's job, this only computes.
+    ``n_unscoreable`` is that same JSON's cell-level count (0 for clean),
+    stamped onto every row for this cell since it's a per-cell quantity, not
+    a per-(scorer, event, horizon) one.
     """
     out = []
     for r in metrics:
@@ -147,6 +163,7 @@ def load_cell_metrics(
                     rows_path, scorer=scorer, horizon_hours=horizon_hours
                 ),
                 ece=ece_from_calibration(r.get("calibration")),
+                n_unscoreable=n_unscoreable,
             )
         )
     return out
@@ -184,6 +201,7 @@ def build_degradation_table(
                     "event": r.event,
                     "horizon_hours": r.horizon_hours,
                     "n_at_risk": r.n_at_risk,
+                    "n_unscoreable": r.n_unscoreable,
                     "auroc": r.auroc,
                     "auroc_delta": _delta(r.auroc, base.auroc if base else None),
                     "auprc": r.auprc,
@@ -221,21 +239,22 @@ def render_markdown(table: List[Dict[str, Any]]) -> str:
         "AUROC/AUPRC/ECE and their delta from the clean baseline "
         "(docs/missingness_protocol.md), per cell x scorer x event x horizon.",
         "",
-        "| cell | transform | scorer | event | horizon (h) | n | "
+        "| cell | transform | scorer | event | horizon (h) | n | unscoreable | "
         "AUROC | ΔAUROC | AUPRC | ΔAUPRC | ECE | ΔECE |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for row in table:
         lines.append(
             "| {cell} | {transform} | {scorer} | {event} | {horizon_hours:g} | "
-            "{n_at_risk} | {auroc} | {auroc_delta} | {auprc} | {auprc_delta} | "
-            "{ece} | {ece_delta} |".format(
+            "{n_at_risk} | {n_unscoreable} | {auroc} | {auroc_delta} | {auprc} | "
+            "{auprc_delta} | {ece} | {ece_delta} |".format(
                 cell=row["cell"],
                 transform=row["transform"] or "-",
                 scorer=row["scorer"],
                 event=row["event"],
                 horizon_hours=row["horizon_hours"],
                 n_at_risk=row["n_at_risk"],
+                n_unscoreable=row.get("n_unscoreable") or 0,
                 auroc=_fmt(row["auroc"]),
                 auroc_delta=_fmt(row["auroc_delta"]),
                 auprc=_fmt(row["auprc"]),
@@ -244,6 +263,23 @@ def render_markdown(table: List[Dict[str, Any]]) -> str:
                 ece_delta=_fmt(row["ece_delta"]),
             )
         )
+    reduced_cells = sorted(
+        {
+            (row["cell"], row.get("n_unscoreable") or 0)
+            for row in table
+            if row.get("n_unscoreable")
+        }
+    )
+    if reduced_cells:
+        lines.append("")
+        lines.append(
+            "**Reduced row sets:** these cells dropped clean rows with no "
+            "visible token at/before the row's time on the degraded record "
+            "(docs/missingness_protocol.md) -- their metrics and deltas above "
+            "are over that reduced row set, not the full clean cohort:"
+        )
+        for cell, n in reduced_cells:
+            lines.append(f"- {cell}: {n} rows unscoreable")
     return "\n".join(lines) + "\n"
 
 
