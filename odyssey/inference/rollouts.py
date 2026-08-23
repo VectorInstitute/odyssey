@@ -32,6 +32,7 @@ comparable against its hazard heads, not as a validated risk estimate.
 """
 
 import logging
+import math
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
@@ -113,7 +114,15 @@ def _sample_gap_hours(
         u = float(torch.rand(1, generator=generator).item())
         return left + u * (right - left)
     width = float(edges[-1]) - (float(edges[-2]) if len(edges) > 1 else 0.0)
-    tail = float(torch.distributions.Exponential(1.0 / max(width, 1e-6)).sample())
+    # Inverse-CDF draw (mean-`width` exponential) instead of
+    # torch.distributions.Exponential: that constructor is untyped (mypy
+    # no-untyped-call under this repo's strict config) and, worse, its
+    # .sample() ignores `generator` entirely -- every other draw in this
+    # function is seeded through it, so a torch.distributions call here
+    # would silently break rollout reproducibility for exactly the
+    # positions that land in the open final bin.
+    u = float(torch.rand(1, generator=generator).item())
+    tail = -max(width, 1e-6) * math.log1p(-u)
     return float(edges[-1]) + tail
 
 
