@@ -40,7 +40,7 @@ authors validated it in.
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 import polars as pl
@@ -52,6 +52,7 @@ from odyssey.inference.alerts import (
     features_for_events,
     outcome_at_horizon,
 )
+from odyssey.inference.fit_cache import FitCache
 
 
 logger = logging.getLogger(__name__)
@@ -190,6 +191,7 @@ def _fit_one_tabicl(
     event_name: str,
     n_estimators: int,
     device: str | None,
+    cache: Optional[FitCache] = None,
 ) -> dict[float, TabICLBaselineModel]:
     """Fit one TabICL context per horizon for a single event.
 
@@ -200,11 +202,24 @@ def _fit_one_tabicl(
     means -- is the only thing that differs, since TabICL's ``fit`` just
     stores the (capped, seeded-subsampled) context rather than running
     gradient descent.
+
+    ``cache``, if given, is checked per horizon before fitting and
+    written to immediately after -- see :mod:`odyssey.inference.fit_cache`.
+    ``_load_tabicl_classifier`` is deferred until the first horizon that
+    actually needs a real fit, so an all-cached call never requires
+    ``tabicl`` to be importable at all.
     """
-    tabicl_classifier_cls = _load_tabicl_classifier()
+    tabicl_classifier_cls = None
     rng = np.random.default_rng(seed)
     out: dict[float, TabICLBaselineModel] = {}
     for h in horizons:
+        cache_key = f"tabicl/{event_name}/{h:g}h"
+        if cache is not None:
+            cached = cache.load(cache_key)
+            if cached is not None:
+                out[h] = cached
+                continue
+
         y = np.array(
             [outcome_at_horizon(r, times, h) for r in rows],
             dtype=object,
@@ -221,6 +236,8 @@ def _fit_one_tabicl(
         if all_nan_cols.any():
             x_fit[:, all_nan_cols] = 0.0
 
+        if tabicl_classifier_cls is None:
+            tabicl_classifier_cls = _load_tabicl_classifier()
         clf = tabicl_classifier_cls(
             n_estimators=n_estimators,
             device=device,
@@ -237,6 +254,8 @@ def _fit_one_tabicl(
             },
             all_nan_cols=all_nan_cols if all_nan_cols.any() else None,
         )
+        if cache is not None:
+            cache.save(cache_key, out[h])
         logger.info(
             "[tabicl] %s@%gh: %s features, %d context rows, n_estimators=%d",
             event_name,
@@ -259,6 +278,7 @@ def fit_tabicl_baselines(
     feature_set: str = "strong",
     n_estimators: int = 8,
     device: str | None = None,
+    cache: Optional[FitCache] = None,
 ) -> dict[tuple[str, float], TabICLBaselineModel]:
     """One TabICLv2 context per (event, horizon), on the same features as the GBM.
 
@@ -274,7 +294,9 @@ def fit_tabicl_baselines(
     Requires the optional ``tabicl`` package
     (see the module docstring); raises ``ImportError`` with install
     instructions if it is not installed, the first time a context would
-    actually be fit -- not merely on import of this module.
+    actually be fit -- not merely on import of this module. ``cache``, if
+    given, is consulted/updated per (event, horizon) -- see
+    :mod:`odyssey.inference.fit_cache`.
     """
     models: dict[tuple[str, float], TabICLBaselineModel] = {}
     features = features_for_events(
@@ -293,6 +315,7 @@ def fit_tabicl_baselines(
             event_name=name,
             n_estimators=n_estimators,
             device=device,
+            cache=cache,
         )
         for h, model in per_horizon.items():
             models[(name, h)] = model

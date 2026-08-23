@@ -15,6 +15,7 @@ installed in this environment.
 """
 
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -26,6 +27,7 @@ from odyssey.data.alert_events import ALERT_EVENTS, all_event_times
 from odyssey.data.value_binning import add_value_tokens
 from odyssey.inference import survivalpfn_baseline as survivalpfn_module
 from odyssey.inference.alerts import EventTimes, IndexRow, _index_rows_from_events
+from odyssey.inference.fit_cache import FitCache
 from odyssey.inference.survivalpfn_baseline import (
     SURVIVALPFN_MAX_FEATURES,
     SURVIVALPFN_MAX_ROWS,
@@ -419,3 +421,59 @@ def test_fit_one_survivalpfn_rejects_a_feature_matrix_over_the_hard_cap(
 
 def test_module_constants_are_ordered_sensibly() -> None:
     assert SURVIVALPFN_MIN_ROWS < SURVIVALPFN_MAX_ROWS
+
+
+# ---------------------------------------------------------------------------
+# fit_survivalpfn_baselines + FitCache: cache hit skips the fit, cache miss saves
+# ---------------------------------------------------------------------------
+
+
+def test_fit_survivalpfn_baselines_skips_fitting_on_a_cache_hit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(survivalpfn_module, "SURVIVALPFN_MIN_ROWS", 2)
+    events = _events(24)
+    binned = add_value_tokens(events)
+    times = all_event_times(binned, ALERT_EVENTS, "mimic_iv")
+    rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+    cache = FitCache(cache_dir=tmp_path)
+
+    fit_survivalpfn_baselines(
+        binned, rows, times, horizons=(8.0, 24.0), feature_set="basic", cache=cache
+    )
+    assert len(_FakeEstimator.instances) == 1
+
+    def _boom() -> None:
+        raise AssertionError("should not load the estimator on a cache hit")
+
+    monkeypatch.setattr(survivalpfn_module, "_load_survival_estimator", _boom)
+    models = fit_survivalpfn_baselines(
+        binned, rows, times, horizons=(8.0, 24.0), feature_set="basic", cache=cache
+    )
+    # cache hit still serves every horizon the caller asks for, from the
+    # one cached context -- not just whatever horizons were fit originally
+    assert ("vasopressor_start", 8.0) in models
+    assert ("vasopressor_start", 24.0) in models
+    assert len(_FakeEstimator.instances) == 1
+
+
+def test_fit_survivalpfn_baselines_refits_when_the_cache_is_from_a_different_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(survivalpfn_module, "SURVIVALPFN_MIN_ROWS", 2)
+    events = _events(24)
+    binned = add_value_tokens(events)
+    times = all_event_times(binned, ALERT_EVENTS, "mimic_iv")
+    rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+
+    writer = FitCache(cache_dir=tmp_path, fingerprint={"survivalpfn": "1.0.0"})
+    fit_survivalpfn_baselines(
+        binned, rows, times, horizons=(8.0,), feature_set="basic", cache=writer
+    )
+    assert len(_FakeEstimator.instances) == 1
+
+    reader = FitCache(cache_dir=tmp_path, fingerprint={"survivalpfn": "2.0.0"})
+    fit_survivalpfn_baselines(
+        binned, rows, times, horizons=(8.0,), feature_set="basic", cache=reader
+    )
+    assert len(_FakeEstimator.instances) == 2
