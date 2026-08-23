@@ -4,7 +4,7 @@
 # nobody can log into the node directly, so this is what actually runs there.
 #
 # Usage (on the GEMINI node, from the repo root):
-#   scripts/gemini/run.sh [probe|schema|env-gpu|extract-dry|extract|finalize|export-codes|train-smoke|train-smoke-2|train-full|train-rung2|eval-forecast <run-name>|train|eval|all]
+#   scripts/gemini/run.sh [probe|schema|env-gpu|extract-dry|extract|finalize|export-codes|pipeline|train-smoke|train-smoke-2|train-full|train-rung2|eval-forecast <run-name>|train|eval|all]
 #
 # Steps:
 #   probe        scripts/gemini/probe_env.sh -> scripts/gemini/out/env_probe.txt
@@ -46,6 +46,22 @@
 #                if the full inventory would exceed the commit-size cap
 #                below (real risk at GEMINI's ~13-50k-code scale, not
 #                hypothetical -- see the script's own docstring).
+#   pipeline     chains extract -> finalize -> export-codes end to end, each
+#                stage's own guards unchanged. Adds two chain-level guards
+#                on top, both from a real incident (2026-08-22): finalize
+#                was OOM-killed by the kernel 9 minutes into its 1.2B-row
+#                repartition scan, run outside any Slurm allocation. (1) a
+#                memory preflight upfront (checks SLURM_MEM_PER_NODE, or
+#                /proc/meminfo directly if unset) that refuses in seconds,
+#                not 9 minutes, with the exact salloc command, if under
+#                ~64G. (2) a partial-output guard: if the OOM kill (or any
+#                other) left GEMINI_MEDS_OUTPUT_DIR/data/ behind with no
+#                metadata/.finalize_complete sentinel, refuses with the
+#                exact rm commands rather than letting finalize's own
+#                auto-wipe (see finalize_meds.py's _wipe_partial_output)
+#                silently redo the work unattended -- this chain is meant
+#                to run unwatched, so an ambiguous partial state should
+#                stop and ask, not guess.
 #   train-smoke  proves data+env+backbone on a small slice before committing
 #                to a full run: model_kind=baseline, source=gemini,
 #                concepts/alerts off (event_hazards=False), backbone stays
@@ -297,6 +313,86 @@ main() {
         echo "Reads metadata/codes.parquet (needs finalize done) and writes"
         echo "the suppressed code inventory to scripts/gemini/out/codes_inventory.json."
         python scripts/gemini/export_codes.py
+    }
+
+    run_pipeline() {
+        echo "=== pipeline (extract -> finalize -> export-codes) ==="
+        echo "Each stage's own guards (manifest checks, disk/NOFILE preflight,"
+        echo "finalize's completion sentinel) are unchanged -- this just"
+        echo "sequences them. Two chain-level guards below, both from a real"
+        echo "incident: finalize was OOM-killed 2026-08-22, 9 minutes into its"
+        echo "repartition pass, running outside any Slurm allocation."
+        if [[ -z "${TMUX:-}" && -z "${STY:-}" ]]; then
+            echo "WARNING: this doesn't look like a tmux or screen session --" >&2
+            echo "if the SSH connection drops, the whole chain dies with it," >&2
+            echo "and extract alone can run for hours." >&2
+            echo "Run it detached instead, e.g.:" >&2
+            echo "  tmux new -s pipeline 'scripts/gemini/run.sh pipeline'" >&2
+            echo "  # or: nohup scripts/gemini/run.sh pipeline > pipeline.log 2>&1 &" >&2
+        fi
+
+        # --- memory preflight ---------------------------------------------
+        # Checked upfront, before extract even starts, not just before
+        # finalize -- no point burning hours on extract only to hit the same
+        # OOM at the finalize stage. Prefers SLURM_MEM_PER_NODE (MB, Slurm's
+        # own convention) when set; falls back to /proc/meminfo's
+        # MemAvailable when this isn't running inside an allocation at all,
+        # which is exactly the condition that caused the real kill.
+        local min_mem_gb=64
+        local avail_kb avail_gb
+        if [[ -n "${SLURM_MEM_PER_NODE:-}" ]]; then
+            avail_gb=$((SLURM_MEM_PER_NODE / 1024))
+            echo "Memory preflight: SLURM_MEM_PER_NODE=${SLURM_MEM_PER_NODE} MB (~${avail_gb} GB) allocated."
+        else
+            avail_kb=$(awk '/MemAvailable/ {print $2}' /proc/meminfo)
+            avail_gb=$((${avail_kb:-0} / 1024 / 1024))
+            echo "Memory preflight: no Slurm allocation detected (SLURM_MEM_PER_NODE"
+            echo "unset) -- reading /proc/meminfo directly: ~${avail_gb} GB available."
+        fi
+        if ((avail_gb < min_mem_gb)); then
+            echo "REFUSING to start: ~${avail_gb} GB available, need at least" >&2
+            echo "${min_mem_gb} GB -- finalize's repartition pass was OOM-killed" >&2
+            echo "by the kernel under exactly this condition (2026-08-22, 9" >&2
+            echo "minutes into a 1.2B-row scan, no Slurm allocation). Get a real" >&2
+            echo "allocation first, e.g.:" >&2
+            echo "  salloc --mem=${min_mem_gb}G --cpus-per-task=8 --time=08:00:00" >&2
+            echo "(adjust partition/account flags for GEMINI's actual Slurm" >&2
+            echo "config if this doesn't match it -- not documented in this repo)," >&2
+            echo "then re-run 'scripts/gemini/run.sh pipeline' inside that" >&2
+            echo "allocation's shell." >&2
+            exit 1
+        fi
+        echo "Memory preflight OK (~${avail_gb} GB >= ${min_mem_gb} GB)."
+
+        # --- partial-output guard -------------------------------------------
+        # Same incident: the kill left data/ partially written under
+        # GEMINI_MEDS_OUTPUT_DIR with no metadata/.finalize_complete sentinel
+        # (finalize_meds.py's own completion marker). Run standalone,
+        # finalize would auto-wipe this itself and start over (see
+        # finalize_meds.py's _wipe_partial_output) -- fine for an operator
+        # watching the run, but this chain is meant to run unattended, so a
+        # partial, ambiguous prior attempt should stop and ask a human
+        # instead of silently redoing possibly-hours of work on an
+        # assumption. Mirrors finalize's own refusal doctrine (a specific
+        # error naming the exact state and the exact fix), applied here
+        # rather than left to finalize's internal auto-wipe.
+        MEDS_DIR="${GEMINI_MEDS_OUTPUT_DIR:-/mnt/nfs/project/subdural_hematoma_endotypes/gemini_meds_v1}"
+        if [[ -d "$MEDS_DIR/data" && ! -f "$MEDS_DIR/metadata/.finalize_complete" ]]; then
+            echo "REFUSING to start: $MEDS_DIR/data exists but" >&2
+            echo "$MEDS_DIR/metadata/.finalize_complete does not -- a partial," >&2
+            echo "incomplete finalize output from a prior run (e.g. the" >&2
+            echo "2026-08-22 OOM kill), not a completed one. Confirm by hand" >&2
+            echo "before re-running the unattended chain over it. If the" >&2
+            echo "partial output is expected garbage, delete it and re-run:" >&2
+            echo "  rm -rf $MEDS_DIR/data $MEDS_DIR/metadata" >&2
+            echo "If it's something else, look before deleting." >&2
+            exit 1
+        fi
+
+        echo "--- stage 1/3: extract ---" && run_extract &&
+            echo "--- stage 2/3: finalize ---" && run_finalize &&
+            echo "--- stage 3/3: export-codes ---" && run_export_codes &&
+            echo "=== pipeline complete: extract -> finalize -> export-codes ==="
     }
 
     run_pending_stub() {
@@ -1112,6 +1208,7 @@ PY
         extract) run_extract ;;
         finalize) run_finalize ;;
         export-codes) run_export_codes ;;
+        pipeline) run_pipeline ;;
         train-smoke) run_train_smoke 5 2 gemini_smoke_1 ;;
         train-smoke-2) run_train_smoke 30 "" gemini_smoke_2 ;;
         train-full) run_train_full ;;
@@ -1121,7 +1218,7 @@ PY
         eval) run_pending_stub eval ;;
         all) run_probe; run_schema; run_extract_dry ;;
         *)
-            echo "unknown step: $STEP (expected probe, schema, env-gpu, extract-dry, extract, finalize, export-codes, train-smoke, train-smoke-2, train-full, train-rung2, eval-forecast, train, eval, or all)" >&2
+            echo "unknown step: $STEP (expected probe, schema, env-gpu, extract-dry, extract, finalize, export-codes, pipeline, train-smoke, train-smoke-2, train-full, train-rung2, eval-forecast, train, eval, or all)" >&2
             exit 1
             ;;
     esac
