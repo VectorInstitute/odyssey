@@ -235,11 +235,28 @@ def build_patient_sequence(
         return PatientSequence(subject_id, [], [], [], [], [], [])
 
     first_time = times[0]
-    time_stamps = [(t - first_time).total_seconds() / 3600.0 for t in times]
+    # Computed as a polars expression, not Python's native
+    # timedelta.total_seconds() -- the two are conceptually equivalent but
+    # not bit-identical (different internal rounding), which showed up as
+    # a real bug: a landmark bucket computed from this sequence's own
+    # time_stamps (torch path) disagreeing with one computed from
+    # _index_rows_from_events' polars pipeline (ground truth) on the exact
+    # same real-world event, off by ~1e-13 hours -- just enough to flip a
+    # floor() right at a bucket boundary (root-caused 2026-08-23; see
+    # odyssey.inference.alerts.verify_packed_landmark_rows). Matching the
+    # exact same expression removes the second, independently-rounded
+    # derivation rather than tolerating the disagreement with an epsilon.
+    time_stamps = events.select(
+        ((pl.col("time") - pl.lit(first_time)).dt.total_seconds() / 3600.0).alias("_h")
+    )["_h"].to_list()
     if birth_time is not None:
-        ages = [
-            (t - birth_time).total_seconds() / 3600.0 / HOURS_PER_YEAR for t in times
-        ]
+        ages = events.select(
+            (
+                (pl.col("time") - pl.lit(birth_time)).dt.total_seconds()
+                / 3600.0
+                / HOURS_PER_YEAR
+            ).alias("_a")
+        )["_a"].to_list()
     else:
         ages = [0.0] * len(times)
 
