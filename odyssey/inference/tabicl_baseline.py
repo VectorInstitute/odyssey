@@ -56,6 +56,20 @@ from odyssey.inference.alerts import (
 
 logger = logging.getLogger(__name__)
 
+# Query-side batch size for predict_proba. TabICL is O(context^2 +
+# context*query^2) in context/query size (per the library's own scaling
+# characterization); a single unbatched call over a large held-out set
+# revisits the same wall a real MIMIC rescore hit -- ~216GB attempted for
+# one unbatched predict_proba(552_000 rows), an immediate OOM crash, no
+# partial results. Chunking the QUERY dimension changes only how many
+# query rows are scored against the fixed (already-fit) context per
+# forward pass; it does not change any individual row's prediction, since
+# TabICL's in-context scoring conditions each query row on the context
+# only, not on other query rows in the same batch -- confirmed by this
+# module's own architecture (the context is fixed at fit time, independent
+# of whatever query batch predict_proba is later called with).
+_PREDICT_BATCH_SIZE = 8192
+
 # Cap on the in-context training set TabICL actually sees, per (event,
 # horizon). Well inside the ~100K-row range the authors report strong,
 # GPU-timed results for (under 10s for 50K rows / 100 features on an H100);
@@ -136,12 +150,33 @@ class TabICLBaselineModel:
     the same column count and avoids the mismatch entirely."""
 
     def predict_proba(self, x: np.ndarray) -> np.ndarray:
-        """Positive-class (label ``1``) probabilities, ``(n,)``."""
+        """Positive-class (label ``1``) probabilities, ``(n,)``.
+
+        Batched over the query dimension in chunks of
+        :data:`_PREDICT_BATCH_SIZE` -- see that constant's comment for why
+        (a real, confirmed OOM crash on an unbatched large query set, not
+        a hypothetical). Asserts the batched output length matches the
+        input length, since a silent row drop here would be far worse
+        than the crash this exists to prevent.
+        """
         if self.all_nan_cols is not None:
             x = x.copy()
             x[:, self.all_nan_cols] = 0.0
-        proba = self.clf.predict_proba(x)  # type: ignore[attr-defined]
-        return _positive_class_proba(self.clf, proba)
+        if x.shape[0] == 0:
+            return np.empty((0,), dtype=np.float64)
+        chunks = []
+        for start in range(0, x.shape[0], _PREDICT_BATCH_SIZE):
+            chunk = x[start : start + _PREDICT_BATCH_SIZE]
+            proba = self.clf.predict_proba(chunk)  # type: ignore[attr-defined]
+            chunks.append(_positive_class_proba(self.clf, proba))
+        result = np.concatenate(chunks)
+        if len(result) != x.shape[0]:
+            raise AssertionError(
+                f"batched predict_proba returned {len(result)} rows for "
+                f"{x.shape[0]} input rows -- a row was silently dropped or "
+                "duplicated across batch chunks"
+            )
+        return result
 
 
 def _fit_one_tabicl(
