@@ -197,6 +197,90 @@ def test_export_task_labels_skips_a_horizon_with_no_at_risk_rows(
     assert paths == {}
 
 
+def test_export_task_labels_or_aggregates_colliding_subject_and_time(
+    tmp_path: Path,
+) -> None:
+    """Colliding hadm_ids for one subject at one prediction_time must OR.
+
+    eICU: concurrent/transferred ICU unit stays within one hospitalization
+    must collapse to one row, true if EITHER says at-risk-positive -- not an
+    arbitrary pick of one hadm_id's outcome over the other's.
+    """
+    rows = {
+        "icu_admission": [
+            IndexRow(subject_id=1, visit_id=10, time_hours=0.0),  # positive
+            IndexRow(subject_id=1, visit_id=11, time_hours=0.0),  # negative
+            IndexRow(subject_id=2, visit_id=20, time_hours=0.0),  # negative only
+        ]
+    }
+    times = {
+        "icu_admission": EventTimes(
+            onset={(1, 10): 4.0},  # subject 1, visit 10: observed within 8h
+            censor={(1, 11): 30.0, (2, 20): 30.0},
+            subject_scoped=False,
+        )
+    }
+    events = _events_binned([1, 2])
+
+    paths = export_task_labels(
+        rows, times, events, horizons=(8.0,), output_dir=tmp_path
+    )
+    df = pl.read_parquet(paths[("icu_admission", 8.0)])
+    assert df.height == 2  # subject 1's two colliding rows collapsed to one
+    row1 = df.filter(pl.col("subject_id") == 1)
+    assert row1.height == 1
+    assert row1["boolean_value"][0] is True  # OR: True wins over False
+    row2 = df.filter(pl.col("subject_id") == 2)
+    assert row2["boolean_value"][0] is False
+
+
+def test_export_task_labels_output_order_is_deterministic_regardless_of_input_order(
+    tmp_path: Path,
+) -> None:
+    """Regression test for the row-order nondeterminism this write boundary fixes.
+
+    Root cause (confirmed by source, not assumed): the rows this function
+    receives trace back to a polars ``group_by`` upstream
+    (``_index_rows_from_events``, in ``alerts.py``) with no
+    ``maintain_order=True`` -- polars' multi-threaded hash-partition
+    group_by does not guarantee a stable row order across runs, even for
+    identical input. Confirmed live: two exports of the exact same input
+    produced byte-different parquet files with identical row content once
+    sorted. Simulated here without relying on group_by's actual
+    nondeterminism (which cannot be forced in a unit test): feed the same
+    three rows in two different input orders and assert both produce the
+    exact same on-disk row order -- the write-boundary sort must produce a
+    canonical order independent of whatever order the caller handed it.
+    """
+    events = _events_binned([1, 2, 3])
+    times = {
+        "death": EventTimes(
+            onset={(1, 10): 2.0, (2, 20): 2.0, (3, 30): 2.0},
+            censor={},
+            subject_scoped=False,
+        )
+    }
+
+    def _rows(order: list[int]) -> dict[str, list[IndexRow]]:
+        by_subject = {
+            1: IndexRow(subject_id=1, visit_id=10, time_hours=5.0),
+            2: IndexRow(subject_id=2, visit_id=20, time_hours=1.0),
+            3: IndexRow(subject_id=3, visit_id=30, time_hours=3.0),
+        }
+        return {"death": [by_subject[s] for s in order]}
+
+    paths_a = export_task_labels(
+        _rows([1, 2, 3]), times, events, horizons=(8.0,), output_dir=tmp_path / "a"
+    )
+    paths_b = export_task_labels(
+        _rows([3, 1, 2]), times, events, horizons=(8.0,), output_dir=tmp_path / "b"
+    )
+    df_a = pl.read_parquet(paths_a[("death", 8.0)])
+    df_b = pl.read_parquet(paths_b[("death", 8.0)])
+    assert df_a["subject_id"].to_list() == df_b["subject_id"].to_list()
+    assert df_a["subject_id"].to_list() == sorted(df_a["subject_id"].to_list())
+
+
 # ---------------------------------------------------------------------------
 # verify_cached_label_count: the second half of (d)
 # ---------------------------------------------------------------------------

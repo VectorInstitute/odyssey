@@ -144,6 +144,35 @@ def export_task_labels(
     requirement; the second half (meds-tab-cache-task's own joined count)
     is :func:`verify_cached_label_count`, checked after the CLI stage runs,
     not here.
+
+    Sorts by ``(subject_id, prediction_time)`` immediately before writing.
+    Confirmed root cause: ``rows`` traces back to
+    :func:`~odyssey.inference.alerts._index_rows_from_events`'s
+    ``timed.group_by("subject_id", "hadm_id", "_bucket")``, which has no
+    ``maintain_order=True`` -- polars' multi-threaded hash-partition
+    group_by does not guarantee row order across runs on identical input
+    (confirmed: two exports of the same input produced byte-different
+    parquet files, but row-content-identical once both were sorted by this
+    same key). Rather than chase order-preservation through every upstream
+    step that might reorder rows, this write boundary is the one place a
+    canonical order is enforced -- every caller gets a deterministic file
+    regardless of what happens upstream.
+
+    OR-aggregates ``boolean_value`` across rows that collide on
+    ``(subject_id, prediction_time)`` after that sort. ``rows`` is built
+    per ``hadm_id`` (one row per subject/visit/landmark-bucket), and the
+    same absolute timestamp can be shared by more than one ``hadm_id`` for
+    a subject -- confirmed, for eICU, this is not a coincidence: ``hadm_id``
+    is the ICU *unit* stay, nested inside the subject's own health-system
+    (hospital) stay, and a sampled check (15/15 colliding groups) found
+    every one had fully overlapping event spans -- concurrent/transferred
+    unit stays within one hospitalization, not distinct episodes. "At risk
+    from any of the subject's concurrent units at this instant" is the
+    correct label there, not an arbitrary pick among them (which is what
+    the pre-sort, pre-aggregation code silently did, nondeterministically).
+    Logs whenever this collapses rows, since the reasoning above is
+    eICU-specific and any other source hitting this path nontrivially
+    should have its own collisions checked before being trusted.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     paths: dict[tuple[str, float], Path] = {}
@@ -170,15 +199,32 @@ def export_task_labels(
                     "boolean_value": [bool(outcomes[i]) for i in keep],
                 }
             )
+            n_supplied = label_df.height
+            label_df = (
+                label_df.group_by(["subject_id", "prediction_time"])
+                .agg(pl.col("boolean_value").any())
+                .sort(["subject_id", "prediction_time"])
+            )
+            n_collapsed = n_supplied - label_df.height
+            if n_collapsed:
+                logger.info(
+                    "[meds_tab] %s@%gh: %d rows OR-collapsed across colliding "
+                    "(subject_id, prediction_time) keys (%d -> %d rows)",
+                    event_name,
+                    h,
+                    n_collapsed,
+                    n_supplied,
+                    label_df.height,
+                )
             task_dir = output_dir / f"{event_name}_{h:g}h"
             task_dir.mkdir(parents=True, exist_ok=True)
             out_path = task_dir / "0.parquet"
             label_df.write_parquet(out_path)
             written = pl.read_parquet(out_path)
-            if written.height != len(keep):
+            if written.height != label_df.height:
                 raise AssertionError(
                     f"{event_name}@{h}h: wrote {written.height} label rows to "
-                    f"{out_path}, supplied {len(keep)} -- silent drop or "
+                    f"{out_path}, expected {label_df.height} -- silent drop or "
                     "duplication in the write itself"
                 )
             paths[(event_name, h)] = out_path
@@ -186,7 +232,7 @@ def export_task_labels(
                 "[meds_tab] %s@%gh: %d label rows -> %s",
                 event_name,
                 h,
-                len(keep),
+                label_df.height,
                 out_path,
             )
     return paths
