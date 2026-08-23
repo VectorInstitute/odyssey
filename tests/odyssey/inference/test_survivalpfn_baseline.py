@@ -202,7 +202,66 @@ def test_predict_proba_uses_this_instances_own_horizon_not_a_shared_one() -> Non
     p80 = model_80h.predict_proba(np.zeros((2, 3)))
     assert np.allclose(p8, 0.08)
     assert np.allclose(p80, 0.8)
-    assert not np.allclose(p8, p80)
+
+
+class _BatchRecordingEstimator:
+    """Records the size of every predict_event_distribution call."""
+
+    def __init__(self) -> None:
+        self.call_sizes: List[int] = []
+
+    def predict_event_distribution(self, x: np.ndarray) -> _FakeDistribution:
+        self.call_sizes.append(x.shape[0])
+        return _FakeDistribution()
+
+
+def test_predict_proba_batches_large_query_sets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test for a real OOM.
+
+    This model shares TabICL's in-context-transformer shape and the
+    identical unbounded-query-size exposure (confirmed via TabICL's real
+    crash: a ~216GB allocation attempt on 552,000 unbatched query rows).
+    Query-side batching must split large calls into chunks no larger than
+    _PREDICT_BATCH_SIZE.
+    """
+    monkeypatch.setattr(survivalpfn_module, "_PREDICT_BATCH_SIZE", 10)
+    estimator = _BatchRecordingEstimator()
+    model = SurvivalPFNBaselineModel(estimator, horizon_hours=40.0)
+
+    p = model.predict_proba(np.zeros((25, 3)))
+
+    assert estimator.call_sizes == [10, 10, 5]
+    assert p.shape == (25,)
+    assert np.allclose(p, 0.4)
+
+
+def test_predict_proba_empty_input_returns_empty_without_calling_estimator() -> None:
+    estimator = _BatchRecordingEstimator()
+    model = SurvivalPFNBaselineModel(estimator, horizon_hours=40.0)
+    p = model.predict_proba(np.zeros((0, 3)))
+    assert p.shape == (0,)
+    assert estimator.call_sizes == []
+
+
+def test_predict_proba_raises_if_a_batch_silently_drops_a_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(survivalpfn_module, "_PREDICT_BATCH_SIZE", 10)
+
+    class _DroppingEstimator:
+        def predict_event_distribution(self, x: np.ndarray) -> object:
+            class _Dist:
+                def survival_at(self, time: torch.Tensor) -> torch.Tensor:
+                    # Always returns one fewer row than asked for.
+                    return torch.zeros(max(len(time) - 1, 0))
+
+            return _Dist()
+
+    model = SurvivalPFNBaselineModel(_DroppingEstimator(), horizon_hours=40.0)
+    with pytest.raises(AssertionError, match="silently dropped"):
+        model.predict_proba(np.zeros((5, 3)))
 
 
 def test_survivalpfn_baseline_model_defaults() -> None:

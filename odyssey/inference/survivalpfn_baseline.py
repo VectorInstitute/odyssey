@@ -96,6 +96,18 @@ SURVIVALPFN_MAX_ROWS = 5_000
 # minimum context size the way TabICL's "not tested below 300" does.
 SURVIVALPFN_MIN_ROWS = 50
 
+# Query-side batch size for predict_proba. SurvivalPFN shares TabICL's
+# in-context-transformer shape and has the identical O(context/query)
+# blowup with no CPU/disk offload knob at all -- a real MIMIC rescore hit
+# this exact wall (~216GB attempted for one unbatched call on 552,000
+# query rows, immediate OOM, no partial results) via TabICL first, and
+# this module has the same structural exposure. Chunking the query
+# dimension changes only how many rows are scored per forward pass, not
+# any individual row's prediction: the fitted context is fixed, and each
+# query row is scored against it independently of whatever other query
+# rows share its batch.
+_PREDICT_BATCH_SIZE = 8192
+
 
 def _load_survival_estimator() -> Any:
     """Import and return ``survivalpfn.SurvivalEstimator``, or raise a clear error.
@@ -205,15 +217,35 @@ class SurvivalPFNBaselineModel:
     params: dict[str, float] = field(default_factory=dict)
 
     def predict_proba(self, x: np.ndarray) -> np.ndarray:
-        """``P(event within horizon_hours)``, ``(n,)`` -- ``1 - survival_at(h)``."""
+        """``P(event within horizon_hours)``, ``(n,)`` -- ``1 - survival_at(h)``.
+
+        Batched over the query dimension in chunks of
+        :data:`_PREDICT_BATCH_SIZE` -- see that constant's comment for why
+        (a real, confirmed OOM crash on this exact model shape via
+        TabICL's identical exposure, not a hypothetical). Asserts the
+        batched output length matches the input length.
+        """
         import torch  # noqa: PLC0415
 
-        dist = self.estimator.predict_event_distribution(  # type: ignore[attr-defined]
-            np.asarray(x, dtype=np.float32)
-        )
-        h = torch.full((x.shape[0],), float(self.horizon_hours), dtype=torch.float32)
-        survival = dist.survival_at(h)
-        result: np.ndarray = (1.0 - survival).detach().cpu().numpy()
+        x = np.asarray(x, dtype=np.float32)
+        if x.shape[0] == 0:
+            return np.empty((0,), dtype=np.float64)
+        chunks = []
+        for start in range(0, x.shape[0], _PREDICT_BATCH_SIZE):
+            chunk = x[start : start + _PREDICT_BATCH_SIZE]
+            dist = self.estimator.predict_event_distribution(chunk)  # type: ignore[attr-defined]
+            h = torch.full(
+                (chunk.shape[0],), float(self.horizon_hours), dtype=torch.float32
+            )
+            survival = dist.survival_at(h)
+            chunks.append((1.0 - survival).detach().cpu().numpy())
+        result: np.ndarray = np.concatenate(chunks)
+        if len(result) != x.shape[0]:
+            raise AssertionError(
+                f"batched predict_proba returned {len(result)} rows for "
+                f"{x.shape[0]} input rows -- a row was silently dropped or "
+                "duplicated across batch chunks"
+            )
         return result
 
 
