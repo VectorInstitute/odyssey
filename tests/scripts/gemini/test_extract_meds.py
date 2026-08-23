@@ -2315,6 +2315,192 @@ def test_logical_shard_row_counts_sums_base_and_part_files(tmp_path: Path) -> No
     assert mod._logical_shard_row_counts(tmp_path) == {0: 2}
 
 
+# --- Atomic tmp-then-rename part-file visibility --------------------------
+
+
+def test_writer_writes_to_a_tmp_path_and_only_the_rename_makes_it_countable(
+    tmp_path: Path,
+) -> None:
+    mod = _load_module()
+    writer = mod.MedsShardWriter(tmp_path, {"pA": 0})
+    batch = pd.DataFrame(
+        {
+            "subject_id": ["pA"],
+            "time": [pd.Timestamp("2020-01-01")],
+            "code": ["ADMISSION"],
+            "numeric_value": [None],
+            "hadm_id": [1],
+        }
+    )
+    writer.write_batch("admdad_subset", batch)
+    writer.flush_all()  # below threshold -- only flush_all() writes it
+
+    # The moment flush_all() closes the writer, the file must exist under
+    # its tmp name for zero time -- by the time we can observe it, only
+    # the final, renamed name should be present.
+    assert (tmp_path / "shard_0000.parquet").exists()
+    assert not (tmp_path / "shard_0000.parquet.tmp").exists()
+    assert mod._logical_shard_row_counts(tmp_path) == {0: 1}
+
+
+def test_clean_leftover_tmp_files_deletes_and_logs_an_orphan_at_startup(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A fresh MedsShardWriter must never let a leftover .tmp file linger.
+
+    Real incident: a killed process's truncated tmp part-file, left under
+    a countable final name before this fix existed, was only discovered
+    much later by a corrupt-file crash deep in a resumed run.
+    """
+    mod = _load_module()
+    orphan = tmp_path / "shard_0000.parquet.tmp"
+    orphan.write_bytes(b"not a valid parquet file, truncated mid-write")
+
+    with caplog.at_level("WARNING"):
+        mod.MedsShardWriter(tmp_path, {"pA": 0})
+
+    assert not orphan.exists()
+    assert any("leftover tmp part-file" in r.message for r in caplog.records)
+    assert any(str(orphan) in r.message for r in caplog.records)
+
+
+def test_clean_leftover_tmp_files_is_a_noop_when_nothing_is_there(
+    tmp_path: Path,
+) -> None:
+    mod = _load_module()
+    mod.MedsShardWriter(tmp_path, {"pA": 0})  # must not raise
+
+
+def test_logical_shard_row_counts_fails_loud_with_the_offending_path(
+    tmp_path: Path,
+) -> None:
+    """A corrupt final-named file must never be silently skipped.
+
+    Real incident: an OOM-killed process left a truncated, footer-less
+    file under a *final*, countable name (before the atomic tmp-then-
+    rename fix existed); pq.ParquetFile's ArrowInvalid carried no path,
+    forcing a manual scan of 1,000+ files to find the one bad one. The
+    error must name exactly which path is bad.
+    """
+    mod = _load_module()
+    corrupt = tmp_path / "shard_0000.parquet"
+    corrupt.write_bytes(b"not a valid parquet file, truncated mid-write")
+
+    with pytest.raises(RuntimeError, match="corrupt or unreadable"):
+        mod._logical_shard_row_counts(tmp_path)
+
+    # The whole point: the offending path must be nameable from the error
+    # alone, not require re-scanning every file to find it.
+    try:
+        mod._logical_shard_row_counts(tmp_path)
+    except RuntimeError as exc:
+        assert str(corrupt) in str(exc)
+
+
+def test_discard_incomplete_writers_removes_only_tmp_files_and_clears_state(
+    tmp_path: Path,
+) -> None:
+    mod = _load_module()
+    writer = mod.MedsShardWriter(tmp_path, {"pA": 0, "pB": 1})
+    batch = pd.DataFrame(
+        {
+            "subject_id": ["pA", "pB"],
+            "time": [pd.Timestamp("2020-01-01")] * 2,
+            "code": ["ADMISSION"] * 2,
+            "numeric_value": [None, None],
+            "hadm_id": [1, 2],
+        }
+    )
+    writer.write_batch("admdad_subset", batch)  # below threshold -- still buffered
+    # Force both shards' writers open (as a real mid-table crash would
+    # have, once SHARD_FLUSH_ROW_THRESHOLD had been crossed at least once).
+    writer._writer_for(0)
+    writer._writer_for(1)
+    tmp_paths = [
+        tmp_path / "shard_0000.parquet.tmp",
+        tmp_path / "shard_0001.parquet.tmp",
+    ]
+    assert all(p.exists() for p in tmp_paths)
+
+    writer.discard_incomplete_writers()
+
+    assert not any(p.exists() for p in tmp_paths)
+    assert writer._writers == {}
+    assert writer._writer_paths == {}
+    assert writer._buffers == {}
+    assert writer.total_buffered_rows == 0
+    assert mod._logical_shard_row_counts(tmp_path) == {}
+
+
+def test_discard_incomplete_writers_never_touches_an_already_flushed_shard(
+    tmp_path: Path,
+) -> None:
+    """A prior table's already-renamed, final-named file must survive."""
+    mod = _load_module()
+    writer = mod.MedsShardWriter(tmp_path, {"pA": 0})
+    writer.write_batch(
+        "admdad_subset",
+        pd.DataFrame(
+            {
+                "subject_id": ["pA"],
+                "time": [pd.Timestamp("2020-01-01")],
+                "code": ["ADMISSION"],
+                "numeric_value": [None],
+                "hadm_id": [1],
+            }
+        ),
+    )
+    writer.flush_all()  # table 1 completes durably, renamed to its final name
+
+    writer.write_batch(
+        "lab_subset",
+        pd.DataFrame(
+            {
+                "subject_id": ["pA"],
+                "time": [pd.Timestamp("2020-01-02")],
+                "code": ["LAB//1//UNK"],
+                "numeric_value": [1.0],
+                "hadm_id": [1],
+            }
+        ),
+    )  # table 2's own tmp part-file is now open, not yet flushed
+
+    writer.discard_incomplete_writers()
+
+    assert (tmp_path / "shard_0000.parquet").exists()  # table 1 survives
+    assert not (tmp_path / "shard_0000_part1.parquet.tmp").exists()  # table 2 discarded
+    assert mod._logical_shard_row_counts(tmp_path) == {0: 1}
+
+
+def test_extract_one_table_discards_incomplete_writers_on_a_mid_table_crash(
+    tmp_path: Path,
+) -> None:
+    mod = _load_module()
+    writer = mod.MedsShardWriter(tmp_path, {"pA": 0})
+
+    def crashing_generator():
+        yield mod.ExtractedBatch(
+            pd.DataFrame(
+                {
+                    "subject_id": ["pA"],
+                    "time": [pd.Timestamp("2020-01-01")],
+                    "code": ["ADMISSION"],
+                    "numeric_value": [None],
+                    "hadm_id": [1],
+                }
+            ),
+            1,
+        )
+        raise RuntimeError("simulated crash: 103@POST")
+
+    with pytest.raises(RuntimeError, match="103@POST"):
+        mod._extract_one_table("admdad_subset", crashing_generator(), writer)
+
+    assert writer._writers == {}
+    assert list(tmp_path.glob("*.tmp")) == []
+    assert list(tmp_path.glob("*.parquet")) == []
+
+
 def test_run_extraction_resumed_run_never_truncates_a_completed_tables_shard(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
