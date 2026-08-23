@@ -74,7 +74,37 @@ attached does not launch.
 1. GEMINI code_mapping table (OMOP -> LOINC + unit tags incl. SI variants)
    + per-unit clinical ranges (the umol/L creatinine trap) + gemini alert
    event definitions -> unlocks G6 and paper R5.
-2. Ladder rung specs (G4/G5) sized from G2's measured throughput.
+2. Ladder rung specs (G4/G5) -- SPECIFIED (Aug 23, sized from train-full's
+   measured behavior):
+
+   **Evidence base:** gemini_full_14m_v1 runs ~1.8-1.9 steps/s deep into
+   epoch 1 at 64x512 (feed-bound; smoke runs showed ~3GB VRAM / ~20% util
+   at 14M, so GPU compute is nowhere near the H200's ceiling). Val task
+   loss still improving well into epoch 2 (2.137 @ step 27.2k -> 1.555 @
+   71.2k), i.e. 14M is not saturated on 894 shards -- the curve argument
+   needs bigger rungs, and the data supports them.
+
+   **G4 (rung 2, ~60M):** same config as gemini_full_14m_v1 EXCEPT the
+   width/depth bump (target ~4x params; hidden 256->512 first, extra
+   layers only if the printed param count lands far from ~60M -- the
+   launch report must state the actual count printed at init). Same data,
+   same 64x512 geometry, same 2-epoch budget, same seed, same
+   eval-forecast protocol on the same held-out shards. Because the run is
+   feed-bound at 14M, wall-clock should grow far less than 4x; the launch
+   report must state measured steps/s in the first 2k steps -- if it
+   collapses below ~1 step/s, stop and report (feed parallelization
+   becomes the prerequisite, per the G4 gate).
+
+   **G5 (rung 3, ~150M):** only after G4's eval-forecast shows a real
+   gain over 14M (gate unchanged). Same recipe, next width/depth step
+   (~hidden 768 or 512 + deeper); same everything else. If G4's gain is
+   marginal, G5's budget goes to the GEMINI alert/concept subset run (G6)
+   instead -- curve-with-plateau is still a publishable curve.
+
+   **Both rungs:** checkpoint_every 2000 + prune to best/final (the
+   MIMIC best-vs-final lesson); eval-forecast immediately after each run
+   under the standard protocol; registry row per rung with the stamp
+   ritual once alert-side evals exist.
 3. Wave table assembly + protocol-delta write-up as legs complete.
 
 ## Active defects (affect gates above)
