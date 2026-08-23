@@ -230,8 +230,8 @@ def test_landmark_mask_state_prevents_a_spurious_landmark_at_a_chunk_boundary() 
     assert mask2.tolist() == [[False, True], [False, False]]
     # Lane 1's state must be UNCHANGED (still subject 2/visit 20/bucket 0)
     # since chunk 2 had no real position in that lane.
-    assert state2.subject_id[1].item() == 2
-    assert state2.visit_id[1].item() == 20
+    assert state2.subject_by_lane[1] == 2
+    assert state2.last_bucket_by_lane[1] == {20: 0}
 
     # Chunk 3: lane 1's subject 2 resumes at hour 3 (still bucket 0, same
     # visit) -- must NOT be a new landmark, proving the padding chunk in
@@ -279,6 +279,45 @@ def test_landmark_mask_a_new_subject_at_chunk_boundary_is_still_a_landmark() -> 
         state=state,
     )
     assert mask.item() is True
+
+
+def test_landmark_mask_interleaved_visits_at_a_shared_timestamp_land_once_each() -> (
+    None
+):
+    """The v2->v3 regression: real discharge-instant medication-stop bundles.
+
+    Root cause of a real bug found chasing verify_packed_landmark_rows'
+    disagreement with _index_rows_from_events on real eICU data (subject
+    454662, held-out shards): at a discharge instant, a subject's own
+    medication-STOPPED events for two different admissions (hadm_ids) can
+    share the exact same timestamp and appear interleaved in token order
+    (ending admission, starting admission, ending, starting, ...) rather
+    than grouped by visit. v2's ``_landmark_mask`` compared each position
+    only to the one immediately before it (``~same_visit``), so every
+    interleave step re-triggered a landmark even though that visit's
+    bucket had already been landmarked -- 3 spurious landmarks per visit
+    in the real case, from 6 real interleaved positions. v3 tracks the
+    last-emitted bucket per visit directly (matching
+    _index_rows_from_events' per-(subject, visit, bucket) group-by), so
+    order no longer matters: each visit lands exactly once.
+    """
+    landmark_hours = 4.0
+    same_time = 166.183333  # the literal real-data value from the repro
+    # One lane, one chunk: 6 positions, visit_id alternating 10/20/10/20/
+    # 10/20, all at the exact same timestamp (same bucket for both visits,
+    # since visit_start_hours is 0 for both here -- the real case has
+    # each visit's own start, this pins the same property more simply).
+    mask, state = _landmark_mask(
+        time_hours=torch.tensor([[same_time] * 6]),
+        subject_ids=torch.tensor([[1, 1, 1, 1, 1, 1]]),
+        visit_ids=torch.tensor([[10, 20, 10, 20, 10, 20]]),
+        landmark_hours=landmark_hours,
+        visit_start_hours=torch.zeros(1, 6),
+    )
+    # Exactly one landmark per visit: the FIRST occurrence of each, not
+    # every interleave step.
+    assert mask.tolist() == [[True, True, False, False, False, False]]
+    assert state.last_bucket_by_lane[0] == {10: 41, 20: 41}
 
 
 @pytest.mark.parametrize(
