@@ -59,6 +59,7 @@ from odyssey.inference.survivalpfn_baseline import fit_survivalpfn_baselines
 from odyssey.inference.tabicl_baseline import fit_tabicl_baselines
 from odyssey.training.shard_stream import make_preparer, shard_paths
 from odyssey.training.train import TrainingConfig
+from odyssey.utils.joblib_tmp import ensure_joblib_temp_folder
 
 
 logger = logging.getLogger(__name__)
@@ -103,6 +104,7 @@ def _rss_human() -> str:
 
 def main() -> None:  # noqa: PLR0915
     """Fit TabICL/EBM/SurvivalPFN and join their scores onto an existing dump."""
+    ensure_joblib_temp_folder()
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
