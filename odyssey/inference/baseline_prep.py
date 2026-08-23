@@ -148,6 +148,7 @@ def prepare_baseline_data(
     landmark_hours: float = 4.0,
     loader: ShardLoader = load_meds_shard,
     degraded_shard_dir: Optional[Path] = None,
+    task_set: str = "v1",
 ) -> BaselineData:
     """Build landmark rows, event times, and features one shard at a time.
 
@@ -177,7 +178,9 @@ def prepare_baseline_data(
     for raw_path in paths:
         shard_path = Path(raw_path)
         raw = prepare(loader(shard_path))
-        merge_event_times(data.times, all_event_times(raw, alerts, source))
+        merge_event_times(
+            data.times, all_event_times(raw, alerts, source, task_set=task_set)
+        )
         binned = add_value_tokens(raw, binner, source=source)
         del raw  # one shard's frames at a time -- the module's whole point
         shard_rows = _index_rows_from_events(

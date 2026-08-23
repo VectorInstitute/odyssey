@@ -51,6 +51,7 @@ import torch.nn.functional as F  # noqa: N812
 from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.concepts import concepts_for_source
 from odyssey.data.history_recap import maybe_history_recap
+from odyssey.data.sidecars import activate_sidecars
 from odyssey.data.streaming import NO_SUBJECT, PackedLaneSampler, StreamingChunk
 from odyssey.data.value_binning import add_value_tokens
 from odyssey.data.vocabulary import PAD_ID, Vocabulary
@@ -361,7 +362,8 @@ def evaluate_interventions(
         raw_events, enabled=getattr(config, "history_recap", False)
     )
     source = getattr(config, "source", "mimic_iv")
-    concepts = concepts_for_source(source)
+    activate_sidecars(held_out_shard_dir)
+    concepts = concepts_for_source(source, task_set=getattr(config, "task_set", "v1"))
     events_binned = add_value_tokens(raw_events, binner, source=source)
 
     supervision: ConceptSupervision = getattr(config, "concept_supervision", "stay")

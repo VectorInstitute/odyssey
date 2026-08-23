@@ -54,12 +54,13 @@ from typing import Callable, Dict, Iterator, Optional, Sequence, TypeVar, Union
 import polars as pl
 import torch
 
-from odyssey.data.alert_events import ALERT_EVENTS, all_event_times
+from odyssey.data.alert_events import alert_events_for, all_event_times
 from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.concepts import AnyConceptDefinition, concepts_for_source
 from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.packed_context import PackedContextSampler
 from odyssey.data.sequences import PatientSequence
+from odyssey.data.sidecars import activate_sidecars, active_sidecar_names
 from odyssey.data.signal_panel import SignalPanelResolver
 from odyssey.data.streaming import PackedLaneSampler
 from odyssey.data.value_binning import QuantileBinner, add_value_tokens
@@ -165,6 +166,15 @@ class TrainingConfig:
     """Feed per-family hours-since-last-event (log1p, capped, plus a seen
     flag) to the time/event heads, concatenated after the bottleneck so
     timing metadata never routes through the concepts. Opt-in A/B."""
+    task_set: str = "v1"
+    """Which concept registry + alert-event set this run supervises
+    (:data:`odyssey.data.concepts.TASK_SETS`,
+    :func:`odyssey.data.alert_events.alert_events_for`). "v1" = the 15
+    concepts / 4 alerts every run before Aug 23 2026 used; "v2" adds the
+    Sepsis-3 concept + alert and 30-day readmission. Saved in config.json
+    so evaluation rebuilds exactly this run's heads and labels; needs the
+    microbiology sidecar next to the data for sepsis3 (see
+    :mod:`odyssey.data.sidecars`)."""
     signal_channels: bool = False
     """Feed per-curated-signal staleness (hours since last observation,
     log1p, capped, plus a seen flag) and the last standardized value for
@@ -464,6 +474,27 @@ def _detach_state(state: TimeAwareState) -> TimeAwareState:
     )
 
 
+def _activate_run_sidecars(config: TrainingConfig) -> None:
+    """Activate the label sidecars next to the training data; guard task_set v2.
+
+    A v2 run supervises sepsis3, whose label needs the microbiology
+    sidecar: silently training with it absent would mask the concept
+    everywhere and leave an untrained sepsis head, so refuse loudly with
+    the fix (build it with scripts/build_mimic_sidecars.py and place it at
+    ``<root>/sidecars/`` next to ``data/``).
+    """
+    names = activate_sidecars(config.train_shard_dir)
+    if names:
+        logger.info("[data] sidecars active: %s", ", ".join(names))
+    if config.task_set != "v1" and "microbiology" not in active_sidecar_names():
+        raise FileNotFoundError(
+            f"task_set={config.task_set!r} needs the 'microbiology' sidecar "
+            f"(sepsis3 label) but none was found next to {config.train_shard_dir} "
+            "-- build it with scripts/build_mimic_sidecars.py and place it at "
+            "<root>/sidecars/microbiology.parquet (sibling of data/)."
+        )
+
+
 def _signal_panel_for(config: TrainingConfig) -> Optional[SignalPanelResolver]:
     """Return the resolver the run's patient iterators need (``None`` = channel off)."""
     if not getattr(config, "signal_channels", False):
@@ -517,7 +548,7 @@ def build_model(
         else None
     )
     event_names = (
-        [a.name for a in ALERT_EVENTS]
+        [a.name for a in alert_events_for(getattr(config, "task_set", "v1"))]
         if getattr(config, "event_hazards", False)
         else None
     )
@@ -683,6 +714,7 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
     output_dir = Path(config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "config.json").write_text(json.dumps(asdict(config), indent=2))
+    _activate_run_sidecars(config)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(config.seed)
@@ -723,7 +755,7 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
     if config.normalize_medications:
         logger.info("[data] medication codes normalized to ingredient level")
 
-    concepts = concepts_for_source(config.source)
+    concepts = concepts_for_source(config.source, task_set=config.task_set)
     logger.info(
         "[data] labeling %d concepts (%s-scoped, source=%s)",
         len(concepts),
@@ -758,12 +790,19 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
     tuning_event_tables: Optional[EventTimeTables] = None
     if config.event_hazards:
         logger.info("[data] computing alert-event onset/censoring times")
-        event_names = [a.name for a in ALERT_EVENTS]
+        alerts = alert_events_for(config.task_set)
+        event_names = [a.name for a in alerts]
         train_event_tables = EventTimeTables(
-            all_event_times(train_events, ALERT_EVENTS, config.source), event_names
+            all_event_times(
+                train_events, alerts, config.source, task_set=config.task_set
+            ),
+            event_names,
         )
         tuning_event_tables = EventTimeTables(
-            all_event_times(tuning_events, ALERT_EVENTS, config.source), event_names
+            all_event_times(
+                tuning_events, alerts, config.source, task_set=config.task_set
+            ),
+            event_names,
         )
     train_labels = _labels_to_device(train_labels, device)
     train_masks = _labels_to_device(train_masks, device)
@@ -868,7 +907,7 @@ def _train_streaming(config: TrainingConfig, output_dir: Path, device: str) -> P
         history_recap=config.history_recap,
         source=config.source,
     )
-    concepts = concepts_for_source(config.source)
+    concepts = concepts_for_source(config.source, task_set=config.task_set)
     logger.info("[stream] fitting quantile binner over %d train shards", len(paths))
     binner = fit_binner_streaming(
         paths,
@@ -887,7 +926,8 @@ def _train_streaming(config: TrainingConfig, output_dir: Path, device: str) -> P
         concepts=concepts,
         concept_supervision=config.concept_supervision,
         with_first_times=config.randint_prob > 0.0,
-        alerts=ALERT_EVENTS if config.event_hazards else None,
+        alerts=alert_events_for(config.task_set) if config.event_hazards else None,
+        task_set=config.task_set,
     )
     logger.info(
         "[data] train: %d subjects, %d events (streamed)",
@@ -915,7 +955,8 @@ def _train_streaming(config: TrainingConfig, output_dir: Path, device: str) -> P
         )
     else:
         tuning_labels, tuning_masks = build_concept_label_dicts(tuning_events, concepts)
-    event_names = [a.name for a in ALERT_EVENTS]
+    alerts = alert_events_for(config.task_set)
+    event_names = [a.name for a in alerts]
     train_event_tables = (
         EventTimeTables(stats.event_times, event_names)
         if config.event_hazards
@@ -923,7 +964,10 @@ def _train_streaming(config: TrainingConfig, output_dir: Path, device: str) -> P
     )
     tuning_event_tables = (
         EventTimeTables(
-            all_event_times(tuning_events, ALERT_EVENTS, config.source), event_names
+            all_event_times(
+                tuning_events, alerts, config.source, task_set=config.task_set
+            ),
+            event_names,
         )
         if config.event_hazards
         else None

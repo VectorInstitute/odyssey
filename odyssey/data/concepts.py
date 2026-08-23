@@ -69,6 +69,8 @@ from typing import Dict, List, Literal, Optional, Sequence, Set, Tuple, Union
 import polars as pl
 
 from odyssey.data.code_mapping import prefixes_for_loinc, unit_for
+from odyssey.data.sidecars import MICROBIOLOGY, active_sidecar
+from odyssey.data.sofa import assessable_keys, sofa_supported, sofa_timeseries
 
 
 logger = logging.getLogger(__name__)
@@ -220,12 +222,67 @@ class DerivedGcsTotalRule:
     max_component_gap_minutes: float = 15.0
 
 
+# Antibacterials (stems + common MIMIC brand names), after mimic-code's
+# ``antibiotic.sql`` list; antifungals/antivirals deliberately excluded,
+# as there. Matched case-insensitively against medication START codes.
+ANTIBIOTIC_PATTERN = (
+    r"cillin|cef|ceph|penem|vancomycin|vancocin|linezolid|zyvox|daptomycin|cubicin"
+    r"|azithromycin|zithromax|clarithromycin|biaxin|erythromycin|clindamycin|cleocin"
+    r"|gentamicin|tobramycin|amikacin|streptomycin|kanamycin|neomycin"
+    r"|floxacin|cipro|levaquin|avelox|noroxin|factive|proquin"
+    r"|cycline|doxy|minocin|solodyn|vibramycin|tetra"
+    r"|metronidazole|flagyl|sulfamethoxazole|trimethoprim|bactrim|septra|smz"
+    r"|aztreonam|azactam|cayston|rifampin|rifadin|nitrofurantoin|macrobid|macrodantin"
+    r"|chloramphenicol|synercid|vibativ|mupirocin|bactroban|monurol|fosfomycin"
+    r"|augmentin|unasyn|zosyn|timentin|tazobactam|sulbactam|bicillin|pfizerpen"
+    r"|keflex|kefzol|rocephin|claforan|fortaz|tazicef|maxipime|cefotan|mefoxin"
+    r"|ceftin|zinacef|omnicef|suprax|vantin|spectracef|cedax|duricef|raniclor"
+)
+# Routes that do not count as systemic antibiotic therapy (topical, eye,
+# ear, nasal, inhaled) -- mimic-code's exclusions, matched on MEDS ``route``.
+ANTIBIOTIC_ROUTE_EXCLUDE = (
+    r"^(OU|OS|OD|AU|AS|AD|TP)$|ear|eye|ophth|otic|nasal|inhal|neb|topical|cream|gel"
+    r"|ointment|desensitization|irrig|vaginal|rectal"
+)
+
+
+@dataclass(frozen=True)
+class Sepsis3Rule:
+    """Sepsis-3 onset (Singer 2016) as operationalized by mimic-code's ``sepsis3``.
+
+    Suspected infection = a culture specimen (from the ``microbiology``
+    sidecar, :mod:`odyssey.data.sidecars`) and a systemic antibiotic start
+    within the standard window (antibiotic within ``antibiotic_after_hours``
+    after the culture, or culture within ``culture_after_hours`` after the
+    antibiotic); the suspicion time is the earlier of the two. Sepsis =
+    a SOFA total >= ``sofa_threshold`` (baseline assumed 0, as mimic-code
+    does) at any instant from ``sofa_before_hours`` before to
+    ``sofa_after_hours`` after suspicion; onset is the first instant both
+    hold. Diagnosis codes are deliberately not used (no onset time).
+    """
+
+    source: str
+    antibiotic_pattern: str = ANTIBIOTIC_PATTERN
+    route_exclude: str = ANTIBIOTIC_ROUTE_EXCLUDE
+    antibiotic_after_hours: float = 72.0
+    culture_after_hours: float = 24.0
+    sofa_before_hours: float = 48.0
+    sofa_after_hours: float = 24.0
+    sofa_threshold: int = 2
+    subject_col: str = "subject_id"
+    visit_col: str = "hadm_id"
+    route_col: str = "route"
+    antibiotic_event_pattern: str = r"//START//|//Administered//"
+    """Which medication rows count as the drug being given (not stopped)."""
+
+
 ComponentRule = Union[
     ConceptRule,
     SustainedRule,
     BaselineRelativeRule,
     DerivedGcsTotalRule,
     CodeOccurrenceRule,
+    Sepsis3Rule,
 ]
 
 
@@ -373,12 +430,20 @@ class LoincGcsTotal:
 # CodeOccurrenceRule is already source-agnostic (it matches drug names in
 # code strings / text_value, not institution item ids), so it doubles as
 # its own canonical form.
+@dataclass(frozen=True)
+class CanonicalSepsis3:
+    """Canonical Sepsis-3: expands to :class:`Sepsis3Rule` where SOFA is scorable."""
+
+    sofa_threshold: int = 2
+
+
 CanonicalRule = Union[
     LoincThreshold,
     LoincSustained,
     LoincBaselineRelative,
     LoincGcsTotal,
     CodeOccurrenceRule,
+    CanonicalSepsis3,
 ]
 
 
@@ -439,10 +504,27 @@ def _prefix_threshold(rule: LoincThreshold, prefix: str, source: str) -> float:
     )
 
 
-def _expand_rule(rule: CanonicalRule, source: str) -> List[ComponentRule]:
-    """Resolve one canonical rule to concrete rules; [] if unresolvable."""
+def _expand_non_loinc(
+    rule: CanonicalRule, source: str
+) -> Optional[List[ComponentRule]]:
+    """Expand the non-LOINC-keyed rules; ``None`` when ``rule`` is LOINC-keyed."""
     if isinstance(rule, CodeOccurrenceRule):
         return [rule]
+    if isinstance(rule, CanonicalSepsis3):
+        # Needs vasopressor rates and ventilation intervals (SOFA's
+        # non-LOINC ingredients) and the microbiology sidecar: MIMIC-IV
+        # today; other sources drop the concept with the usual warning.
+        if not sofa_supported(source):
+            return []
+        return [Sepsis3Rule(source=source, sofa_threshold=rule.sofa_threshold)]
+    return None
+
+
+def _expand_rule(rule: CanonicalRule, source: str) -> List[ComponentRule]:
+    """Resolve one canonical rule to concrete rules; [] if unresolvable."""
+    non_loinc = _expand_non_loinc(rule, source)
+    if non_loinc is not None:
+        return non_loinc
     if isinstance(rule, LoincGcsTotal):
         components = [
             _loinc_prefixes((loinc,), source)
@@ -465,6 +547,7 @@ def _expand_rule(rule: CanonicalRule, source: str) -> List[ComponentRule]:
                 max_component_gap_minutes=rule.max_component_gap_minutes,
             )
         ]
+    assert not isinstance(rule, (CodeOccurrenceRule, CanonicalSepsis3))  # for mypy
     prefixes = _loinc_prefixes(rule.loincs, source)
     if isinstance(rule, LoincThreshold):
         return [
@@ -515,8 +598,40 @@ def _expand_component(
     return rules[0] if len(rules) == 1 else AnyOf(rules)
 
 
-def concepts_for_source(source: str = "mimic_iv") -> List[AnyConceptDefinition]:
+# Task-set versions: which canonical concepts a run supervises. "v1" is the
+# 15-concept registry every run before Aug 23 2026 trained with (its
+# checkpoints hard-code that count); "v2" adds sepsis3. A run records its
+# task_set in config.json so evaluation rebuilds exactly its concept list.
+TASK_SETS: Dict[str, Tuple[str, ...]] = {
+    "v1": (
+        "tachycardia",
+        "bradycardia",
+        "hypotension",
+        "hypertension",
+        "hypoxia",
+        "fever",
+        "hypothermia",
+        "elevated_lactate",
+        "sustained_tachypnea",
+        "acute_kidney_injury",
+        "aki_stage_2",
+        "aki_stage_3",
+        "sirs",
+        "qsofa",
+        "on_vasopressors",
+    ),
+}
+TASK_SETS["v2"] = TASK_SETS["v1"] + ("sepsis3",)
+DEFAULT_TASK_SET = "v1"
+
+
+def concepts_for_source(
+    source: str = "mimic_iv", *, task_set: str = DEFAULT_TASK_SET
+) -> List[AnyConceptDefinition]:
     """Expand the canonical registry to one source's concrete definitions.
+
+    ``task_set`` selects which canonical concepts are included (see
+    :data:`TASK_SETS`); unknown names raise.
 
     Criteria whose LOINCs have no mapping in ``source`` are dropped with
     a warning; a composite that retains fewer criteria than its
@@ -526,7 +641,12 @@ def concepts_for_source(source: str = "mimic_iv") -> List[AnyConceptDefinition]:
     names/count from the same expansion the model was trained with.
     """
     out: List[AnyConceptDefinition] = []
+    if task_set not in TASK_SETS:
+        raise ValueError(f"unknown task_set {task_set!r}; known: {sorted(TASK_SETS)}")
+    wanted = set(TASK_SETS[task_set])
     for canonical in CANONICAL_CONCEPTS:
+        if canonical.name not in wanted:
+            continue
         if isinstance(canonical, CanonicalComposite):
             components = []
             for component in canonical.components:
@@ -756,6 +876,19 @@ CANONICAL_CONCEPTS: List[AnyCanonicalConcept] = [
         "infusion events rather than a numeric threshold. 'Observed' means "
         "the subject has any medication/infusion data at all, so an absent "
         "match is a genuine negative, not missingness.",
+    ),
+    CanonicalConcept(
+        "sepsis3",
+        (CanonicalSepsis3(sofa_threshold=2),),
+        "Sepsis-3 onset (Singer et al. 2016; mimic-code operationalization): "
+        "suspected infection (culture specimen and systemic antibiotic start "
+        "within 72h after / 24h before each other; suspicion time = the "
+        "earlier) with a SOFA total >= 2 between 48h before and 24h after "
+        "suspicion; onset = first instant both hold. Cultures come from the "
+        "microbiology sidecar (label-only; no model sees them); SOFA from "
+        "odyssey.data.sofa. 'Observed' = the visit has at least one SOFA "
+        "component reading, so the score could have been assessed. MIMIC-IV "
+        "only until another source has SOFA ingredients and a sidecar.",
     ),
 ]
 
@@ -1032,7 +1165,163 @@ def _component_ids(
             code_col=code_col,
             time_col=time_col,
         )
+    if isinstance(rule, Sepsis3Rule):
+        return _sepsis3_ids(
+            events,
+            rule,
+            subject_id_col=subject_id_col,
+            code_col=code_col,
+            value_col=value_col,
+            time_col=time_col,
+        )
     raise TypeError(f"unknown component rule type: {type(rule)!r}")
+
+
+_SIDECAR_WARNED: Set[str] = set()
+
+
+def _sepsis3_ids(  # noqa: PLR0915
+    events: pl.DataFrame,
+    rule: Sepsis3Rule,
+    *,
+    subject_id_col: str,
+    code_col: str,
+    value_col: str,
+    time_col: str,
+) -> Tuple[Set[int], FirstTimes]:
+    """Sepsis-3 first-onset per key; see :class:`Sepsis3Rule`."""
+    key = subject_id_col
+    cultures = active_sidecar(MICROBIOLOGY)
+    if cultures is None:
+        if MICROBIOLOGY not in _SIDECAR_WARNED:
+            _SIDECAR_WARNED.add(MICROBIOLOGY)
+            logger.warning(
+                "[concepts] sepsis3: no active %r sidecar (see "
+                "odyssey.data.sidecars.activate_sidecars) -- concept is "
+                "unobserved everywhere in this call",
+                MICROBIOLOGY,
+            )
+        return set(), {}
+
+    timed = events.filter(pl.col(time_col).is_not_null())
+    # --- per-key span and identity (subject + visit), for culture attribution
+    has_subject = rule.subject_col in timed.columns and rule.subject_col != key
+    has_visit = rule.visit_col in timed.columns
+    aggs = [pl.col(time_col).min().alias("_t0"), pl.col(time_col).max().alias("_t1")]
+    if has_subject:
+        aggs.append(pl.col(rule.subject_col).first().alias("_subject"))
+    if has_visit:
+        aggs.append(pl.col(rule.visit_col).first().alias("_visit"))
+    spans = timed.group_by(key).agg(aggs)
+    if not has_subject:
+        spans = spans.with_columns(pl.col(key).alias("_subject"))
+    if not has_visit:
+        spans = spans.with_columns(pl.lit(None, dtype=pl.Int64).alias("_visit"))
+
+    # --- cultures attributed to keys: same hadm_id, or (no hadm_id) inside the span
+    cult = cultures.select(
+        pl.col("subject_id").alias("_subject"),
+        pl.col("hadm_id").cast(pl.Int64).alias("_chadm"),
+        pl.col("time").cast(timed.schema[time_col]).alias("_ctime"),
+    ).join(
+        spans.select(key, "_subject", "_visit", "_t0", "_t1"),
+        on="_subject",
+        how="inner",
+    )
+    cult = cult.filter(
+        (
+            pl.col("_chadm").is_not_null()
+            & (pl.col("_chadm") == pl.col("_visit").cast(pl.Int64))
+        )
+        | (
+            pl.col("_chadm").is_null()
+            & (pl.col("_ctime") >= pl.col("_t0"))
+            & (pl.col("_ctime") <= pl.col("_t1"))
+        )
+    ).select(key, "_ctime")
+
+    # --- systemic antibiotic starts / administrations (never STOP rows).
+    # MIMIC-IV: pharmacy ``MEDICATION//START//<drug>//<ndc>`` rows (no
+    # hadm_id in the standard extraction, so absent under visit scoping)
+    # and eMAR ``MEDICATION//<drug>//Administered//<ndc>`` rows (hadm_id
+    # present); both are "the drug was given/started" events.
+    starts = timed.filter(
+        pl.col(code_col).str.starts_with("MEDICATION//")
+        & pl.col(code_col).str.contains(rule.antibiotic_event_pattern)
+        & pl.col(code_col).str.contains("(?i)" + rule.antibiotic_pattern)
+    )
+    if rule.route_col in starts.columns:
+        starts = starts.filter(
+            ~pl.col(rule.route_col)
+            .fill_null("")
+            .str.contains("(?i)" + rule.route_exclude)
+        )
+    abx = starts.select(key, pl.col(time_col).alias("_atime"))
+
+    # observed = the SOFA score could be assessed at all for this key,
+    # whether or not infection was ever suspected.
+    sofa_obs_keys: Set[int] = set(
+        assessable_keys(  # type: ignore[arg-type]
+            timed,
+            source=rule.source,
+            key=key,
+            code_col=code_col,
+            value_col=value_col,
+            time_col=time_col,
+        )
+    )
+    if cult.height == 0 or abx.height == 0:
+        return sofa_obs_keys, {}
+
+    # --- suspicion time per key: earliest min(culture, antibiotic) over valid pairs
+    pairs = cult.join(abx, on=key, how="inner").filter(
+        (
+            pl.col("_atime")
+            >= pl.col("_ctime") - pl.duration(hours=rule.culture_after_hours)
+        )
+        & (
+            pl.col("_atime")
+            <= pl.col("_ctime") + pl.duration(hours=rule.antibiotic_after_hours)
+        )
+    )
+    if pairs.height == 0:
+        return sofa_obs_keys, {}
+    suspicion = (
+        pairs.with_columns(pl.min_horizontal("_ctime", "_atime").alias("_si"))
+        .group_by(key)
+        .agg(pl.col("_si").min())
+    )
+
+    # --- SOFA on the suspected keys only, suspicion instants added to the grid
+    sus_events = timed.join(suspicion.select(key), on=key, how="semi")
+    sofa = sofa_timeseries(
+        sus_events,
+        source=rule.source,
+        key=key,
+        code_col=code_col,
+        value_col=value_col,
+        time_col=time_col,
+        grid_times=suspicion.select(key, pl.col("_si").alias(time_col)),
+    )
+    crossed = (
+        sofa.join(suspicion, on=key, how="inner")
+        .filter(
+            (pl.col("sofa") >= rule.sofa_threshold)
+            & (
+                pl.col(time_col)
+                >= pl.col("_si") - pl.duration(hours=rule.sofa_before_hours)
+            )
+            & (
+                pl.col(time_col)
+                <= pl.col("_si") + pl.duration(hours=rule.sofa_after_hours)
+            )
+        )
+        .group_by(key)
+        .agg(pl.col(time_col).min().alias("_tsofa"), pl.col("_si").first())
+        .with_columns(pl.max_horizontal("_tsofa", "_si").alias("_onset"))
+    )
+    onsets: FirstTimes = dict(zip(crossed[key].to_list(), crossed["_onset"].to_list()))
+    return sofa_obs_keys, onsets
 
 
 def _occurrence_ids(

@@ -189,6 +189,7 @@ def build_corpus_stats(
     concept_supervision: str,
     with_first_times: bool,
     alerts: Optional[Sequence[AlertEvent]],
+    task_set: str = "v1",
     code_col: str = "code",
 ) -> CorpusStats:
     """Aggregate code counts, concept labels/masks/first times and event times."""
@@ -215,7 +216,10 @@ def build_corpus_stats(
         stats.labels.update(labels)
         stats.masks.update(masks)
         if alerts:
-            merge_event_times(stats.event_times, all_event_times(raw, alerts, source))
+            merge_event_times(
+                stats.event_times,
+                all_event_times(raw, alerts, source, task_set=task_set),
+            )
         if (i + 1) % 20 == 0:
             logger.info("[stream] stats: %d/%d shards", i + 1, len(paths))
     stats.code_counts = dict(counts)

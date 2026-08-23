@@ -34,6 +34,7 @@ from odyssey.data.concepts import AnyConceptDefinition, concepts_for_source
 from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.packed_context import PackedContextSampler
 from odyssey.data.sequences import PatientSequence
+from odyssey.data.sidecars import activate_sidecars
 from odyssey.data.streaming import PackedLaneSampler, StreamingChunk
 from odyssey.data.value_binning import QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import Vocabulary, code_type
@@ -277,7 +278,12 @@ def load_run(
     # time head's weight shape against the bottleneck/backbone width.
     time_w = checkpoint["model"].get("time_head.proj.weight")
     if time_w is not None:
-        n_c = len(concepts_for_source(getattr(config, "source", "mimic_iv")))
+        n_c = len(
+            concepts_for_source(
+                getattr(config, "source", "mimic_iv"),
+                task_set=getattr(config, "task_set", "v1"),
+            )
+        )
         if getattr(config, "model_kind", "bottleneck") == "baseline":
             base = config.hidden_size
         else:
@@ -293,7 +299,10 @@ def load_run(
         int(first_layer.shape[0]) if first_layer is not None else 0
     )
 
-    concepts = concepts_for_source(getattr(config, "source", "mimic_iv"))
+    concepts = concepts_for_source(
+        getattr(config, "source", "mimic_iv"),
+        task_set=getattr(config, "task_set", "v1"),
+    )
     model = build_model(config, vocab_size=len(vocab), num_concepts=len(concepts))
     model.load_state_dict(checkpoint["model"])
     model = model.to(device)
@@ -954,7 +963,8 @@ def evaluate_run(
         raw_events, enabled=getattr(config, "history_recap", False)
     )
     source = getattr(config, "source", "mimic_iv")
-    concepts = concepts_for_source(source)
+    activate_sidecars(held_out_shard_dir)
+    concepts = concepts_for_source(source, task_set=getattr(config, "task_set", "v1"))
     events_binned = add_value_tokens(raw_events, binner, source=source)
 
     supervision = getattr(config, "concept_supervision", "stay")
