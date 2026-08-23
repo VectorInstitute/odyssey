@@ -175,7 +175,11 @@ def _fit_one_ebm(
     to immediately after -- individual EBM fits here have run past an
     hour each at full project scale (see :data:`EBM_MAX_ROWS`'s note), so
     this is where losing an in-progress run costs the most -- see
-    :mod:`odyssey.inference.fit_cache`.
+    :mod:`odyssey.inference.fit_cache`.  ``features``, if given, is the
+    precomputed per-event feature dict for this function's
+    ``feature_set`` (see
+    :func:`odyssey.inference.baseline_prep.prepare_baseline_data`);
+    ``train_events_binned`` is then unused and may be empty.
     """
     ebm_classifier_cls = None
     groups_all = np.array([r.subject_id for r in rows])
@@ -255,6 +259,7 @@ def fit_ebm_baselines(
     max_rows: int | None = None,
     outer_bags: int | None = None,
     cache: Optional[FitCache] = None,
+    features: Optional[dict[str, np.ndarray]] = None,
 ) -> dict[tuple[str, float], EBMBaselineModel]:
     """One ``ExplainableBoostingClassifier`` per (event, horizon).
 
@@ -283,9 +288,10 @@ def fit_ebm_baselines(
     resolved_max_rows = EBM_MAX_ROWS if max_rows is None else max_rows
     resolved_outer_bags = DEFAULT_OUTER_BAGS if outer_bags is None else outer_bags
     models: dict[tuple[str, float], EBMBaselineModel] = {}
-    features = features_for_events(
-        train_events_binned, train_rows, source=source, feature_set=feature_set
-    )
+    if features is None:
+        features = features_for_events(
+            train_events_binned, train_rows, source=source, feature_set=feature_set
+        )
     for name, rows in train_rows.items():
         if not rows:
             continue

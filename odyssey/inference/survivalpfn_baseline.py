@@ -363,6 +363,7 @@ def fit_survivalpfn_baselines(
     device: str = "cpu",
     max_rows: int | None = None,
     cache: Optional[FitCache] = None,
+    features: Optional[dict[str, np.ndarray]] = None,
 ) -> dict[tuple[str, float], SurvivalPFNBaselineModel]:
     """One SurvivalPFN context per event, evaluated at every horizon.
 
@@ -380,12 +381,17 @@ def fit_survivalpfn_baselines(
     not installed, the first time a context would actually be fit -- not
     merely on import of this module. ``cache``, if given, is
     consulted/updated per event -- see :mod:`odyssey.inference.fit_cache`.
+    ``features``, if given, is the precomputed per-event feature dict for
+    this function's ``feature_set`` (see
+    :func:`odyssey.inference.baseline_prep.prepare_baseline_data`);
+    ``train_events_binned`` is then unused and may be empty.
     """
     resolved_max_rows = SURVIVALPFN_MAX_ROWS if max_rows is None else max_rows
     models: dict[tuple[str, float], SurvivalPFNBaselineModel] = {}
-    features = features_for_events(
-        train_events_binned, train_rows, source=source, feature_set=feature_set
-    )
+    if features is None:
+        features = features_for_events(
+            train_events_binned, train_rows, source=source, feature_set=feature_set
+        )
     for name, rows in train_rows.items():
         if not rows:
             continue

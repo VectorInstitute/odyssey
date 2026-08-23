@@ -48,37 +48,19 @@ from typing import Dict, List, Set, Tuple
 
 import polars as pl
 
-from odyssey.data.alert_events import ALERT_EVENTS, all_event_times
-from odyssey.data.code_normalization import maybe_normalize
-from odyssey.data.history_recap import maybe_history_recap
-from odyssey.data.value_binning import QuantileBinner, add_value_tokens
-from odyssey.inference.alerts import (
-    HORIZONS_HOURS,
-    IndexRow,
-    _index_rows_from_events,
-    features_for_events,
-)
+from odyssey.data.alert_events import ALERT_EVENTS
+from odyssey.data.value_binning import QuantileBinner
+from odyssey.inference.alerts import HORIZONS_HOURS, IndexRow
+from odyssey.inference.baseline_prep import prepare_baseline_data
 from odyssey.inference.ebm_baseline import fit_ebm_baselines
 from odyssey.inference.fit_cache import FitCache
 from odyssey.inference.survivalpfn_baseline import fit_survivalpfn_baselines
 from odyssey.inference.tabicl_baseline import fit_tabicl_baselines
-from odyssey.training.data import load_meds_shards
+from odyssey.training.shard_stream import make_preparer, shard_paths
 from odyssey.training.train import TrainingConfig
 
 
 logger = logging.getLogger(__name__)
-
-
-def _prepare(
-    shard_dir: Path, max_shards: int, config: TrainingConfig, binner: QuantileBinner
-) -> pl.DataFrame:
-    source = getattr(config, "source", "mimic_iv")
-    raw = load_meds_shards(shard_dir, max_shards=max_shards)
-    raw = maybe_normalize(
-        raw, enabled=getattr(config, "normalize_medications", False), source=source
-    )
-    raw = maybe_history_recap(raw, enabled=getattr(config, "history_recap", False))
-    return add_value_tokens(raw, binner, source=source)
 
 
 def _rows_frame(
@@ -127,11 +109,24 @@ def main() -> None:  # noqa: PLR0915
     horizons = HORIZONS_HOURS
     cache = FitCache(cache_dir=args.run_dir / "rescore_cache")
 
-    logger.info("[rescore] preparing held-out events (model-free)")
-    held_binned = _prepare(args.held_out_shard_dir, args.max_shards, config, binner)
-    held_rows = _index_rows_from_events(
-        held_binned, ALERT_EVENTS, landmark_hours=args.landmark_hours
+    source = getattr(config, "source", "mimic_iv")
+    prepare = make_preparer(
+        normalize_medications=getattr(config, "normalize_medications", False),
+        history_recap=getattr(config, "history_recap", False),
+        source=source,
     )
+
+    logger.info("[rescore] preparing held-out events (model-free, streaming)")
+    held = prepare_baseline_data(
+        shard_paths(args.held_out_shard_dir, max_shards=args.max_shards),
+        prepare,
+        binner,
+        alerts=ALERT_EVENTS,
+        feature_sets=("strong", "basic"),
+        source=source,
+        landmark_hours=args.landmark_hours,
+    )
+    held_rows = held.rows
 
     existing = pl.read_parquet(args.existing_dump)
     existing_key_rows = list(
@@ -179,55 +174,58 @@ def main() -> None:  # noqa: PLR0915
         "[rescore] key match with existing dump: exact, %d rows", len(held_keys)
     )
 
-    logger.info("[rescore] preparing baseline training events (model-free)")
-    train_binned = _prepare(
-        args.baseline_shard_dir, args.max_baseline_shards, config, binner
+    logger.info("[rescore] preparing baseline training events (model-free, streaming)")
+    # One streaming pass replaces the old whole-split frame (held across all
+    # three fits) plus a SECOND full raw load for event times -- the exact
+    # shape that OOM-killed two eval boxes at 35-37GB (see module docstring).
+    # Event times now come from the PREPARED (post-normalization) events,
+    # matching fit_baselines_streaming's canonical behavior, where the old
+    # code used un-normalized raw events for times only.
+    train = prepare_baseline_data(
+        shard_paths(args.baseline_shard_dir, max_shards=args.max_baseline_shards),
+        prepare,
+        binner,
+        alerts=ALERT_EVENTS,
+        feature_sets=("strong", "basic"),
+        source=source,
+        landmark_hours=args.landmark_hours,
     )
-    source = getattr(config, "source", "mimic_iv")
-    train_rows = _index_rows_from_events(
-        train_binned, ALERT_EVENTS, landmark_hours=args.landmark_hours
-    )
-    train_times = all_event_times(
-        load_meds_shards(args.baseline_shard_dir, max_shards=args.max_baseline_shards),
-        ALERT_EVENTS,
-        source,
-    )
+    empty = pl.DataFrame()
 
     logger.info("[rescore] fitting TabICL (strong features)")
     tabicl_models = fit_tabicl_baselines(
-        train_binned,
-        train_rows,
-        train_times,
+        empty,
+        train.rows,
+        train.times,
         horizons=horizons,
         source=source,
         cache=cache,
+        features=train.features["strong"],
     )
     logger.info("[rescore] fitting EBM (strong features)")
     ebm_models = fit_ebm_baselines(
-        train_binned,
-        train_rows,
-        train_times,
+        empty,
+        train.rows,
+        train.times,
         horizons=horizons,
         source=source,
         cache=cache,
+        features=train.features["strong"],
     )
     logger.info("[rescore] fitting SurvivalPFN (basic features, 100-feature cap)")
     survivalpfn_models = fit_survivalpfn_baselines(
-        train_binned,
-        train_rows,
-        train_times,
+        empty,
+        train.rows,
+        train.times,
         horizons=horizons,
         source=source,
         cache=cache,
+        features=train.features["basic"],
     )
 
     logger.info("[rescore] scoring held-out rows")
-    strong_features = features_for_events(
-        held_binned, held_rows, source=source, feature_set="strong"
-    )
-    basic_features = features_for_events(
-        held_binned, held_rows, source=source, feature_set="basic"
-    )
+    strong_features = held.features["strong"]
+    basic_features = held.features["basic"]
 
     scores: Dict[str, Dict[str, Dict[str, List[float]]]] = {
         "tabicl": {},
