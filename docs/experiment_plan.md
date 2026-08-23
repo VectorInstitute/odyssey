@@ -138,6 +138,36 @@ attached does not launch.
   bug is symmetric across v1/v2, so E2's protocol-delta attribution survives.
   Interim E5 rows are marked "v2, pre-interleaving-fix" in the registry.
 
+## Master sequence (consolidated Aug 23; nothing ships half-baked)
+
+Phase 1 -- **close the wave** (in flight, days): v3 dumps both datasets ->
+E5/M2 rescores -> re-tab -> gates -> E4 sweep -> wave tables + protocol
+delta write-up -> R3/R4 writable. Includes M3 (case studies), M4 (L-series
+six-mode completion), M5 (GPU coverage), M6 (seed replicate) on VM1's tail.
+
+Phase 2 -- **GEMINI depth** (overlaps 1, H200 + lead CPU): G4 60M rung ->
+G5 gate decision; G6 concepts+alerts on the 18-table dataset (lead's
+mapping is ready; wiring after export-codes lands) -> frozen cross-system
+transfer + temporal-cutoff + 30-site hospital-holdout (R5, the title
+gate). eICU subject-to-hospital sidecar built in parallel (CPU, feeds the
+same holdout machinery).
+
+Phase 3 -- **stress + tasks** (after wave tables close): missingness
+protocol runs (designed, docs/missingness_protocol.md); task-suite
+expansion decision executed (Sepsis-3 vs 30-day readmission -- pick on
+clinical-impact grounds, spec then run); transformer-control v3 alerts
+rerun (paper-grade gate: true-time-threading P2 fix first).
+
+Phase 4 -- **interpretability push** (Track B, once modeling clears):
+next lever design from the M-series frontier; distributional time head
+probe (item 13); GEMINI concept-transfer readout (R7's strongest
+potential claim, falls out of G6). Causal framing stays honest either way.
+
+Phase 5 -- **paper assembly**: entry-19 related-work consolidation; v3
+tables into R2-R7; title decision (waits on R5); TRIPOD+AI checklist;
+Amrit rewrites for voice. Deployment/translator work (MEDS-to-FHIR) stays
+explicitly post-paper.
+
 ## Standing gates recap
 
 - Nothing launches without a row here or an explicit lead go.
