@@ -339,6 +339,13 @@ main() {
         # MemAvailable when this isn't running inside an allocation at all,
         # which is exactly the condition that caused the real kill.
         local min_mem_gb=64
+        # The refuse-below threshold (min_mem_gb) and the salloc amount we
+        # actually recommend are deliberately different numbers: 64G is
+        # where we refuse, but the only finalize run that ever SUCCEEDED at
+        # the full 1.2B rows used a 96G allocation, and the 2026-08-22 kill
+        # means the true peak is still unknown -- recommend the known-good
+        # number, not just the refusal floor.
+        local recommend_mem_gb=96
         local avail_kb avail_gb
         if [[ -n "${SLURM_MEM_PER_NODE:-}" ]]; then
             avail_gb=$((SLURM_MEM_PER_NODE / 1024))
@@ -355,11 +362,15 @@ main() {
             echo "by the kernel under exactly this condition (2026-08-22, 9" >&2
             echo "minutes into a 1.2B-row scan, no Slurm allocation). Get a real" >&2
             echo "allocation first, e.g.:" >&2
-            echo "  salloc --mem=${min_mem_gb}G --cpus-per-task=8 --time=08:00:00" >&2
-            echo "(adjust partition/account flags for GEMINI's actual Slurm" >&2
-            echo "config if this doesn't match it -- not documented in this repo)," >&2
-            echo "then re-run 'scripts/gemini/run.sh pipeline' inside that" >&2
-            echo "allocation's shell." >&2
+            echo "  salloc --mem=${recommend_mem_gb}G --cpus-per-task=8 --time=08:00:00" >&2
+            echo "(${recommend_mem_gb}G is the known-good number -- the only" >&2
+            echo "finalize run that succeeded at the full 1.2B rows used this" >&2
+            echo "much; the true peak is still unknown after the kill, so this" >&2
+            echo "is a safety margin above the ${min_mem_gb}G refusal floor," >&2
+            echo "not the floor itself. (Adjust partition/account flags for" >&2
+            echo "GEMINI's actual Slurm config if this doesn't match it -- not" >&2
+            echo "documented in this repo.) Then re-run" >&2
+            echo "'scripts/gemini/run.sh pipeline' inside that allocation's shell." >&2
             exit 1
         fi
         echo "Memory preflight OK (~${avail_gb} GB >= ${min_mem_gb} GB)."
