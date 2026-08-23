@@ -38,8 +38,9 @@ import numpy as np
 import polars as pl
 
 from odyssey.data.alert_events import origin_hours
-from odyssey.data.code_mapping import prefixes_for_loinc, unit_for
+from odyssey.data.code_mapping import unit_for
 from odyssey.data.sequences import BIRTH_CODE
+from odyssey.data.signal_panel import NO_SIGNAL, SIGNAL_PANEL, SignalPanelResolver
 from odyssey.data.vocabulary import (
     BILLING_TYPE,
     DIAGNOSIS_TYPE,
@@ -56,60 +57,10 @@ from odyssey.data.vocabulary import (
 # Panel definitions
 # ---------------------------------------------------------------------------
 
-# name -> LOINC. Names are for feature labels only; resolution to concrete
-# code prefixes goes through the per-source LOINC tables, so a signal a
-# source does not chart simply yields all-missing columns there.
-SIGNAL_PANEL: Tuple[Tuple[str, str], ...] = (
-    ("heart_rate", "8867-4"),
-    ("resp_rate", "9279-1"),
-    ("spo2", "59408-5"),
-    ("temperature", "8310-5"),
-    ("sbp_noninvasive", "76534-7"),
-    ("dbp_noninvasive", "76535-4"),
-    ("map_noninvasive", "76536-2"),
-    ("sbp_arterial", "8480-6"),
-    ("dbp_arterial", "8462-4"),
-    ("map_arterial", "8478-0"),
-    ("fio2", "3150-0"),
-    ("gcs_eye", "9267-6"),
-    ("gcs_verbal", "9270-0"),
-    ("gcs_motor", "9268-4"),
-    ("urine_output", "9187-6"),
-    ("creatinine", "2160-0"),
-    ("bun", "3094-0"),
-    ("lactate", "32693-4"),
-    ("wbc", "6690-2"),
-    ("hemoglobin", "718-7"),
-    ("hematocrit", "4544-3"),
-    ("platelets", "777-3"),
-    ("sodium", "2951-2"),
-    ("potassium", "2823-3"),
-    ("chloride", "2075-0"),
-    ("bicarbonate", "1963-8"),
-    ("bicarbonate_blood_gas", "1959-6"),
-    ("glucose", "2345-7"),
-    ("glucose_whole_blood", "2339-0"),
-    ("anion_gap", "1863-0"),
-    ("calcium", "17861-6"),
-    ("magnesium", "19123-9"),
-    ("phosphate", "2777-1"),
-    ("albumin", "1751-7"),
-    ("bilirubin_total", "1975-2"),
-    ("alt", "1742-6"),
-    ("ast", "1920-8"),
-    ("alk_phos", "6768-6"),
-    ("inr", "6301-6"),
-    ("ptt", "14979-9"),
-    ("ph", "11558-4"),
-    ("pco2", "11557-6"),
-    ("po2", "11556-8"),
-    ("base_excess", "11555-0"),
-    ("troponin_t", "6598-7"),
-    ("troponin_i", "10839-9"),
-    ("nt_probnp", "33762-6"),
-    ("crp", "1988-5"),
-)
-
+# The signal panel itself lives in :mod:`odyssey.data.signal_panel` so the
+# sequence model's per-signal head channels read exactly the same signals
+# (matched inputs); re-exported here because feature names and the stats
+# block are defined against it.
 Converter = Callable[[np.ndarray], np.ndarray]
 
 # (LOINC, unit tag from code_mapping.unit_for) -> conversion to the panel's
@@ -442,14 +393,17 @@ class StrongFeatureBuilder:
     ) -> None:
         self.source = source
         self.names = feature_names()
-        self._signal_prefixes: List[List[Tuple[str, Optional[Converter]]]] = []
-        for _, loinc in SIGNAL_PANEL:
-            entries: List[Tuple[str, Optional[Converter]]] = []
-            for prefix in sorted(prefixes_for_loinc(loinc, source=source)):
+        self._resolver = SignalPanelResolver(source)
+        # prefix -> unit converter into the panel's canonical unit (only
+        # unit-split signals have one); resolution itself is the shared
+        # resolver's, so the model and this builder classify codes alike.
+        self._converter_of: Dict[str, Optional[Converter]] = {}
+        for (_, loinc), prefixes in zip(SIGNAL_PANEL, self._resolver.prefixes):
+            for prefix in prefixes:
                 unit = unit_for(prefix, source=source)
-                conv = _UNIT_CONVERSIONS.get((loinc, unit)) if unit else None
-                entries.append((prefix, conv))
-            self._signal_prefixes.append(entries)
+                self._converter_of[prefix] = (
+                    _UNIT_CONVERSIONS.get((loinc, unit)) if unit else None
+                )
         self._drug_res = [re.compile(rx, re.IGNORECASE) for _, rx in DRUG_CLASSES]
         self._subjects: Dict[int, _Subject] = self._preprocess(events_binned)
 
@@ -463,13 +417,9 @@ class StrongFeatureBuilder:
         drugs_of: Dict[str, List[int]] = {}
         for code in set(codes):
             base = code.rsplit("::", 1)[0] if "::" in code else code
-            for s_idx, entries in enumerate(self._signal_prefixes):
-                for prefix, conv in entries:
-                    if base.startswith(prefix):
-                        signal_of[code] = (s_idx, conv)
-                        break
-                if code in signal_of:
-                    break
+            s_idx, prefix = self._resolver.resolve_with_prefix(code)
+            if s_idx != NO_SIGNAL and prefix is not None:
+                signal_of[code] = (s_idx, self._converter_of[prefix])
             if base.split("//", 1)[0] in _DRUG_FAMILIES:
                 hits = [i for i, rx in enumerate(self._drug_res) if rx.search(base)]
                 if hits:

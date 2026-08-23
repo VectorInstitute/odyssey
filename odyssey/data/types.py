@@ -29,6 +29,12 @@ class AuxiliaryInputs(NamedTuple):
     """(..., 8) hours since the previous event of each code family (NaN if
     never), per token; ``None`` on batches built without the channel. Read
     only by models with ``recency_features`` on, at the heads."""
+    signal_state: Optional[torch.Tensor] = None
+    """(..., 2 * N_PANEL_SIGNALS) per-token panel-signal state: hours since
+    each curated signal's previous observation, then that observation's
+    standardized value (NaN where unseen); ``None`` on batches built
+    without the channel. Read only by models with ``signal_channels`` on,
+    at the time/event heads."""
 
 
 class ClinicalSequenceBatch(NamedTuple):

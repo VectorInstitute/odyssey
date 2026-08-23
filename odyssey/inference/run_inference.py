@@ -40,6 +40,7 @@ from odyssey.data.vocabulary import Vocabulary, code_type
 from odyssey.models.concept_bottleneck import ConceptBottleneckOutput
 from odyssey.models.sequence_model import (
     RECENCY_DIM,
+    SIGNAL_DIM,
     BaselineSequenceModel,
     ConceptLabelDict,
     ConceptSupervision,
@@ -283,7 +284,9 @@ def load_run(
             base = n_c * config.embedding_dim + (
                 getattr(config, "unknown_dim", None) or config.embedding_dim
             )
-        config.recency_features = int(time_w.shape[1]) == base + RECENCY_DIM
+        extra = int(time_w.shape[1]) - base
+        config.recency_features = extra in (RECENCY_DIM, RECENCY_DIM + SIGNAL_DIM)
+        config.signal_channels = extra in (SIGNAL_DIM, RECENCY_DIM + SIGNAL_DIM)
     # MLP readout (event_heads.proj.0/2.*) vs the linear one (event_heads.proj.*)
     first_layer = checkpoint["model"].get("event_heads.proj.0.weight")
     config.event_head_hidden = (
@@ -752,7 +755,12 @@ def run_streaming_inference(
     if concepts is None:
         concepts = concepts_for_source("mimic_iv")
     model.eval()
-    patients = iter_patient_sequences(events_binned, vocab, max_seq_len=max_seq_len)
+    patients = iter_patient_sequences(
+        events_binned,
+        vocab,
+        max_seq_len=max_seq_len,
+        signal_panel=getattr(model, "signal_panel", None),
+    )
     sampler = _build_sampler(
         patients,
         backbone=backbone,

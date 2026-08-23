@@ -60,6 +60,7 @@ from odyssey.data.concepts import AnyConceptDefinition, concepts_for_source
 from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.packed_context import PackedContextSampler
 from odyssey.data.sequences import PatientSequence
+from odyssey.data.signal_panel import SignalPanelResolver
 from odyssey.data.streaming import PackedLaneSampler
 from odyssey.data.value_binning import QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import PAD_ID, Vocabulary
@@ -164,6 +165,13 @@ class TrainingConfig:
     """Feed per-family hours-since-last-event (log1p, capped, plus a seen
     flag) to the time/event heads, concatenated after the bottleneck so
     timing metadata never routes through the concepts. Opt-in A/B."""
+    signal_channels: bool = False
+    """Feed per-curated-signal staleness (hours since last observation,
+    log1p, capped, plus a seen flag) and the last standardized value for
+    each of the 48 panel signals (:mod:`odyssey.data.signal_panel`, the
+    tuned GBM's own panel) to the time/event heads, after the bottleneck.
+    The v10 lever: the recency channel says "a lab was drawn 6h ago", this
+    says "the last creatinine was 6h ago and it was +2 SD". Opt-in A/B."""
     concept_global_pairs: bool = False
     """Leakage control: input-independent (w+, w-) per known concept, so a
     concept slot carries only its probability (see ConceptBottleneck)."""
@@ -456,6 +464,13 @@ def _detach_state(state: TimeAwareState) -> TimeAwareState:
     )
 
 
+def _signal_panel_for(config: TrainingConfig) -> Optional[SignalPanelResolver]:
+    """Return the resolver the run's patient iterators need (``None`` = channel off)."""
+    if not getattr(config, "signal_channels", False):
+        return None
+    return SignalPanelResolver(getattr(config, "source", "mimic_iv"))
+
+
 def build_model(
     config: TrainingConfig, *, vocab_size: int, num_concepts: int
 ) -> SequenceModel:
@@ -516,6 +531,8 @@ def build_model(
             event_names=event_names,
             event_head_hidden=event_head_hidden,
             recency_features=bool(getattr(config, "recency_features", False)),
+            signal_channels=bool(getattr(config, "signal_channels", False)),
+            source=getattr(config, "source", "mimic_iv"),
         )
     return ConceptBottleneckSequenceModel(
         backbone=backbone,
@@ -529,6 +546,8 @@ def build_model(
         concept_global_pairs=bool(getattr(config, "concept_global_pairs", False)),
         unknown_dim=getattr(config, "unknown_dim", None),
         recency_features=bool(getattr(config, "recency_features", False)),
+        signal_channels=bool(getattr(config, "signal_channels", False)),
+        source=getattr(config, "source", "mimic_iv"),
     )
 
 
@@ -802,6 +821,7 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
             vocab,
             max_seq_len=config.max_seq_len,
             shuffle_seed=config.seed + epoch,
+            signal_panel=_signal_panel_for(config),
         )
 
     corpus = PreparedCorpus(
@@ -924,6 +944,7 @@ def _train_streaming(config: TrainingConfig, output_dir: Path, device: str) -> P
             source=config.source,
             max_seq_len=config.max_seq_len,
             shuffle_seed=config.seed + epoch,
+            signal_panel=_signal_panel_for(config),
         )
 
     corpus = PreparedCorpus(
@@ -1135,7 +1156,10 @@ def _run_training(  # noqa: PLR0912, PLR0915
 
     def make_tuning_sampler() -> StreamingSampler:
         patients = iter_patient_sequences(
-            tuning_events_binned, vocab, max_seq_len=config.max_seq_len
+            tuning_events_binned,
+            vocab,
+            max_seq_len=config.max_seq_len,
+            signal_panel=_signal_panel_for(config),
         )
         if config.backbone == "transformer":
             return PackedContextSampler(
