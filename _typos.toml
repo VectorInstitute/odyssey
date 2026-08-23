@@ -1,4 +1,7 @@
 [default.extend-words]
+# ND = MIMIC-IV prescription route abbreviation (nasal, with NU/NS/NAS) in
+# odyssey/data/concepts.py's ANTIBIOTIC_ROUTE_EXCLUDE, not a typo for "AND".
+ND = "ND"
 # INH (inhalation) and OINT (ointment) are pharmacy form abbreviations in
 # odyssey/data/code_normalization.py, not typos.
 INH = "INH"
@@ -35,6 +38,3 @@ get_rolling_window_indicies = "get_rolling_window_indicies"
 # a fresh report is committed, so the whole directory is excluded rather
 # than growing an extend-words entry per column.
 extend-exclude = ["scripts/gemini/out/"]
-# ND = MIMIC-IV prescription route abbreviation (nasal, with NU/NS/NAS) in
-# odyssey/data/concepts.py's ANTIBIOTIC_ROUTE_EXCLUDE, not a typo for "AND".
-ND = "ND"
