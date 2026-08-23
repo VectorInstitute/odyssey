@@ -51,7 +51,7 @@ import logging
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Protocol, Sequence, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Protocol, Sequence, Set, Tuple, Union
 
 import numpy as np
 import polars as pl
@@ -541,6 +541,249 @@ def collect_model_scores(
                     )
     _export_truncation_boundaries(sampler, truncation_boundaries_out)
     return rows
+
+
+@dataclass
+class _LaneCarry:
+    """Last real position of a lane's continuing subject (previous chunk)."""
+
+    subject_id: int
+    time: float
+    logits: torch.Tensor
+    features: torch.Tensor
+    concept_probs: Optional[torch.Tensor]
+
+
+def _scores_at(
+    logits: torch.Tensor,
+    features: torch.Tensor,
+    concept_probs: Optional[torch.Tensor],
+    *,
+    alerts: Sequence[AlertEvent],
+    token_masks: Dict[str, torch.Tensor],
+    concept_index: Dict[str, int],
+    event_heads: Optional[Any],
+    head_index: Dict[str, int],
+    horizons: Sequence[float],
+) -> Dict[str, Dict[str, float]]:
+    """Per-alert score dict for one position (``logits``/``features`` are 1-D)."""
+    probs = torch.softmax(logits, dim=-1)
+    hazards = event_heads(features.unsqueeze(0)) if event_heads is not None else None
+    out: Dict[str, Dict[str, float]] = {}
+    for alert in alerts:
+        scores = {"next_mass": float(probs[token_masks[alert.name]].sum())}
+        if concept_probs is not None and alert.concept in concept_index:
+            scores["concept"] = float(concept_probs[concept_index[alert.concept]])
+        if hazards is not None and event_heads is not None and alert.name in head_index:
+            head_logits = hazards[:, head_index[alert.name]]
+            for h in horizons:
+                scores[f"hazard@{h:g}h"] = float(
+                    probability_within(head_logits, event_heads.edges, h)[0]
+                )
+        out[alert.name] = scores
+    return out
+
+
+def collect_model_scores_at_rows(  # noqa: PLR0912, PLR0915
+    model: SequenceModel,
+    events_binned: pl.DataFrame,
+    vocab: Vocabulary,
+    concept_names: Sequence[str],
+    alerts: Sequence[AlertEvent],
+    *,
+    index_rows: Sequence[IndexRow],
+    num_lanes: int = 8,
+    chunk_size: int = 256,
+    device: str = "cuda",
+    horizons: Sequence[float] = HORIZONS_HOURS,
+    backbone: str = "hybrid",
+    max_context: int = 4096,
+    truncation_boundaries_out: Optional[Dict[int, float]] = None,
+) -> Tuple[Dict[str, List[IndexRow]], int]:
+    """Score the model at GIVEN index rows (the missingness protocol's path).
+
+    ``index_rows`` are (subject, visit, time) triples fixed by the CLEAN
+    record (a dump); the model is run over ``events_binned`` -- possibly a
+    degraded copy -- and each row is scored at the first token charted AT
+    the row's time when one exists (the landmark convention), else at the
+    last visible token BEFORE it: what the model knows as of that instant,
+    given this record. Rows with no visible token at or before their time
+    are unscoreable and counted (second return value); the returned rows
+    keep the given keys exactly, so the row set is identical across
+    degradation cells by construction (docs/missingness_protocol.md,
+    Principle 3), whatever the degraded record's own landmark grid would be.
+    For the lane sampler the last position of a continuing subject is
+    carried across chunks so "the last visible token before t" is exact
+    across chunk boundaries.
+    """
+    model.eval()
+    concept_index = {name: i for i, name in enumerate(concept_names)}
+    token_masks = {a.name: _event_token_mask(vocab, a, device) for a in alerts}
+    event_heads = getattr(model, "event_heads", None)
+    head_index = (
+        {name: i for i, name in enumerate(event_heads.event_names)}
+        if event_heads is not None
+        else {}
+    )
+    # targets per subject, ascending time (dedupe identical keys)
+    targets: Dict[int, List[Tuple[int, float]]] = {}
+    seen_keys: set[Tuple[int, int, float]] = set()
+    for r in index_rows:
+        key = (r.subject_id, r.visit_id, r.time_hours)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        targets.setdefault(r.subject_id, []).append((r.visit_id, r.time_hours))
+    for target_list in targets.values():
+        target_list.sort(key=lambda x: x[1])
+    pointer: Dict[int, int] = dict.fromkeys(targets, 0)
+    rows: Dict[str, List[IndexRow]] = {a.name: [] for a in alerts}
+    unscoreable = 0
+
+    patients = iter_patient_sequences(
+        events_binned, vocab, signal_panel=getattr(model, "signal_panel", None)
+    )
+    packed = backbone == "transformer"
+    sampler: Union[PackedLaneSampler, PackedContextSampler] = (
+        PackedContextSampler(patients, batch_size=num_lanes, max_context=max_context)
+        if packed
+        else PackedLaneSampler(
+            patients, num_lanes=num_lanes, chunk_size=chunk_size, reset_prob=0.0
+        )
+    )
+    carry: Dict[int, _LaneCarry] = {}
+
+    def emit(
+        sid: int,
+        vid: int,
+        t: float,
+        outputs: Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]],
+        *,
+        is_tail: bool,
+    ) -> None:
+        per_alert = _scores_at(
+            *outputs,
+            alerts=alerts,
+            token_masks=token_masks,
+            concept_index=concept_index,
+            event_heads=event_heads,
+            head_index=head_index,
+            horizons=horizons,
+        )
+        for alert in alerts:
+            rows[alert.name].append(
+                IndexRow(sid, vid, t, per_alert[alert.name], is_tail=is_tail)
+            )
+
+    state = None
+    with torch.no_grad():
+        for chunk in sampler:
+            chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
+            fwd = model.forward_with_features(
+                chunk.batch, state=state, reset_mask=chunk.reset_mask
+            )
+            state = fwd.state
+            sids_all = chunk.subject_ids
+            times_all = chunk.batch.aux.time_stamps
+            ends_all = chunk.patient_end
+            cps_all = (
+                fwd.bottleneck.concept_probs if fwd.bottleneck is not None else None
+            )
+            truncated_ids = (
+                set(sampler.truncation_boundaries)
+                if packed and isinstance(sampler, PackedContextSampler)
+                else set()
+            )
+            for lane in range(sids_all.shape[0]):
+                sids = sids_all[lane].tolist()
+                times = times_all[lane].tolist()
+                ends = ends_all[lane].tolist()
+                prev: Optional[Tuple[int, float, int]] = (
+                    None  # (sid, time, pos) in chunk
+                )
+                for i, sid in enumerate(sids):
+                    if sid == NO_SUBJECT:
+                        break
+                    t_i = float(times[i])
+                    lst: Optional[List[Tuple[int, float]]] = targets.get(sid)
+                    if lst is None:
+                        prev = (sid, t_i, i)
+                        continue
+                    # previous visible token of THIS subject: in-chunk or carried
+                    prev_time: Optional[float] = None
+                    prev_out: Optional[
+                        Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]
+                    ] = None
+                    if prev is not None and prev[0] == sid:
+                        prev_time = prev[1]
+                        prev_out = (
+                            fwd.logits[lane, prev[2]],
+                            fwd.features[lane, prev[2]],
+                            cps_all[lane, prev[2]] if cps_all is not None else None,
+                        )
+                    elif i == 0 and lane in carry and carry[lane].subject_id == sid:
+                        c = carry[lane]
+                        prev_time = c.time
+                        prev_out = (c.logits, c.features, c.concept_probs)
+                    here = (
+                        fwd.logits[lane, i],
+                        fwd.features[lane, i],
+                        cps_all[lane, i] if cps_all is not None else None,
+                    )
+                    ptr = pointer[sid]
+                    # targets strictly before this token: score at the previous token
+                    while ptr < len(lst) and lst[ptr][1] < t_i:
+                        if prev_out is None:
+                            unscoreable += 1
+                        else:
+                            emit(
+                                sid,
+                                lst[ptr][0],
+                                lst[ptr][1],
+                                prev_out,
+                                is_tail=sid in truncated_ids,
+                            )
+                        ptr += 1
+                    # targets AT this token's time: the first token of the instant
+                    if prev_time is None or prev_time != t_i:
+                        while ptr < len(lst) and lst[ptr][1] == t_i:
+                            emit(
+                                sid,
+                                lst[ptr][0],
+                                t_i,
+                                here,
+                                is_tail=sid in truncated_ids,
+                            )
+                            ptr += 1
+                    if ends[i]:
+                        # subject over: remaining targets are at/after the last token
+                        while ptr < len(lst):
+                            emit(
+                                sid,
+                                lst[ptr][0],
+                                lst[ptr][1],
+                                here,
+                                is_tail=sid in truncated_ids,
+                            )
+                            ptr += 1
+                    pointer[sid] = ptr
+                    prev = (sid, t_i, i)
+                # carry the lane's last real position for a continuing subject
+                if prev is not None and not bool(ends[prev[2]]):
+                    carry[lane] = _LaneCarry(
+                        prev[0],
+                        prev[1],
+                        fwd.logits[lane, prev[2]].clone(),
+                        fwd.features[lane, prev[2]].clone(),
+                        cps_all[lane, prev[2]].clone() if cps_all is not None else None,
+                    )
+                elif lane in carry:
+                    del carry[lane]
+    # subjects never seen at all (absent from the record): all their rows unscoreable
+    for sid, lst in targets.items():
+        unscoreable += len(lst) - pointer[sid]
+    _export_truncation_boundaries(sampler, truncation_boundaries_out)
+    return rows, unscoreable
 
 
 def _export_truncation_boundaries(
@@ -1445,6 +1688,24 @@ def load_index_row_table(path: Union[str, Path]) -> pl.DataFrame:
     return table
 
 
+def _index_rows_from_dump(
+    dump_path: Union[str, Path], alerts: Sequence[AlertEvent]
+) -> List[IndexRow]:
+    """Return the distinct (subject, visit, time) rows of a dump for ``alerts``."""
+    dump = load_index_row_table(dump_path)
+    names = {a.name for a in alerts}
+    sub = (
+        dump.filter(pl.col("event").is_in(sorted(names)))
+        if "event" in dump.columns
+        else dump
+    )
+    keys = sub.select("subject_id", "visit_id", "time_hours").unique()
+    return [
+        IndexRow(int(s), int(v), float(t))
+        for s, v, t in zip(keys["subject_id"], keys["visit_id"], keys["time_hours"])
+    ]
+
+
 def verify_rows_match_dump(
     rows: Dict[str, List[IndexRow]],
     times: Dict[str, EventTimes],
@@ -1952,7 +2213,60 @@ def _fit_and_score_gbm_baselines(
     return baselines, features_by_event
 
 
-def evaluate_alerts(
+def _score_degraded_at_clean_rows(
+    model: SequenceModel,
+    binned: pl.DataFrame,
+    vocab: Vocabulary,
+    concept_names: Sequence[str],
+    alerts: Sequence[AlertEvent],
+    *,
+    verify_against_dump: Optional[Union[str, Path]],
+    num_lanes: int,
+    chunk_size: int,
+    device: str,
+    horizons: Sequence[float],
+    backbone: str,
+    max_context: int,
+    truncation_boundaries_out: Dict[int, float],
+) -> Dict[str, List[IndexRow]]:
+    """Missingness protocol: score the CLEAN dump's rows on the degraded record.
+
+    The degraded record's own landmark grid is never used (lab lag shifts
+    it, dropped visit starts re-bucket it); the model is scored at the last
+    visible token at/before each clean row's time instead
+    (:func:`collect_model_scores_at_rows`).
+    """
+    if verify_against_dump is None:
+        raise ValueError(
+            "degraded_shard_dir needs verify_against_dump (the clean dump whose "
+            "rows are scored on the degraded record)"
+        )
+    dump_rows = _index_rows_from_dump(verify_against_dump, alerts)
+    rows, unscoreable = collect_model_scores_at_rows(
+        model,
+        binned,
+        vocab,
+        concept_names,
+        alerts,
+        index_rows=dump_rows,
+        num_lanes=num_lanes,
+        chunk_size=chunk_size,
+        device=device,
+        horizons=horizons,
+        backbone=backbone,
+        max_context=max_context,
+        truncation_boundaries_out=truncation_boundaries_out,
+    )
+    logger.info(
+        "[alerts] scored %d clean rows on the degraded record (%d unscoreable: no "
+        "visible token at/before the row time)",
+        len(dump_rows),
+        unscoreable,
+    )
+    return rows
+
+
+def evaluate_alerts(  # noqa: PLR0912, PLR0915
     run_dir: Union[str, Path],
     held_out_shard_dir: Union[str, Path],
     *,
@@ -2051,6 +2365,14 @@ def evaluate_alerts(
         degraded_raw = _load_prepared_raw(
             degraded_shard_dir, max_shards, config, source
         )
+        # The clean rows are scored on this record in the clean time frame:
+        # every subject's origin (first timed event) must be identical
+        # (degrade.py guarantees it; checked, not trusted).
+        from odyssey.inference.baseline_prep import (  # noqa: PLC0415
+            _verify_matching_origins,
+        )
+
+        _verify_matching_origins(raw, degraded_raw, context=str(degraded_shard_dir))
         binned = add_value_tokens(degraded_raw, binner, source=source)
         del degraded_raw
     else:
@@ -2065,23 +2387,40 @@ def evaluate_alerts(
             "[alerts] collecting model scores at %.0fh landmarks", landmark_hours
         )
     truncation_boundaries: Dict[int, float] = {}
-    rows = collect_model_scores(
-        model,
-        binned,
-        vocab,
-        concept_names,
-        alerts,
-        visit_start=visit_start,
-        landmark_hours=landmark_hours,
-        num_lanes=num_lanes,
-        chunk_size=chunk_size,
-        device=device,
-        horizons=horizons,
-        backbone=backbone,
-        max_context=getattr(config, "max_context", 4096),
-        truncation_boundaries_out=truncation_boundaries,
-        index_mode=index_mode,
-    )
+    if degraded_shard_dir is not None:
+        rows = _score_degraded_at_clean_rows(
+            model,
+            binned,
+            vocab,
+            concept_names,
+            alerts,
+            verify_against_dump=verify_against_dump,
+            num_lanes=num_lanes,
+            chunk_size=chunk_size,
+            device=device,
+            horizons=horizons,
+            backbone=backbone,
+            max_context=getattr(config, "max_context", 4096),
+            truncation_boundaries_out=truncation_boundaries,
+        )
+    else:
+        rows = collect_model_scores(
+            model,
+            binned,
+            vocab,
+            concept_names,
+            alerts,
+            visit_start=visit_start,
+            landmark_hours=landmark_hours,
+            num_lanes=num_lanes,
+            chunk_size=chunk_size,
+            device=device,
+            horizons=horizons,
+            backbone=backbone,
+            max_context=getattr(config, "max_context", 4096),
+            truncation_boundaries_out=truncation_boundaries,
+            index_mode=index_mode,
+        )
     # Runs for every backbone, not just "transformer": collect_model_scores'
     # row-construction path is unconditional on `packed` (see its own
     # docstring), so a landmark-selection bug isn't backbone-specific --
@@ -2091,15 +2430,16 @@ def evaluate_alerts(
     # (only PackedContextSampler ever populates it), so every subject goes
     # through the exact-match branch -- the truncated-subject branches are
     # simply never triggered, not skipped by a backbone check.
-    verify_packed_landmark_rows(
-        rows,
-        binned,
-        alerts,
-        landmark_hours=landmark_hours,
-        truncation_boundaries=truncation_boundaries,
-        index_mode=index_mode,
-        max_context=getattr(config, "max_context", 4096),
-    )
+    if degraded_shard_dir is None:
+        verify_packed_landmark_rows(
+            rows,
+            binned,
+            alerts,
+            landmark_hours=landmark_hours,
+            truncation_boundaries=truncation_boundaries,
+            index_mode=index_mode,
+            max_context=getattr(config, "max_context", 4096),
+        )
     if verify_against_dump is not None:
         verify_rows_match_dump(rows, times, verify_against_dump, horizons=horizons)
 
