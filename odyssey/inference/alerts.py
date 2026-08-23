@@ -1739,11 +1739,104 @@ def verify_packed_landmark_rows(
     return problems
 
 
+def _load_prepared_raw(
+    shard_dir: Union[str, Path], max_shards: Optional[int], config: object, source: str
+) -> pl.DataFrame:
+    """Load one MEDS split and apply the run's own normalize/history-recap prep.
+
+    Shared by :func:`evaluate_alerts` for both the clean held-out split and
+    (when given) a missingness-protocol degraded shard directory -- same
+    prep either way, only the shard directory differs.
+    """
+    raw = load_meds_shards(shard_dir, max_shards=max_shards)
+    raw = maybe_normalize(
+        raw, enabled=getattr(config, "normalize_medications", False), source=source
+    )
+    return maybe_history_recap(raw, enabled=getattr(config, "history_recap", False))
+
+
+def _fit_and_score_gbm_baselines(
+    baseline_shard_dir: Optional[Union[str, Path]],
+    *,
+    stream_baseline: bool,
+    max_baseline_shards: Optional[int],
+    config: object,
+    source: str,
+    binner: Optional[QuantileBinner],
+    alerts: Sequence[AlertEvent],
+    horizons: Sequence[float],
+    landmark_hours: float,
+    baseline_feature_set: str,
+    tune_baselines: bool,
+    binned: pl.DataFrame,
+    rows: Dict[str, List[IndexRow]],
+) -> Tuple[
+    Optional[Dict[Tuple[str, float], BaselineModel]], Optional[Dict[str, np.ndarray]]
+]:
+    """Fit and score the GBM baselines for one alerts pass.
+
+    Fits on ``baseline_shard_dir`` (always clean -- Principle 1, never
+    retrained/refit on degraded data) and scores against ``binned``/``rows``
+    (the held-out split's own frame -- degraded when :func:`evaluate_alerts`
+    was given ``degraded_shard_dir``). Returns ``(None, None)`` if
+    ``baseline_shard_dir`` wasn't given.
+    """
+    if baseline_shard_dir is None:
+        return None, None
+    if stream_baseline:
+        logger.info(
+            "[alerts] fitting GBM baselines on %s (streaming)", baseline_shard_dir
+        )
+        baseline_paths = shard_paths(baseline_shard_dir, max_shards=max_baseline_shards)
+        prepare = make_preparer(
+            normalize_medications=getattr(config, "normalize_medications", False),
+            history_recap=getattr(config, "history_recap", False),
+            source=source,
+        )
+        baselines = fit_baselines_streaming(
+            baseline_paths,
+            prepare,
+            binner,
+            alerts=alerts,
+            horizons=horizons,
+            source=source,
+            landmark_hours=landmark_hours,
+            feature_set=baseline_feature_set,
+            tune=tune_baselines,
+        )
+    else:
+        logger.info("[alerts] fitting GBM baselines on %s", baseline_shard_dir)
+        train_raw = _load_prepared_raw(
+            baseline_shard_dir, max_baseline_shards, config, source
+        )
+        train_times = all_event_times(train_raw, alerts, source)
+        train_binned = add_value_tokens(train_raw, binner, source=source)
+        del train_raw
+        train_rows = _index_rows_from_events(
+            train_binned, alerts, landmark_hours=landmark_hours
+        )
+        baselines = fit_baselines(
+            train_binned,
+            train_rows,
+            train_times,
+            horizons=horizons,
+            source=source,
+            feature_set=baseline_feature_set,
+            tune=tune_baselines,
+        )
+    features_by_event = features_for_events(
+        binned, rows, source=source, feature_set=baseline_feature_set
+    )
+    return baselines, features_by_event
+
+
 def evaluate_alerts(
     run_dir: Union[str, Path],
     held_out_shard_dir: Union[str, Path],
     *,
     baseline_shard_dir: Optional[Union[str, Path]] = None,
+    degraded_shard_dir: Optional[Union[str, Path]] = None,
+    verify_against_dump: Optional[Union[str, Path]] = None,
     max_shards: Optional[int] = None,
     max_baseline_shards: Optional[int] = None,
     alerts: Sequence[AlertEvent] = ALERT_EVENTS,
@@ -1767,6 +1860,29 @@ def evaluate_alerts(
     ``baseline_shard_dir`` whole into memory (:func:`fit_baselines`); use it
     once ``max_baseline_shards`` is large enough that the whole-frame path
     risks OOM (full-scale runs, hundreds of shards).
+
+    ``degraded_shard_dir`` is the missingness stress protocol's hook
+    (docs/missingness_protocol.md; shards produced by
+    :mod:`odyssey.data.degrade`): when given, everything that determines
+    *labels* (``times``) and the *visit envelope* (``visit_start``, itself
+    always identical across cells since anchor rows are never touched by
+    any degrade.py transform) still comes from ``held_out_shard_dir`` (the
+    clean v3 dump), but ``binned`` -- what both the model
+    (:func:`collect_model_scores`) and the GBM baselines'
+    :func:`features_for_events` actually score against -- is loaded from
+    ``degraded_shard_dir`` instead. ``baseline_shard_dir`` (baseline
+    *fitting*) is untouched either way: Principle 1 is frozen models AND
+    frozen-fit baselines, degraded inputs only at scoring time, never at
+    fit time. No change to :func:`collect_model_scores` or the streaming/
+    tokenization path itself is needed for this -- a degraded shard is
+    just a shard, scored the same way; landmark selection naturally
+    reproduces the clean cohort as long as the degrade.py transform
+    preserved it (anchor rows, and for axis C the subject's time origin).
+    That is exactly what ``verify_against_dump`` checks: if given, asserts
+    (via :func:`verify_rows_match_dump`) that this run's row set and
+    labels exactly match a saved clean dump -- the acceptance criterion
+    for a degraded cell's alerts pass -- immediately after the existing
+    :func:`verify_packed_landmark_rows` self-consistency check.
     """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     model, vocab, binner, config = load_run(
@@ -1775,14 +1891,23 @@ def evaluate_alerts(
     source = getattr(config, "source", "mimic_iv")
     concept_names = [c.name for c in concepts_for_source(source)]
 
-    raw = load_meds_shards(held_out_shard_dir, max_shards=max_shards)
-    raw = maybe_normalize(
-        raw, enabled=getattr(config, "normalize_medications", False), source=source
-    )
-    raw = maybe_history_recap(raw, enabled=getattr(config, "history_recap", False))
+    raw = _load_prepared_raw(held_out_shard_dir, max_shards, config, source)
     times = all_event_times(raw, alerts, source)
     visit_start = _visit_starts(raw)
-    binned = add_value_tokens(raw, binner, source=source)
+    if degraded_shard_dir is not None:
+        logger.info(
+            "[alerts] scoring against degraded shards from %s (labels/visit "
+            "envelope from the clean %s)",
+            degraded_shard_dir,
+            held_out_shard_dir,
+        )
+        degraded_raw = _load_prepared_raw(
+            degraded_shard_dir, max_shards, config, source
+        )
+        binned = add_value_tokens(degraded_raw, binner, source=source)
+        del degraded_raw
+    else:
+        binned = add_value_tokens(raw, binner, source=source)
     del raw
 
     backbone = getattr(config, "backbone", "hybrid")
@@ -1820,62 +1945,24 @@ def evaluate_alerts(
         landmark_hours=landmark_hours,
         truncation_boundaries=truncation_boundaries,
     )
+    if verify_against_dump is not None:
+        verify_rows_match_dump(rows, times, verify_against_dump, horizons=horizons)
 
-    baselines = None
-    features_by_event = None
-    if baseline_shard_dir is not None and stream_baseline:
-        logger.info(
-            "[alerts] fitting GBM baselines on %s (streaming)", baseline_shard_dir
-        )
-        baseline_paths = shard_paths(baseline_shard_dir, max_shards=max_baseline_shards)
-        prepare = make_preparer(
-            normalize_medications=getattr(config, "normalize_medications", False),
-            history_recap=getattr(config, "history_recap", False),
-            source=source,
-        )
-        baselines = fit_baselines_streaming(
-            baseline_paths,
-            prepare,
-            binner,
-            alerts=alerts,
-            horizons=horizons,
-            source=source,
-            landmark_hours=landmark_hours,
-            feature_set=baseline_feature_set,
-            tune=tune_baselines,
-        )
-        features_by_event = features_for_events(
-            binned, rows, source=source, feature_set=baseline_feature_set
-        )
-    elif baseline_shard_dir is not None:
-        logger.info("[alerts] fitting GBM baselines on %s", baseline_shard_dir)
-        train_raw = load_meds_shards(baseline_shard_dir, max_shards=max_baseline_shards)
-        train_raw = maybe_normalize(
-            train_raw,
-            enabled=getattr(config, "normalize_medications", False),
-            source=source,
-        )
-        train_raw = maybe_history_recap(
-            train_raw, enabled=getattr(config, "history_recap", False)
-        )
-        train_times = all_event_times(train_raw, alerts, source)
-        train_binned = add_value_tokens(train_raw, binner, source=source)
-        del train_raw
-        train_rows = _index_rows_from_events(
-            train_binned, alerts, landmark_hours=landmark_hours
-        )
-        baselines = fit_baselines(
-            train_binned,
-            train_rows,
-            train_times,
-            horizons=horizons,
-            source=source,
-            feature_set=baseline_feature_set,
-            tune=tune_baselines,
-        )
-        features_by_event = features_for_events(
-            binned, rows, source=source, feature_set=baseline_feature_set
-        )
+    baselines, features_by_event = _fit_and_score_gbm_baselines(
+        baseline_shard_dir,
+        stream_baseline=stream_baseline,
+        max_baseline_shards=max_baseline_shards,
+        config=config,
+        source=source,
+        binner=binner,
+        alerts=alerts,
+        horizons=horizons,
+        landmark_hours=landmark_hours,
+        baseline_feature_set=baseline_feature_set,
+        tune_baselines=tune_baselines,
+        binned=binned,
+        rows=rows,
+    )
 
     if dump_rows_path is not None:
         context_cols = None
