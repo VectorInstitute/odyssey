@@ -20,8 +20,10 @@ from odyssey.inference.alerts import IndexRow
 from odyssey.inference.meds_tab_baseline import (
     MedsTabBaselineModel,
     _prediction_times,
+    assert_label_df_sorted,
     assert_label_feature_alignment,
     assert_no_split_leakage,
+    build_shared_landmark_label_df,
     export_task_labels,
     index_matrix_by_event,
     verify_cached_label_count,
@@ -279,6 +281,78 @@ def test_export_task_labels_output_order_is_deterministic_regardless_of_input_or
     df_b = pl.read_parquet(paths_b[("death", 8.0)])
     assert df_a["subject_id"].to_list() == df_b["subject_id"].to_list()
     assert df_a["subject_id"].to_list() == sorted(df_a["subject_id"].to_list())
+
+
+# ---------------------------------------------------------------------------
+# assert_label_df_sorted / build_shared_landmark_label_df: the join_asof
+# silent-corruption precondition, enforced in code (E4 gate finding).
+# ---------------------------------------------------------------------------
+
+
+def test_assert_label_df_sorted_passes_on_sorted_input() -> None:
+    df = pl.DataFrame(
+        {
+            "subject_id": [1, 1, 2],
+            "prediction_time": [T0, T0 + timedelta(hours=1), T0],
+            "boolean_value": [False, False, False],
+        }
+    )
+    assert_label_df_sorted(df)  # no raise
+
+
+def test_assert_label_df_sorted_raises_on_unsorted_subject_id() -> None:
+    df = pl.DataFrame(
+        {
+            "subject_id": [2, 1],
+            "prediction_time": [T0, T0],
+            "boolean_value": [False, False],
+        }
+    )
+    with pytest.raises(AssertionError, match="not sorted"):
+        assert_label_df_sorted(df)
+
+
+def test_assert_label_df_sorted_raises_on_unsorted_time_within_subject() -> None:
+    # Same real-world shape as the confirmed bug: subject_id monotonic, but
+    # times out of order within a subject's own rows.
+    df = pl.DataFrame(
+        {
+            "subject_id": [1, 1],
+            "prediction_time": [T0 + timedelta(hours=1), T0],
+            "boolean_value": [False, False],
+        }
+    )
+    with pytest.raises(AssertionError, match="not sorted"):
+        assert_label_df_sorted(df)
+
+
+def test_build_shared_landmark_label_df_is_sorted_and_deduped() -> None:
+    """Regression test for the confirmed E4 gate root cause.
+
+    build_shared_landmark_label_df originally built its DataFrame directly
+    from IndexRow list order (whatever _index_rows_from_events' own
+    group_by happened to produce) with no sort and no dedup -- unlike
+    export_task_labels, which already had both. That unsorted output fed
+    straight into MEDS-Tab's tabularize-time-series as its label_df,
+    whose get_rolling_window_indicies does a polars join_asof requiring
+    sorted input; polars does not validate this and silently produced
+    wrong rolling-window feature values (confirmed: a real gate run showed
+    60% of a random row sample with mismatched values despite exactly
+    matching row keys). This must never regress silently again.
+    """
+    rows = [
+        IndexRow(subject_id=2, visit_id=20, time_hours=0.0),
+        IndexRow(subject_id=1, visit_id=11, time_hours=5.0),  # dup key w/ next
+        IndexRow(subject_id=1, visit_id=12, time_hours=5.0),  # same subject+time
+        IndexRow(subject_id=1, visit_id=10, time_hours=0.0),
+    ]
+    events = _events_binned([1, 2])
+    label_df = build_shared_landmark_label_df(rows, events, max_horizon_hours=8.0)
+
+    assert_label_df_sorted(label_df)  # must never fail on this function's own output
+    # 4 rows in, one (subject=1, time=5.0h) collision collapses to 1 -> 3 out.
+    assert label_df.height == 3
+    assert label_df["subject_id"].to_list() == sorted(label_df["subject_id"].to_list())
 
 
 # ---------------------------------------------------------------------------
