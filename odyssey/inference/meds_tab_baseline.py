@@ -118,6 +118,141 @@ def _prediction_times(
     return times
 
 
+def _sort_and_or_aggregate_labels(
+    label_df: pl.DataFrame, *, log_context: str
+) -> pl.DataFrame:
+    """Canonicalize a MEDS-Tab label_df before it is written or handed to MEDS-Tab.
+
+    Two invariants enforced here, both confirmed root causes of real bugs
+    tonight, not hypothetical:
+
+    1. Deterministic order. Row order traces back (through whichever
+       caller-side ``IndexRow`` construction) to
+       :func:`~odyssey.inference.alerts._index_rows_from_events`'s
+       ``group_by`` with no ``maintain_order=True`` -- polars'
+       multi-threaded hash-partition group_by does not guarantee row
+       order across runs on identical input (confirmed: two exports of
+       the same input produced byte-different files, content-identical
+       only once both were sorted by this key).
+    2. OR-aggregated collisions. Rows colliding on
+       ``(subject_id, prediction_time)`` (eICU: concurrent/transferred
+       ICU unit stays within one hospitalization, confirmed via a
+       sampled overlap check, not distinct episodes) collapse to one row,
+       true if any of them is -- not an arbitrary pick among them, which
+       is what silently happened before this existed.
+
+    Both matter beyond just this function's own output looking right:
+    MEDS-Tab's own ``get_rolling_window_indicies`` does
+    ``label_df.join_asof(event_df, by="subject_id", on="time")``, and
+    polars' ``join_asof`` silently produces wrong window boundaries (not
+    an error) when its input isn't sorted by ``(by, on)`` -- confirmed by
+    reading ``MEDS_tabular_automl.generate_summarized_reps`` source
+    directly. An unsorted ``label_df`` handed to a MEDS-Tab tabularize
+    call doesn't just look wrong here, it corrupts every downstream
+    aggregated feature value for that shard.
+    """
+    n_supplied = label_df.height
+    label_df = (
+        label_df.group_by(["subject_id", "prediction_time"])
+        .agg(pl.col("boolean_value").any())
+        .sort(["subject_id", "prediction_time"])
+    )
+    n_collapsed = n_supplied - label_df.height
+    if n_collapsed:
+        logger.info(
+            "[meds_tab] %s: %d rows OR-collapsed across colliding "
+            "(subject_id, prediction_time) keys (%d -> %d rows)",
+            log_context,
+            n_collapsed,
+            n_supplied,
+            label_df.height,
+        )
+    return label_df
+
+
+def assert_label_df_sorted(
+    label_df: pl.DataFrame,
+    *,
+    subject_col: str = "subject_id",
+    time_col: str = "prediction_time",
+) -> None:
+    """Fail loud before any MEDS-Tab handoff if ``label_df`` isn't sorted.
+
+    Enforces, in code, the precondition :func:`_sort_and_or_aggregate_labels`'s
+    docstring explains: MEDS-Tab's ``get_rolling_window_indicies`` silently
+    miscomputes rolling-window aggregations (not an error, not a crash --
+    wrong feature values that still shape-check) when its ``label_df``
+    input isn't sorted by ``(subject_col, time_col)``, because it feeds a
+    polars ``join_asof`` that assumes sortedness without validating it.
+    Confirmed as the exact, sole cause of a real gate failure: a shared
+    landmark grid built without this sort produced tabularized feature
+    rows matching a known-correct reference on row keys but not on values
+    (60% mismatch on a random sample), while the same grid re-sorted and
+    re-tabularized matched exactly. This assert is the guard that failure
+    mode can never again reach a MEDS-Tab CLI call silently.
+    """
+    subject_ids = label_df[subject_col].to_list()
+    times = label_df[time_col].to_list()
+    keys = list(zip(subject_ids, times))
+    if keys != sorted(keys):
+        raise AssertionError(
+            f"label_df is not sorted by ({subject_col}, {time_col}) -- "
+            "handing this to MEDS-Tab's tabularize stage would silently "
+            "corrupt every rolling-window feature value via join_asof's "
+            "unvalidated sortedness precondition (confirmed root cause, "
+            "not a hypothetical). Sort before writing, don't bypass this."
+        )
+
+
+def build_shared_landmark_label_df(
+    any_event_rows: Sequence[IndexRow],
+    events_binned: pl.DataFrame,
+    *,
+    max_horizon_hours: float,
+) -> pl.DataFrame:
+    """Build the PRE-at-risk-filter landmark grid as a MEDS-Tab ``label_df``.
+
+    Verified directly (not assumed) that this row set is byte-identical
+    across every alert event for a given split -- landmarks are a fixed
+    every-N-hour grid per subject's stay, independent of which outcome is
+    being predicted; :func:`export_task_labels`' own per-(event,horizon)
+    at-risk filter only ever REMOVES rows from this shared grid, never
+    adds. That makes it a strict superset of every task's own label rows,
+    safe to use as the ONE shared ``label_df`` for
+    tabularize-static/time-series: MEDS-Tab's own ``compute_agg`` only
+    restricts WHICH times get the (expensive) rolling-window aggregation
+    computed, not what a computed value at any given time is -- feeding
+    it the full raw per-event-timestamp grid instead (``label_df=None``)
+    costs far more (measured: ~28x one task's own run on a real shard),
+    while this landmark grid costs ~1.4x and covers every task at once.
+    ``boolean_value`` is a placeholder -- unused by
+    tabularize-static/time-series, which only reads
+    ``subject_id``/``prediction_time`` from ``label_df``; the real
+    outcome label is applied later, per task, by
+    :func:`export_task_labels` (or, in the standalone-slicer
+    architecture, by slicing this grid's own tabularized output).
+
+    Sorted and OR-aggregated the same way :func:`export_task_labels` is
+    (see :func:`_sort_and_or_aggregate_labels`) -- this function did NOT
+    carry that fix originally, and its unsorted output was the confirmed,
+    sole root cause of a real gate failure (see
+    :func:`assert_label_df_sorted`'s docstring). Every caller building a
+    MEDS-Tab-bound label_df goes through the same canonicalization now,
+    not a second, independently-maintained copy of it.
+    """
+    pred_times = _prediction_times(
+        any_event_rows, events_binned, max_horizon_hours=max_horizon_hours
+    )
+    label_df = pl.DataFrame(
+        {
+            "subject_id": [r.subject_id for r in any_event_rows],
+            "prediction_time": pred_times,
+            "boolean_value": [False] * len(any_event_rows),
+        }
+    )
+    return _sort_and_or_aggregate_labels(label_df, log_context="shared_landmark_grid")
+
+
 def export_task_labels(
     rows: dict[str, list[IndexRow]],
     times: dict[str, EventTimes],
@@ -145,34 +280,10 @@ def export_task_labels(
     is :func:`verify_cached_label_count`, checked after the CLI stage runs,
     not here.
 
-    Sorts by ``(subject_id, prediction_time)`` immediately before writing.
-    Confirmed root cause: ``rows`` traces back to
-    :func:`~odyssey.inference.alerts._index_rows_from_events`'s
-    ``timed.group_by("subject_id", "hadm_id", "_bucket")``, which has no
-    ``maintain_order=True`` -- polars' multi-threaded hash-partition
-    group_by does not guarantee row order across runs on identical input
-    (confirmed: two exports of the same input produced byte-different
-    parquet files, but row-content-identical once both were sorted by this
-    same key). Rather than chase order-preservation through every upstream
-    step that might reorder rows, this write boundary is the one place a
-    canonical order is enforced -- every caller gets a deterministic file
-    regardless of what happens upstream.
-
-    OR-aggregates ``boolean_value`` across rows that collide on
-    ``(subject_id, prediction_time)`` after that sort. ``rows`` is built
-    per ``hadm_id`` (one row per subject/visit/landmark-bucket), and the
-    same absolute timestamp can be shared by more than one ``hadm_id`` for
-    a subject -- confirmed, for eICU, this is not a coincidence: ``hadm_id``
-    is the ICU *unit* stay, nested inside the subject's own health-system
-    (hospital) stay, and a sampled check (15/15 colliding groups) found
-    every one had fully overlapping event spans -- concurrent/transferred
-    unit stays within one hospitalization, not distinct episodes. "At risk
-    from any of the subject's concurrent units at this instant" is the
-    correct label there, not an arbitrary pick among them (which is what
-    the pre-sort, pre-aggregation code silently did, nondeterministically).
-    Logs whenever this collapses rows, since the reasoning above is
-    eICU-specific and any other source hitting this path nontrivially
-    should have its own collisions checked before being trusted.
+    Sorted and OR-aggregated via :func:`_sort_and_or_aggregate_labels`
+    (see its docstring for the confirmed root causes both fix) immediately
+    before writing -- every caller of this module gets the same
+    canonicalization at the same, single choke point.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     paths: dict[tuple[str, float], Path] = {}
@@ -199,23 +310,9 @@ def export_task_labels(
                     "boolean_value": [bool(outcomes[i]) for i in keep],
                 }
             )
-            n_supplied = label_df.height
-            label_df = (
-                label_df.group_by(["subject_id", "prediction_time"])
-                .agg(pl.col("boolean_value").any())
-                .sort(["subject_id", "prediction_time"])
+            label_df = _sort_and_or_aggregate_labels(
+                label_df, log_context=f"{event_name}@{h:g}h"
             )
-            n_collapsed = n_supplied - label_df.height
-            if n_collapsed:
-                logger.info(
-                    "[meds_tab] %s@%gh: %d rows OR-collapsed across colliding "
-                    "(subject_id, prediction_time) keys (%d -> %d rows)",
-                    event_name,
-                    h,
-                    n_collapsed,
-                    n_supplied,
-                    label_df.height,
-                )
             task_dir = output_dir / f"{event_name}_{h:g}h"
             task_dir.mkdir(parents=True, exist_ok=True)
             out_path = task_dir / "0.parquet"
@@ -497,7 +594,9 @@ def index_matrix_by_event(rows: dict[str, list[IndexRow]]) -> dict[str, np.ndarr
 
 __all__ = [
     "MedsTabBaselineModel",
+    "assert_label_df_sorted",
     "assert_no_split_leakage",
+    "build_shared_landmark_label_df",
     "export_task_labels",
     "index_matrix_by_event",
     "verify_cached_label_count",
