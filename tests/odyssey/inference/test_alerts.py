@@ -26,6 +26,7 @@ from odyssey.inference.alerts import (
     GBM_MIN_OBSERVED,
     LANDMARK_PROTOCOL_VERSION,
     IndexRow,
+    _fit_and_score_gbm_baselines,
     _index_rows_from_events,
     _landmark_mask,
     _positive_class_proba,
@@ -1845,3 +1846,62 @@ def test_index_mode_is_validated() -> None:
             landmark_hours=4.0,
             index_mode="x",
         )
+
+
+def test_fit_and_score_gbm_baselines_reuses_a_prefit_model_without_refitting() -> None:
+    """One fit, scored against every degradation cell.
+
+    The missingness sweep's whole point: prefit_baselines must be used
+    as-is, never refit, even when baseline_shard_dir is also given.
+    """
+    events = _events(12)
+    binned = add_value_tokens(events)
+    times = all_event_times(events, ALERT_EVENTS, "mimic_iv")
+    rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+    prefit = fit_baselines(
+        binned, rows, times, horizons=(8.0,), feature_set="basic", tune=False
+    )
+
+    baselines, features_by_event = _fit_and_score_gbm_baselines(
+        "/should/never/be/read",  # baseline_shard_dir -- must be ignored
+        stream_baseline=False,
+        max_baseline_shards=None,
+        config=object(),
+        source="mimic_iv",
+        binner=None,
+        alerts=ALERT_EVENTS,
+        horizons=(8.0,),
+        landmark_hours=4.0,
+        baseline_feature_set="basic",
+        tune_baselines=False,
+        binned=binned,
+        rows=rows,
+        prefit_baselines=prefit,
+    )
+
+    assert baselines is prefit  # identity: no refit happened
+    assert features_by_event is not None
+    assert set(features_by_event) == set(rows)
+
+
+def test_fit_and_score_gbm_baselines_returns_none_without_a_baseline_source() -> None:
+    events = _events(4)
+    binned = add_value_tokens(events)
+    rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+    baselines, features_by_event = _fit_and_score_gbm_baselines(
+        None,
+        stream_baseline=False,
+        max_baseline_shards=None,
+        config=object(),
+        source="mimic_iv",
+        binner=None,
+        alerts=ALERT_EVENTS,
+        horizons=(8.0,),
+        landmark_hours=4.0,
+        baseline_feature_set="basic",
+        tune_baselines=False,
+        binned=binned,
+        rows=rows,
+    )
+    assert baselines is None
+    assert features_by_event is None
