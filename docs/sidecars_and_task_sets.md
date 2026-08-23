@@ -90,7 +90,7 @@ exactly what a run trained:
 |---|---|---|
 | `v1` | 15: tachycardia, bradycardia, hypotension, hypertension, hypoxia, fever, hypothermia, elevated_lactate, sustained_tachypnea, acute_kidney_injury, aki_stage_2, aki_stage_3, sirs, qsofa, on_vasopressors | 4: vasopressor_start, icu_admission, acute_kidney_injury, death |
 | `v2` | v1 + sepsis3 (16) | v1 + sepsis3, readmission_30d (6) |
-| `v3` | v2 + 11 structurally-derived electrolyte/metabolic/hematologic concepts (hyperkalemia, hypokalemia, hyponatremia, hypernatremia, hypoglycemia, hyperglycemia, anemia, thrombocytopenia, coagulopathy, metabolic_acidosis, shock) -- 27 total | *(none yet -- see caveat below)* |
+| `v3` | v2 + 11 structurally-derived electrolyte/metabolic/hematologic concepts (hyperkalemia, hypokalemia, hyponatremia, hypernatremia, hypoglycemia, hyperglycemia, anemia, thrombocytopenia, coagulopathy, metabolic_acidosis, shock) -- 27 total | same as v2 (v3 widens concepts only; `alert_events_for("v3")` returns the v2 events) |
 
 `v1` is the default (`DEFAULT_TASK_SET` / `TrainingConfig.task_set`
 default) and is what every run before 2026-08-23 trained with; its
@@ -108,13 +108,6 @@ always names the exact task_set it was trained with (defaulting to
 `"v1"` if the field predates this mechanism entirely), so evaluation
 always rebuilds the same concept/alert-event list a run trained with,
 never a newer one by accident.
-
-**Caveat:** `TASK_SETS["v3"]` (concepts) exists, but `ALERT_TASK_SETS`
-has no `"v3"` entry yet -- `alert_events_for("v3")` currently raises
-`unknown task_set 'v3'`. A run configured with `task_set="v3"` and
-`event_hazards=True` (the `TrainingConfig` default) will hit this at
-`alert_events_for(config.task_set)` in `train.py`. Flagged separately;
-not fixed as part of this doc pass.
 
 ## Sepsis-3 definition summary
 
