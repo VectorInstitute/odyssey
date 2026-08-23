@@ -88,12 +88,17 @@ attached does not launch.
   the surviving truncated-subject classes. Fix owner: e6. Approved design:
   per-lane `{visit_id: last_bucket_emitted}` state cleared at subject
   boundaries, persisted across chunks; acceptance = all verifier classes zero
-  on the real repro + literal interleaved-pattern regression test. **Open
-  question gating dump regen:** does the lane/streaming collect path share the
-  adjacency mask (then E1/E2/E3/M2 v2 dumps carry the extras and regen after
-  the fix; rescores rerun mechanically) or build rows from the group-by side
-  (immune, packed-only)? e6 reporting the mechanism. Until answered, new E5/E7
-  registry rows note "main @ c147b9f, pre-interleaving-fix".
+  on the real repro + literal interleaved-pattern regression test.
+  **RESOLVED (Aug 23): lane path exposed** -- collect_model_scores builds rows
+  through one unconditional code path for both backbones (e6, confirmed by
+  reading), so every v2 dump carries ~1.4% duplicate landmarks. **Ruling: the
+  fix bumps LANDMARK_PROTOCOL_VERSION to 3** (same doctrine as v1->v2), and
+  the lane path gains a production row-set assertion against the group-by
+  ground truth. Regen queue once v3 merges: E1 dumps + rescores, E5 mechanical
+  rerun, E4/E7 label export before the sweep (tabularization salvage
+  unaffected), M2 born under v3 (never run as v2). v1 legs stay as-is: the
+  bug is symmetric across v1/v2, so E2's protocol-delta attribution survives.
+  Interim E5 rows are marked "v2, pre-interleaving-fix" in the registry.
 
 ## Standing gates recap
 
