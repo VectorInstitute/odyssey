@@ -1365,6 +1365,102 @@ def load_index_row_table(path: Union[str, Path]) -> pl.DataFrame:
     return table
 
 
+def verify_rows_match_dump(
+    rows: Dict[str, List[IndexRow]],
+    times: Dict[str, EventTimes],
+    dump_path: Union[str, Path],
+    *,
+    horizons: Sequence[float] = HORIZONS_HOURS,
+) -> None:
+    """Assert a freshly-reconstructed row set exactly matches a saved dump.
+
+    For baseline scripts that keep their own row/feature source (e.g.
+    ``collect_model_scores``'s live forward pass) unchanged across protocol
+    versions, but need proof -- not an assumption -- that the cohort they
+    just scored is the same one a saved ``index_row_table`` dump (an
+    ``alerts_rows.parquet``-style file) represents. Verifies two things,
+    per event, loud failure on either:
+
+    1. Row identity: the multiset of ``(subject_id, visit_id, time_hours)``
+       triples matches exactly. A multiset, not a set -- real dumps can
+       have duplicate keys (a lane/chunk streaming walk can revisit the
+       same landmark position more than once), and a plain set comparison
+       would silently collapse those and hide a real count mismatch.
+    2. Label agreement: for every horizon, the multiset of
+       ``(subject_id, visit_id, time_hours, y@h)`` matches exactly --
+       :func:`outcome_at_horizon` computed fresh here must agree with the
+       dump's own ``y@{h:g}h`` column for every row, not just share the
+       same row keys.
+
+    Uses :func:`load_index_row_table` to read the dump, so a
+    ``landmark_protocol_version`` mismatch is still logged as a warning
+    even when every row and label otherwise agrees (protocol version is
+    orthogonal to row/label identity -- a dump can be on a different
+    protocol and still, by coincidence or by design, describe the same
+    cohort).
+    """
+    dump = load_index_row_table(dump_path)
+    for event_name, event_rows in rows.items():
+        dump_ev = dump.filter(pl.col("event") == event_name)
+        own_keys = sorted((r.subject_id, r.visit_id, r.time_hours) for r in event_rows)
+        dump_keys = sorted(
+            zip(
+                (int(s) for s in dump_ev["subject_id"].to_list()),
+                (int(v) for v in dump_ev["visit_id"].to_list()),
+                dump_ev["time_hours"].to_list(),
+            )
+        )
+        if own_keys != dump_keys:
+            own_set, dump_set = set(own_keys), set(dump_keys)
+            raise AssertionError(
+                f"{event_name}: reconstructed rows do not match dump {dump_path} -- "
+                f"{len(own_keys)} reconstructed vs {len(dump_keys)} in dump; "
+                f"only in reconstruction (up to 5): {sorted(own_set - dump_set)[:5]}; "
+                f"only in dump (up to 5): {sorted(dump_set - own_set)[:5]}"
+            )
+
+        for h in horizons:
+            y_col = f"y@{h:g}h"
+            # -1.0 is a sentinel for None/censored -- outcome_at_horizon only
+            # ever returns None, 0, or 1, so this is unambiguous and, unlike
+            # a bare None, sorts safely against the float values it's mixed
+            # with (Python raises comparing None to float when tuple keys tie
+            # on subject/visit/time and only the outcome differs).
+            own_y = sorted(
+                (
+                    r.subject_id,
+                    r.visit_id,
+                    r.time_hours,
+                    -1.0
+                    if (o := outcome_at_horizon(r, times[event_name], h)) is None
+                    else float(o),
+                )
+                for r in event_rows
+            )
+            dump_y = sorted(
+                (s, v, t, -1.0 if y is None else float(y))
+                for s, v, t, y in zip(
+                    (int(s) for s in dump_ev["subject_id"].to_list()),
+                    (int(v) for v in dump_ev["visit_id"].to_list()),
+                    dump_ev["time_hours"].to_list(),
+                    dump_ev[y_col].to_list(),
+                )
+            )
+            if own_y != dump_y:
+                own_y_set, dump_y_set = set(own_y), set(dump_y)
+                raise AssertionError(
+                    f"{event_name}@{h:g}h: y@h disagrees with dump {dump_path} for "
+                    f"{len(own_y_set.symmetric_difference(dump_y_set))} row(s) (up to 5 "
+                    f"reconstructed): {sorted(own_y_set - dump_y_set)[:5]}; "
+                    f"(up to 5 dump): {sorted(dump_y_set - own_y_set)[:5]}"
+                )
+    logger.info(
+        "[alerts] verified against dump %s: %s",
+        dump_path,
+        ", ".join(f"{name}={len(r)} rows" for name, r in rows.items()),
+    )
+
+
 # Context columns dumped with the per-row table (names from
 # odyssey.inference.baseline_features.feature_names when the strong set is used).
 ROW_DUMP_CONTEXT: Tuple[str, ...] = (
@@ -1894,5 +1990,7 @@ __all__ = [
     "fit_baselines",
     "score_alerts",
     "index_row_table",
+    "load_index_row_table",
+    "verify_rows_match_dump",
     "evaluate_alerts",
 ]
