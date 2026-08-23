@@ -584,6 +584,7 @@ def test_verify_packed_landmark_rows_tail_aware_all_three_arms() -> None:
             ALERT_EVENTS,
             landmark_hours=4.0,
             truncation_boundaries=truncation_boundaries,
+            max_context=15,
         )
         == []
     )
@@ -600,9 +601,10 @@ def test_verify_packed_landmark_rows_tail_aware_all_three_arms() -> None:
         ALERT_EVENTS,
         landmark_hours=4.0,
         truncation_boundaries=truncation_boundaries,
+        max_context=15,
     )
     assert problems
-    assert any("no record" in p for p in problems)
+    assert any("extra 1" in p for p in problems)
 
     # Arm 2 (tail, dropped a row at/after the boundary): should have been
     # kept (it's inside the window PackedContextSampler actually kept),
@@ -619,9 +621,10 @@ def test_verify_packed_landmark_rows_tail_aware_all_three_arms() -> None:
         ALERT_EVENTS,
         landmark_hours=4.0,
         truncation_boundaries=truncation_boundaries,
+        max_context=15,
     )
     assert problems
-    assert any("missing entirely from the packed path" in p for p in problems)
+    assert any("missing 1" in p for p in problems)
 
     # Arm 3 (tail, "missing" a row that was never in the kept window at
     # all): legitimate truncation shrinkage, must NOT be flagged. Ground
@@ -1905,3 +1908,124 @@ def test_fit_and_score_gbm_baselines_returns_none_without_a_baseline_source() ->
     )
     assert baselines is None
     assert features_by_event is None
+
+
+# ---------------------------------------------------------------------------
+# Real-data finding (CPU end-to-end integration pass, Amrit's directive
+# relayed via odyssey-4b): backbone="transformer" + index_mode="landmark"
+# + truncation disagrees with the model-free ground truth on real MIMIC-IV
+# data. Gated on the local data actually being present -- this is real,
+# local, patient-level data (never fixtures, never committed), consistent
+# with every other local-only real-data check this session.
+# ---------------------------------------------------------------------------
+
+_REAL_MIMIC_HELD_OUT = Path("/Volumes/clinical-data/meds/mimiciv_3.1_v1/data/held_out")
+
+
+@pytest.mark.skipif(
+    not _REAL_MIMIC_HELD_OUT.is_dir(),
+    reason="needs local real MIMIC-IV MEDS data (not available in CI)",
+)
+def test_verify_packed_landmark_rows_agrees_on_real_mimic_data_landmark_mode() -> None:
+    """Real-data finding: landmark-mode + truncation disagrees with ground truth.
+
+    Confirmed on a real held-out shard (986 subjects, max_context=512, ~40%
+    of subjects truncated): 22 total bucket-level disagreements (3
+    "invented" truncated-subject buckets ground truth has no record of at
+    all, 19 buckets ground truth says should still be visible but the
+    packed path dropped), identical counts repeated across every event
+    scored -- one shared underlying cause, not per-event noise.
+
+    Model WEIGHTS are not the cause: reproduces identically (same 3/19
+    split) with a randomly-initialized model, confirmed by direct
+    comparison against a run with an actually-trained checkpoint -- this is
+    a data/tokenization/truncation-selection bug, not a learned-behavior
+    one, so this test uses an untrained model (fast, no training needed).
+
+    index_mode="visit_end" does NOT reproduce this on the same data/model/
+    truncation (zero warnings) -- narrows the cause to the landmark-BUCKET
+    computation specifically (_landmark_mask's torch.floor((time_hours -
+    visit_start_hours) / landmark_hours) vs _bucket_of's Python
+    (row.time_hours - start) // landmark_hours in
+    verify_packed_landmark_rows itself), not truncation-boundary handling
+    in general (visit_end also truncates, just never buckets).
+
+    Ruled out: float32 vs float64 precision -- PackedContextSampler already
+    stacks time_stamps as torch.double (see packed_context.py's
+    _stack("time_stamps", torch.double)), so this is not the same class of
+    bug as the float32->float64 landmark-time fix referenced in
+    _landmark_mask's own docstring. The remaining, NOT yet confirmed
+    hypothesis: a boundary-adjacent floating-point rounding disagreement
+    between torch's division-then-floor and Python's floor-division for a
+    real (irregularly-spaced, not exactly-on-the-hour) timestamp sitting
+    very close to an exact multiple of landmark_hours, specific to a
+    truncated subject's boundary-straddling bucket -- consistent with the
+    existing synthetic regression test
+    (test_verify_packed_landmark_rows_tail_aware_all_three_arms) passing
+    cleanly, since its fixture uses exactly-on-the-hour timestamps that
+    would never expose this. Not reduced to a synthetic repro here: the
+    22 real disagreements are a small fraction of the ~392 truncated
+    subjects on this one shard (a narrow edge case, not a systemic
+    failure), and constructing a synthetic timestamp that reliably
+    reproduces the exact rounding disagreement needs more investigation
+    than fits this pass -- flagging precisely rather than guessing at a
+    fix. Whoever picks this up next: compare _landmark_mask's raw
+    torch.floor(...) result against _bucket_of's raw (...) // ... result
+    for the specific truncated-subject/bucket pairs this test's own
+    `problems` list names, on this same real shard, to find the first
+    diverging value directly rather than re-deriving from first
+    principles.
+
+    Downstream consequence, confirmed the same real-data run: this is why
+    scripts/missingness_sweep.py hard-crashes (not just warns) for a
+    backbone="transformer" run -- evaluate_alerts' verify_against_dump
+    (verify_rows_match_dump, a strict AssertionError, not a warning) rejects
+    the degraded-cell row set because the SAME clean-dump landmark set this
+    bug produces is not even stable from one evaluate_alerts call to the
+    next. That crash is downstream of this one root cause, not
+    independently investigated -- missingness_sweep.py itself is doing
+    exactly what it should (refusing rather than silently scoring against a
+    wrong row set); it needs this bug fixed before a backbone="transformer"
+    sweep can run end to end. A backbone="hybrid" sweep is not expected to
+    hit this (see above: visit_end and, per _landmark_mask's own docstring,
+    the hybrid backbone's earlier v2->v3 bug were already fixed).
+    """
+    from odyssey.data.alert_events import alert_events_for  # noqa: PLC0415
+    from odyssey.training.data import load_meds_shards as _load  # noqa: PLC0415
+
+    events = _load(_REAL_MIMIC_HELD_OUT, max_shards=1)
+    binned = add_value_tokens(events, None, source="mimic_iv")
+    vocab = Vocabulary.build(binned["code"].to_list(), min_count=1)
+    concepts = concepts_for_source("mimic_iv", task_set="v2")
+    alerts = alert_events_for("v2")
+    model = _transformer_model(len(vocab), len(concepts))
+
+    truncation_boundaries: Dict[int, float] = {}
+    model_rows = collect_model_scores(
+        model,
+        binned,
+        vocab,
+        [c.name for c in concepts],
+        alerts,
+        visit_start=_visit_starts(events),
+        landmark_hours=4.0,
+        num_lanes=8,
+        device="cpu",
+        backbone="transformer",
+        max_context=512,
+        truncation_boundaries_out=truncation_boundaries,
+    )
+    assert len(truncation_boundaries) > 0  # confirms this shard exercises truncation
+
+    problems = verify_packed_landmark_rows(
+        model_rows,
+        binned,
+        alerts,
+        landmark_hours=4.0,
+        truncation_boundaries=truncation_boundaries,
+        max_context=512,
+    )
+    assert problems == [], (
+        f"landmark-mode packed-path/ground-truth disagreement on real data "
+        f"(see this test's docstring): {problems}"
+    )

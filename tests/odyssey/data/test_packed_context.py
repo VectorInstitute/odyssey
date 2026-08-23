@@ -155,7 +155,14 @@ def test_patient_longer_than_max_context_is_truncated_from_the_left() -> None:
     assert kept_ids == [1006, 1007, 1008, 1009]
 
 
-def test_truncated_patients_time_stamps_are_rebased_to_start_at_zero() -> None:
+def test_truncated_patients_keep_their_true_time_stamps() -> None:
+    """The kept tail is NOT rebased to 0: true times flow to every consumer.
+
+    An earlier version rebased the window and had the alerts harness add the
+    boundary back; the float64 round trip flipped landmark buckets on exact
+    boundaries (research journal entry 44). The backbone derives deltas from
+    reset_mask, so it never needed the rebase.
+    """
     long_patient = _seq(1, 10)  # time_stamps 0..9
     sampler = PackedContextSampler(
         _patients([long_patient]), batch_size=1, max_context=4
@@ -165,7 +172,8 @@ def test_truncated_patients_time_stamps_are_rebased_to_start_at_zero() -> None:
 
     assert chunk is not None
     kept_times = chunk.batch.aux.time_stamps[0].tolist()
-    assert kept_times == [0.0, 1.0, 2.0, 3.0]
+    assert kept_times == [6.0, 7.0, 8.0, 9.0]
+    assert sampler.truncation_boundaries == {1: 6.0}
 
 
 def test_truncated_subject_ids_records_the_truncated_patient() -> None:

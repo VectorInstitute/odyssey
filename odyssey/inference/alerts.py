@@ -51,7 +51,7 @@ import logging
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Protocol, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Protocol, Sequence, Set, Tuple, Union
 
 import numpy as np
 import polars as pl
@@ -323,31 +323,6 @@ def _event_token_mask(
     return mask.to(device)
 
 
-def _unrebase_truncated_times(
-    times: torch.Tensor, sids: torch.Tensor, boundaries: Dict[int, float]
-) -> torch.Tensor:
-    """Shift a chunk's truncated subjects back to their true time origin.
-
-    ``PackedContextSampler`` rebases a truncated subject's kept window to
-    start at 0 (see ``_truncate_head``); every other consumer of
-    ``time_hours`` (``visit_start``, ``outcome_at_horizon``, ``EventTimes``,
-    ``_index_rows_from_events``) assumes the shared "hours since this
-    subject's true first event" frame instead. Applying this before
-    :func:`_landmark_mask` ever sees ``times`` matters, not just at output
-    construction -- landmark bucket assignment itself needs the true
-    origin, a real bug caught by
-    ``test_verify_packed_landmark_rows_tail_aware_all_three_arms``'s
-    "arm 0" (a correctly shrunk tail should report zero problems, and it
-    didn't, before this was applied here rather than only at the end).
-    """
-    if not boundaries:
-        return times
-    offset = torch.zeros_like(times)
-    for sid, boundary in boundaries.items():
-        offset = torch.where(sids == sid, boundary, offset)
-    return times + offset
-
-
 def _select_index_positions(
     index_mode: str,
     chunk: StreamingChunk,
@@ -475,10 +450,8 @@ def collect_model_scores(
             sids = chunk.subject_ids
             vids = chunk.visit_ids
             times = chunk.batch.aux.time_stamps
-            if packed and isinstance(sampler, PackedContextSampler):
-                times = _unrebase_truncated_times(
-                    times, sids, sampler.truncation_boundaries
-                )
+            # Packed-path timestamps are already in the true frame (see
+            # packed_context._truncate_head): no un-rebasing.
             # visit start per position, via the unique (subject, visit)
             # keys in this chunk (a few hundred lookups, not one per token)
             keys = torch.stack([sids, vids], dim=-1).reshape(-1, 2)
@@ -525,11 +498,10 @@ def collect_model_scores(
             )
             kept_sids = sids[keep].tolist()
             kept_vids = vids[keep].tolist()
-            # times was already un-rebased above (before _landmark_mask
-            # ever saw it), so kept_times is already in the one shared
-            # "hours since this subject's true first event" frame
-            # everything else here (outcome_at_horizon, EventTimes,
-            # _index_rows_from_events) assumes -- no further adjustment.
+            # times are in the one shared "hours since this subject's true
+            # first event" frame everything else here (outcome_at_horizon,
+            # EventTimes, _index_rows_from_events) assumes -- for both
+            # samplers; no adjustment.
             kept_times = times[keep].tolist()
             truncated_ids = (
                 set(sampler.truncation_boundaries)
@@ -1615,14 +1587,22 @@ def _index_rows_from_events(
     *,
     landmark_hours: float,
     index_mode: str = "landmark",
+    origins: Optional[pl.DataFrame] = None,
+    visit_starts: Optional[Dict[Tuple[int, int], float]] = None,
 ) -> Dict[str, List[IndexRow]]:
     """Index rows straight from events (no model), for baseline fitting.
 
     Landmark buckets by default; ``index_mode="visit_end"`` gives one row
-    per (subject, visit) at the visit's last event.
+    per (subject, visit) at the visit's last event. ``origins`` (subject ->
+    first timed event, :func:`origin_hours`) and ``visit_starts``
+    ((subject, visit) -> hours of the visit's first event) default to the
+    frame's own; pass the FULL record's when ``events_binned`` is a filtered
+    view (the verifier's kept-window truth) so hours and buckets stay in
+    the true frame.
     """
     _check_index_mode(index_mode)
-    origins = origin_hours(events_binned)
+    if origins is None:
+        origins = origin_hours(events_binned)
     timed = (
         events_binned.filter(
             pl.col("time").is_not_null() & pl.col("hadm_id").is_not_null()
@@ -1644,9 +1624,23 @@ def _index_rows_from_events(
             for s, v, t in zip(firsts["subject_id"], firsts["hadm_id"], firsts["_t"])
         ]
         return {a.name: list(rows) for a in alerts}
-    starts = timed.group_by("subject_id", "hadm_id").agg(
-        pl.col("_hours").min().alias("_start")
-    )
+    if visit_starts is None:
+        starts = timed.group_by("subject_id", "hadm_id").agg(
+            pl.col("_hours").min().alias("_start")
+        )
+    else:
+        starts = pl.DataFrame(
+            {
+                "subject_id": [k[0] for k in visit_starts],
+                "hadm_id": [k[1] for k in visit_starts],
+                "_start": [float(v) for v in visit_starts.values()],
+            }
+        ).cast(
+            {
+                "subject_id": timed.schema["subject_id"],
+                "hadm_id": timed.schema["hadm_id"],
+            }
+        )
     timed = timed.join(starts, on=["subject_id", "hadm_id"], how="left").with_columns(
         ((pl.col("_hours") - pl.col("_start")) // landmark_hours).alias("_bucket")
     )
@@ -1672,47 +1666,32 @@ def _landmark_key_set(rows: Sequence[IndexRow]) -> set[Tuple[int, int, float]]:
     return {(row.subject_id, row.visit_id, round(row.time_hours, 6)) for row in rows}
 
 
-def _verify_visit_end_rows(
-    model_rows: Dict[str, List[IndexRow]],
-    ground_truth: Dict[str, List[IndexRow]],
-    alerts: Sequence[AlertEvent],
-    boundaries: Dict[int, float],
-) -> List[str]:
-    """Check visit-end rows (the visit_end branch of verify_packed_landmark_rows)."""
-    truncated_ids = set(boundaries)
-    problems: List[str] = []
-    for alert in alerts:
-        got = _landmark_key_set(model_rows.get(alert.name, []))
-        want = _landmark_key_set(ground_truth.get(alert.name, []))
-        got_steady = {k for k in got if k[0] not in truncated_ids}
-        want_steady = {k for k in want if k[0] not in truncated_ids}
-        if got_steady != want_steady:
-            problems.append(
-                f"{alert.name}: non-truncated subjects' visit-end rows disagree "
-                f"with _index_rows_from_events (missing "
-                f"{len(want_steady - got_steady)}, extra {len(got_steady - want_steady)})"
-            )
-        got_tail = got - got_steady
-        want_tail = want - want_steady
-        invented = got_tail - want_tail
-        if invented:
-            problems.append(
-                f"{alert.name}: {len(invented)} truncated-subject visit-end row(s) "
-                "the packed path produced that ground truth has no row for"
-            )
-        late_missing = [
-            k
-            for k in want_tail - got_tail
-            if k[2] >= boundaries.get(k[0], float("inf"))
-        ]
-        if late_missing:
-            problems.append(
-                f"{alert.name}: {len(late_missing)} truncated-subject visit-end "
-                "row(s) at/after the truncation boundary are missing"
-            )
-    for problem in problems:
-        logger.warning("[alerts] visit-end verification: %s", problem)
-    return problems
+def _visible_after_truncation(
+    events_binned: pl.DataFrame, truncated: Set[int], max_context: int
+) -> pl.DataFrame:
+    """Return the rows a truncated subject's packed window actually kept.
+
+    Mirrors :func:`odyssey.data.sequences.build_patient_sequence`'s token
+    order (timed non-birth rows sorted by time, ties in frame order; static
+    rows lead and are the first to be truncated away) and
+    :class:`~odyssey.data.packed_context.PackedContextSampler`'s tail
+    truncation: the last ``max_context`` timed rows per truncated subject.
+    Other subjects are returned untouched.
+    """
+    is_trunc = pl.col("subject_id").is_in(sorted(truncated))
+    untouched = events_binned.filter(~is_trunc)
+    timed = (
+        events_binned.filter(
+            is_trunc & pl.col("time").is_not_null() & (pl.col("code") != BIRTH_CODE)
+        )
+        .with_row_index("_row")
+        .sort(["subject_id", "time", "_row"], maintain_order=True)
+        .with_columns(pl.col("_row").cum_count().over("subject_id").alias("_pos"))
+        .with_columns(pl.col("_pos").max().over("subject_id").alias("_n"))
+        .filter(pl.col("_pos") > pl.col("_n") - max_context)
+        .drop("_row", "_pos", "_n")
+    )
+    return pl.concat([untouched, timed.select(untouched.columns)])
 
 
 def verify_packed_landmark_rows(
@@ -1723,8 +1702,15 @@ def verify_packed_landmark_rows(
     landmark_hours: float,
     truncation_boundaries: Dict[int, float],
     index_mode: str = "landmark",
+    max_context: Optional[int] = None,
 ) -> List[str]:
     """Compare collect_model_scores' index-row set against the model-free truth.
+
+    ``max_context`` is the packed sampler's window (needed whenever
+    ``truncation_boundaries`` is non-empty): a truncated subject's visible
+    record is the last ``max_context`` timed tokens in the tokenizer's
+    order, which is a token-count tail, not a time cut -- a same-instant
+    bundle at the boundary can be split between kept and dropped rows.
 
     ``index_mode="visit_end"`` compares visit-end rows instead: exact set
     equality for non-truncated subjects; for truncated subjects, no row
@@ -1805,85 +1791,50 @@ def verify_packed_landmark_rows(
     :func:`~odyssey.utils.env_fingerprint.check_canary`'s house style for
     a real-time self-check that must not abort a running evaluation.
     """
-    ground_truth = _index_rows_from_events(
-        events_binned, alerts, landmark_hours=landmark_hours, index_mode=index_mode
+    # Exact truth for what the packed path can see: every subject's full
+    # record, except truncated subjects, whose events before their kept
+    # window start are removed (origins kept from the full record so hours
+    # stay in the true frame). The packed path's index rows must equal this
+    # set exactly -- for both backbones, both index modes -- with no
+    # bucket-level heuristics: the earlier three-arm bucket comparison
+    # flagged a straddling bucket whose kept tokens all belonged to another
+    # visit (entry 44's CPU integration pass, 17 false positives per shard).
+    origins = origin_hours(events_binned)
+    visible = events_binned
+    if truncation_boundaries:
+        if max_context is None:
+            raise ValueError(
+                "verify_packed_landmark_rows needs max_context when subjects were "
+                "truncated (truncation_boundaries is non-empty)"
+            )
+        visible = _visible_after_truncation(
+            events_binned, set(truncation_boundaries), max_context
+        )
+    expected = _index_rows_from_events(
+        visible,
+        alerts,
+        landmark_hours=landmark_hours,
+        index_mode=index_mode,
+        origins=origins,
+        visit_starts=_visit_starts(events_binned),
     )
-    boundaries = truncation_boundaries
-    truncated_ids = set(boundaries)
-    if index_mode == "visit_end":
-        return _verify_visit_end_rows(model_rows, ground_truth, alerts, boundaries)
-    visit_starts = _visit_starts(events_binned)
-
-    def _bucket_of(row: IndexRow) -> int:
-        start = visit_starts.get((row.subject_id, row.visit_id), 0.0)
-        return int((row.time_hours - start) // landmark_hours)
-
-    problems = []
+    problems: List[str] = []
     for alert in alerts:
-        got_rows = model_rows.get(alert.name, [])
-        want_rows = ground_truth.get(alert.name, [])
-        got = _landmark_key_set(got_rows)
-        want = _landmark_key_set(want_rows)
-
-        got_steady = {k for k in got if k[0] not in truncated_ids}
-        want_steady = {k for k in want if k[0] not in truncated_ids}
-        if got_steady != want_steady:
-            missing = len(want_steady - got_steady)
-            extra = len(got_steady - want_steady)
+        got = _landmark_key_set(model_rows.get(alert.name, []))
+        want = _landmark_key_set(expected.get(alert.name, []))
+        if got != want:
+            missing = len(want - got)
+            extra = len(got - want)
             problems.append(
-                f"{alert.name}: non-truncated subjects disagree with "
-                f"_index_rows_from_events (missing {missing}, extra {extra})"
-            )
-
-        got_tail_buckets = {
-            (r.subject_id, r.visit_id, _bucket_of(r)) for r in got_rows if r.is_tail
-        }
-        want_tail_rows_by_bucket: Dict[Tuple[int, int, int], IndexRow] = {
-            (r.subject_id, r.visit_id, _bucket_of(r)): r
-            for r in want_rows
-            if r.subject_id in truncated_ids
-        }
-        want_tail_buckets = set(want_tail_rows_by_bucket)
-
-        invented = got_tail_buckets - want_tail_buckets
-        if invented:
-            problems.append(
-                f"{alert.name}: {len(invented)} truncated-subject landmark "
-                "bucket(s) the packed path produced that ground truth has "
-                "no record of at all (not merely a truncation-shrunk set "
-                "-- a real landmark-selection bug)"
-            )
-        dropped_buckets = want_tail_buckets - got_tail_buckets
-        should_have_kept = []
-        for key in dropped_buckets:
-            subject_id, visit_id, bucket = key
-            start = visit_starts.get((subject_id, visit_id), 0.0)
-            bucket_end = start + (bucket + 1) * landmark_hours
-            # Legitimate only if the WHOLE bucket predates the boundary --
-            # not merely "ground truth's own recorded time for it does":
-            # a bucket the boundary falls inside (the ground-truth time is
-            # before the boundary, since that is exactly the event that
-            # got truncated away, but part of the bucket's range is still
-            # >= boundary, still visible) must still get a landmark from
-            # the packed path -- its own window-start, if nothing else.
-            # Comparing only the ground-truth time here would let a fully
-            # dropped straddling bucket slip through unflagged, confirmed
-            # by test_verify_packed_landmark_rows_tail_aware_all_three_arms'
-            # own "arm 2" before this fix.
-            if bucket_end > boundaries[subject_id]:
-                should_have_kept.append(key)
-        if should_have_kept:
-            problems.append(
-                f"{alert.name}: {len(should_have_kept)} landmark bucket(s) "
-                "at or after a truncated subject's own kept-window start "
-                "are missing entirely from the packed path -- truncation "
-                "should never drop a bucket inside the window it kept"
+                f"{alert.name}: model index rows disagree with the model-free truth "
+                f"on the visible record (missing {missing}, extra {extra}; "
+                f"index_mode={index_mode}, {len(truncation_boundaries)} truncated "
+                "subjects accounted for)"
             )
     for p in problems:
         logger.warning(
-            "[alerts] landmark row-set mismatch, backbone='transformer': %s -- "
-            "the packed-path selection and the model-free ground truth should "
-            "agree exactly outside of expected truncation shrinkage (see "
+            "[alerts] index-row set mismatch: %s -- the model path's selection "
+            "and the model-free truth must agree exactly (see "
             "verify_packed_landmark_rows' docstring); treat these scores as "
             "suspect until this is understood",
             p,
@@ -2147,6 +2098,7 @@ def evaluate_alerts(
         landmark_hours=landmark_hours,
         truncation_boundaries=truncation_boundaries,
         index_mode=index_mode,
+        max_context=getattr(config, "max_context", 4096),
     )
     if verify_against_dump is not None:
         verify_rows_match_dump(rows, times, verify_against_dump, horizons=horizons)
