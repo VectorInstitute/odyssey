@@ -111,13 +111,29 @@ logger = logging.getLogger(__name__)
 #: boundaries -- a patient whose sequence spanned more than one chunk got a
 #: spurious extra landmark row at the boundary (confirmed ~23% over-count
 #: at eICU scale; review findings 8/19).
-#: v2 (current): LandmarkState is threaded across chunks, fixing that.
+#: v2 (2026-08-21 to 2026-08-23): LandmarkState threaded across chunks,
+#: fixing the above -- but still decided "new landmark" by comparing only
+#: to the immediately-preceding token position (``~same_visit``). A
+#: patient's own token order can legitimately interleave two different
+#: visits at one shared timestamp (e.g. a discharge instant that stops
+#: medication orders under both an ending and a starting admission id) --
+#: each interleave step toggled ``~same_visit`` and re-triggered a
+#: landmark even though the bucket had already been landmarked for that
+#: visit, an artifact confirmed at ~1.4% of rows on a real eICU repro.
+#: Affected every backbone (the row-construction path in
+#: collect_model_scores is unconditional on ``packed``), not just
+#: backbone="transformer".
+#: v3 (current): landmark selection tracks, per lane, the last bucket
+#: already emitted per visit (cleared at subject boundaries) and requires
+#: a genuinely new bucket for THAT visit -- matching
+#: _index_rows_from_events' per-(subject, visit, bucket) group-by
+#: semantics exactly, order-of-arrival no longer matters.
 #:
 #: _index_rows_from_events (the model-free path used for baseline fitting)
 #: was never affected -- it has no chunking at all -- so this version only
 #: describes collect_model_scores' output, and only that output carries
 #: the tag (see _stamp_landmark_protocol_version, load_index_row_table).
-LANDMARK_PROTOCOL_VERSION = 2
+LANDMARK_PROTOCOL_VERSION = 3
 
 HORIZONS_HOURS: Tuple[float, ...] = (8.0, 24.0, 72.0)
 
@@ -167,19 +183,20 @@ def outcome_at_horizon(
 
 @dataclass
 class LandmarkState:
-    """Per-lane last-real-position state, threaded across streaming chunks.
+    """Per-lane last-emitted-bucket-per-visit state, threaded across chunks.
 
-    ``bucket``/``subject_id``/``visit_id`` are each ``(lanes,)``: the
-    landmark bucket, subject, and visit of the last *real* (non-padding)
-    position :func:`_landmark_mask` saw in that lane, across every call so
-    far -- the same role the backbone's own recurrent state plays for
-    model weights, carried by the caller from one chunk to the next
-    (see :func:`collect_model_scores`).
+    ``last_bucket_by_lane[lane]`` maps ``visit_id -> the last bucket a
+    landmark was already emitted for``, scoped to that lane's CURRENT
+    subject -- cleared the moment a lane's subject_id changes.
+    ``subject_by_lane[lane]`` is only that lane's most recently seen real
+    subject_id (``NO_SUBJECT`` if the lane has never seen a real position
+    yet), used to detect that transition. Threaded across streaming
+    chunks the same role the backbone's own recurrent state plays for
+    model weights (see :func:`collect_model_scores`).
     """
 
-    bucket: torch.Tensor
-    subject_id: torch.Tensor
-    visit_id: torch.Tensor
+    last_bucket_by_lane: List[Dict[int, int]]
+    subject_by_lane: List[int]
 
 
 def _landmark_mask(
@@ -191,22 +208,39 @@ def _landmark_mask(
     *,
     state: Optional[LandmarkState] = None,
 ) -> Tuple[torch.Tensor, LandmarkState]:
-    """First real position of each visit's ``landmark_hours`` bucket, across chunks.
+    """First position of each (subject, visit, bucket) triple, across chunks.
 
-    Real bug this fixes: an earlier version had no ``state`` parameter at
-    all -- called fresh per chunk, the first position of every chunk was
-    unconditionally treated as a new landmark (nothing to compare it
-    against), so any patient whose sequence spans more than one streaming
-    chunk got a spurious extra landmark row at every chunk boundary, even
-    when that position was still inside the same bucket as the position
-    before it. Confirmed via
-    ``tests/odyssey/inference/test_alerts.py``'s regression test: at
-    eICU scale this over-counted landmark rows by ~23%.
+    Matches :func:`_index_rows_from_events`' per-(subject, visit, bucket)
+    group-by semantics exactly: a position is a landmark iff its bucket
+    has not already been landmarked for that visit (within the lane's
+    current subject), regardless of what token immediately precedes it in
+    the stream.
 
-    ``state`` (``None`` on the first call) carries the previous call's
-    last real position per lane forward; without it, position 0 of every
-    lane falls back to "nothing before it" (matching the original,
-    single-chunk-only behavior) rather than crashing.
+    Two real bugs this has fixed, in order:
+
+    - v1->v2 (2026-08-21): an earlier version had no ``state`` parameter
+      at all -- called fresh per chunk, the first position of every chunk
+      was unconditionally treated as a new landmark, so any patient whose
+      sequence spans more than one streaming chunk got a spurious extra
+      landmark row at every chunk boundary (~23% over-count at eICU
+      scale; ``tests/odyssey/inference/test_alerts.py``'s regression
+      test).
+    - v2->v3 (2026-08-23): even with state carried across chunks, v2
+      compared each position only to the *immediately preceding* one
+      (``~same_visit``) -- so a patient whose own token order legitimately
+      interleaves two different visits at one shared timestamp (a
+      discharge instant stopping medication orders under both an ending
+      and a starting admission id is a real, observed pattern) got a
+      fresh spurious landmark on every interleave step, even though that
+      visit's bucket had already been landmarked. Confirmed at ~1.4% of
+      rows on a real eICU repro; affected every backbone, not just
+      backbone="transformer" (the row-construction path in
+      :func:`collect_model_scores` is unconditional on ``packed``).
+
+    ``state`` (``None`` on the first call) carries each lane's per-visit
+    bucket map forward; without it, every lane starts with no visits
+    known yet (matching the original, single-chunk-only behavior) rather
+    than crashing.
 
     Returns
     -------
@@ -217,52 +251,38 @@ def _landmark_mask(
     lanes, chunk_len = time_hours.shape
     bucket = torch.floor((time_hours - visit_start_hours) / landmark_hours)
 
-    prev_bucket = torch.full_like(bucket, -1.0)
-    prev_bucket[:, 1:] = bucket[:, :-1]
-    prev_subject = torch.full_like(subject_ids, NO_SUBJECT)
-    prev_subject[:, 1:] = subject_ids[:, :-1]
-    prev_visit = torch.full_like(visit_ids, -1)
-    prev_visit[:, 1:] = visit_ids[:, :-1]
-    if state is not None:
-        prev_bucket[:, 0] = state.bucket
-        prev_subject[:, 0] = state.subject_id
-        prev_visit[:, 0] = state.visit_id
-
-    same_visit = (subject_ids == prev_subject) & (visit_ids == prev_visit)
-    new_bucket = (bucket != prev_bucket) | ~same_visit
-    mask = new_bucket & (subject_ids != NO_SUBJECT) & (visit_ids >= 0)
-
-    # Carry forward each lane's LAST real (non-padding) position for the
-    # next call -- if a lane has no real position in this chunk at all
-    # (a fully-padded chunk for that lane), keep whatever state it already
-    # had rather than resetting to "nothing before it".
-    real = subject_ids != NO_SUBJECT
-    positions = torch.arange(chunk_len, device=time_hours.device).unsqueeze(0)
-    real_positions = torch.where(real, positions, torch.full_like(positions, -1))
-    last_idx = real_positions.max(dim=1).values
-    has_real = last_idx >= 0
-    gather_idx = last_idx.clamp(min=0).unsqueeze(1)
-    chunk_last_bucket = bucket.gather(1, gather_idx).squeeze(1)
-    chunk_last_subject = subject_ids.gather(1, gather_idx).squeeze(1)
-    chunk_last_visit = visit_ids.gather(1, gather_idx).squeeze(1)
     if state is None:
-        prev_state_bucket = torch.full(
-            (lanes,), -1.0, dtype=bucket.dtype, device=time_hours.device
-        )
-        prev_state_subject = torch.full(
-            (lanes,), NO_SUBJECT, dtype=subject_ids.dtype, device=time_hours.device
-        )
-        prev_state_visit = torch.full(
-            (lanes,), -1, dtype=visit_ids.dtype, device=time_hours.device
-        )
+        last_bucket_by_lane: List[Dict[int, int]] = [{} for _ in range(lanes)]
+        subject_by_lane: List[int] = [NO_SUBJECT] * lanes
     else:
-        prev_state_bucket = state.bucket
-        prev_state_subject = state.subject_id
-        prev_state_visit = state.visit_id
+        last_bucket_by_lane = state.last_bucket_by_lane
+        subject_by_lane = list(state.subject_by_lane)
+
+    bucket_rows = bucket.tolist()
+    subject_rows = subject_ids.tolist()
+    visit_rows = visit_ids.tolist()
+    mask = torch.zeros((lanes, chunk_len), dtype=torch.bool)
+
+    for lane in range(lanes):
+        lane_buckets = last_bucket_by_lane[lane]
+        current_subject = subject_by_lane[lane]
+        for pos in range(chunk_len):
+            subject_id = subject_rows[lane][pos]
+            visit_id = visit_rows[lane][pos]
+            if subject_id == NO_SUBJECT or visit_id < 0:
+                continue  # padding, or a static/demographic token
+            if subject_id != current_subject:
+                lane_buckets = {}
+                last_bucket_by_lane[lane] = lane_buckets
+                current_subject = subject_id
+            this_bucket = int(bucket_rows[lane][pos])
+            if lane_buckets.get(visit_id) != this_bucket:
+                mask[lane, pos] = True
+                lane_buckets[visit_id] = this_bucket
+        subject_by_lane[lane] = current_subject
+
     new_state = LandmarkState(
-        bucket=torch.where(has_real, chunk_last_bucket, prev_state_bucket),
-        subject_id=torch.where(has_real, chunk_last_subject, prev_state_subject),
-        visit_id=torch.where(has_real, chunk_last_visit, prev_state_visit),
+        last_bucket_by_lane=last_bucket_by_lane, subject_by_lane=subject_by_lane
     )
     return mask, new_state
 
@@ -1557,14 +1577,20 @@ def verify_packed_landmark_rows(
     landmark_hours: float,
     truncation_boundaries: Dict[int, float],
 ) -> List[str]:
-    """Compare backbone="transformer"'s landmark set against the model-free truth.
+    """Compare collect_model_scores' landmark set against the model-free truth.
 
     Two independent implementations of "which (subject, visit, time)
-    triples are landmarks" (:func:`collect_model_scores`'s packed path
-    and :func:`_index_rows_from_events`) only get to coexist once they
-    are shown to agree, not assumed to -- this is that proof, run for
-    real every time backbone="transformer" scores a run
-    (:func:`evaluate_alerts`), not only in tests.
+    triples are landmarks" (:func:`collect_model_scores`, either backbone,
+    and :func:`_index_rows_from_events`) only get to coexist once they are
+    shown to agree, not assumed to -- this is that proof, run for real
+    every time a run is scored (:func:`evaluate_alerts`), not only in
+    tests. Originally written and gated to backbone="transformer" only;
+    generalized 2026-08-23 after the v2->v3 landmark-selection bug turned
+    out to affect backbone="hybrid" too and nothing had ever verified it
+    (``truncation_boundaries`` stays empty for that backbone, so every
+    subject goes through the exact-match branch below -- the
+    truncated-subject branches only ever trigger for
+    ``PackedContextSampler``, which never gets used with backbone="hybrid").
 
     Truncated subjects (``IndexRow.is_tail``) are compared differently
     from everyone else, or a real evaluation at ``max_context=4096``
@@ -1776,14 +1802,22 @@ def evaluate_alerts(
         max_context=getattr(config, "max_context", 4096),
         truncation_boundaries_out=truncation_boundaries,
     )
-    if backbone == "transformer":
-        verify_packed_landmark_rows(
-            rows,
-            binned,
-            alerts,
-            landmark_hours=landmark_hours,
-            truncation_boundaries=truncation_boundaries,
-        )
+    # Runs for every backbone, not just "transformer": collect_model_scores'
+    # row-construction path is unconditional on `packed` (see its own
+    # docstring), so a landmark-selection bug isn't backbone-specific --
+    # confirmed the hard way when the v2->v3 interleaved-visit bug turned
+    # out to affect backbone="hybrid" dumps too, silently, because nothing
+    # verified them. truncation_boundaries stays {} for backbone="hybrid"
+    # (only PackedContextSampler ever populates it), so every subject goes
+    # through the exact-match branch -- the truncated-subject branches are
+    # simply never triggered, not skipped by a backbone check.
+    verify_packed_landmark_rows(
+        rows,
+        binned,
+        alerts,
+        landmark_hours=landmark_hours,
+        truncation_boundaries=truncation_boundaries,
+    )
 
     baselines = None
     features_by_event = None
