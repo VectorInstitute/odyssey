@@ -205,7 +205,14 @@ def main() -> None:  # noqa: PLR0915
     )
     empty = pl.DataFrame()
 
-    logger.info("[rescore] fitting TabICL (strong features)")
+    # TabICL on the BASIC feature set, for two reasons that point the same
+    # way: (1) comparability -- every completed TabICL run in this project
+    # (the eICU rows in docs/experiments.md) used basic, so a strong-feature
+    # MIMIC row would not be like-for-like; (2) cost -- TabICL re-reads its
+    # whole context per call at O(n^2 + n*m^2), so 609 columns is ~70 GB per
+    # call versus ~8 GB at 17 (three OOM-kills, 2026-08-23; see
+    # tabicl_baseline.estimate_peak_gb, which now refuses such a fit).
+    logger.info("[rescore] fitting TabICL (basic features)")
     tabicl_models = fit_tabicl_baselines(
         empty,
         train.rows,
@@ -213,7 +220,8 @@ def main() -> None:  # noqa: PLR0915
         horizons=horizons,
         source=source,
         cache=cache,
-        features=train.features["strong"],
+        features=train.features["basic"],
+        feature_set="basic",
     )
     logger.info("[rescore] fitting EBM (strong features)")
     ebm_models = fit_ebm_baselines(
@@ -259,7 +267,7 @@ def main() -> None:  # noqa: PLR0915
         scores["survivalpfn"][event] = {}
         for h in horizons:
             for name, models, feats in (
-                ("tabicl", tabicl_models, strong_features),
+                ("tabicl", tabicl_models, basic_features),
                 ("ebm", ebm_models, strong_features),
                 ("survivalpfn", survivalpfn_models, basic_features),
             ):

@@ -72,26 +72,63 @@ logger = logging.getLogger(__name__)
 # of whatever query batch predict_proba is later called with).
 _PREDICT_BATCH_SIZE = 8192
 
-# Peak inference memory scales with (context rows x query rows) per forward
-# pass, times the ensemble size: a fixed query batch is therefore NOT a
-# memory bound, because the context size varies per fit (up to
-# TABICL_MAX_ROWS). A second real OOM-kill (2026-08-23, MIMIC rescore, ~71
-# GB RSS, no traceback -- the kernel killed it) came from an 8192-row query
-# batch against a ~50k-row context. The effective batch is capped so that
-# context x query stays under this budget, with a floor so a huge context
-# cannot drive the batch to 1. Override with ODYSSEY_TABICL_PAIR_BUDGET
-# when profiling; the default is deliberately conservative (a ~50k context
-# gives a 2048-row batch).
-_PAIR_BUDGET = int(os.environ.get("ODYSSEY_TABICL_PAIR_BUDGET", "100000000"))
-_MIN_PREDICT_BATCH = 512
+# Inference cost, per this module's docstring and confirmed the hard way:
+# roughly O(n^2 + n*m^2) in context rows n and feature columns m, per
+# ensemble member, re-paid on EVERY predict_proba call (the whole context
+# is re-read each time). The query batch is NOT the lever -- three
+# separate OOM-kills proved it: an unbatched call, then 8192-row batches,
+# then 2000-row batches, and finally a single isolated 2000-row call
+# against a 50k x 609 context reaching ~70 GB before it returned
+# (2026-08-23). With m = 609 the n*m^2 term alone is ~1.9e10 per member.
+# So the cost is governed at FIT time, by how large a context (and how
+# wide a feature set) the fit keeps -- checked below, loudly, instead of
+# discovered as a kernel kill hours later.
+# Calibration anchor, measured on this box (2026-08-23): a 50,000-row x
+# 609-feature context with 8 estimators peaked at ~70 GB in a SINGLE
+# predict_proba call, i.e. ~4.2e-10 GB per unit of n_estimators*(n^2 +
+# n*m^2). The eICU configurations that have run to completion here
+# (50,000 x ~17 basic features) come to ~8 GB by the same constant.
+_GB_PER_COST_UNIT = 70.0 / (8.0 * (50_000.0**2 + 50_000.0 * 609.0**2))
+_MEMORY_BUDGET_GB = float(os.environ.get("ODYSSEY_TABICL_MEMORY_BUDGET_GB", "16"))
+
+
+def estimate_peak_gb(n_context_rows: int, n_features: int, n_estimators: int) -> float:
+    """Estimated peak RSS of one predict_proba call, in GB.
+
+    From this module's documented cost shape, ``O(n^2 + n*m^2)`` per
+    ensemble member in context rows ``n`` and feature columns ``m``,
+    scaled by a measured anchor (see :data:`_GB_PER_COST_UNIT`). The whole
+    context is re-read on every call, so this is a per-call peak, not a
+    one-off setup cost, and query batching does not reduce it.
+    """
+    n, m = float(n_context_rows), float(n_features)
+    return _GB_PER_COST_UNIT * float(n_estimators) * (n * n + n * m * m)
+
+
+def check_inference_cost(
+    n_context_rows: int, n_features: int, n_estimators: int, *, context: str
+) -> None:
+    """Raise before fitting a TabICL configuration that cannot then be scored."""
+    peak = estimate_peak_gb(n_context_rows, n_features, n_estimators)
+    if peak > _MEMORY_BUDGET_GB:
+        raise ValueError(
+            f"{context}: this TabICL fit would need an estimated {peak:.0f} GB "
+            f"per predict_proba call (context {n_context_rows} rows x "
+            f"{n_features} features x {n_estimators} estimators), over the "
+            f"{_MEMORY_BUDGET_GB:.0f} GB budget. Query batching does not reduce "
+            "it: the whole context is re-read every call (three confirmed "
+            "OOM-kills, 2026-08-23, the last from a single 2000-row call). Use "
+            "the basic feature set (what every completed TabICL run in this "
+            "project has used: ~8 GB at the same context size), lower "
+            "TABICL_MAX_ROWS, or raise ODYSSEY_TABICL_MEMORY_BUDGET_GB knowing "
+            "the memory is real."
+        )
 
 
 def predict_batch_size(n_context_rows: int) -> int:
-    """Query rows per forward pass for a fit with ``n_context_rows`` context."""
-    if n_context_rows <= 0:
-        return _PREDICT_BATCH_SIZE
-    budgeted = _PAIR_BUDGET // max(n_context_rows, 1)
-    return int(max(_MIN_PREDICT_BATCH, min(_PREDICT_BATCH_SIZE, budgeted)))
+    """Query rows per forward pass; the query axis is a minor term (see above)."""
+    del n_context_rows
+    return _PREDICT_BATCH_SIZE
 
 
 # Cap on the in-context training set TabICL actually sees, per (event,
@@ -176,13 +213,12 @@ class TabICLBaselineModel:
     def predict_proba(self, x: np.ndarray) -> np.ndarray:
         """Positive-class (label ``1``) probabilities, ``(n,)``.
 
-        Batched over the query dimension, in chunks sized by
-        :func:`predict_batch_size` against this fit's own context size --
-        see :data:`_PAIR_BUDGET` (two real, confirmed OOM crashes: an
-        unbatched query set, then a fixed 8192-row batch against a ~50k
-        context). Asserts the batched output length matches the
-        input length, since a silent row drop here would be far worse
-        than the crash this exists to prevent.
+        Batched over the query dimension (:func:`predict_batch_size`) so a
+        huge query set is not materialized at once; note that the query
+        axis is the MINOR term -- peak memory is set at fit time by the
+        context and feature count (:func:`check_inference_cost`). Asserts
+        the batched output length matches the input length, since a silent
+        row drop here would be far worse than the crash it prevents.
         """
         if self.all_nan_cols is not None:
             x = x.copy()
@@ -238,7 +274,10 @@ def _fit_one_tabicl(
     rng = np.random.default_rng(seed)
     out: dict[float, TabICLBaselineModel] = {}
     for h in horizons:
-        cache_key = f"tabicl/{event_name}/{h:g}h"
+        # The feature set is part of the key: a fit is only reusable for the
+        # same feature matrix (a strong-feature fit scored with basic columns
+        # would be silently wrong, or crash on shape at best).
+        cache_key = f"tabicl/{feature_set}/{event_name}/{h:g}h"
         if cache is not None:
             cached = cache.load(cache_key)
             if cached is not None:
@@ -267,6 +306,12 @@ def _fit_one_tabicl(
             n_estimators=n_estimators,
             device=device,
             random_state=seed,
+        )
+        check_inference_cost(
+            len(keep),
+            int(x_all.shape[1]),
+            n_estimators,
+            context=f"{event_name}@{h:g}h ({feature_set} features)",
         )
         clf.fit(x_fit, y_fit)
         out[h] = TabICLBaselineModel(

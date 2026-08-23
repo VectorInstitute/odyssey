@@ -186,7 +186,8 @@ def _fit_one_ebm(
     rng = np.random.default_rng(seed)
     out: dict[float, EBMBaselineModel] = {}
     for h in horizons:
-        cache_key = f"ebm/{event_name}/{h:g}h"
+        # Keyed by feature set too: see tabicl_baseline's note.
+        cache_key = f"ebm/{feature_set}/{event_name}/{h:g}h"
         if cache is not None:
             cached = cache.load(cache_key)
             if cached is not None:
