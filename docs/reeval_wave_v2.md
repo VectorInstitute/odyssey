@@ -200,3 +200,18 @@ check is one line against both dumps' `.height`.
   if a wave-in-progress marker or an existing dump under active comparison
   is present) so an ordinary eval run can't silently destroy a wave
   precondition again.
+- **Precision note, 2026-08-23**: `time_stamps` is now stacked as
+  `torch.double` rather than `torch.float` in both
+  `odyssey/data/packed_context.py` and `odyssey/data/streaming.py`
+  (root-caused chasing `verify_packed_landmark_rows`' real-data
+  disagreement -- float32 loses enough precision at real-data time
+  magnitudes, hundreds of hours since a subject's origin, to disagree
+  with `_index_rows_from_events`' float64 ground truth at the 6th
+  decimal place). This can shift a dump's `time_hours` values by up to
+  ~1e-6 hours (a few milliseconds) relative to dumps produced before this
+  fix landed -- below every decision threshold this wave cares about, but
+  stamped here so a future exact-key join across pre-fix and post-fix
+  dumps isn't surprised by a landmark that "moved." The model's own
+  forward pass is unaffected (`TimeEmbeddingLayer.forward` already casts
+  to float32 internally before use); this only touches the
+  landmark-bookkeeping and `IndexRow.time_hours` path.

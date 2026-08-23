@@ -354,3 +354,51 @@ def test_packing_is_deterministic_given_the_same_patient_order() -> None:
     assert torch.equal(chunk_1.batch.concept_ids, chunk_2.batch.concept_ids)
     assert torch.equal(chunk_1.reset_mask, chunk_2.reset_mask)
     assert torch.equal(chunk_1.subject_ids, chunk_2.subject_ids)
+
+
+# ---------------------------------------------------------------------------
+# Time precision (real-data scale)
+# ---------------------------------------------------------------------------
+
+
+def test_time_stamps_survive_real_data_magnitude_at_double_precision() -> None:
+    """time_stamps must stay float64 through packing, not silently narrow to float32.
+
+    Regression test for a real bug: verify_packed_landmark_rows disagreed
+    with _index_rows_from_events' model-free ground truth on real eICU
+    data -- 38,424 missing / 40,727 extra landmark rows on one alert
+    event alone. Root cause, confirmed via a local repro (tiny CPU
+    TransformerBackbone + PackedContextSampler over real eICU held-out
+    shards): every single mismatch paired up as the same (subject, visit,
+    bucket) landmark at nearly the same time, off by ~1e-6 hours -- e.g.
+    434.416667 (the float64 ground truth, computed by polars) vs
+    434.416656 (the packed path's own value). That gap is exactly
+    float32's precision loss at real-data time magnitudes (hundreds of
+    hours since a subject's origin): torch.tensor(434.416667,
+    dtype=torch.float) rounds to 434.4166564941406, a different value at
+    the 6th decimal place, which is exactly what
+    ``_landmark_key_set``'s round-to-6-decimals comparison guard is
+    sensitive to. 434.416667 here is the literal value observed in that
+    real-data repro, not a hand-picked adversarial one -- ordinary
+    patient timelines hit this given long enough follow-up.
+    """
+    real_data_hours = 434.416667
+    seq = PatientSequence(
+        subject_id=1,
+        concept_ids=[1000, 1001],
+        type_ids=[1, 1],
+        time_stamps=[0.0, real_data_hours],
+        ages=[30.0, 30.0],
+        visit_orders=[0, 0],
+        visit_segments=[0, 0],
+    )
+    sampler = PackedContextSampler(_patients([seq]), batch_size=1, max_context=8)
+
+    chunk = sampler.next_chunk()
+
+    assert chunk is not None
+    assert chunk.batch.aux.time_stamps.dtype == torch.double
+    recovered = float(chunk.batch.aux.time_stamps[0, 1])
+    assert round(recovered, 6) == real_data_hours, (
+        f"time_stamps lost precision in packing: {real_data_hours} -> {recovered}"
+    )
