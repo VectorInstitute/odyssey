@@ -477,3 +477,56 @@ def test_fit_survivalpfn_baselines_refits_when_the_cache_is_from_a_different_env
         binned, rows, times, horizons=(8.0,), feature_set="basic", cache=reader
     )
     assert len(_FakeEstimator.instances) == 2
+
+
+def test_survival_targets_administratively_censor_at_the_cap() -> None:
+    """Follow-up beyond the cap becomes censored AT the cap, not an event.
+
+    Real defect this fixes (2026-08-23, MIMIC-IV): death is subject-scoped,
+    so its uncapped time-to-event had a median of 6,915 h against an 8/24/72 h
+    alert window (3.3% of events inside 72 h). The fitted survival curve was
+    flat at 1.0 across that window and ``1 - S(h)`` came back a literal
+    constant 0.0 at every horizon. The visit-scoped events (medians 60-100 h)
+    were unaffected, which is why this surfaced on one column only.
+    """
+    from odyssey.inference import survivalpfn_baseline as spfn  # noqa: PLC0415
+
+    _survival_targets = spfn._survival_targets
+
+    rows = [
+        IndexRow(subject_id=1, visit_id=-1, time_hours=0.0),  # event at 10h
+        IndexRow(subject_id=2, visit_id=-1, time_hours=0.0),  # event at 5000h
+        IndexRow(subject_id=3, visit_id=-1, time_hours=0.0),  # censored at 5000h
+    ]
+    times = EventTimes(
+        onset={(1, -1): 10.0, (2, -1): 5000.0},
+        censor={(1, -1): 20.0, (2, -1): 6000.0, (3, -1): 5000.0},
+        subject_scoped=True,
+    )
+    t, delta, keep = _survival_targets(rows, times, None)
+    assert t.tolist() == [10.0, 5000.0, 5000.0]
+    assert delta.tolist() == [1.0, 1.0, 0.0]
+    assert keep.tolist() == [0, 1, 2]
+
+    t, delta, keep = _survival_targets(rows, times, 72.0)
+    assert t.tolist() == [10.0, 72.0, 72.0]  # both long rows cut to the cap
+    assert delta.tolist() == [1.0, 0.0, 0.0]  # and treated as censored there
+    assert keep.tolist() == [0, 1, 2]  # the row set itself is unchanged
+
+
+def test_followup_cap_defaults_to_the_largest_horizon() -> None:
+    """The default cap matches the question the other baselines answer."""
+    import inspect  # noqa: PLC0415
+
+    from odyssey.inference import survivalpfn_baseline as spfn  # noqa: PLC0415
+
+    default = (
+        inspect.signature(spfn.fit_survivalpfn_baselines)
+        .parameters["followup_cap_hours"]
+        .default
+    )
+    assert default is spfn._CAP_AT_MAX_HORIZON
+    # and the cap is part of the cache key, so a differently-capped fit is
+    # never silently reused (the feature-set lesson, same day)
+    source = inspect.getsource(spfn)
+    assert 'cache_key = f"survivalpfn/{cap_tag}/{event_name}"' in source
