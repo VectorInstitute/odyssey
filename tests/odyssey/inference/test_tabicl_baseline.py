@@ -100,6 +100,75 @@ def test_predict_proba_handles_a_non_standard_class_column_order() -> None:
     assert np.allclose(p, [0.1, 0.8])
 
 
+class _BatchRecordingClf:
+    """Records the size of every predict_proba call it receives.
+
+    Returns a running-offset-based value (not reset per call) so
+    concatenation order across batches is actually distinguishable, not
+    just total row count.
+    """
+
+    def __init__(self) -> None:
+        self.classes_ = np.array([0, 1])
+        self.call_sizes: List[int] = []
+        self._seen = 0
+
+    def predict_proba(self, x: np.ndarray) -> np.ndarray:
+        self.call_sizes.append(x.shape[0])
+        col1 = self._seen + np.arange(x.shape[0], dtype=float)
+        self._seen += x.shape[0]
+        return np.stack([1.0 - col1, col1], axis=1)
+
+
+def test_predict_proba_batches_large_query_sets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test for a real OOM.
+
+    A real MIMIC rescore attempted a ~216GB allocation calling
+    predict_proba unbatched on 552,000 query rows. Query-side batching
+    must split large calls into chunks no larger than
+    _PREDICT_BATCH_SIZE, and reassemble results in the original row
+    order.
+    """
+    monkeypatch.setattr(tabicl_module, "_PREDICT_BATCH_SIZE", 10)
+    clf = _BatchRecordingClf()
+    model = TabICLBaselineModel(clf, feature_set="strong", n_features=3)
+
+    n = 25
+    p = model.predict_proba(np.zeros((n, 3)))
+
+    assert clf.call_sizes == [10, 10, 5]  # 3 chunks, last one smaller
+    assert np.allclose(p, np.arange(n, dtype=float))  # order preserved
+
+
+def test_predict_proba_empty_input_returns_empty_without_calling_clf() -> None:
+    clf = _BatchRecordingClf()
+    model = TabICLBaselineModel(clf, feature_set="strong", n_features=3)
+    p = model.predict_proba(np.zeros((0, 3)))
+    assert p.shape == (0,)
+    assert clf.call_sizes == []
+
+
+class _RowDroppingClf:
+    """Silently drops a row -- simulates the failure the length assert catches."""
+
+    classes_ = np.array([0, 1])
+
+    def predict_proba(self, x: np.ndarray) -> np.ndarray:
+        n = max(x.shape[0] - 1, 0)
+        return np.zeros((n, 2))
+
+
+def test_predict_proba_raises_if_a_batch_silently_drops_a_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tabicl_module, "_PREDICT_BATCH_SIZE", 10)
+    model = TabICLBaselineModel(_RowDroppingClf(), feature_set="strong", n_features=3)
+    with pytest.raises(AssertionError, match="silently dropped"):
+        model.predict_proba(np.zeros((5, 3)))
+
+
 def test_tabicl_baseline_model_defaults_and_params() -> None:
     model = TabICLBaselineModel(_FakeClf(np.array([0, 1]), np.zeros((0, 2))))
     assert model.feature_set == "strong"
