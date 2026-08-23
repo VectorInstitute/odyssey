@@ -223,6 +223,7 @@ dry run):
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import json
@@ -3246,7 +3247,7 @@ class MedsShardWriter:
         return _logical_shard_row_counts(self.output_dir)
 
     def discard_incomplete_writers(self) -> None:
-        """Safely abandon every still-open writer's ``.tmp`` file, in-memory state included.
+        """Safely abandon every still-open writer's ``.tmp`` file.
 
         Meant to be called from an ``except`` clause wrapping the table
         currently mid-flight when it raises -- see :func:`_extract_one_table`.
@@ -3262,19 +3263,17 @@ class MedsShardWriter:
         from scratch under a fresh part number, losing nothing and
         double-counting nothing.
 
-        Deliberately does *not* try to close each ``pq.ParquetWriter``
-        cleanly first: the exception being handled may have left the
-        writer or the underlying connection in an unknown state, and
-        since the ``.tmp`` file is being deleted regardless, there is
-        nothing to gain from risking a second exception out of ``close()``
-        -- any secondary error there is swallowed, not re-raised, so the
+        Best-effort ``close()`` first (so pyarrow releases its own file
+        handle cleanly where possible), but the exception being handled
+        may have left the writer or connection in an unknown state, so
+        any secondary error out of ``close()`` itself is swallowed, not
+        re-raised -- the ``.tmp`` file is deleted regardless, and the
         caller's original exception is what actually propagates.
         """
         for shard, writer in self._writers.items():
-            try:
+            # Best-effort only -- the tmp file is discarded regardless.
+            with contextlib.suppress(Exception):
                 writer.close()
-            except Exception:  # noqa: BLE001 -- best-effort; the tmp file is discarded either way
-                pass
             tmp_path, _final_path = self._writer_paths.get(shard, (None, None))
             if tmp_path is not None and tmp_path.exists():
                 logger.warning(
@@ -3402,12 +3401,13 @@ def _extract_one_table(
     table crashed before the single end-of-run ``close()`` ever ran) this
     ordering closes.
 
-    If this table's own batch loop raises, :meth:`MedsShardWriter.discard_incomplete_writers`
-    cleans up before the exception propagates -- safe now that a writer
-    only ever touches a ``.tmp`` name until :meth:`MedsShardWriter.flush_all`
-    renames it (see that method's own docstring for why the durability
-    fix's original commit explicitly rejected doing this before the
-    atomic-visibility fix existed).
+    If this table's own batch loop raises,
+    :meth:`MedsShardWriter.discard_incomplete_writers` cleans up before the
+    exception propagates -- safe now that a writer only ever touches a
+    ``.tmp`` name until :meth:`MedsShardWriter.flush_all` renames it (see
+    that method's own docstring for why the durability fix's original
+    commit explicitly rejected doing this before the atomic-visibility
+    fix existed).
     """
     logger.info("[extract_meds] extracting %s...", table_name)
     report_progress = _log_table_progress(table_name)

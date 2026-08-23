@@ -2346,12 +2346,11 @@ def test_writer_writes_to_a_tmp_path_and_only_the_rename_makes_it_countable(
 def test_clean_leftover_tmp_files_deletes_and_logs_an_orphan_at_startup(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Real incident: a killed process's truncated tmp part-file, left under
+    """A fresh MedsShardWriter must never let a leftover .tmp file linger.
 
+    Real incident: a killed process's truncated tmp part-file, left under
     a countable final name before this fix existed, was only discovered
-    much later by a corrupt-file crash deep in a resumed run. A fresh
-    MedsShardWriter must never let a leftover .tmp file from a *previous*
-    process linger where a later rename or glob could ever reach it.
+    much later by a corrupt-file crash deep in a resumed run.
     """
     mod = _load_module()
     orphan = tmp_path / "shard_0000.parquet.tmp"
@@ -2375,12 +2374,12 @@ def test_clean_leftover_tmp_files_is_a_noop_when_nothing_is_there(
 def test_logical_shard_row_counts_fails_loud_with_the_offending_path(
     tmp_path: Path,
 ) -> None:
-    """Real incident: an OOM-killed process left a truncated, footer-less
+    """A corrupt final-named file must never be silently skipped.
 
+    Real incident: an OOM-killed process left a truncated, footer-less
     file under a *final*, countable name (before the atomic tmp-then-
     rename fix existed); pq.ParquetFile's ArrowInvalid carried no path,
-    forcing a manual scan of 1,000+ files to find the one bad one. A
-    corrupt final-named file must never be silently skipped, and the
+    forcing a manual scan of 1,000+ files to find the one bad one. The
     error must name exactly which path is bad.
     """
     mod = _load_module()
@@ -2417,7 +2416,10 @@ def test_discard_incomplete_writers_removes_only_tmp_files_and_clears_state(
     # have, once SHARD_FLUSH_ROW_THRESHOLD had been crossed at least once).
     writer._writer_for(0)
     writer._writer_for(1)
-    tmp_paths = [tmp_path / "shard_0000.parquet.tmp", tmp_path / "shard_0001.parquet.tmp"]
+    tmp_paths = [
+        tmp_path / "shard_0000.parquet.tmp",
+        tmp_path / "shard_0001.parquet.tmp",
+    ]
     assert all(p.exists() for p in tmp_paths)
 
     writer.discard_incomplete_writers()
