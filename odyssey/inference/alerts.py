@@ -599,7 +599,7 @@ def collect_model_scores_at_rows(  # noqa: PLR0912, PLR0915
     backbone: str = "hybrid",
     max_context: int = 4096,
     truncation_boundaries_out: Optional[Dict[int, float]] = None,
-) -> Tuple[Dict[str, List[IndexRow]], int]:
+) -> Tuple[Dict[str, List[IndexRow]], List[Tuple[int, int, float]]]:
     """Score the model at GIVEN index rows (the missingness protocol's path).
 
     ``index_rows`` are (subject, visit, time) triples fixed by the CLEAN
@@ -608,10 +608,11 @@ def collect_model_scores_at_rows(  # noqa: PLR0912, PLR0915
     the row's time when one exists (the landmark convention), else at the
     last visible token BEFORE it: what the model knows as of that instant,
     given this record. Rows with no visible token at or before their time
-    are unscoreable and counted (second return value); the returned rows
-    keep the given keys exactly, so the row set is identical across
-    degradation cells by construction (docs/missingness_protocol.md,
-    Principle 3), whatever the degraded record's own landmark grid would be.
+    are unscoreable and returned as keys (second return value) -- never
+    scored with a later token, which would leak the future; every other
+    returned row keeps its given key, so the row set is the clean one minus
+    those keys, whatever the degraded record's own landmark grid would be
+    (docs/missingness_protocol.md, Principle 3).
     For the lane sampler the last position of a continuing subject is
     carried across chunks so "the last visible token before t" is exact
     across chunk boundaries.
@@ -638,7 +639,7 @@ def collect_model_scores_at_rows(  # noqa: PLR0912, PLR0915
         target_list.sort(key=lambda x: x[1])
     pointer: Dict[int, int] = dict.fromkeys(targets, 0)
     rows: Dict[str, List[IndexRow]] = {a.name: [] for a in alerts}
-    unscoreable = 0
+    unscoreable: List[Tuple[int, int, float]] = []
 
     patients = iter_patient_sequences(
         events_binned, vocab, signal_panel=getattr(model, "signal_panel", None)
@@ -734,7 +735,7 @@ def collect_model_scores_at_rows(  # noqa: PLR0912, PLR0915
                     # targets strictly before this token: score at the previous token
                     while ptr < len(lst) and lst[ptr][1] < t_i:
                         if prev_out is None:
-                            unscoreable += 1
+                            unscoreable.append((sid, lst[ptr][0], lst[ptr][1]))
                         else:
                             emit(
                                 sid,
@@ -781,7 +782,7 @@ def collect_model_scores_at_rows(  # noqa: PLR0912, PLR0915
                     del carry[lane]
     # subjects never seen at all (absent from the record): all their rows unscoreable
     for sid, lst in targets.items():
-        unscoreable += len(lst) - pointer[sid]
+        unscoreable.extend((sid, v, t) for v, t in lst[pointer[sid] :])
     _export_truncation_boundaries(sampler, truncation_boundaries_out)
     return rows, unscoreable
 
@@ -1712,8 +1713,14 @@ def verify_rows_match_dump(
     dump_path: Union[str, Path],
     *,
     horizons: Sequence[float] = HORIZONS_HOURS,
+    ignore_keys: Optional[Set[Tuple[int, int, float]]] = None,
 ) -> None:
     """Assert a freshly-reconstructed row set exactly matches a saved dump.
+
+    ``ignore_keys`` are dump rows known to be absent from the reconstruction
+    for a stated reason (the missingness protocol's unscoreable rows: clean
+    landmarks before the degraded record's first visible token); the dump
+    is compared minus those, and the outcome check covers the rest.
 
     For baseline scripts that keep their own row/feature source (e.g.
     ``collect_model_scores``'s live forward pass) unchanged across protocol
@@ -1741,6 +1748,24 @@ def verify_rows_match_dump(
     cohort).
     """
     dump = load_index_row_table(dump_path)
+    ignored = ignore_keys or set()
+    if ignored:
+        ignore_frame = pl.DataFrame(
+            {
+                "subject_id": [s for s, _, _ in ignored],
+                "visit_id": [v for _, v, _ in ignored],
+                "time_hours": [t for _, _, t in ignored],
+            }
+        ).cast(
+            {
+                "subject_id": dump.schema["subject_id"],
+                "visit_id": dump.schema["visit_id"],
+                "time_hours": dump.schema["time_hours"],
+            }
+        )
+        dump = dump.join(
+            ignore_frame, on=["subject_id", "visit_id", "time_hours"], how="anti"
+        )
     for event_name, event_rows in rows.items():
         dump_ev = dump.filter(pl.col("event") == event_name)
         own_keys = sorted((r.subject_id, r.visit_id, r.time_hours) for r in event_rows)
@@ -2228,7 +2253,7 @@ def _score_degraded_at_clean_rows(
     backbone: str,
     max_context: int,
     truncation_boundaries_out: Dict[int, float],
-) -> Dict[str, List[IndexRow]]:
+) -> Tuple[Dict[str, List[IndexRow]], Set[Tuple[int, int, float]]]:
     """Missingness protocol: score the CLEAN dump's rows on the degraded record.
 
     The degraded record's own landmark grid is never used (lab lag shifts
@@ -2257,13 +2282,20 @@ def _score_degraded_at_clean_rows(
         max_context=max_context,
         truncation_boundaries_out=truncation_boundaries_out,
     )
-    logger.info(
-        "[alerts] scored %d clean rows on the degraded record (%d unscoreable: no "
-        "visible token at/before the row time)",
-        len(dump_rows),
-        unscoreable,
-    )
-    return rows
+    if unscoreable:
+        logger.warning(
+            "[alerts] %d of %d clean rows are unscoreable on the degraded record "
+            "(no visible token at/before the row time: clean landmarks before the "
+            "degraded record's kept-window start); excluded from this cell's "
+            "metrics and from the dump comparison, never scored with a later token",
+            len(unscoreable),
+            len(dump_rows),
+        )
+    else:
+        logger.info(
+            "[alerts] scored all %d clean rows on the degraded record", len(dump_rows)
+        )
+    return rows, set(unscoreable)
 
 
 def evaluate_alerts(  # noqa: PLR0912, PLR0915
@@ -2387,8 +2419,9 @@ def evaluate_alerts(  # noqa: PLR0912, PLR0915
             "[alerts] collecting model scores at %.0fh landmarks", landmark_hours
         )
     truncation_boundaries: Dict[int, float] = {}
+    unscoreable_keys: Set[Tuple[int, int, float]] = set()
     if degraded_shard_dir is not None:
-        rows = _score_degraded_at_clean_rows(
+        rows, unscoreable_keys = _score_degraded_at_clean_rows(
             model,
             binned,
             vocab,
@@ -2441,7 +2474,13 @@ def evaluate_alerts(  # noqa: PLR0912, PLR0915
             max_context=getattr(config, "max_context", 4096),
         )
     if verify_against_dump is not None:
-        verify_rows_match_dump(rows, times, verify_against_dump, horizons=horizons)
+        verify_rows_match_dump(
+            rows,
+            times,
+            verify_against_dump,
+            horizons=horizons,
+            ignore_keys=unscoreable_keys or None,
+        )
 
     baselines, features_by_event = _fit_and_score_gbm_baselines(
         baseline_shard_dir,
