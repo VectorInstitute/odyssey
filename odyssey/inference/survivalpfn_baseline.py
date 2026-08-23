@@ -72,12 +72,13 @@ import logging
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 import polars as pl
 
 from odyssey.inference.alerts import EventTimes, IndexRow, features_for_events
+from odyssey.inference.fit_cache import FitCache
 
 
 logger = logging.getLogger(__name__)
@@ -260,6 +261,7 @@ def _fit_one_survivalpfn(
     event_name: str,
     device: str,
     max_rows: int,
+    cache: Optional[FitCache] = None,
 ) -> dict[float, SurvivalPFNBaselineModel]:
     """Fit one SurvivalPFN context for a single event, shared across every horizon.
 
@@ -269,6 +271,13 @@ def _fit_one_survivalpfn(
     :func:`_survival_targets`'s ``(T, delta)`` pair rather than a
     per-horizon binary outcome, and one fit produces every horizon's
     wrapper at once instead of looping ``horizons`` to fit separately.
+
+    ``cache``, if given, is checked/updated per event (this baseline's
+    natural fit granularity -- one context serves every horizon) --
+    caches the fitted estimator plus its fit metadata, then rebuilds the
+    per-horizon wrappers below on every call (cheap, no re-fit) so a
+    cache hit still honors whatever ``horizons`` the caller asks for. See
+    :mod:`odyssey.inference.fit_cache`.
     """
     if x_all.shape[1] > SURVIVALPFN_MAX_FEATURES:
         raise ValueError(
@@ -277,45 +286,55 @@ def _fit_one_survivalpfn(
             f"got {x_all.shape[1]} columns (feature_set={feature_set!r}). "
             "Use feature_set='basic' (16 columns), not 'strong'."
         )
-    estimator_cls = _load_survival_estimator()
-    t_all, delta_all, keep_idx = _survival_targets(rows, times)
-    if (
-        len(keep_idx) < SURVIVALPFN_MIN_ROWS
-        or delta_all.sum() < 1
-        or (delta_all == 0).sum() < 1
-    ):
-        logger.info(
-            "[survivalpfn] %s: skipped, %d at-risk rows (need >= %d, "
-            "both event and censored rows present)",
-            event_name,
-            len(keep_idx),
-            SURVIVALPFN_MIN_ROWS,
-        )
-        return {}
-    groups = np.array([rows[i].subject_id for i in keep_idx])
-    rng = np.random.default_rng(seed)
-    n_at_risk = len(keep_idx)
-    if n_at_risk > max_rows:
-        sub = _grouped_subsample(np.arange(n_at_risk), groups, max_rows, rng)
-        keep_idx = keep_idx[sub]
-        t_all = t_all[sub]
-        delta_all = delta_all[sub]
-    x_fit = np.array(x_all[keep_idx], dtype=np.float32, copy=False)
+    cache_key = f"survivalpfn/{event_name}"
+    cached = cache.load(cache_key) if cache is not None else None
+    if cached is not None:
+        estimator, n_context_rows, elapsed, row_capped = cached
+    else:
+        t_all, delta_all, keep_idx = _survival_targets(rows, times)
+        if (
+            len(keep_idx) < SURVIVALPFN_MIN_ROWS
+            or delta_all.sum() < 1
+            or (delta_all == 0).sum() < 1
+        ):
+            logger.info(
+                "[survivalpfn] %s: skipped, %d at-risk rows (need >= %d, "
+                "both event and censored rows present)",
+                event_name,
+                len(keep_idx),
+                SURVIVALPFN_MIN_ROWS,
+            )
+            return {}
+        groups = np.array([rows[i].subject_id for i in keep_idx])
+        rng = np.random.default_rng(seed)
+        n_at_risk = len(keep_idx)
+        if n_at_risk > max_rows:
+            sub = _grouped_subsample(np.arange(n_at_risk), groups, max_rows, rng)
+            keep_idx = keep_idx[sub]
+            t_all = t_all[sub]
+            delta_all = delta_all[sub]
+        x_fit = np.array(x_all[keep_idx], dtype=np.float32, copy=False)
 
-    estimator = estimator_cls(device=device)
-    t0 = time.time()
-    estimator.fit(X=x_fit, delta=delta_all, T=t_all)
-    elapsed = time.time() - t0
-    logger.info(
-        "[survivalpfn] %s: fit on %d rows (%.1f%% event, %.1f%% censored) "
-        "in %.1fs, serves %d horizons",
-        event_name,
-        len(keep_idx),
-        100 * float(delta_all.mean()),
-        100 * (1 - float(delta_all.mean())),
-        elapsed,
-        len(horizons),
-    )
+        estimator_cls = _load_survival_estimator()
+        estimator = estimator_cls(device=device)
+        t0 = time.time()
+        estimator.fit(X=x_fit, delta=delta_all, T=t_all)
+        elapsed = time.time() - t0
+        n_context_rows = len(keep_idx)
+        row_capped = len(keep_idx) < n_at_risk
+        logger.info(
+            "[survivalpfn] %s: fit on %d rows (%.1f%% event, %.1f%% censored) "
+            "in %.1fs, serves %d horizons",
+            event_name,
+            n_context_rows,
+            100 * float(delta_all.mean()),
+            100 * (1 - float(delta_all.mean())),
+            elapsed,
+            len(horizons),
+        )
+        if cache is not None:
+            cache.save(cache_key, (estimator, n_context_rows, elapsed, row_capped))
+
     out: dict[float, SurvivalPFNBaselineModel] = {}
     for h in horizons:
         out[h] = SurvivalPFNBaselineModel(
@@ -324,9 +343,9 @@ def _fit_one_survivalpfn(
             feature_set=feature_set,
             n_features=int(x_all.shape[1]),
             params={
-                "n_context_rows": float(len(keep_idx)),
+                "n_context_rows": float(n_context_rows),
                 "fit_seconds": elapsed,
-                "row_capped": float(len(keep_idx) < n_at_risk),
+                "row_capped": float(row_capped),
             },
         )
     return out
@@ -343,6 +362,7 @@ def fit_survivalpfn_baselines(
     feature_set: str = "basic",
     device: str = "cpu",
     max_rows: int | None = None,
+    cache: Optional[FitCache] = None,
 ) -> dict[tuple[str, float], SurvivalPFNBaselineModel]:
     """One SurvivalPFN context per event, evaluated at every horizon.
 
@@ -358,7 +378,8 @@ def fit_survivalpfn_baselines(
     Requires the optional ``survivalpfn`` package (see the module
     docstring); raises ``ImportError`` with install instructions if it is
     not installed, the first time a context would actually be fit -- not
-    merely on import of this module.
+    merely on import of this module. ``cache``, if given, is
+    consulted/updated per event -- see :mod:`odyssey.inference.fit_cache`.
     """
     resolved_max_rows = SURVIVALPFN_MAX_ROWS if max_rows is None else max_rows
     models: dict[tuple[str, float], SurvivalPFNBaselineModel] = {}
@@ -378,6 +399,7 @@ def fit_survivalpfn_baselines(
             event_name=name,
             device=device,
             max_rows=resolved_max_rows,
+            cache=cache,
         )
         for h, model in per_horizon.items():
             models[(name, h)] = model

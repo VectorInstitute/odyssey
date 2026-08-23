@@ -11,6 +11,25 @@ model-free, CPU-only operations (``_index_rows_from_events``,
 feature computation, joined onto the existing dump by (event, subject_id,
 visit_id, time_hours) rather than assumed to line up positionally.
 
+Two anti-lost-compute measures, both added after a real incident (a run
+that fit all three baselines cleanly -- EBM alone took ~4.6h over 12
+(event, horizon) pairs -- then crashed at the first held-out scoring
+call; see ``docs/reeval_wave_v2.md``):
+
+- Fits are cached to ``{run-dir}/rescore_cache/`` (see
+  :mod:`odyssey.inference.fit_cache`) immediately as each one completes
+  and reloaded on a rerun instead of refit, gated on an environment
+  fingerprint so a cache built in a different venv is never trusted.
+- Held-out scoring itself needs no batching logic here: the crash was an
+  unbatched ``predict_proba`` call over 552K+ query rows inside the
+  in-context/foundation-model baselines (TabICL, SurvivalPFN), fixed at
+  the source in their own model wrappers
+  (:class:`~odyssey.inference.tabicl_baseline.TabICLBaselineModel`,
+  :class:`~odyssey.inference.survivalpfn_baseline.SurvivalPFNBaselineModel`),
+  which now chunk the query dimension internally -- every caller,
+  including this script's plain ``.predict_proba(...)`` calls below,
+  gets that for free.
+
 Usage:
     uv run python -m scripts.rescore_extra_baselines \
         --run-dir ~/runs/full_run_v8 \
@@ -40,6 +59,7 @@ from odyssey.inference.alerts import (
     features_for_events,
 )
 from odyssey.inference.ebm_baseline import fit_ebm_baselines
+from odyssey.inference.fit_cache import FitCache
 from odyssey.inference.survivalpfn_baseline import fit_survivalpfn_baselines
 from odyssey.inference.tabicl_baseline import fit_tabicl_baselines
 from odyssey.training.data import load_meds_shards
@@ -105,6 +125,7 @@ def main() -> None:  # noqa: PLR0915
     config = TrainingConfig(**json.loads((args.run_dir / "config.json").read_text()))
     binner = QuantileBinner.load(args.run_dir / "quantile_binner.json")
     horizons = HORIZONS_HOURS
+    cache = FitCache(cache_dir=args.run_dir / "rescore_cache")
 
     logger.info("[rescore] preparing held-out events (model-free)")
     held_binned = _prepare(args.held_out_shard_dir, args.max_shards, config, binner)
@@ -174,15 +195,30 @@ def main() -> None:  # noqa: PLR0915
 
     logger.info("[rescore] fitting TabICL (strong features)")
     tabicl_models = fit_tabicl_baselines(
-        train_binned, train_rows, train_times, horizons=horizons, source=source
+        train_binned,
+        train_rows,
+        train_times,
+        horizons=horizons,
+        source=source,
+        cache=cache,
     )
     logger.info("[rescore] fitting EBM (strong features)")
     ebm_models = fit_ebm_baselines(
-        train_binned, train_rows, train_times, horizons=horizons, source=source
+        train_binned,
+        train_rows,
+        train_times,
+        horizons=horizons,
+        source=source,
+        cache=cache,
     )
     logger.info("[rescore] fitting SurvivalPFN (basic features, 100-feature cap)")
     survivalpfn_models = fit_survivalpfn_baselines(
-        train_binned, train_rows, train_times, horizons=horizons, source=source
+        train_binned,
+        train_rows,
+        train_times,
+        horizons=horizons,
+        source=source,
+        cache=cache,
     )
 
     logger.info("[rescore] scoring held-out rows")
