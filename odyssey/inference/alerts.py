@@ -1897,6 +1897,7 @@ def _fit_and_score_gbm_baselines(
     rows: Dict[str, List[IndexRow]],
     task_set: str = "v1",
     index_mode: str = "landmark",
+    prefit_baselines: Optional[Dict[Tuple[str, float], BaselineModel]] = None,
 ) -> Tuple[
     Optional[Dict[Tuple[str, float], BaselineModel]], Optional[Dict[str, np.ndarray]]
 ]:
@@ -1905,9 +1906,23 @@ def _fit_and_score_gbm_baselines(
     Fits on ``baseline_shard_dir`` (always clean -- Principle 1, never
     retrained/refit on degraded data) and scores against ``binned``/``rows``
     (the held-out split's own frame -- degraded when :func:`evaluate_alerts`
-    was given ``degraded_shard_dir``). Returns ``(None, None)`` if
-    ``baseline_shard_dir`` wasn't given.
+    was given ``degraded_shard_dir``). Returns ``(None, None)`` if neither
+    ``prefit_baselines`` nor ``baseline_shard_dir`` was given.
+
+    ``prefit_baselines``, when given, is used as-is -- no fit happens at
+    all. This is the missingness sweep's reuse path
+    (scripts/missingness_sweep.py): fitting is expensive and, per
+    Principle 1, must be the SAME frozen model scored against every
+    degradation cell, not independently refit 8 times (which would also
+    confound the degradation signal with fit-to-fit variance from the
+    hyperparameter search). Takes priority over ``baseline_shard_dir`` when
+    both are given.
     """
+    if prefit_baselines is not None:
+        features_by_event = features_for_events(
+            binned, rows, source=source, feature_set=baseline_feature_set
+        )
+        return prefit_baselines, features_by_event
     if baseline_shard_dir is None:
         return None, None
     if stream_baseline:
@@ -1964,6 +1979,8 @@ def evaluate_alerts(
     held_out_shard_dir: Union[str, Path],
     *,
     baseline_shard_dir: Optional[Union[str, Path]] = None,
+    prefit_baselines: Optional[Dict[Tuple[str, float], BaselineModel]] = None,
+    fitted_baselines_out: Optional[Dict[Tuple[str, float], BaselineModel]] = None,
     degraded_shard_dir: Optional[Union[str, Path]] = None,
     verify_against_dump: Optional[Union[str, Path]] = None,
     max_shards: Optional[int] = None,
@@ -2013,6 +2030,13 @@ def evaluate_alerts(
     labels exactly match a saved clean dump -- the acceptance criterion
     for a degraded cell's alerts pass -- immediately after the existing
     :func:`verify_packed_landmark_rows` self-consistency check.
+
+    ``prefit_baselines``/``fitted_baselines_out`` are the sweep's other
+    hook (see :func:`_fit_and_score_gbm_baselines`): pass the dict a
+    CLEAN call populated via ``fitted_baselines_out`` back in as
+    ``prefit_baselines`` on every degraded call, so the GBM is fit once
+    and scored -- never refit -- against every cell, matching Principle 1
+    for the baseline family too.
     """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     model, vocab, binner, config = load_run(
@@ -2116,7 +2140,10 @@ def evaluate_alerts(
         rows=rows,
         task_set=task_set,
         index_mode=index_mode,
+        prefit_baselines=prefit_baselines,
     )
+    if fitted_baselines_out is not None and baselines is not None:
+        fitted_baselines_out.update(baselines)
 
     if dump_rows_path is not None:
         context_cols = None
@@ -2157,6 +2184,25 @@ def _main() -> None:
     parser.add_argument("--held-out-shard-dir", required=True)
     parser.add_argument("--output-json", required=True)
     parser.add_argument("--baseline-shard-dir", default=None)
+    parser.add_argument(
+        "--degraded-shard-dir",
+        default=None,
+        help=(
+            "score against this shard dir instead of --held-out-shard-dir "
+            "(missingness stress protocol, docs/missingness_protocol.md; "
+            "shards from python -m odyssey.data.degrade) -- labels and the "
+            "visit envelope still come from --held-out-shard-dir"
+        ),
+    )
+    parser.add_argument(
+        "--verify-against-dump",
+        default=None,
+        help=(
+            "assert this run's row set/labels exactly match a saved clean "
+            "--dump-rows parquet before scoring (acceptance check for a "
+            "degraded cell's alerts pass)"
+        ),
+    )
     parser.add_argument("--max-shards", type=int, default=None)
     parser.add_argument("--max-baseline-shards", type=int, default=None)
     parser.add_argument("--landmark-hours", type=float, default=4.0)
@@ -2252,6 +2298,8 @@ def _main() -> None:
         run_dir,
         args.held_out_shard_dir,
         baseline_shard_dir=args.baseline_shard_dir,
+        degraded_shard_dir=args.degraded_shard_dir,
+        verify_against_dump=args.verify_against_dump,
         max_shards=args.max_shards,
         max_baseline_shards=args.max_baseline_shards,
         alerts=chosen_alerts,
