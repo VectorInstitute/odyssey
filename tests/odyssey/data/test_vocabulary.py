@@ -6,13 +6,19 @@ from pathlib import Path
 import polars as pl
 
 from odyssey.data.vocabulary import (
+    LAB_FAMILY,
+    MEDICATION_FAMILY,
     OTHER_TYPE,
     PAD_ID,
+    ROW_FAMILIES,
     UNK_ID,
     VISIT_TYPE,
+    VITAL_FAMILY,
     Vocabulary,
     code_type,
     code_types,
+    is_anchor,
+    row_family,
 )
 
 
@@ -236,3 +242,43 @@ def test_unknown_backoff_name_raises() -> None:
         raise AssertionError("expected ValueError")
     except ValueError:
         pass
+
+
+def test_is_anchor_covers_visit_and_demographic_rows_only() -> None:
+    assert is_anchor("HOSPITAL_ADMISSION//")
+    assert is_anchor("HOSPITAL_DISCHARGE//")
+    assert is_anchor("ICU_ADMISSION//MICU")
+    assert is_anchor("GENDER//F")
+    assert is_anchor("MEDS_BIRTH//")
+    assert not is_anchor("LAB//RESULT//50912//")
+    assert not is_anchor("MEDICATION//norepinephrine//Administered")
+    assert not is_anchor("DIAGNOSIS//ICD//10//I5023")
+
+
+def test_row_family_medication_is_source_agnostic() -> None:
+    for source in ("mimic_iv", "eicu", "gemini"):
+        assert row_family(
+            "MEDICATION//norepinephrine//Administered", source=source
+        ) == (MEDICATION_FAMILY)
+    assert (
+        row_family("INFUSION_START//propofol", source="mimic_iv") == MEDICATION_FAMILY
+    )
+
+
+def test_row_family_mimic_splits_lab_result_from_chartevents_itemid() -> None:
+    # hosp/labevents: LAB//RESULT//{itemid}// -- real labs.
+    assert row_family("LAB//RESULT//50912//", source="mimic_iv") == LAB_FAMILY
+    # icu/chartevents: LAB//{itemid}// with no RESULT segment -- vitals.
+    assert row_family("LAB//220045//bpm", source="mimic_iv") == VITAL_FAMILY
+
+
+def test_row_family_eicu_and_gemini_use_the_top_level_prefix_directly() -> None:
+    for source in ("eicu", "gemini"):
+        assert row_family("VITALS//3013502//", source=source) == VITAL_FAMILY
+        assert row_family("LAB//3020891//", source=source) == LAB_FAMILY
+
+
+def test_row_family_returns_none_outside_the_three_families() -> None:
+    assert row_family("DIAGNOSIS//ICD//10//I5023", source="mimic_iv") is None
+    assert row_family("HOSPITAL_ADMISSION//", source="mimic_iv") is None
+    assert set(ROW_FAMILIES) == {LAB_FAMILY, VITAL_FAMILY, MEDICATION_FAMILY}

@@ -269,3 +269,63 @@ def code_type(code: str) -> int:
 def code_types(codes: List[str]) -> List[int]:
     """Vectorized convenience wrapper around :func:`code_type`."""
     return [code_type(c) for c in codes]
+
+
+def is_anchor(code: str) -> bool:
+    """Return True for admission/discharge/demographic-static rows.
+
+    Used by :mod:`odyssey.data.degrade` (docs/missingness_protocol.md) to
+    protect the rows a degraded record cannot lose without becoming a
+    different task: :data:`VISIT_TYPE` (admission/discharge/ICU
+    admission-discharge/transfer/ED registration) and
+    :data:`DEMOGRAPHIC_TYPE` (sex/race/language/insurance/marital
+    status/birth/death) are exactly "the visit envelope plus who this
+    patient is". Not specific to any one degradation axis -- any caller
+    that needs to know "is this row the kind that must always survive"
+    reuses this rather than re-deriving it from :func:`code_type`.
+    """
+    return code_type(code) in (VISIT_TYPE, DEMOGRAPHIC_TYPE)
+
+
+#: Row-family names :func:`row_family` classifies into, for the
+#: missingness protocol's family-blackout axis (docs/missingness_protocol.md,
+#: axis B) -- kept here, next to :func:`code_type`, since row_family is
+#: itself just a finer-grained read of the same code-prefix taxonomy.
+LAB_FAMILY = "labs"
+VITAL_FAMILY = "vitals"
+MEDICATION_FAMILY = "medications"
+ROW_FAMILIES = (LAB_FAMILY, VITAL_FAMILY, MEDICATION_FAMILY)
+
+
+def row_family(code: str, *, source: str) -> Optional[str]:
+    """Classify one MEDS code into a row family, or ``None`` if none applies.
+
+    Reuses two existing, documented conventions rather than inventing a new
+    classifier:
+
+    1. Medications: :func:`code_type`'s :data:`MEDICATION_TYPE` bucket
+       already unifies medication/infusion code prefixes across every
+       source.
+    2. Labs vs. vitals/charting: *not* distinguished by :func:`code_type`
+       -- MIMIC-IV charts both under one :data:`LAB_TYPE` bucket -- but
+       *is* distinguished by the raw code-prefix shape itself, already
+       documented in :mod:`odyssey.data.code_mapping`'s module docstring:
+       MIMIC-IV's ``hosp/labevents`` rows are ``LAB//RESULT//{itemid}//...``
+       (real labs); ``icu/chartevents`` rows are ``LAB//{itemid}//...``,
+       with no ``RESULT`` segment (vitals/charting). eICU and GEMINI don't
+       have this ambiguity: vitals are already a separate top-level
+       ``VITALS//...`` prefix (specs/eICU.yaml,
+       scripts/gemini/extract_meds.py's ``extract_vitals``), disjoint from
+       their own real-lab ``LAB//...`` prefix (``extract_labs``).
+    """
+    if code_type(code) == MEDICATION_TYPE:
+        return MEDICATION_FAMILY
+    top = code.split("//", 1)[0]
+    if top == "VITALS":
+        return VITAL_FAMILY
+    if top == "LAB":
+        if source == "mimic_iv":
+            second = code.split("//", 2)[1] if code.count("//") >= 2 else ""
+            return VITAL_FAMILY if second != "RESULT" else LAB_FAMILY
+        return LAB_FAMILY
+    return None
