@@ -42,7 +42,7 @@ attached does not launch.
 | E1 | v8 v2 dump regen (running) | v8's corrected row set + clean hazard/GBM v2 scores | -- |
 | E2 | v9 clean-v1 alerts (pinned worktree 85dde80^) | **Was the recency effect ever real?** + sizes ABI contamination + v1-vs-v2 protocol delta | E1 done |
 | E3 | v9 inference/interventions/case regen (current main) | Clean replacements for every contaminated v9 artifact | E2 done |
-| E4 | MEDS-Tab shared-grid xgboost stage (12 tasks, n_trials=200/seed 0) | Field-standard baseline row of the v2 comparator table | tabularize done (overnight) + task-1 exact-reproduction trust gate |
+| E4 | MEDS-Tab shared-grid xgboost stage (12 tasks, n_trials=200/seed 0) | Field-standard baseline row of the v2 comparator table | GATE FAILED Aug 23: slicer value spot-check 6/10 mismatched (feature + row-key gates passed). Working hypothesis: grid-to-matrix row misalignment via MEDS-Tab-internal sort/dedup (503 un-aggregated duplicate rows in the shared grid are the suspect). 2h timebox on mechanism confirmation; fallback = standalone per-task on a reduced task set (lead decides scope). Sweep additionally waits on v3 labels either way. |
 | E5 | v2 rescores: TabICL / EBM / SurvivalPFN against E1+v9-v2 rows | The eICU v2 comparator table | E1 done (CPU, can interleave when GPU busy) |
 | E6 | Transformer-control subset run (eICU 30 shards, matched budget) | Backbone priced (Track A item 5); born under v2 | GPU free after E3 |
 | E7 | MEDS-Tab v2 label export + rerun | MEDS-Tab's v2 row | E4 done + v2 rows exist |
