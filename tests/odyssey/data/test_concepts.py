@@ -1135,3 +1135,235 @@ def test_aki_delta_is_unit_converted_per_source() -> None:
     assert [e.delta for e in _expand_rule(rule, "mimic_iv")] == [0.3]
     assert [e.delta for e in _expand_rule(rule, "eicu")] == [0.3]
     assert [e.delta for e in _expand_rule(rule, "gemini")] == [26.5]
+
+
+# ---------------------------------------------------------------------------
+# v3: electrolyte/metabolic/hematologic concept widening (Track B item 11)
+# ---------------------------------------------------------------------------
+
+_V3_NEW_NAMES = (
+    "hyperkalemia",
+    "hypokalemia",
+    "hyponatremia",
+    "hypernatremia",
+    "hypoglycemia",
+    "hyperglycemia",
+    "anemia",
+    "thrombocytopenia",
+    "coagulopathy",
+    "metabolic_acidosis",
+    "shock",
+)
+
+
+def test_v1_and_v2_expansions_are_unchanged_by_the_v3_addition() -> None:
+    """Adding v3 must not alter what v1/v2 runs would have trained/evaluated with."""
+    assert concepts_for_source("mimic_iv", task_set="v1") == CONCEPTS
+    assert [c.name for c in concepts_for_source("mimic_iv", task_set="v1")] == [
+        "tachycardia",
+        "bradycardia",
+        "hypotension",
+        "hypertension",
+        "hypoxia",
+        "fever",
+        "hypothermia",
+        "elevated_lactate",
+        "sustained_tachypnea",
+        "acute_kidney_injury",
+        "aki_stage_2",
+        "aki_stage_3",
+        "sirs",
+        "qsofa",
+        "on_vasopressors",
+    ]
+    assert [c.name for c in concepts_for_source("mimic_iv", task_set="v2")] == [
+        "tachycardia",
+        "bradycardia",
+        "hypotension",
+        "hypertension",
+        "hypoxia",
+        "fever",
+        "hypothermia",
+        "elevated_lactate",
+        "sustained_tachypnea",
+        "acute_kidney_injury",
+        "aki_stage_2",
+        "aki_stage_3",
+        "sirs",
+        "qsofa",
+        "on_vasopressors",
+        "sepsis3",
+    ]
+
+
+def test_v3_adds_exactly_the_eleven_new_concepts_on_top_of_v2() -> None:
+    v2_names = {c.name for c in concepts_for_source("mimic_iv", task_set="v2")}
+    v3_names = [c.name for c in concepts_for_source("mimic_iv", task_set="v3")]
+    assert set(v3_names) - v2_names == set(_V3_NEW_NAMES)
+    assert len(v3_names) == len(set(v3_names))  # no accidental duplicate names
+
+
+def _v3_concept(name: str, source: str = "mimic_iv") -> ConceptDefinition:
+    concepts = concepts_for_source(source, task_set="v3")
+    by_name = {c.name: c for c in concepts}
+    concept = by_name[name]
+    assert isinstance(concept, ConceptDefinition)
+    return concept
+
+
+def test_hyperkalemia_triggers_above_5_5() -> None:
+    concept = _v3_concept("hyperkalemia")
+    events = _events(
+        [
+            (1, "LAB//RESULT//50971//mEq/L", 5.6),  # triggers
+            (2, "LAB//RESULT//50971//mEq/L", 4.0),  # does not
+        ]
+    )
+    labels = label_concepts(events, [concept]).sort("subject_id")
+    assert labels["hyperkalemia"].to_list() == [1, 0]
+
+
+def test_hypokalemia_triggers_below_3_0() -> None:
+    concept = _v3_concept("hypokalemia")
+    events = _events(
+        [
+            (1, "LAB//RESULT//50971//mEq/L", 2.9),  # triggers
+            (2, "LAB//RESULT//50971//mEq/L", 4.0),  # does not
+        ]
+    )
+    labels = label_concepts(events, [concept]).sort("subject_id")
+    assert labels["hypokalemia"].to_list() == [1, 0]
+
+
+def test_hyponatremia_triggers_below_130() -> None:
+    concept = _v3_concept("hyponatremia")
+    events = _events(
+        [
+            (1, "LAB//RESULT//50983//mEq/L", 128.0),  # triggers
+            (2, "LAB//RESULT//50983//mEq/L", 140.0),  # does not
+        ]
+    )
+    labels = label_concepts(events, [concept]).sort("subject_id")
+    assert labels["hyponatremia"].to_list() == [1, 0]
+
+
+def test_hypernatremia_triggers_above_150() -> None:
+    concept = _v3_concept("hypernatremia")
+    events = _events(
+        [
+            (1, "LAB//RESULT//50983//mEq/L", 151.0),  # triggers
+            (2, "LAB//RESULT//50983//mEq/L", 140.0),  # does not
+        ]
+    )
+    labels = label_concepts(events, [concept]).sort("subject_id")
+    assert labels["hypernatremia"].to_list() == [1, 0]
+
+
+def test_hypoglycemia_triggers_below_70() -> None:
+    concept = _v3_concept("hypoglycemia")
+    events = _events(
+        [
+            (1, "LAB//RESULT//50931//mg/dL", 65.0),  # triggers
+            (2, "LAB//RESULT//50931//mg/dL", 100.0),  # does not
+        ]
+    )
+    labels = label_concepts(events, [concept]).sort("subject_id")
+    assert labels["hypoglycemia"].to_list() == [1, 0]
+
+
+def test_hyperglycemia_triggers_above_250() -> None:
+    concept = _v3_concept("hyperglycemia")
+    events = _events(
+        [
+            (1, "LAB//RESULT//50931//mg/dL", 260.0),  # triggers
+            (2, "LAB//RESULT//50931//mg/dL", 140.0),  # does not
+        ]
+    )
+    labels = label_concepts(events, [concept]).sort("subject_id")
+    assert labels["hyperglycemia"].to_list() == [1, 0]
+
+
+def test_anemia_triggers_below_7() -> None:
+    concept = _v3_concept("anemia")
+    events = _events(
+        [
+            (1, "LAB//RESULT//51222//g/dL", 6.5),  # triggers
+            (2, "LAB//RESULT//51222//g/dL", 12.0),  # does not
+        ]
+    )
+    labels = label_concepts(events, [concept]).sort("subject_id")
+    assert labels["anemia"].to_list() == [1, 0]
+
+
+def test_thrombocytopenia_triggers_below_100() -> None:
+    concept = _v3_concept("thrombocytopenia")
+    events = _events(
+        [
+            (1, "LAB//RESULT//51265//K/uL", 80.0),  # triggers
+            (2, "LAB//RESULT//51265//K/uL", 250.0),  # does not
+        ]
+    )
+    labels = label_concepts(events, [concept]).sort("subject_id")
+    assert labels["thrombocytopenia"].to_list() == [1, 0]
+
+
+def test_coagulopathy_triggers_above_1_5() -> None:
+    concept = _v3_concept("coagulopathy")
+    events = _events(
+        [
+            (1, "LAB//RESULT//51237//", 1.8),  # triggers
+            (2, "LAB//RESULT//51237//", 1.0),  # does not
+        ]
+    )
+    labels = label_concepts(events, [concept]).sort("subject_id")
+    assert labels["coagulopathy"].to_list() == [1, 0]
+
+
+def test_metabolic_acidosis_triggers_on_either_bicarb_or_ph() -> None:
+    concept = _v3_concept("metabolic_acidosis")
+    events = _events(
+        [
+            (1, "LAB//RESULT//50882//mEq/L", 15.0),  # low bicarb triggers
+            (2, "LAB//RESULT//50820//units", 7.2),  # low pH triggers
+            (3, "LAB//RESULT//50882//mEq/L", 24.0),  # normal, does not
+        ]
+    )
+    labels = label_concepts(events, [concept]).sort("subject_id")
+    assert labels["metabolic_acidosis"].to_list() == [1, 1, 0]
+
+
+def test_shock_requires_recurring_low_map_not_one_reading() -> None:
+    concept = _v3_concept("shock")
+    events = _events(
+        [
+            # subject 1: two low-MAP readings 2h apart -- sustained, triggers
+            (1, "LAB//220181//mmHg", 60.0, T0),
+            (1, "LAB//220181//mmHg", 58.0, T0 + timedelta(hours=2)),
+            # subject 2: a single low reading -- does not trigger
+            (2, "LAB//220181//mmHg", 60.0, T0),
+        ]
+    )
+    labels = label_concepts(events, [concept]).sort("subject_id")
+    assert labels["shock"].to_list() == [1, 0]
+
+
+def test_shock_is_not_defined_in_terms_of_on_vasopressors() -> None:
+    """The dropped-redundancy check.
+
+    shock's rules never reference a vasopressor code pattern -- see its
+    CanonicalConcept description for why the original vasopressor-OR
+    clause was left out.
+    """
+    concept = _v3_concept("shock")
+    assert all(not isinstance(r, CodeOccurrenceRule) for r in concept.rules)
+
+
+def test_v3_eicu_expansion_resolves_every_new_concept() -> None:
+    """Confirm none of the new concepts are dropped for eicu.
+
+    Every v3 LOINC is already mapped for eicu (code_mapping.py) -- unlike
+    sepsis3, none of the new concepts should be dropped there.
+    """
+    eicu_names = {c.name for c in concepts_for_source("eicu", task_set="v3")}
+    for name in _V3_NEW_NAMES:
+        assert name in eicu_names, f"{name} unexpectedly dropped for eicu"
