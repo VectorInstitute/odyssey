@@ -45,7 +45,7 @@ import json
 import logging
 from dataclasses import asdict
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from odyssey.data.degrade import all_cells, generate_cell, load_cell_metadata
 from odyssey.inference.alerts import (
@@ -78,13 +78,22 @@ def _write_cell_result(
     run_dir: Path,
     held_out_shard_dir: Path,
     results: List[AlertMetrics],
+    n_unscoreable: Optional[int] = None,
 ) -> None:
-    """Write one cell's alerts.json, with the degrade.py cell metadata embedded."""
+    """Write one cell's alerts.json, with the degrade.py cell metadata embedded.
+
+    ``n_unscoreable`` is ``None`` for the clean baseline (which never scores
+    against a degraded record) and an int -- possibly 0 -- for every degraded
+    cell: the count of clean rows this cell's metrics had to drop because the
+    degraded record had no visible token at/before the row's time (see
+    ``evaluate_alerts``'s ``unscoreable_out``).
+    """
     payload = {
         "cell": cell,
         "cell_metadata": metadata,  # None for the clean baseline
         "run_dir": str(run_dir),
         "held_out_shard_dir": str(held_out_shard_dir),
+        "n_unscoreable": n_unscoreable,
         "metrics": [
             {**asdict(r), "landmark_protocol_version": LANDMARK_PROTOCOL_VERSION}
             for r in results
@@ -215,11 +224,13 @@ def run_sweep(
             cell_json, overwrite=overwrite, kind=f"missingness sweep {name} alerts"
         )
         logger.info("[sweep] scoring cell %s (GBM reused, not refit)", name)
+        unscoreable: Set[Tuple[int, int, float]] = set()
         results = evaluate_alerts(
             run_dir,
             held_out_shard_dir,
             degraded_shard_dir=cell_dir,
             verify_against_dump=clean_rows,
+            unscoreable_out=unscoreable,
             prefit_baselines=fitted or None,
             max_shards=max_shards,
             landmark_hours=landmark_hours,
@@ -230,6 +241,13 @@ def run_sweep(
             stream_baseline=stream_baseline,
             dump_rows_path=cell_rows,
         )
+        if unscoreable:
+            logger.warning(
+                "[sweep] cell %s: %d clean rows unscoreable on the degraded "
+                "record -- this cell's metrics are over a reduced row set",
+                name,
+                len(unscoreable),
+            )
         _write_cell_result(
             cell_json,
             cell=name,
@@ -237,6 +255,7 @@ def run_sweep(
             run_dir=run_dir,
             held_out_shard_dir=held_out_shard_dir,
             results=results,
+            n_unscoreable=len(unscoreable),
         )
         per_cell_json[name] = cell_json
 
@@ -271,6 +290,7 @@ def aggregate(
             payload["metrics"],
             transform=transform,
             rows_path=results_dir / f"{name}_alerts_rows.parquet",
+            n_unscoreable=payload.get("n_unscoreable") or 0,
         )
     table = build_degradation_table(clean_metrics, cells_metrics)
     json_path = output_root / "degradation_table.json"
