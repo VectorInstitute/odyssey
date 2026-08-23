@@ -1,5 +1,6 @@
 """Tests for converting raw MEDS events into patient token sequences."""
 
+import os
 import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -282,21 +283,40 @@ def test_real_meds_data_tokenizes_and_runs_through_the_model(tmp_path: Path) -> 
     ConceptBottleneckSequenceModel end to end -- proving the tokenization
     output is actually shaped and typed the way the model expects, not
     just that each piece works in isolation.
+
+    ``MEDS_DEMO_CACHE_DIR``, if set, redirects ``output_dir`` from
+    ``tmp_path`` (always fresh, so meds-extract-run's own PhysioNet fetch
+    always hits the network) to a stable directory, and skips the fetch
+    entirely if that directory already holds a complete extraction from
+    an earlier run -- unset (the default for local/dev runs), behavior is
+    unchanged. CI sets it to an actions/cache-restored path so the
+    PhysioNet download only ever happens on a real cache miss: real
+    incident this closes, PhysioNet's own ConnectTimeout flaking
+    integration tests that have nothing to do with the network fetch
+    itself. Everything after extraction -- vocab, tokenization, the model
+    forward pass -- always runs for real regardless of cache hit or miss;
+    only the extraction subprocess itself is ever skipped.
     """
-    output_dir = tmp_path / "meds_demo"
-    result = subprocess.run(
-        [
-            "meds-extract-run",
-            "spec=MIMIC-IV",
-            f"output_dir={output_dir}",
-            "dataset_key=demo",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=600,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr[-4000:]
+    cache_dir = os.environ.get("MEDS_DEMO_CACHE_DIR")
+    output_dir = Path(cache_dir) / "meds_demo" if cache_dir else tmp_path / "meds_demo"
+    train_shards_glob = list((output_dir / "data" / "train").glob("*.parquet"))
+    if cache_dir and train_shards_glob:
+        pass  # cache hit -- reuse the earlier extraction, no network fetch
+    else:
+        output_dir.parent.mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(
+            [
+                "meds-extract-run",
+                "spec=MIMIC-IV",
+                f"output_dir={output_dir}",
+                "dataset_key=demo",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=600,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr[-4000:]
 
     shards = sorted((output_dir / "data" / "train").glob("*.parquet"))[:3]
     events = pl.concat([pl.read_parquet(s) for s in shards])
