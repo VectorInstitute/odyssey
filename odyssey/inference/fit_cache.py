@@ -99,11 +99,42 @@ class FitCache:
         return payload["model"]
 
     def save(self, key: str, model: Any) -> None:
-        """Pickle ``model`` to disk under ``key``, stamped with the fingerprint."""
+        """Pickle ``model`` to disk under ``key``, stamped with the fingerprint.
+
+        Fails soft, not loud: caching is a pure optimization applied AFTER
+        a fit already succeeded (every caller here calls this only once
+        its own fit is done and usable in-memory regardless), so a pickle
+        failure must never take down an otherwise-successful run. Real,
+        confirmed incident: a survivalpfn.SurvivalEstimator instance holds
+        a lambda as an attribute (from its own ``InContextModel.__init__``),
+        which stdlib ``pickle`` cannot serialize by construction (only
+        module-level, importable-by-reference callables survive it) --
+        this raised ``AttributeError`` deep inside ``pickle.dump`` and
+        crashed the whole script, discarding a fit that had already
+        completed. Caught broadly (``Exception``, not just the pickle
+        module's own error type) because unpicklable-object failures
+        surface as different exception classes depending on which part of
+        the object graph is at fault (``AttributeError``, ``TypeError``,
+        ``pickle.PicklingError`` are all observed in practice) -- the
+        caller's contract is "the model you already have keeps working",
+        not "guess the right exception type to catch".
+        """
         path = self._path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("wb") as f:
-            pickle.dump({"fingerprint": self.fingerprint, "model": model}, f)
+        try:
+            with path.open("wb") as f:
+                pickle.dump({"fingerprint": self.fingerprint, "model": model}, f)
+        except Exception:
+            path.unlink(missing_ok=True)  # never leave a truncated pickle behind
+            logger.warning(
+                "[fit-cache] %s: could not pickle this model for caching -- "
+                "continuing without a cache entry (the fit itself already "
+                "succeeded and is unaffected; only a future rerun loses the "
+                "chance to skip refitting this one key)",
+                key,
+                exc_info=True,
+            )
+            return
         logger.info("[fit-cache] %s: fit complete, cached to %s", key, path)
 
 
