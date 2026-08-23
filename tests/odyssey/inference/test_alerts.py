@@ -1064,6 +1064,38 @@ def test_verify_rows_match_dump_passes_on_an_exact_match(tmp_path: Path) -> None
     verify_rows_match_dump(rows, times, path, horizons=(8.0,))  # no raise
 
 
+def test_verify_rows_match_dump_ignores_declared_unscoreable_rows(
+    tmp_path: Path,
+) -> None:
+    """Declared-unscoreable rows are excluded; every other row must still match."""
+    rows = {
+        "death": [
+            IndexRow(subject_id=1, visit_id=10, time_hours=0.0),
+            IndexRow(subject_id=2, visit_id=20, time_hours=4.0),
+        ]
+    }
+    times = {
+        "death": EventTimes(
+            onset={(1, 10): 4.0}, censor={(2, 20): 30.0}, subject_scoped=False
+        )
+    }
+    path = tmp_path / "rows.parquet"
+    _write_dump(path, rows, times)
+    without_first = {"death": rows["death"][1:]}
+    # unexplained: raises
+    with pytest.raises(AssertionError, match="reconstructed rows do not match"):
+        verify_rows_match_dump(without_first, times, path, horizons=(8.0,))
+    # declared unscoreable: passes
+    verify_rows_match_dump(
+        without_first, times, path, horizons=(8.0,), ignore_keys={(1, 10, 0.0)}
+    )
+    # declaring a row that is still reconstructed does not hide a mismatch
+    with pytest.raises(AssertionError, match="reconstructed rows do not match"):
+        verify_rows_match_dump(
+            rows, times, path, horizons=(8.0,), ignore_keys={(1, 10, 0.0)}
+        )
+
+
 def test_verify_rows_match_dump_raises_on_a_missing_row(tmp_path: Path) -> None:
     rows = {
         "death": [
@@ -2084,7 +2116,7 @@ def test_scoring_at_the_clean_rows_reproduces_landmark_scoring_exactly(
         backbone=backbone,
         max_context=max_context,
     )
-    assert unscoreable == 0
+    assert unscoreable == []
     for alert in ALERT_EVENTS:
         a, b = _rows_by_key(landmark[alert.name]), _rows_by_key(fixed[alert.name])
         assert set(a) == set(b) and len(a) == len(landmark[alert.name])
@@ -2151,7 +2183,7 @@ def test_scoring_at_the_clean_rows_on_a_degraded_record_keeps_the_row_set() -> N
     # row has a visible token at/before it)
     want = _rows_by_key(clean_rows)
     got = _rows_by_key(fixed["vasopressor_start"])
-    assert set(got) == set(want) and unscoreable == 0
+    assert set(got) == set(want) and unscoreable == []
     # and the degraded scores are not simply the clean scores
     assert any(
         got[k].scores["next_mass"] != pytest.approx(want[k].scores["next_mass"])
