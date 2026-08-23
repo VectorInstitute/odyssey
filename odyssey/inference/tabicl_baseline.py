@@ -279,7 +279,7 @@ def _fit_one_tabicl(
         # would be silently wrong, or crash on shape at best).
         cache_key = f"tabicl/{feature_set}/{event_name}/{h:g}h"
         if cache is not None:
-            cached = cache.load(cache_key)
+            cached = cache.load_for_feature_set(cache_key, feature_set)
             if cached is not None:
                 out[h] = cached
                 continue

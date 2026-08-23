@@ -98,6 +98,33 @@ class FitCache:
         logger.info("[fit-cache] %s: loaded cached fit from %s", key, path)
         return payload["model"]
 
+    def load_for_feature_set(self, key: str, feature_set: str) -> Any:
+        """Load ``key`` only if the cached fit was made on ``feature_set``.
+
+        A fit is bound to the feature matrix it saw; scoring a
+        strong-feature fit with basic columns is wrong (silently, if the
+        column counts happen to line up). The cache key already encodes the
+        feature set, but a key layout can change or a cache can be migrated
+        by hand -- both happened on 2026-08-23 -- so the object itself is
+        checked too, and a mismatch is treated as a miss (warned, then
+        refit) rather than trusted.
+        """
+        cached = self.load(key)
+        if cached is None:
+            return None
+        found = getattr(cached, "feature_set", None)
+        if found is not None and found != feature_set:
+            logger.warning(
+                "[fit-cache] %s: cached fit is on %r features, wanted %r -- "
+                "ignoring it and refitting (a stale key layout or a migrated "
+                "cache; the fit is bound to its feature matrix)",
+                key,
+                found,
+                feature_set,
+            )
+            return None
+        return cached
+
     def save(self, key: str, model: Any) -> None:
         """Pickle ``model`` to disk under ``key``, stamped with the fingerprint.
 

@@ -189,7 +189,7 @@ def _fit_one_ebm(
         # Keyed by feature set too: see tabicl_baseline's note.
         cache_key = f"ebm/{feature_set}/{event_name}/{h:g}h"
         if cache is not None:
-            cached = cache.load(cache_key)
+            cached = cache.load_for_feature_set(cache_key, feature_set)
             if cached is not None:
                 out[h] = cached
                 continue
