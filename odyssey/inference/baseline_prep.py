@@ -42,7 +42,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import polars as pl
 
-from odyssey.data.alert_events import AlertEvent, all_event_times
+from odyssey.data.alert_events import AlertEvent, all_event_times, origin_hours
 from odyssey.data.value_binning import QuantileBinner, add_value_tokens
 from odyssey.inference.alerts import (
     BASELINE_FEATURE_SETS,
@@ -76,6 +76,67 @@ class BaselineData:
     features: Dict[str, Dict[str, np.ndarray]] = field(default_factory=dict)
 
 
+def _verify_matching_origins(
+    clean: pl.DataFrame, degraded: pl.DataFrame, *, context: str
+) -> None:
+    """Fail loud if a degraded shard's per-subject time origin moved.
+
+    Every downstream ``_hours`` computation (landmark buckets, feature
+    lookups) is relative to each subject's own origin
+    (:func:`odyssey.data.alert_events.origin_hours`: first timed non-birth
+    event). :mod:`odyssey.data.degrade`'s axis C (:func:`apply_lab_lag`)
+    guarantees this by construction and asserts it itself; axes A/B
+    (:func:`apply_mcar`, :func:`apply_family_blackout`) only guarantee
+    ANCHOR rows survive, not specifically whichever row happened to be
+    temporally first -- a rare unlucky draw could still drop it. Catching
+    that here, once, protects every caller rather than trusting each
+    degrade.py cell to have gotten it right.
+    """
+    before_frame = origin_hours(clean)
+    after_frame = origin_hours(degraded)
+    before = dict(
+        zip(before_frame["subject_id"].to_list(), before_frame["_origin"].to_list())
+    )
+    after = dict(
+        zip(after_frame["subject_id"].to_list(), after_frame["_origin"].to_list())
+    )
+    mismatched = sorted(
+        sid for sid, origin in before.items() if after.get(sid) != origin
+    )
+    if mismatched:
+        raise RuntimeError(
+            f"{context}: {len(mismatched)} subject(s) have a shifted or "
+            "missing time origin between the clean and degraded shard -- "
+            "downstream hours-since-origin arithmetic would silently "
+            f"disagree. Offending subject_ids: {mismatched[:10]}"
+        )
+
+
+def _resolve_feature_frame(
+    shard_path: Path,
+    binned: pl.DataFrame,
+    degraded_shard_dir: Optional[Path],
+    prepare: Preparer,
+    binner: Optional[QuantileBinner],
+    *,
+    source: str,
+    loader: ShardLoader,
+) -> pl.DataFrame:
+    """Resolve the frame features should be built from.
+
+    ``binned`` itself, or -- when ``degraded_shard_dir`` is given -- the
+    matching degraded shard (same filename), verified against ``binned``'s
+    per-subject time origins first (see :func:`_verify_matching_origins`).
+    """
+    if degraded_shard_dir is None:
+        return binned
+    degraded_raw = prepare(loader(degraded_shard_dir / shard_path.name))
+    feature_frame = add_value_tokens(degraded_raw, binner, source=source)
+    del degraded_raw
+    _verify_matching_origins(binned, feature_frame, context=str(shard_path))
+    return feature_frame
+
+
 def prepare_baseline_data(
     paths: Sequence[Path],
     prepare: Preparer,
@@ -86,6 +147,7 @@ def prepare_baseline_data(
     source: str = "mimic_iv",
     landmark_hours: float = 4.0,
     loader: ShardLoader = load_meds_shard,
+    degraded_shard_dir: Optional[Path] = None,
 ) -> BaselineData:
     """Build landmark rows, event times, and features one shard at a time.
 
@@ -97,19 +159,38 @@ def prepare_baseline_data(
     outputs, instead of the whole split several times over. Verified
     equivalent by test, not by argument alone
     (``tests/odyssey/inference/test_baseline_prep.py``).
+
+    ``degraded_shard_dir`` is the missingness stress protocol's hook
+    (docs/missingness_protocol.md; shards produced by
+    :mod:`odyssey.data.degrade`, same filenames as ``paths``): when given,
+    landmark rows and event times (labels) still come from ``paths`` (the
+    clean split) -- Principle 3 -- but the FEATURES scored are built from
+    the matching degraded shard instead. :func:`_verify_matching_origins`
+    guards the one way this could silently go wrong.
     """
     for fs in feature_sets:
         if fs not in BASELINE_FEATURE_SETS:
             raise ValueError(f"unknown baseline feature set {fs!r}")
     data = BaselineData()
     chunks: Dict[str, Dict[str, List[np.ndarray]]] = {fs: {} for fs in feature_sets}
-    for path in paths:
-        raw = prepare(loader(Path(path)))
+    degraded_dir = Path(degraded_shard_dir) if degraded_shard_dir is not None else None
+    for raw_path in paths:
+        shard_path = Path(raw_path)
+        raw = prepare(loader(shard_path))
         merge_event_times(data.times, all_event_times(raw, alerts, source))
         binned = add_value_tokens(raw, binner, source=source)
         del raw  # one shard's frames at a time -- the module's whole point
         shard_rows = _index_rows_from_events(
             binned, alerts, landmark_hours=landmark_hours
+        )
+        feature_frame = _resolve_feature_frame(
+            shard_path,
+            binned,
+            degraded_dir,
+            prepare,
+            binner,
+            source=source,
+            loader=loader,
         )
         # The landmark grid is event-independent in the normal case (only
         # outcomes differ), so detect that and build ONE feature matrix per
@@ -125,7 +206,7 @@ def prepare_baseline_data(
             if shared_grid:
                 canonical = next(iter(shard_rows))
                 feats = features_for_events(
-                    binned,
+                    feature_frame,
                     {canonical: shard_rows[canonical]},
                     source=source,
                     feature_set=fs,
@@ -137,7 +218,7 @@ def prepare_baseline_data(
                     chunks[fs].setdefault(event, []).append(feats)
             else:
                 shard_feats = features_for_events(
-                    binned, shard_rows, source=source, feature_set=fs
+                    feature_frame, shard_rows, source=source, feature_set=fs
                 )
                 for event, feats in shard_feats.items():
                     chunks[fs].setdefault(event, []).append(
@@ -145,7 +226,7 @@ def prepare_baseline_data(
                     )
         for event, event_rows in shard_rows.items():
             data.rows.setdefault(event, []).extend(event_rows)
-        del binned
+        del binned, feature_frame
     for fs in feature_sets:
         data.features[fs] = _concat_dedup(chunks[fs])
     n_rows = {event: len(rows) for event, rows in data.rows.items()}

@@ -20,7 +20,11 @@ import pytest
 from odyssey.data.alert_events import ALERT_EVENTS, all_event_times
 from odyssey.data.value_binning import add_value_tokens
 from odyssey.inference.alerts import _index_rows_from_events, features_for_events
-from odyssey.inference.baseline_prep import BaselineData, prepare_baseline_data
+from odyssey.inference.baseline_prep import (
+    BaselineData,
+    _verify_matching_origins,
+    prepare_baseline_data,
+)
 
 
 T0 = datetime(2024, 1, 1)
@@ -181,3 +185,117 @@ def test_unknown_feature_set_refuses() -> None:
             feature_sets=("bogus",),
             loader=lambda p: shards[p],
         )
+
+
+# ---------------------------------------------------------------------------
+# Missingness stress protocol glue: degraded_shard_dir
+# (docs/missingness_protocol.md; odyssey.data.degrade produces the shards)
+# ---------------------------------------------------------------------------
+
+
+def _degraded_shard(subject_ids: List[int]) -> pl.DataFrame:
+    """Build a degraded stand-in for _shard's subjects.
+
+    Same subjects/visits as _shard, but every heart-rate value flattened
+    to a single constant -- a stand-in for a real degrade.py transform,
+    distinguishable in the resulting features without needing the real
+    module here.
+    """
+    rows: List[Tuple[int, str, datetime, Optional[float], int]] = []
+    for sid in subject_ids:
+        hadm = 1000 + sid
+        for h in range(24):
+            rows.append((sid, "LAB//220045//bpm", T0 + timedelta(hours=h), 100.0, hadm))
+        if sid % 2 == 0:
+            rows.append(
+                (
+                    sid,
+                    "MEDICATION//norepinephrine//Administered",
+                    T0 + timedelta(hours=14),
+                    None,
+                    hadm,
+                )
+            )
+        if sid % 4 == 0:
+            rows.append(
+                (sid, "ICU_ADMISSION//MICU", T0 + timedelta(hours=6), None, hadm)
+            )
+    return pl.DataFrame(
+        rows,
+        schema={
+            "subject_id": pl.Int64,
+            "code": pl.Utf8,
+            "time": pl.Datetime,
+            "numeric_value": pl.Float32,
+            "hadm_id": pl.Int64,
+        },
+        orient="row",
+    )
+
+
+def test_degraded_shard_dir_scores_features_from_the_degraded_copy() -> None:
+    """Score against the degraded copy while keeping clean labels.
+
+    rows/times/labels come from the clean split; features come from the
+    degraded one -- the whole point of the hook.
+    """
+    clean = _fake_shards()
+    degraded = {
+        Path("degraded") / p.name: _degraded_shard(list(range(1 + i * 6, 7 + i * 6)))
+        for i, p in enumerate(clean)
+    }
+    all_frames = {**clean, **degraded}
+    data = prepare_baseline_data(
+        list(clean),
+        _identity,
+        None,
+        alerts=ALERT_EVENTS,
+        feature_sets=("basic",),
+        source="mimic_iv",
+        loader=lambda p: all_frames[p],
+        degraded_shard_dir=Path("degraded"),
+    )
+    clean_only = prepare_baseline_data(
+        list(clean),
+        _identity,
+        None,
+        alerts=ALERT_EVENTS,
+        feature_sets=("basic",),
+        source="mimic_iv",
+        loader=lambda p: all_frames[p],
+    )
+    # Same landmark rows either way (clean split defines them; sorted since
+    # polars group_by order isn't guaranteed stable across separate calls)...
+    for event in clean_only.rows:
+        assert sorted(map(_key, data.rows[event])) == sorted(
+            map(_key, clean_only.rows[event])
+        )
+    # ...but the features differ, because they were built from the degraded
+    # copy (every heart rate flattened to 100.0) instead of the clean one.
+    assert not np.array_equal(
+        data.features["basic"]["death"], clean_only.features["basic"]["death"]
+    )
+
+
+def test_verify_matching_origins_passes_when_origin_unchanged() -> None:
+    clean = _shard([1, 2])
+    # drop everything except the earliest row per subject and one extra --
+    # origin (each subject's first non-birth timed row) is unchanged.
+    degraded = clean.filter(
+        pl.col("code") != "MEDICATION//norepinephrine//Administered"
+    )
+    _verify_matching_origins(clean, degraded, context="test")  # no raise
+
+
+def test_verify_matching_origins_raises_when_a_subjects_earliest_row_is_gone() -> None:
+    clean = _shard([1, 2])
+    origin_row = clean.sort("time").filter(pl.col("subject_id") == 1).head(1)
+    degraded = clean.filter(
+        ~(
+            (pl.col("subject_id") == 1)
+            & (pl.col("time") == origin_row["time"][0])
+            & (pl.col("code") == origin_row["code"][0])
+        )
+    )
+    with pytest.raises(RuntimeError, match="shifted or"):
+        _verify_matching_origins(clean, degraded, context="test")
