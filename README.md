@@ -99,6 +99,8 @@ uv sync --extra cuda --no-build-isolation
 
 Local (CPU/MPS) development uses a lightweight stand-in backbone so the concept-bottleneck logic can be built and tested without a GPU; see `tests/odyssey/models/test_concept_bottleneck.py`.
 
+The notes-sidecar text-embedding pipeline (`odyssey/text/embed_notes.py`) depends on `transformers`, an optional extra: `uv sync --extra text` (see `docs/sidecars_and_task_sets.md`).
+
 ## Data pipeline
 
 **MEDS is the narrow waist of the whole system.** Each data source gets its own extractor, as source-specific as it needs to be (standard `meds-extract` tooling for MIMIC-IV, a declarative MESSY spec for eICU, a bespoke SQL-streaming extractor for GEMINI's Postgres-only access), but all three converge on the same conformant [MEDS](https://github.com/Medical-Event-Data-Standard/meds) event schema, and everything downstream (binning, tokenization, concepts, training, evaluation, baselines) is written once against that schema and never knows which hospital system produced the data. Conformance at the boundary is enforced mechanically (schema, `metadata/` layout, split directories), not by convention. Deployment readiness follows the same principle: when the best model is settled, a thin MEDS-to-FHIR translator at this boundary is what connects it to live hospital systems, with nothing upstream rearchitected (Track D).
