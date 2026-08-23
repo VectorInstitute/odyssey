@@ -215,6 +215,49 @@ whitespace-collapse only, no cross-name canonicalization map yet, unlike
 :func:`_normalize_unit_series`'s unit handling). Closes every retention
 anomaly found in the real-run accounting so far.
 
+Real-run hardening (2026-08-23, seventh incident): a re-extraction crashed
+in :meth:`MedsShardWriter.close` -> :func:`_logical_shard_row_counts` with
+``ArrowInvalid`` ("Parquet magic bytes not found in footer") -- a truncated
+part-file orphaned by an earlier OOM-killed attempt (killed mid-write, so
+no footer) had landed under a *countable* final name, and the error carried
+no path, forcing a manual scan of 1,000+ files to find the one bad one.
+Fixed with atomic part-file visibility: :meth:`MedsShardWriter._writer_for`
+now opens every writer against ``<final_name>.parquet.tmp``, never the
+final name directly; :meth:`MedsShardWriter.flush_all` only ``os.rename``s
+a shard's ``.tmp`` file to its real, countable name once ``close()`` has
+already written a valid footer. :meth:`MedsShardWriter.__init__` cleans up
+(deletes and logs) any leftover ``.tmp`` file already on disk at startup --
+it can only be an orphan from a previously-killed process.
+:func:`_logical_shard_row_counts` also now re-raises any corrupt/unreadable
+file with its path in the message, rather than ever silently skipping it --
+a corrupt *final*-named file is real, unexpected damage under this design,
+not something to paper over. :meth:`MedsShardWriter.discard_incomplete_writers`
+safely discards a still-open writer's ``.tmp`` file (and only its ``.tmp``
+file, never an already-renamed final one) on any exception mid-table --
+this doctrine only became safe once every writer's on-disk identity was
+``.tmp``-gated; before this fix, closing a partially-written writer on
+exception would have finalized a countable, final-named file that a retry
+(which redoes the whole table from scratch) would then double-count.
+
+**Known residual hazard, deliberately not fixed (P3 tracker item)**:
+:meth:`MedsShardWriter.flush_all`'s own close-then-rename loop -- one
+``close()`` + ``os.rename`` pair per shard touched by the table currently
+finishing -- is not itself atomic as a *whole*. A process killed partway
+through that loop leaves some of the table's part files already promoted
+to their final, countable names while the table's manifest entry has not
+yet been marked complete; the next resumed run then re-extracts the whole
+table from scratch and double-counts whatever had already been promoted.
+Before this fix, that unsafe window was the *entire* table's extraction
+duration (any crash anywhere during the table could double-count or lose
+data); now it's just the handful of seconds ``flush_all`` itself takes to
+iterate its writers, several orders of magnitude smaller, which is why
+this residual window is being accepted rather than closed immediately. A
+real fix needs either per-part-file table identity (so a resumed run can
+tell "this final-named file belongs to a table being redone, discard it"
+apart from "this belongs to an already-complete table, keep it") or a
+manifest-recorded expected-file list per table -- both are output-layout
+changes deliberately deferred rather than made mid-campaign.
+
 Run on the GEMINI node (writes real patient data to ``OUTPUT_DIR`` -- not a
 dry run):
 

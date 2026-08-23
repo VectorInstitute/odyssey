@@ -495,5 +495,35 @@ consistent with a run-*shape* change rather than a code regression, and
 with the cap (bounding the wave itself to ~10-14 GB) surviving any
 plausible fragmentation floor regardless. Total buffered rows are now
 logged in the per-batch timing line so this class of question is
-answerable
-from logs directly next time.
+answerable from logs directly next time.
+
+**Real incident, real fix (2026-08-23, fourth): a re-extraction crashed
+in `MedsShardWriter.close()` -> `_logical_shard_row_counts` with
+`ArrowInvalid` ("Parquet magic bytes not found in footer")** -- a
+truncated part-file orphaned by an earlier OOM-killed attempt (killed
+mid-write, so no footer) had landed under a countable final name, and
+the error carried no path, forcing a manual scan of 1,000+ files to find
+the one bad one. Fixed with atomic part-file visibility: every writer
+now opens against `<final_name>.parquet.tmp`, never the final name
+directly, and `flush_all()` only renames a shard's tmp file to its real
+name once `close()` has already written a valid footer.
+`_logical_shard_row_counts` now re-raises any corrupt file with its path
+in the message rather than ever silently skipping it. A new
+`discard_incomplete_writers()` safely discards a still-open writer's tmp
+file (never an already-renamed final one) on any exception mid-table,
+finally closing the tension the original durability fix left open.
+Merged as `ad2b214`; see the module docstring's own incident log for the
+full mechanism.
+
+**Known residual hazard, deliberately not fixed (P3, deferred)**:
+`flush_all()`'s own close-then-rename loop (one close+rename pair per
+shard) is not atomic as a whole -- a kill landing inside that loop
+leaves some part files already promoted to final names before the
+table's manifest entry is marked complete, so a resumed run re-extracts
+the whole table and double-counts whatever was already promoted. Before
+this fix that window was the entire table's extraction; now it's just
+the few seconds `flush_all()` itself takes, which is why it's accepted
+rather than closed immediately. The real fix needs per-part-file table
+identity or a manifest-recorded expected-file list -- both are
+output-layout changes deliberately deferred rather than made
+mid-campaign.
