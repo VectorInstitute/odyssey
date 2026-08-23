@@ -80,6 +80,9 @@ ALERT_EVENTS_V2: Tuple[AlertEvent, ...] = ALERT_EVENTS_V1 + (
 ALERT_TASK_SETS: Dict[str, Tuple[AlertEvent, ...]] = {
     "v1": ALERT_EVENTS_V1,
     "v2": ALERT_EVENTS_V2,
+    # v3 widens the CONCEPT set only (odyssey.data.concepts.TASK_SETS); its
+    # alert events are v2's.
+    "v3": ALERT_EVENTS_V2,
 }
 
 # The v1 set, kept as the module-level default every pre-task-set caller
