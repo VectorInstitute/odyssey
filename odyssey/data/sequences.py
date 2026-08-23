@@ -89,8 +89,9 @@ class PatientSequence:
     each curated panel signal k: column ``k`` = hours since that signal's
     previous observation (strictly before this token, like
     ``family_recency``; ``nan`` until first seen), column ``K + k`` = the
-    standardized value of that previous observation (``nan`` if none or
-    valueless). Exact per patient regardless of chunking. Consumed only by
+    standardized value of that previous observation (``nan`` if none).
+    Only valued readings count as observations, like the GBM panel. Exact
+    per patient regardless of chunking. Consumed only by
     models with ``signal_channels`` on, at the time/event heads, never
     through the concept bottleneck -- the per-signal staleness and
     last-value inputs the tuned GBM baseline reads."""
@@ -218,10 +219,15 @@ def _signal_state(
     sid = np.asarray(signal_ids, dtype=np.int64)
     t = np.asarray(time_stamps, dtype=np.float64)
     vals = (
-        np.asarray(values, dtype=np.float64)
+        np.asarray([np.nan if v is None else v for v in values], dtype=np.float64)
         if len(values) == n
         else np.full(n, np.nan, dtype=np.float64)
     )
+    # Only VALUED readings are observations (both for staleness and last
+    # value), matching the GBM panel (baseline_features._build_subject skips
+    # NaN-valued rows): a same-prefix row without a number (an order, a
+    # text-valued chart row) is not a measurement of the signal.
+    sid = np.where(np.isnan(vals), -1, sid)
     positions = np.arange(n, dtype=np.int64)
     obs = np.where(sid[:, None] == np.arange(k)[None, :], positions[:, None], -1)
     last = np.maximum.accumulate(obs, axis=0)

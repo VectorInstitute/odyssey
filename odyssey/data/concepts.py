@@ -69,7 +69,7 @@ from typing import Dict, List, Literal, Optional, Sequence, Set, Tuple, Union
 import polars as pl
 
 from odyssey.data.code_mapping import prefixes_for_loinc, unit_for
-from odyssey.data.sidecars import MICROBIOLOGY, active_sidecar
+from odyssey.data.sidecars import ANTIBIOTIC_ORDERS, MICROBIOLOGY, active_sidecar
 from odyssey.data.sofa import assessable_keys, sofa_supported, sofa_timeseries
 
 
@@ -239,10 +239,15 @@ ANTIBIOTIC_PATTERN = (
     r"|ceftin|zinacef|omnicef|suprax|vantin|spectracef|cedax|duricef|raniclor"
 )
 # Routes that do not count as systemic antibiotic therapy (topical, eye,
-# ear, nasal, inhaled) -- mimic-code's exclusions, matched on MEDS ``route``.
+# ear, nasal, inhaled, irrigation, vaginal, rectal, intravitreal, locks):
+# mimic-code's word exclusions plus MIMIC-IV's own route ABBREVIATIONS as
+# actually charted on prescriptions/eMAR (TP, NU, NS/ND/NAS, OU/OS/OD, AU/AS/AD,
+# IH/IN, IRR/IR, VG, PR, IVT, LOCK, DWELL -- audited on the real orders table,
+# research journal entry 44). Matched case-insensitively, whole field.
 ANTIBIOTIC_ROUTE_EXCLUDE = (
-    r"^(OU|OS|OD|AU|AS|AD|TP)$|ear|eye|ophth|otic|nasal|inhal|neb|topical|cream|gel"
-    r"|ointment|desensitization|irrig|vaginal|rectal"
+    r"^(OU|OS|OD|AU|AS|AD|TP|NU|NS|ND|NAS|IH|IN|IRR|IR|VG|PR|IVT|LOCK|DWELL|EX)$"
+    r"|ear|eye|ophth|otic|nasal|inhal|neb|topical|cream|gel|ointment|intravitreal"
+    r"|desensitization|irrig|vaginal|rectal"
 )
 
 
@@ -1304,6 +1309,37 @@ def _component_ids(
 _SIDECAR_WARNED: Set[str] = set()
 
 
+def _attribute_sidecar_rows(
+    rows: pl.DataFrame, spans: pl.DataFrame, *, key: str, time_alias: str
+) -> pl.DataFrame:
+    """Attach sidecar rows (subject_id, hadm_id, time, ...) to label keys.
+
+    A row belongs to a key when its ``hadm_id`` equals the key's visit, or,
+    when the row has no ``hadm_id``, when its time falls inside the key's
+    event span. ``spans`` has ``key, _subject, _visit, _t0, _t1``. Extra
+    columns of ``rows`` are carried through; ``time`` is renamed to
+    ``time_alias``.
+    """
+    joined = rows.rename(
+        {"subject_id": "_subject", "hadm_id": "_rhadm", "time": time_alias}
+    ).join(
+        spans.select(key, "_subject", "_visit", "_t0", "_t1"),
+        on="_subject",
+        how="inner",
+    )
+    return joined.filter(
+        (
+            pl.col("_rhadm").is_not_null()
+            & (pl.col("_rhadm") == pl.col("_visit").cast(pl.Int64))
+        )
+        | (
+            pl.col("_rhadm").is_null()
+            & (pl.col(time_alias) >= pl.col("_t0"))
+            & (pl.col(time_alias) <= pl.col("_t1"))
+        )
+    ).drop("_subject", "_rhadm", "_visit", "_t0", "_t1")
+
+
 def _sepsis3_ids(  # noqa: PLR0915
     events: pl.DataFrame,
     rule: Sepsis3Rule,
@@ -1343,44 +1379,52 @@ def _sepsis3_ids(  # noqa: PLR0915
         spans = spans.with_columns(pl.lit(None, dtype=pl.Int64).alias("_visit"))
 
     # --- cultures attributed to keys: same hadm_id, or (no hadm_id) inside the span
-    cult = cultures.select(
-        pl.col("subject_id").alias("_subject"),
-        pl.col("hadm_id").cast(pl.Int64).alias("_chadm"),
-        pl.col("time").cast(timed.schema[time_col]).alias("_ctime"),
-    ).join(
-        spans.select(key, "_subject", "_visit", "_t0", "_t1"),
-        on="_subject",
-        how="inner",
-    )
-    cult = cult.filter(
-        (
-            pl.col("_chadm").is_not_null()
-            & (pl.col("_chadm") == pl.col("_visit").cast(pl.Int64))
-        )
-        | (
-            pl.col("_chadm").is_null()
-            & (pl.col("_ctime") >= pl.col("_t0"))
-            & (pl.col("_ctime") <= pl.col("_t1"))
-        )
+    cult = _attribute_sidecar_rows(
+        cultures.select(
+            "subject_id",
+            pl.col("hadm_id").cast(pl.Int64),
+            pl.col("time").cast(timed.schema[time_col]),
+        ),
+        spans,
+        key=key,
+        time_alias="_ctime",
     ).select(key, "_ctime")
 
-    # --- systemic antibiotic starts / administrations (never STOP rows).
-    # MIMIC-IV: pharmacy ``MEDICATION//START//<drug>//<ndc>`` rows (no
-    # hadm_id in the standard extraction, so absent under visit scoping)
-    # and eMAR ``MEDICATION//<drug>//Administered//<ndc>`` rows (hadm_id
-    # present); both are "the drug was given/started" events.
-    starts = timed.filter(
-        pl.col(code_col).str.starts_with("MEDICATION//")
-        & pl.col(code_col).str.contains(rule.antibiotic_event_pattern)
-        & pl.col(code_col).str.contains("(?i)" + rule.antibiotic_pattern)
-    )
-    if rule.route_col in starts.columns:
-        starts = starts.filter(
-            ~pl.col(rule.route_col)
-            .fill_null("")
-            .str.contains("(?i)" + rule.route_exclude)
+    # --- systemic antibiotic starts. Preferred source: the antibiotic_orders
+    # sidecar (prescription ORDERS, mimic-code's anchor; hadm_id on every
+    # row). Fallback: the tokenized record's pharmacy START / eMAR
+    # Administered rows -- which under-call suspicion on MIMIC-IV (pharmacy
+    # START rows carry no hadm_id in the standard extraction and eMAR covers
+    # only part of the years; research journal entry 43).
+    orders = active_sidecar(ANTIBIOTIC_ORDERS)
+    if orders is not None:
+        abx = _attribute_sidecar_rows(
+            orders.select(
+                "subject_id",
+                pl.col("hadm_id").cast(pl.Int64),
+                pl.col("time").cast(timed.schema[time_col]),
+                pl.col("route"),
+            ),
+            spans,
+            key=key,
+            time_alias="_atime",
         )
-    abx = starts.select(key, pl.col(time_col).alias("_atime"))
+        abx = abx.filter(
+            ~pl.col("route").fill_null("").str.contains("(?i)" + rule.route_exclude)
+        ).select(key, "_atime")
+    else:
+        starts = timed.filter(
+            pl.col(code_col).str.starts_with("MEDICATION//")
+            & pl.col(code_col).str.contains(rule.antibiotic_event_pattern)
+            & pl.col(code_col).str.contains("(?i)" + rule.antibiotic_pattern)
+        )
+        if rule.route_col in starts.columns:
+            starts = starts.filter(
+                ~pl.col(rule.route_col)
+                .fill_null("")
+                .str.contains("(?i)" + rule.route_exclude)
+            )
+        abx = starts.select(key, pl.col(time_col).alias("_atime"))
 
     # observed = the SOFA score could be assessed at all for this key,
     # whether or not infection was ever suspected.

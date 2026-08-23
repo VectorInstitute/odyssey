@@ -21,6 +21,7 @@ from odyssey.data.concepts import (
     label_concepts_by_visit,
 )
 from odyssey.data.sidecars import (
+    ANTIBIOTIC_ORDERS,
     MICROBIOLOGY,
     activate_sidecars,
     active_sidecar,
@@ -291,3 +292,32 @@ def test_sidecar_discovery_from_a_split_directory(tmp_path: Path) -> None:
         activate_sidecars(None)
     assert active_sidecar(MICROBIOLOGY) is None
     assert activate_sidecars(tmp_path / "nowhere" / "data" / "train") == []
+
+
+def test_sepsis3_prefers_the_antibiotic_orders_sidecar_with_route_policy() -> None:
+    """With the orders sidecar active, suspicion comes from prescription orders."""
+    concepts = [
+        c for c in concepts_for_source("mimic_iv", task_set="v2") if c.name == "sepsis3"
+    ]
+    visit = _septic_visit(abx_offset_h=100.0)  # the record's own antibiotic is too late
+    orders = pl.DataFrame(
+        {
+            "subject_id": [1, 1],
+            "hadm_id": pl.Series([10, 10], dtype=pl.Int64),
+            "time": [T0 + 2 * H, T0 + 3 * H],
+            "stoptime": [T0 + 5 * H, T0 + 6 * H],
+            "drug": ["Vancomycin", "Mupirocin Nasal Ointment"],
+            "route": ["IV", "NU"],
+        }
+    )
+    with sidecar_context(
+        {MICROBIOLOGY: _cultures(T0 + 1 * H), ANTIBIOTIC_ORDERS: orders}
+    ):
+        row = label_concepts_by_visit(visit, concepts).to_dicts()[0]
+    assert row["sepsis3"] == 1  # the IV vancomycin order anchors suspicion
+    nasal_only = orders.filter(pl.col("route") == "NU")
+    with sidecar_context(
+        {MICROBIOLOGY: _cultures(T0 + 1 * H), ANTIBIOTIC_ORDERS: nasal_only}
+    ):
+        row = label_concepts_by_visit(visit, concepts).to_dicts()[0]
+    assert row["sepsis3"] == 0  # a nasal-route order is not systemic therapy

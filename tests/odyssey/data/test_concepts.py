@@ -1,5 +1,6 @@
 """Tests for rule-derived concept labels."""
 
+import re
 import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -10,6 +11,7 @@ import pytest
 
 from odyssey.data import code_mapping
 from odyssey.data.concepts import (
+    ANTIBIOTIC_ROUTE_EXCLUDE,
     CANONICAL_CONCEPTS,
     CONCEPTS,
     AnyOf,
@@ -1367,3 +1369,49 @@ def test_v3_eicu_expansion_resolves_every_new_concept() -> None:
     eicu_names = {c.name for c in concepts_for_source("eicu", task_set="v3")}
     for name in _V3_NEW_NAMES:
         assert name in eicu_names, f"{name} unexpectedly dropped for eicu"
+
+
+# ---------------------------------------------------------------------------
+# Sepsis-3 antibiotic route exclusion (real-data finding,
+# research_journal/experiments/44_real_data_checks.html)
+# ---------------------------------------------------------------------------
+
+
+def test_antibiotic_route_exclude_misses_real_mimic_route_abbreviations() -> None:
+    """ANTIBIOTIC_ROUTE_EXCLUDE must cover MIMIC-IV's route abbreviations.
+
+    Originally it matched route *words* only -- confirmed on a real held-out shard: 174
+    Mupirocin (topical/nasal MRSA-decolonization ointment, not systemic
+    antibiotic therapy) rows in one shard alone -- 139 null route, 35
+    route='NU' (nasal), 3 route='PR' (rectal) -- all pass through uncaught
+    as systemic antibiotic starts feeding Sepsis-3's suspected-infection
+    criterion (odyssey.data.concepts._sepsis3_ids, the
+    ``~pl.col(route_col)...str.contains(route_exclude)`` filter). Every
+    other drug in the real top-40 antibiotic-regex match list was a
+    genuine systemic antibacterial -- this route-abbreviation gap is the
+    one concrete false-positive source found.
+
+    Fix proposal (not applied here -- flagging for review, not isolated
+    enough to fix blind): add MIMIC-IV's actual route abbreviations (at
+    least NU, PR; audit the rest of d_items.csv's route vocabulary rather
+    than guessing the full set) to ANTIBIOTIC_ROUTE_EXCLUDE, alongside the
+    existing word-form matches. Separately, note the null-route case is
+    currently treated as NOT excluded (fill_null("") never matches the
+    regex) -- worth an explicit policy decision (assume systemic if route
+    is unknown, or exclude conservatively) rather than the current
+    incidental default.
+    """
+    pattern = re.compile(ANTIBIOTIC_ROUTE_EXCLUDE, re.IGNORECASE)
+    # Fixed (6cbff95 follow-up): abbreviations audited on the real orders table.
+    assert pattern.search("NU"), (
+        "'NU' (MIMIC-IV's real nasal-route abbreviation) should be excluded "
+        "but the regex only matches the word 'nasal', not this abbreviation"
+    )
+    assert pattern.search("PR"), (
+        "'PR' (MIMIC-IV's real rectal-route abbreviation) should be excluded "
+        "but the regex only matches the word 'rectal', not this abbreviation"
+    )
+    # sanity: a genuine systemic route must NOT be excluded (the fix must
+    # not overcorrect and start dropping real IV/PO antibiotic starts).
+    assert not pattern.search("IV")
+    assert not pattern.search("PO")

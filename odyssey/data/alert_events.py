@@ -13,7 +13,6 @@ on the sequence time origin (the subject's first timed non-birth event),
 so they line up with chunk time stamps position for position.
 """
 
-import warnings
 from dataclasses import dataclass
 from typing import Dict, Optional, Sequence, Tuple
 
@@ -138,31 +137,38 @@ def hours_since_origin(
 def _next_visit_onsets(
     timed: pl.DataFrame, code_prefix: str, origins: pl.DataFrame
 ) -> Dict[Tuple[int, int], float]:
-    """(subject, visit) -> hours of the first ``code_prefix`` event after the visit."""
+    """(subject, visit) -> hours of the first ``code_prefix`` event of a LATER visit.
+
+    "Later" is by admission order: the earliest ``code_prefix`` row of a
+    different ``hadm_id`` whose time is after this visit's first event. A
+    visit's own rows can carry timestamps past its real discharge (results
+    finalized later, stray late-attributed rows), so anchoring on the
+    visit's last row skipped genuine back-to-back readmissions in ~1% of
+    visits (research journal entry 44); admissions do not overlap, so the
+    next admission by start time is the next visit.
+    """
     visits = (
         timed.filter(pl.col("hadm_id").is_not_null())
         .group_by("subject_id", "hadm_id")
-        .agg(pl.col("time").max().alias("_end"))
-        .sort(["subject_id", "_end"])
+        .agg(pl.col("time").min().alias("_start"))
     )
-    hits = (
-        timed.filter(pl.col("code").str.starts_with(code_prefix))
-        .select("subject_id", pl.col("time").alias("_next"))
-        .sort(["subject_id", "_next"])
+    hits = timed.filter(pl.col("code").str.starts_with(code_prefix)).select(
+        "subject_id",
+        pl.col("hadm_id").alias("_next_hadm"),
+        pl.col("time").alias("_next"),
     )
-    # strictly after the visit's last event: asof "forward" on _end finds the
-    # first hit at or after _end, so exclude ties by shifting the key.
-    shifted = visits.with_columns(
-        (pl.col("_end") + pl.duration(microseconds=1)).alias("_k")
-    )
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore", message="Sortedness of columns cannot be checked"
+    joined = (
+        visits.join(hits, on="subject_id", how="inner")
+        .filter(
+            (pl.col("_next") > pl.col("_start"))
+            & (
+                pl.col("_next_hadm").is_null()
+                | (pl.col("_next_hadm") != pl.col("hadm_id"))
+            )
         )
-        joined = shifted.sort(["subject_id", "_k"]).join_asof(
-            hits, left_on="_k", right_on="_next", by="subject_id", strategy="forward"
-        )
-    joined = joined.filter(pl.col("_next").is_not_null())
+        .group_by("subject_id", "hadm_id")
+        .agg(pl.col("_next").min())
+    )
     joined = hours_since_origin(joined, "_next", origins)
     return {
         (int(s), int(v)): float(t)
