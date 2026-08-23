@@ -113,6 +113,22 @@ def test_mcar_rejects_invalid_probability() -> None:
         pass
 
 
+def test_mcar_protects_the_origin_row_even_when_it_is_a_lab() -> None:
+    """MCAR must never drop the origin row, even when it is a lab.
+
+    A subject's very first charted event can legitimately be a lab (no
+    anchor row precedes it) -- MCAR at p=1.0 must still never drop it.
+    """
+    rows = [
+        (3, "LAB//RESULT//50912//", T0, 0.9, 3000),  # origin: a real lab
+        (3, "HOSPITAL_DISCHARGE//", T0 + timedelta(hours=5), None, 3000),
+    ]
+    events = _shard(rows)
+    out = apply_mcar(events, p=1.0, seed=0)
+    by_code = dict(zip(out["code"].to_list(), out["time"].to_list()))
+    assert by_code.get("LAB//RESULT//50912//") == T0
+
+
 # ---------------------------------------------------------------------------
 # Axis B: family blackout
 # ---------------------------------------------------------------------------
@@ -137,6 +153,24 @@ def test_family_blackout_unknown_family_raises() -> None:
         raise AssertionError("expected ValueError")
     except ValueError:
         pass
+
+
+def test_family_blackout_protects_the_origin_row_even_in_the_blacked_out_family() -> (
+    None
+):
+    """Family blackout must never remove the origin row either.
+
+    Same edge case as MCAR's: blacking out 'labs' must not remove a
+    subject's origin row even when that row IS a lab.
+    """
+    rows = [
+        (3, "LAB//RESULT//50912//", T0, 0.9, 3000),  # origin: a real lab
+        (3, "HOSPITAL_DISCHARGE//", T0 + timedelta(hours=5), None, 3000),
+    ]
+    events = _shard(rows)
+    out = apply_family_blackout(events, family="labs", source="mimic_iv")
+    by_code = dict(zip(out["code"].to_list(), out["time"].to_list()))
+    assert by_code.get("LAB//RESULT//50912//") == T0
 
 
 # ---------------------------------------------------------------------------
