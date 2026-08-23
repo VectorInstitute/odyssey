@@ -10,6 +10,18 @@ family balancing alpha 0.5, visit-scoped concepts, icd3 backoff, medication
 normalization, time-to-next-event head, per-event hazard heads, randint 0,
 64 lanes x 512, 2 epochs, checkpoint_every 2000.
 
+Comparator feature sets: the tuned **GBM** is the strong-feature bar (609
+hand-built columns, `odyssey/inference/baseline_features.py`). **TabICL**
+rows are fit on the **basic** set (~17 columns) on every dataset: its
+in-context forward pass re-reads the whole context at `O(n^2 + n*m^2)` in
+context rows and feature columns, so 609 columns costs ~70 GB per
+`predict_proba` call versus ~8 GB at 17 (measured 2026-08-23;
+`tabicl_baseline.estimate_peak_gb` now refuses such a fit). That is a real
+property of the comparator, not a tuning choice, and it keeps the MIMIC and
+eICU TabICL rows like-for-like. **EBM** rows are strong-feature on MIMIC and
+basic on eICU; **SurvivalPFN** is basic on both. Every row states its own
+feature set.
+
 Data versions: **MIMIC** = `mimiciv_3.1_v1` (292/?/37 shards). **eICU v1** =
 `eicu_2.0_v1` (spec v1: 36% of medication rows `UNK`, infusions a bare
 `INFUSION_DRUG` token; 134/17/17 shards). **eICU v2** = `eicu_2.0_v2` (spec
