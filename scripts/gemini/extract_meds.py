@@ -2916,6 +2916,18 @@ def _logical_shard_row_counts(output_dir: Path) -> dict[int, int]:
     source for the extraction summary's ``shard_row_counts``, since a
     resumed run's :class:`MedsShardWriter` only tracks rows *it* wrote,
     not what a prior run already committed to a shard's base file.
+
+    A file that fails to open as valid Parquet is **never** silently
+    skipped -- real incident: a killed process (an OOM kill, before the
+    ``.tmp``-then-``rename`` atomic-visibility fix existed) left a
+    truncated, footer-less file under a *final*, countable name;
+    ``pq.ParquetFile`` raised ``ArrowInvalid`` here with no path in the
+    message, forcing a manual scan of 1,000+ files to find the one bad
+    one. Same no-blanket-silence doctrine as the durability fix elsewhere
+    in this module: a corrupt final-named file is real, unexpected
+    damage (with the atomic-visibility fix in place, every final-named
+    file is supposed to be a completed, valid write) and must fail loud
+    with exactly which path is bad, not be papered over or guessed at.
     """
     counts: dict[int, int] = {}
     for path in output_dir.glob("shard_*.parquet"):
@@ -2923,7 +2935,17 @@ def _logical_shard_row_counts(output_dir: Path) -> dict[int, int]:
         if match is None:
             continue
         shard = int(match.group(1))
-        counts[shard] = counts.get(shard, 0) + pq.ParquetFile(path).metadata.num_rows
+        try:
+            n_rows = pq.ParquetFile(path).metadata.num_rows
+        except Exception as exc:
+            raise RuntimeError(
+                f"[extract_meds] corrupt or unreadable Parquet file at {path} -- "
+                "refusing to silently skip it; this is real damage (e.g. a "
+                "truncated file from a killed process), not something to "
+                "paper over. Investigate and remove/replace this specific "
+                "file before retrying."
+            ) from exc
+        counts[shard] = counts.get(shard, 0) + n_rows
     return counts
 
 
@@ -2994,11 +3016,67 @@ class MedsShardWriter:
         #: :meth:`_flush_shard`) rather than recomputed, since it's read
         #: on every :meth:`write_batch` call.
         self.total_buffered_rows = 0
+        #: ``shard -> (tmp_path, final_path)`` for every currently-open
+        #: writer -- see :meth:`_writer_for`'s docstring for why a writer
+        #: is opened against ``tmp_path`` (never counted, never globbed)
+        #: and only renamed to ``final_path`` once :meth:`flush_all`
+        #: closes it successfully.
+        self._writer_paths: dict[int, tuple[Path, Path]] = {}
+        self._clean_leftover_tmp_files()
+
+    def _clean_leftover_tmp_files(self) -> None:
+        """Delete (and log) any ``*.parquet.tmp`` file already on disk at startup.
+
+        A ``.tmp`` file can only exist here because a *previous* process
+        was killed mid-write, before :meth:`flush_all` ever renamed it to
+        its final name (see :meth:`_writer_for`) -- this fresh instance's
+        own ``self._writers``/``self._writer_paths`` start empty, so it
+        never created any of these itself. Real incident this prevents: a
+        killed process's truncated, footer-less part-file used to land
+        under a *countable* final name, and :func:`_logical_shard_row_counts`
+        would only discover it much later (loudly, per that function's own
+        docstring, but only once something finally tried to read it) --
+        cleaning up known-orphaned ``.tmp`` files here, at the start of
+        every run, means a stale one is never even reachable by that path.
+        Deliberately global (every ``.tmp`` file under ``output_dir``, not
+        scoped to one table) since a ``.tmp`` filename carries no table
+        identity to scope by, and any one found here is unconditionally
+        safe to discard regardless of which table's crashed attempt made it
+        -- see :func:`_next_shard_write_path`/:func:`_logical_shard_row_counts`,
+        neither of which ever counts a ``.tmp``-suffixed path as real output.
+        """
+        for tmp_path in self.output_dir.glob("shard_*.parquet.tmp"):
+            logger.warning(
+                "[extract_meds] deleting leftover tmp part-file from a prior "
+                "killed process (never renamed, so never counted as real "
+                "output): %s",
+                tmp_path,
+            )
+            tmp_path.unlink()
 
     def _writer_for(self, shard: int) -> pq.ParquetWriter:
+        """Return (opening if needed) the open writer for ``shard``.
+
+        Opens against ``<final_name>.parquet.tmp``, never the final
+        ``<final_name>.parquet`` name directly -- real incident this
+        prevents: a process killed mid-write previously left a truncated,
+        footer-less file under a *final*, countable name, since
+        ``pq.ParquetWriter`` only ever writes a valid footer at
+        ``close()``. A ``.tmp``-suffixed path is never matched by
+        :data:`_SHARD_FILE_RE`, :func:`_shard_glob`,
+        :func:`_next_shard_write_path`, or
+        :func:`_logical_shard_row_counts`'s glob (all of which require a
+        literal ``.parquet`` at the end) -- an ``os.rename`` in
+        :meth:`flush_all` promotes it to the final, countable name only
+        once ``close()`` has actually written a valid footer, and NFS's
+        same-directory rename is atomic enough that no reader can ever
+        observe a partially-renamed file.
+        """
         if shard not in self._writers:
-            path = _next_shard_write_path(self.output_dir, shard)
-            self._writers[shard] = pq.ParquetWriter(str(path), MEDS_ARROW_SCHEMA)
+            final_path = _next_shard_write_path(self.output_dir, shard)
+            tmp_path = final_path.parent / f"{final_path.name}.tmp"
+            self._writers[shard] = pq.ParquetWriter(str(tmp_path), MEDS_ARROW_SCHEMA)
+            self._writer_paths[shard] = (tmp_path, final_path)
             self._shard_row_counts[shard] = 0
         return self._writers[shard]
 
@@ -3132,12 +3210,24 @@ class MedsShardWriter:
         (already built for the resumed-run case) -- this costs one extra
         small part file per shard per table boundary, never a rewrite of
         anything already on disk.
+
+        Each writer is closed against its ``.tmp`` path and only then
+        ``os.rename``d to its real, countable final name (see
+        :meth:`_writer_for`) -- the rename is the single moment a shard's
+        new part file becomes visible to :func:`_shard_glob`,
+        :func:`_next_shard_write_path`, and
+        :func:`_logical_shard_row_counts`, and it only happens after
+        ``close()`` has already written a valid footer, so nothing ever
+        observes a countable-but-truncated file.
         """
         for shard in list(self._buffers):
             self._flush_shard(shard)
-        for writer in self._writers.values():
+        for shard, writer in self._writers.items():
             writer.close()
+            tmp_path, final_path = self._writer_paths[shard]
+            os.rename(tmp_path, final_path)
         self._writers.clear()
+        self._writer_paths.clear()
         self._shard_row_counts.clear()
 
     def close(self) -> dict[int, int]:
@@ -3154,6 +3244,53 @@ class MedsShardWriter:
         """
         self.flush_all()
         return _logical_shard_row_counts(self.output_dir)
+
+    def discard_incomplete_writers(self) -> None:
+        """Safely abandon every still-open writer's ``.tmp`` file, in-memory state included.
+
+        Meant to be called from an ``except`` clause wrapping the table
+        currently mid-flight when it raises -- see :func:`_extract_one_table`.
+        Unconditionally safe, unlike the blanket "close writers on any
+        exception" the durability fix's own commit message explicitly
+        rejected: back then, closing a partially-written writer would
+        finalize a *countable*, final-named file that a retry (which
+        redoes the whole table from scratch) would then double-count
+        alongside its own fresh part files. Now that a writer only ever
+        touches its ``.tmp`` name (see :meth:`_writer_for`) until
+        :meth:`flush_all` renames it, discarding here is just deleting a
+        file nothing has ever counted or globbed -- the retry recreates it
+        from scratch under a fresh part number, losing nothing and
+        double-counting nothing.
+
+        Deliberately does *not* try to close each ``pq.ParquetWriter``
+        cleanly first: the exception being handled may have left the
+        writer or the underlying connection in an unknown state, and
+        since the ``.tmp`` file is being deleted regardless, there is
+        nothing to gain from risking a second exception out of ``close()``
+        -- any secondary error there is swallowed, not re-raised, so the
+        caller's original exception is what actually propagates.
+        """
+        for shard, writer in self._writers.items():
+            try:
+                writer.close()
+            except Exception:  # noqa: BLE001 -- best-effort; the tmp file is discarded either way
+                pass
+            tmp_path, _final_path = self._writer_paths.get(shard, (None, None))
+            if tmp_path is not None and tmp_path.exists():
+                logger.warning(
+                    "[extract_meds] discarding incomplete tmp part-file after "
+                    "an exception mid-table (safe -- never counted as real "
+                    "output): %s",
+                    tmp_path,
+                )
+                tmp_path.unlink()
+        self._writers.clear()
+        self._writer_paths.clear()
+        self._shard_row_counts.clear()
+        for shard in list(self._buffers):
+            self._buffers.pop(shard, None)
+            self.total_buffered_rows -= self._buffer_row_counts.get(shard, 0)
+            self._buffer_row_counts[shard] = 0
 
 
 def _manifest_path(output_dir: Path) -> Path:
@@ -3264,6 +3401,13 @@ def _extract_one_table(
     (``ipscu_subset``'s buffered-but-unflushed rows lost when a *later*
     table crashed before the single end-of-run ``close()`` ever ran) this
     ordering closes.
+
+    If this table's own batch loop raises, :meth:`MedsShardWriter.discard_incomplete_writers`
+    cleans up before the exception propagates -- safe now that a writer
+    only ever touches a ``.tmp`` name until :meth:`MedsShardWriter.flush_all`
+    renames it (see that method's own docstring for why the durability
+    fix's original commit explicitly rejected doing this before the
+    atomic-visibility fix existed).
     """
     logger.info("[extract_meds] extracting %s...", table_name)
     report_progress = _log_table_progress(table_name)
@@ -3272,33 +3416,37 @@ def _extract_one_table(
     n_generated = 0
     n_written = 0
     n_dropped = 0
-    while True:
-        _datetime_parse_seconds = 0.0
-        t_generate_start = time.time()
-        try:
-            batch, source_rows = next(gen_iter)
-        except StopIteration:
-            break
-        t_generate = time.time() - t_generate_start
-        t_parse = _datetime_parse_seconds
-        t_transform = max(t_generate - t_parse, 0.0)
-        t_write_start = time.time()
-        n_generated += len(batch)
-        batch_written, batch_dropped = writer.write_batch(table_name, batch)
-        n_written += batch_written
-        n_dropped += batch_dropped
-        t_write = time.time() - t_write_start
-        logger.info(
-            "[extract_meds] %s: batch phase timing (%d rows) "
-            "parse=%.1fms transform=%.1fms write=%.1fms total_buffered=%d",
-            table_name,
-            source_rows,
-            t_parse * 1000,
-            t_transform * 1000,
-            t_write * 1000,
-            writer.total_buffered_rows,
-        )
-        report_progress(source_rows)
+    try:
+        while True:
+            _datetime_parse_seconds = 0.0
+            t_generate_start = time.time()
+            try:
+                batch, source_rows = next(gen_iter)
+            except StopIteration:
+                break
+            t_generate = time.time() - t_generate_start
+            t_parse = _datetime_parse_seconds
+            t_transform = max(t_generate - t_parse, 0.0)
+            t_write_start = time.time()
+            n_generated += len(batch)
+            batch_written, batch_dropped = writer.write_batch(table_name, batch)
+            n_written += batch_written
+            n_dropped += batch_dropped
+            t_write = time.time() - t_write_start
+            logger.info(
+                "[extract_meds] %s: batch phase timing (%d rows) "
+                "parse=%.1fms transform=%.1fms write=%.1fms total_buffered=%d",
+                table_name,
+                source_rows,
+                t_parse * 1000,
+                t_transform * 1000,
+                t_write * 1000,
+                writer.total_buffered_rows,
+            )
+            report_progress(source_rows)
+    except BaseException:
+        writer.discard_incomplete_writers()
+        raise
     writer.flush_all()
     if n_generated != n_written + n_dropped:
         raise RuntimeError(
