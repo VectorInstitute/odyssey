@@ -11,6 +11,7 @@ import torch
 
 from odyssey.data.alert_events import (
     ALERT_EVENTS,
+    ALERT_EVENTS_V2,
     AlertEvent,
     EventTimes,
     all_event_times,
@@ -1740,3 +1741,107 @@ def test_main_allows_a_fresh_output_without_overwrite(
 
     assert called["evaluate"] is True
     assert (tmp_path / "alerts.json").read_text() == "[]"
+
+
+# ---------------------------------------------------------------------------
+# index_mode="visit_end" (discharge-anchored rows; 30-day readmission)
+# ---------------------------------------------------------------------------
+
+
+def _readmission_events(n_subjects: int = 12) -> pl.DataFrame:
+    """Two visits per subject; odd subjects are readmitted within 30 days."""
+    rows: List[Tuple[int, str, datetime, Optional[float], Optional[int]]] = []
+    for sid in range(1, n_subjects + 1):
+        first, second = 2000 + sid, 3000 + sid
+        for h in range(10):
+            rows.append((sid, "LAB//220045//bpm", T0 + timedelta(hours=h), 80.0, first))
+        rows.append(
+            (sid, "HOSPITAL_DISCHARGE//HOME", T0 + timedelta(hours=10), None, first)
+        )
+        gap_days = 10 if sid % 2 else 60
+        start = T0 + timedelta(hours=10, days=gap_days)
+        rows.append((sid, "HOSPITAL_ADMISSION//EMERGENCY", start, None, second))
+        for h in range(1, 6):
+            rows.append(
+                (sid, "LAB//220045//bpm", start + timedelta(hours=h), 80.0, second)
+            )
+        # record continues long after the second visit so nothing is censored
+        rows.append((sid, "LAB//220045//bpm", start + timedelta(days=90), 80.0, None))
+    return pl.DataFrame(
+        rows,
+        schema={
+            "subject_id": pl.Int64,
+            "code": pl.Utf8,
+            "time": pl.Datetime,
+            "numeric_value": pl.Float32,
+            "hadm_id": pl.Int64,
+        },
+        orient="row",
+    )
+
+
+@pytest.mark.parametrize("chunk_size", [8, 200])
+def test_visit_end_rows_agree_between_model_and_event_paths(chunk_size: int) -> None:
+    events = _readmission_events()
+    binned = add_value_tokens(events)
+    vocab = _vocab(binned)
+    concepts = concepts_for_source("mimic_iv")
+    model = _model(len(vocab), len(concepts))
+    readmit = [a for a in ALERT_EVENTS_V2 if a.next_visit]
+    model_rows = collect_model_scores(
+        model,
+        binned,
+        vocab,
+        [c.name for c in concepts],
+        readmit,
+        visit_start=_visit_starts(events),
+        num_lanes=2,
+        chunk_size=chunk_size,
+        device="cpu",
+        index_mode="visit_end",
+    )
+    truth = _index_rows_from_events(
+        binned, readmit, landmark_hours=4.0, index_mode="visit_end"
+    )
+    got = {
+        (r.subject_id, r.visit_id, round(r.time_hours, 6))
+        for r in model_rows["readmission_30d"]
+    }
+    want = {
+        (r.subject_id, r.visit_id, round(r.time_hours, 6))
+        for r in truth["readmission_30d"]
+    }
+    assert got == want
+    assert len(want) == 24  # two visits per subject, one row each, at the last event
+    assert (
+        verify_packed_landmark_rows(
+            model_rows,
+            binned,
+            readmit,
+            landmark_hours=4.0,
+            truncation_boundaries={},
+            index_mode="visit_end",
+        )
+        == []
+    )
+    # outcomes at 30 days: first visits of odd subjects are readmitted (10d),
+    # even subjects are not (60d); second visits have no next admission.
+    times = all_event_times(events, readmit, "mimic_iv", task_set="v2")[
+        "readmission_30d"
+    ]
+    by_visit = {(r.subject_id, r.visit_id): r for r in truth["readmission_30d"]}
+    for sid in range(1, 13):
+        first = by_visit[(sid, 2000 + sid)]
+        assert outcome_at_horizon(first, times, 720.0) == (1 if sid % 2 else 0)
+        second = by_visit[(sid, 3000 + sid)]
+        assert outcome_at_horizon(second, times, 720.0) == 0  # record runs 90d on
+
+
+def test_index_mode_is_validated() -> None:
+    with pytest.raises(ValueError, match="index_mode"):
+        _index_rows_from_events(
+            add_value_tokens(_events(2)),
+            ALERT_EVENTS,
+            landmark_hours=4.0,
+            index_mode="x",
+        )

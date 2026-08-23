@@ -61,6 +61,7 @@ from sklearn.metrics import brier_score_loss, roc_auc_score
 
 from odyssey.data.alert_events import (
     ALERT_EVENTS,
+    ALERT_TASK_SETS,
     AlertEvent,
     EventTimes,
     alert_events_for,
@@ -74,7 +75,7 @@ from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.packed_context import PackedContextSampler
 from odyssey.data.sequences import BIRTH_CODE
 from odyssey.data.sidecars import activate_sidecars
-from odyssey.data.streaming import NO_SUBJECT, PackedLaneSampler
+from odyssey.data.streaming import NO_SUBJECT, PackedLaneSampler, StreamingChunk
 from odyssey.data.value_binning import (
     QuantileBinner,
     add_value_tokens,
@@ -138,6 +139,18 @@ logger = logging.getLogger(__name__)
 LANDMARK_PROTOCOL_VERSION = 3
 
 HORIZONS_HOURS: Tuple[float, ...] = (8.0, 24.0, 72.0)
+
+# How index rows are chosen. "landmark": every ``landmark_hours`` bucket
+# within each visit (the alerts protocol). "visit_end": one row per visit at
+# its last event -- the discharge-anchored scheme the 30-day readmission
+# task uses (horizons in days, e.g. 168h / 720h).
+INDEX_MODES: Tuple[str, ...] = ("landmark", "visit_end")
+READMISSION_HORIZONS_HOURS: Tuple[float, ...] = (168.0, 720.0)
+
+
+def _check_index_mode(index_mode: str) -> None:
+    if index_mode not in INDEX_MODES:
+        raise ValueError(f"index_mode must be one of {INDEX_MODES}, got {index_mode!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -335,6 +348,33 @@ def _unrebase_truncated_times(
     return times + offset
 
 
+def _select_index_positions(
+    index_mode: str,
+    chunk: StreamingChunk,
+    *,
+    times: torch.Tensor,
+    sids: torch.Tensor,
+    vids: torch.Tensor,
+    landmark_hours: float,
+    starts: torch.Tensor,
+    landmark_state: Optional[LandmarkState],
+) -> Tuple[torch.Tensor, Optional[LandmarkState]]:
+    """Positions to score in this chunk, per :data:`INDEX_MODES`.
+
+    ``visit_end``: the last position of each real (hadm-bearing) visit, as
+    marked by the tokenizer (``PatientSequence.visit_ends``) and carried
+    per chunk -- the same flag visit-scoped concept supervision uses, so
+    "discharge instant" has one definition. ``landmark``: the per-bucket
+    first positions via :func:`_landmark_mask`, state threaded across
+    chunks.
+    """
+    if index_mode == "visit_end":
+        return chunk.visit_end & (vids >= 0), landmark_state
+    return _landmark_mask(
+        times, sids, vids, landmark_hours, starts, state=landmark_state
+    )
+
+
 def collect_model_scores(
     model: SequenceModel,
     events_binned: pl.DataFrame,
@@ -351,8 +391,13 @@ def collect_model_scores(
     backbone: str = "hybrid",
     max_context: int = 4096,
     truncation_boundaries_out: Optional[Dict[int, float]] = None,
+    index_mode: str = "landmark",
 ) -> Dict[str, List[IndexRow]]:
     """One streaming pass; per alert, index rows with model risk scores.
+
+    ``index_mode="visit_end"`` selects each visit's last position instead
+    of landmark buckets (see :data:`INDEX_MODES`); ``landmark_hours`` is
+    then unused.
 
     ``truncation_boundaries_out``, if given, is populated in place with
     :attr:`~odyssey.data.packed_context.PackedContextSampler.truncation_boundaries`
@@ -393,6 +438,7 @@ def collect_model_scores(
     Rows belonging to a subject the sampler truncated are marked
     ``IndexRow.is_tail=True``.
     """
+    _check_index_mode(index_mode)
     model.eval()
     concept_index = {name: i for i, name in enumerate(concept_names)}
     token_masks = {a.name: _event_token_mask(vocab, a, device) for a in alerts}
@@ -461,8 +507,15 @@ def collect_model_scores(
             # just reset to None above instead (see this function's
             # docstring for why that is the correct choice there, not a
             # gap).
-            keep, landmark_state = _landmark_mask(
-                times, sids, vids, landmark_hours, starts, state=landmark_state
+            keep, landmark_state = _select_index_positions(
+                index_mode,
+                chunk,
+                times=times,
+                sids=sids,
+                vids=vids,
+                landmark_hours=landmark_hours,
+                starts=starts,
+                landmark_state=landmark_state,
             )
             if not keep.any():
                 continue
@@ -1006,6 +1059,7 @@ def fit_baselines_streaming(
     feature_set: str = "strong",
     tune: bool = True,
     task_set: str = "v1",
+    index_mode: str = "landmark",
 ) -> Dict[Tuple[str, float], BaselineModel]:
     """Fit the same models as :func:`fit_baselines`, but shard by shard.
 
@@ -1034,7 +1088,7 @@ def fit_baselines_streaming(
             event_times, all_event_times(raw, alerts, source, task_set=task_set)
         )
         shard_rows = _index_rows_from_events(
-            binned, alerts, landmark_hours=landmark_hours
+            binned, alerts, landmark_hours=landmark_hours, index_mode=index_mode
         )[alerts[0].name]
         if not shard_rows:
             continue
@@ -1533,8 +1587,14 @@ def _index_rows_from_events(
     alerts: Sequence[AlertEvent],
     *,
     landmark_hours: float,
+    index_mode: str = "landmark",
 ) -> Dict[str, List[IndexRow]]:
-    """Landmark index rows straight from events (no model), for baseline fitting."""
+    """Index rows straight from events (no model), for baseline fitting.
+
+    Landmark buckets by default; ``index_mode="visit_end"`` gives one row
+    per (subject, visit) at the visit's last event.
+    """
+    _check_index_mode(index_mode)
     origins = origin_hours(events_binned)
     timed = (
         events_binned.filter(
@@ -1548,6 +1608,15 @@ def _index_rows_from_events(
         )
         .sort("subject_id", "_hours")
     )
+    if index_mode == "visit_end":
+        firsts = timed.group_by("subject_id", "hadm_id").agg(
+            pl.col("_hours").max().alias("_t")
+        )
+        rows = [
+            IndexRow(int(s), int(v), float(t))
+            for s, v, t in zip(firsts["subject_id"], firsts["hadm_id"], firsts["_t"])
+        ]
+        return {a.name: list(rows) for a in alerts}
     starts = timed.group_by("subject_id", "hadm_id").agg(
         pl.col("_hours").min().alias("_start")
     )
@@ -1576,6 +1645,49 @@ def _landmark_key_set(rows: Sequence[IndexRow]) -> set[Tuple[int, int, float]]:
     return {(row.subject_id, row.visit_id, round(row.time_hours, 6)) for row in rows}
 
 
+def _verify_visit_end_rows(
+    model_rows: Dict[str, List[IndexRow]],
+    ground_truth: Dict[str, List[IndexRow]],
+    alerts: Sequence[AlertEvent],
+    boundaries: Dict[int, float],
+) -> List[str]:
+    """Check visit-end rows (the visit_end branch of verify_packed_landmark_rows)."""
+    truncated_ids = set(boundaries)
+    problems: List[str] = []
+    for alert in alerts:
+        got = _landmark_key_set(model_rows.get(alert.name, []))
+        want = _landmark_key_set(ground_truth.get(alert.name, []))
+        got_steady = {k for k in got if k[0] not in truncated_ids}
+        want_steady = {k for k in want if k[0] not in truncated_ids}
+        if got_steady != want_steady:
+            problems.append(
+                f"{alert.name}: non-truncated subjects' visit-end rows disagree "
+                f"with _index_rows_from_events (missing "
+                f"{len(want_steady - got_steady)}, extra {len(got_steady - want_steady)})"
+            )
+        got_tail = got - got_steady
+        want_tail = want - want_steady
+        invented = got_tail - want_tail
+        if invented:
+            problems.append(
+                f"{alert.name}: {len(invented)} truncated-subject visit-end row(s) "
+                "the packed path produced that ground truth has no row for"
+            )
+        late_missing = [
+            k
+            for k in want_tail - got_tail
+            if k[2] >= boundaries.get(k[0], float("inf"))
+        ]
+        if late_missing:
+            problems.append(
+                f"{alert.name}: {len(late_missing)} truncated-subject visit-end "
+                "row(s) at/after the truncation boundary are missing"
+            )
+    for problem in problems:
+        logger.warning("[alerts] visit-end verification: %s", problem)
+    return problems
+
+
 def verify_packed_landmark_rows(
     model_rows: Dict[str, List[IndexRow]],
     events_binned: pl.DataFrame,
@@ -1583,8 +1695,14 @@ def verify_packed_landmark_rows(
     *,
     landmark_hours: float,
     truncation_boundaries: Dict[int, float],
+    index_mode: str = "landmark",
 ) -> List[str]:
-    """Compare collect_model_scores' landmark set against the model-free truth.
+    """Compare collect_model_scores' index-row set against the model-free truth.
+
+    ``index_mode="visit_end"`` compares visit-end rows instead: exact set
+    equality for non-truncated subjects; for truncated subjects, no row
+    the truth lacks and every missing visit end strictly before the
+    subject's truncation boundary (bucket logic does not apply).
 
     Two independent implementations of "which (subject, visit, time)
     triples are landmarks" (:func:`collect_model_scores`, either backbone,
@@ -1661,10 +1779,12 @@ def verify_packed_landmark_rows(
     a real-time self-check that must not abort a running evaluation.
     """
     ground_truth = _index_rows_from_events(
-        events_binned, alerts, landmark_hours=landmark_hours
+        events_binned, alerts, landmark_hours=landmark_hours, index_mode=index_mode
     )
     boundaries = truncation_boundaries
     truncated_ids = set(boundaries)
+    if index_mode == "visit_end":
+        return _verify_visit_end_rows(model_rows, ground_truth, alerts, boundaries)
     visit_starts = _visit_starts(events_binned)
 
     def _bucket_of(row: IndexRow) -> int:
@@ -1776,6 +1896,7 @@ def _fit_and_score_gbm_baselines(
     binned: pl.DataFrame,
     rows: Dict[str, List[IndexRow]],
     task_set: str = "v1",
+    index_mode: str = "landmark",
 ) -> Tuple[
     Optional[Dict[Tuple[str, float], BaselineModel]], Optional[Dict[str, np.ndarray]]
 ]:
@@ -1810,6 +1931,7 @@ def _fit_and_score_gbm_baselines(
             feature_set=baseline_feature_set,
             tune=tune_baselines,
             task_set=task_set,
+            index_mode=index_mode,
         )
     else:
         logger.info("[alerts] fitting GBM baselines on %s", baseline_shard_dir)
@@ -1820,7 +1942,7 @@ def _fit_and_score_gbm_baselines(
         train_binned = add_value_tokens(train_raw, binner, source=source)
         del train_raw
         train_rows = _index_rows_from_events(
-            train_binned, alerts, landmark_hours=landmark_hours
+            train_binned, alerts, landmark_hours=landmark_hours, index_mode=index_mode
         )
         baselines = fit_baselines(
             train_binned,
@@ -1857,6 +1979,7 @@ def evaluate_alerts(
     tune_baselines: bool = True,
     stream_baseline: bool = False,
     dump_rows_path: Optional[Union[str, Path]] = None,
+    index_mode: str = "landmark",
 ) -> List[AlertMetrics]:
     """End to end: model scores + optional GBM baselines, scored on held-out.
 
@@ -1899,10 +2022,19 @@ def evaluate_alerts(
     task_set = getattr(config, "task_set", "v1")
     activate_sidecars(held_out_shard_dir)
     concept_names = [c.name for c in concepts_for_source(source, task_set=task_set)]
+    _check_index_mode(index_mode)
     if alerts is None:
-        # The run's own task set, minus events that are not landmark-scored
-        # (discharge-anchored readmission has its own index scheme).
-        alerts = [a for a in alert_events_for(task_set) if not a.next_visit]
+        # The run's own task set: landmark mode scores the within-visit
+        # events; visit_end mode scores the discharge-anchored ones.
+        alerts = [
+            a
+            for a in alert_events_for(task_set)
+            if a.next_visit == (index_mode == "visit_end")
+        ]
+        if not alerts:
+            raise ValueError(
+                f"task_set {task_set!r} has no events for index_mode={index_mode!r}"
+            )
 
     raw = _load_prepared_raw(held_out_shard_dir, max_shards, config, source)
     times = all_event_times(raw, alerts, source, task_set=task_set)
@@ -1924,7 +2056,12 @@ def evaluate_alerts(
     del raw
 
     backbone = getattr(config, "backbone", "hybrid")
-    logger.info("[alerts] collecting model scores at %.0fh landmarks", landmark_hours)
+    if index_mode == "visit_end":
+        logger.info("[alerts] collecting model scores at visit ends (discharge)")
+    else:
+        logger.info(
+            "[alerts] collecting model scores at %.0fh landmarks", landmark_hours
+        )
     truncation_boundaries: Dict[int, float] = {}
     rows = collect_model_scores(
         model,
@@ -1941,6 +2078,7 @@ def evaluate_alerts(
         backbone=backbone,
         max_context=getattr(config, "max_context", 4096),
         truncation_boundaries_out=truncation_boundaries,
+        index_mode=index_mode,
     )
     # Runs for every backbone, not just "transformer": collect_model_scores'
     # row-construction path is unconditional on `packed` (see its own
@@ -1957,6 +2095,7 @@ def evaluate_alerts(
         alerts,
         landmark_hours=landmark_hours,
         truncation_boundaries=truncation_boundaries,
+        index_mode=index_mode,
     )
     if verify_against_dump is not None:
         verify_rows_match_dump(rows, times, verify_against_dump, horizons=horizons)
@@ -1976,6 +2115,7 @@ def evaluate_alerts(
         binned=binned,
         rows=rows,
         task_set=task_set,
+        index_mode=index_mode,
     )
 
     if dump_rows_path is not None:
@@ -2020,6 +2160,34 @@ def _main() -> None:
     parser.add_argument("--max-shards", type=int, default=None)
     parser.add_argument("--max-baseline-shards", type=int, default=None)
     parser.add_argument("--landmark-hours", type=float, default=4.0)
+    parser.add_argument(
+        "--index-mode",
+        choices=INDEX_MODES,
+        default="landmark",
+        help=(
+            "landmark (default): every --landmark-hours bucket within a visit; "
+            "visit_end: one row per visit at discharge (30-day readmission)"
+        ),
+    )
+    parser.add_argument(
+        "--alerts",
+        nargs="+",
+        default=None,
+        help=(
+            "event names to score (default: the run's task set, filtered by "
+            "--index-mode: within-visit events for landmark, next-visit events "
+            "for visit_end)"
+        ),
+    )
+    parser.add_argument(
+        "--horizons",
+        nargs="+",
+        type=float,
+        default=None,
+        help=(
+            "horizons in hours (default: 8 24 72 for landmark, 168 720 for visit_end)"
+        ),
+    )
     parser.add_argument("--num-lanes", type=int, default=8)
     parser.add_argument("--chunk-size", type=int, default=256)
     parser.add_argument("--checkpoint", default=None)
@@ -2067,12 +2235,28 @@ def _main() -> None:
             Path(args.dump_rows), overwrite=args.overwrite, kind="alerts rows"
         )
     run_dir = Path(args.run_dir)
+    if args.horizons is not None:
+        horizons: Sequence[float] = tuple(args.horizons)
+    elif args.index_mode == "visit_end":
+        horizons = READMISSION_HORIZONS_HOURS
+    else:
+        horizons = HORIZONS_HOURS
+    chosen_alerts: Optional[List[AlertEvent]] = None
+    if args.alerts is not None:
+        by_name = {a.name: a for ts in ALERT_TASK_SETS.values() for a in ts}
+        unknown = [n for n in args.alerts if n not in by_name]
+        if unknown:
+            raise SystemExit(f"unknown --alerts {unknown}; known: {sorted(by_name)}")
+        chosen_alerts = [by_name[n] for n in args.alerts]
     results = evaluate_alerts(
         run_dir,
         args.held_out_shard_dir,
         baseline_shard_dir=args.baseline_shard_dir,
         max_shards=args.max_shards,
         max_baseline_shards=args.max_baseline_shards,
+        alerts=chosen_alerts,
+        horizons=horizons,
+        index_mode=args.index_mode,
         landmark_hours=args.landmark_hours,
         num_lanes=args.num_lanes,
         chunk_size=args.chunk_size,
