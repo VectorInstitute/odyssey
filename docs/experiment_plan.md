@@ -55,7 +55,7 @@ attached does not launch.
 | M2 | Wave MIMIC leg: full_run_v8 v2 dump + rescores | MIMIC v2 comparator table; measures MIMIC's own v1 inflation (do NOT assume eICU's ~19-23%) | M1 done |
 | M3 | v9-MIMIC + full-run case-study regen (fixed trace code) | Restores qualitative traces for reports | M2 done (short) |
 | M4 | L2-L4 six-mode intervention reruns | Completes the lever figure across the L-series (Track B opener) | M3 done (short) |
-| M5 | GPU coverage measure (test_hybrid_gpu with --cov, once) | Closes the CUDA-gated coverage blind spot | any idle moment |
+| M5 | GPU coverage measure (test_hybrid_gpu with --cov, once) | Closes the CUDA-gated coverage blind spot | DONE Aug 23 (9c1c75a, VM1): 12/12 pass, hybrid.py 89% (151 stmts, 17 missed); misses are the incremental-decode step() branch, the varlen batch=1 conv path, and the mamba-ssm import guard -- none called anywhere in odyssey/ outside hybrid.py, so this is full coverage of the live paths |
 | M6 | v9-MIMIC seed replicate | Recency non-replication: real or convergence variance? (also waits on E2/E3 -- the eICU side of that comparison must be clean first) | last |
 
 ## Eval-only / CPU work (post-wave)
