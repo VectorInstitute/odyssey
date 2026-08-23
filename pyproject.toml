@@ -159,9 +159,26 @@ meds_tab = [
     "meds-tab>=0.2.0",
 ]
 
-# NOTE: transformers/lightning/etc. are intentionally omitted until the
-# concept-bottleneck architecture actually needs them — add alongside the
-# code that uses them, not speculatively.
+# Frozen text-encoder embeddings for the notes sidecar
+# (odyssey/text/embed_notes.py, Track A item 7): pooled hidden states from
+# a Hugging Face encoder/decoder, PCA-reduced for the tuned GBM's alert
+# features. The standing decision is MedGemma (google/medgemma-4b-it) on
+# every site, with one dedicated embedder run alongside on MIMIC -- so
+# this needs Gemma3/MedGemma support, not just any transformers version.
+# scikit-learn (embed_notes.py's fit_pca) is already a base dependency
+# above, not repeated here. accelerate is deliberately NOT included:
+# load_encoder does its own model.to(device) placement, not
+# from_pretrained(..., device_map=...), so nothing here actually needs
+# accelerate's device-mapping machinery -- add it if that changes.
+text = [
+    "transformers>=4.50.0",
+    "sentencepiece>=0.2.0",
+    "protobuf>=4.25.0",
+]
+
+# NOTE: lightning/etc. are intentionally omitted until the concept-
+# bottleneck architecture actually needs them — add alongside the code
+# that uses them, not speculatively.
 
 [dependency-groups]
 dev = [
