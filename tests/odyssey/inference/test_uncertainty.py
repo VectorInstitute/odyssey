@@ -4,7 +4,13 @@ import numpy as np
 import pytest
 from sklearn.metrics import roc_auc_score
 
-from odyssey.inference.uncertainty import BootstrapAUROC, bootstrap_auroc
+from odyssey.inference.uncertainty import (
+    BootstrapAUROC,
+    _gather_rows_for_drawn_subjects,
+    _group_p_ties,
+    _weighted_auroc,
+    bootstrap_auroc,
+)
 
 
 def _correlated_fixture() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -157,6 +163,64 @@ def test_all_resamples_skipped_returns_none_mean_std_ci_but_a_count() -> None:
     else:
         # rare with n_boot=1 but not impossible depending on the draw
         assert result.n_boot_used == 1
+
+
+def _subject_grouping(
+    subjects: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Reproduce the module's own internal subject-grouping, for white-box tests."""
+    unique_subjects, inverse = np.unique(subjects, return_inverse=True)
+    n_subjects = len(unique_subjects)
+    order = np.argsort(inverse, kind="stable")
+    counts = np.bincount(inverse, minlength=n_subjects)
+    boundaries = np.concatenate([[0], np.cumsum(counts)])
+    return order, boundaries, counts
+
+
+def test_weighted_auroc_matches_sklearn_exactly_under_ties_and_multiplicity() -> None:
+    """The load-bearing case for the fast weighted-rank rewrite.
+
+    Real alerts columns are coarse -- SurvivalPFN's vasopressor cells had
+    175 distinct probabilities across 111,450 rows -- so ties are the
+    normal case, not an edge case, and it is exactly the interaction of a
+    resampled row's MULTIPLICITY (weight > 1, from a subject being drawn
+    more than once) with a TIE bucket that the mid-rank arithmetic has to
+    get right. A tie bucket where every row shares one label would let a
+    mid-rank bug cancel out silently; every bucket here mixes y=0 and
+    y=1 rows at the identical p value on purpose.
+
+    6 subjects: subject 0 (2 rows, p=0.5, y=[0,1]) and subject 1 (1 row,
+    p=0.5, y=1) share one tie bucket across subjects; subject 2 (3 rows,
+    p=0.2, y=[0,0,1]) is a mixed tie within one subject; subjects 3 (1
+    row, p=0.9, y=1) and 4 (2 rows, p=0.9, y=[0,1]) share another
+    cross-subject tie bucket; subject 5 (1 row, p=0.1, y=0) is untied.
+    """
+    y = np.array([0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0])
+    p = np.array([0.5, 0.5, 0.5, 0.2, 0.2, 0.2, 0.9, 0.9, 0.9, 0.1])
+    subjects = np.array([0, 0, 1, 2, 2, 2, 3, 4, 4, 5])
+
+    order, boundaries, counts = _subject_grouping(subjects)
+    p_group_of_row, n_groups = _group_p_ties(p)
+    n_rows = len(y)
+
+    # Hand-picked draws (subject POSITIONS, matching how bootstrap_auroc
+    # itself draws: rng.integers(0, n_subjects, size=n_subjects)), each
+    # exercising a different multiplicity pattern. The second and third
+    # each draw a subject 3 times, on purpose, not left to chance.
+    draws = [
+        np.array([0, 1, 2, 3, 4, 5]),  # every subject exactly once
+        np.array([0, 0, 3, 3, 3, 5]),  # subject 0 x2, subject 3 x3
+        np.array([1, 2, 2, 4, 4, 4]),  # subject 2 x2, subject 4 x3
+    ]
+    for drawn in draws:
+        row_idx = _gather_rows_for_drawn_subjects(drawn, boundaries, order, counts)
+        actual = _weighted_auroc(row_idx, y, p_group_of_row, n_rows, n_groups)
+
+        y_b, p_b = y[row_idx], p[row_idx]
+        assert len(np.unique(y_b)) == 2  # this draw must actually exercise AUROC
+        expected = roc_auc_score(y_b, p_b)
+
+        assert actual == pytest.approx(expected, abs=1e-9)
 
 
 def test_bootstrap_auroc_result_is_frozen() -> None:

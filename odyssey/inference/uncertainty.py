@@ -157,15 +157,7 @@ def bootstrap_auroc(
 
     # Group rows by tied p-value once: `p_group_of_row[i]` is which
     # ascending-p tie-bucket original row i falls into.
-    p_sort_order = np.argsort(p_arr, kind="quicksort")
-    sorted_p = p_arr[p_sort_order]
-    is_new_group = np.empty(n_rows, dtype=bool)
-    is_new_group[0] = True
-    np.not_equal(sorted_p[1:], sorted_p[:-1], out=is_new_group[1:])
-    group_id_sorted = np.cumsum(is_new_group) - 1
-    n_groups = int(group_id_sorted[-1]) + 1 if n_rows > 0 else 0
-    p_group_of_row = np.empty(n_rows, dtype=np.int64)
-    p_group_of_row[p_sort_order] = group_id_sorted
+    p_group_of_row, n_groups = _group_p_ties(p_arr)
 
     rng = np.random.default_rng(seed)
     scores = []
@@ -191,6 +183,32 @@ def bootstrap_auroc(
     ci_low = float(np.percentile(scores_arr, 100 * alpha / 2))
     ci_high = float(np.percentile(scores_arr, 100 * (1 - alpha / 2)))
     return BootstrapAUROC(point_estimate, mean, std, ci_low, ci_high, n_used, n_skipped)
+
+
+def _group_p_ties(p: np.ndarray) -> tuple[np.ndarray, int]:
+    """Bucket rows by tied ``p`` value: ``(p_group_of_row, n_groups)``.
+
+    ``p_group_of_row[i]`` is which ascending-``p`` tie-bucket original row
+    ``i`` falls into (0 = smallest ``p``); a group with more than one
+    member is a genuine tie in the score, which the weighted mid-rank
+    formula in :func:`_weighted_auroc` must average over correctly even
+    when the tied rows carry different ``y`` labels -- see that
+    function's tests for why a mixed-label tie bucket is the case that
+    actually exercises this.
+    """
+    n_rows = len(p)
+    if n_rows == 0:
+        return np.empty(0, dtype=np.int64), 0
+    p_sort_order = np.argsort(p, kind="quicksort")
+    sorted_p = p[p_sort_order]
+    is_new_group = np.empty(n_rows, dtype=bool)
+    is_new_group[0] = True
+    np.not_equal(sorted_p[1:], sorted_p[:-1], out=is_new_group[1:])
+    group_id_sorted = np.cumsum(is_new_group) - 1
+    n_groups = int(group_id_sorted[-1]) + 1
+    p_group_of_row = np.empty(n_rows, dtype=np.int64)
+    p_group_of_row[p_sort_order] = group_id_sorted
+    return p_group_of_row, n_groups
 
 
 def _weighted_auroc(
