@@ -247,8 +247,24 @@ class QuantileBinner:
         code_col: str = "code",
         value_col: str = "numeric_value",
         tail_transform: str = CLIP_TAIL,
+        min_scale: float = 0.0,
     ) -> "QuantileBinner":
         """Compute per-code quantile boundaries from numeric-valued events.
+
+        ``min_scale`` floors the robust scale at that fraction of the
+        code's own centre (0.0, the default, disables it). Some codes have
+        a near-degenerate training-split IQR -- ``INFUSION_END//228315``
+        was measured at 4.524e-05 on 2026-08-24 -- which turns a trivial
+        float difference into an astronomical standardized value, and a
+        sentinel reading like ``999999.0`` compounds it: those two
+        together produced ``z`` above 1.2e7 on real held-out data. Under
+        :data:`CLIP_TAIL` that was invisible, since everything past 5
+        saturated to 5 and one artifact looked like any genuine extreme.
+        Under :data:`SYMLOG_TAIL` it is not invisible: such values land at
+        :data:`SYMLOG_CEILING` and their ``z^2`` input feature quadruples
+        against what clip fed the model. Defaulted OFF because turning it
+        on changes the fitted stats, and the value-tail arms (E and D,
+        2026-08-24) must differ from each other in exactly one respect.
 
         Codes with fewer than ``min_count`` numeric observations are
         skipped -- too little data for a stable per-code estimate; they
@@ -297,6 +313,8 @@ class QuantileBinner:
             scale = iqr / 1.349 if iqr > 0 else float(row["_std"] or 0.0)
             if not scale > 0:
                 scale = 1.0
+            if min_scale > 0.0 and scale < min_scale * max(abs(center), 1.0):
+                scale = min_scale * max(abs(center), 1.0)
             value_stats[row[code_col]] = (center, float(scale))
         return cls(
             boundaries=boundaries,
