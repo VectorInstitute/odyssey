@@ -86,8 +86,8 @@ def value_features(values: torch.Tensor) -> torch.Tensor:
 #: in under one period and the highest resolves changes an order of
 #: magnitude finer than the standardization scale itself.
 _FOURIER_FREQUENCIES: Tuple[float, ...] = tuple(2.0**k for k in range(8))
+#: Width of :func:`value_features_fourier`'s output: sin+cos per freq, plus ``has``.
 N_FOURIER_FEATURES = 2 * len(_FOURIER_FREQUENCIES) + 1
-"""Width of :func:`value_features_fourier`'s output: sin+cos per freq, plus ``has``."""
 
 
 def value_features_fourier(
