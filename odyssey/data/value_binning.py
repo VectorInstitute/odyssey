@@ -60,20 +60,21 @@ VALUE_Z_CLIP = 5.0
 
 CLIP_TAIL = "clip"
 SYMLOG_TAIL = "symlog"
+#: Outer bound on ``"symlog"``, twice the linear band.
+#:
+#: The compression is gentle by design, but
+#: :func:`~odyssey.models.embeddings.value_features` feeds the embedding
+#: ``[z, z^2, has]``, and the square amplifies whatever the tail does.
+#: Real clinical extremes stay well inside this bound (a 30 mg/dL
+#: creatinine maps to 9.12, a 25 mmol/L lactate to 8.00), so it never
+#: touches a value a clinician would recognize. Data-entry errors are
+#: what it is for: without a bound, ``z = 1e6`` reaches the projection as
+#: ``z^2 = 354`` against a training range that had never exceeded 25,
+#: which is a loss spike waiting to happen and would be indistinguishable
+#: from the intervention failing. Note this risk is specific to the
+#: default ``[z, z^2, has]`` encoding; ``value_fourier`` is bounded by
+#: construction.
 SYMLOG_CEILING = 2.0 * VALUE_Z_CLIP
-"""Outer bound on ``"symlog"``, twice the linear band.
-
-The compression is gentle by design, but
-:func:`~odyssey.models.embeddings.value_features` feeds the embedding
-``[z, z^2, has]``, and the square amplifies whatever the tail does. Real
-clinical extremes stay well inside this bound (a 30 mg/dL creatinine maps
-to 9.12, a 25 mmol/L lactate to 8.00), so it never touches a value a
-clinician would recognize. Data-entry errors are what it is for: without
-a bound, ``z = 1e6`` reaches the projection as ``z^2 = 354`` against a
-training range that had never exceeded 25, which is a loss spike waiting
-to happen and would be indistinguishable from the intervention failing.
-Note this risk is specific to the default ``[z, z^2, has]`` encoding;
-``value_fourier`` is bounded by construction."""
 TAIL_TRANSFORMS = (CLIP_TAIL, SYMLOG_TAIL)
 
 
