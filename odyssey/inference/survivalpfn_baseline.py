@@ -163,6 +163,86 @@ def _grouped_subsample(
     return result
 
 
+def _grouped_subsample_enriched(
+    keep: np.ndarray,
+    groups: np.ndarray,
+    delta: np.ndarray,
+    cap: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Case-enriched variant of :func:`_grouped_subsample`.
+
+    A SENSITIVITY ANALYSIS, not the comparator protocol: uniform random
+    subsampling (:func:`_grouped_subsample`) is a fair procedure but can
+    starve the fitted context of observed events for a rare event at a
+    short administrative follow-up cap -- confirmed on MIMIC's ``death``
+    (2026-08-24): a 4,793-row uniform sample landed only 93 observed
+    deaths, and the resulting fit's ``survival_at`` did not move before
+    ~72h even for subjects who died within the hour, saturating
+    ``1 - S(8h)``/``1 - S(24h)`` to exactly 0 by construction (see
+    :class:`SurvivalPFNBaselineModel.predict_proba`'s degeneracy warning).
+    eICU's near-identical row cap (4,979 rows) landed ~662 events and
+    produced informative curves at the same horizons -- the driver is
+    event count in the sampled context, not the estimator or the horizon.
+
+    This keeps every subject with at least one observed event in ``keep``
+    (up to ``cap`` rows on its own, subsampled among event subjects only
+    if that alone exceeds ``cap``), then fills the remaining row budget
+    with randomly sampled censored-only subjects -- same subject-grouped
+    whole-subject-only shrink discipline as :func:`_grouped_subsample`,
+    just seeded with every available event rather than a uniform draw.
+
+    CALIBRATION WARNING, load-bearing, not decorative: there is no
+    importance-weight or known-sampling-fraction parameter anywhere in
+    ``survivalpfn.SurvivalEstimator.fit`` (checked directly against the
+    installed package, 2026-08-24) to correct for this enrichment. A
+    context fit this way sees an event rate the true population does not
+    have, so the resulting absolute probabilities
+    (``SurvivalPFNBaselineModel.predict_proba``'s ``1 - S(h)``) are
+    miscalibrated BY CONSTRUCTION and must not be read as probabilities
+    or reported as a calibration number. Only rank-based metrics (AUROC)
+    may be read from a model fit on this path -- that is the entire point
+    of the sensitivity check this function exists for: does the RANKING
+    change once the estimator actually sees enough early events, not
+    whether its absolute risk numbers do.
+    """
+    event_subjects = np.unique(groups[delta == 1.0])
+    event_subject_set = set(event_subjects.tolist())
+    all_subjects, counts = np.unique(groups, return_counts=True)
+    subject_row_count = dict(zip(all_subjects.tolist(), counts.tolist()))
+
+    event_row_mask = np.array([g in event_subject_set for g in groups])
+    n_event_rows = int(event_row_mask.sum())
+
+    if n_event_rows >= cap:
+        # Even every event subject together exceeds the cap: subsample
+        # among them only, matching _grouped_subsample's own whole-
+        # subject-cap logic, restricted to the event-subject universe.
+        order = rng.permutation(len(event_subjects))
+        cum = np.cumsum([subject_row_count[s] for s in event_subjects[order]])
+        n_keep = max(1, int(np.searchsorted(cum, cap, side="right")))
+        n_keep = min(n_keep, len(event_subjects))
+        selected = set(event_subjects[order[:n_keep]].tolist())
+        mask = np.array([g in selected for g in groups])
+        result: np.ndarray = keep[mask]
+        return result
+
+    remaining_cap = cap - n_event_rows
+    censored_subjects = np.array(
+        [s for s in all_subjects if s not in event_subject_set]
+    )
+    order = rng.permutation(len(censored_subjects))
+    cum = np.cumsum([subject_row_count[s] for s in censored_subjects[order]])
+    n_censored_subjects = max(0, int(np.searchsorted(cum, remaining_cap, side="right")))
+    n_censored_subjects = min(n_censored_subjects, len(censored_subjects))
+    selected_censored = set(censored_subjects[order[:n_censored_subjects]].tolist())
+
+    final_selected = event_subject_set | selected_censored
+    mask = np.array([g in final_selected for g in groups])
+    final_result: np.ndarray = keep[mask]
+    return final_result
+
+
 class _CapAtMaxHorizon:
     """Sentinel: cap follow-up at the largest scored horizon (the default)."""
 
@@ -319,6 +399,7 @@ def _fit_one_survivalpfn(
     max_rows: int,
     followup_cap_hours: Optional[float],
     cache: Optional[FitCache] = None,
+    enrich_events: bool = False,
 ) -> dict[float, SurvivalPFNBaselineModel]:
     """Fit one SurvivalPFN context for a single event, shared across every horizon.
 
@@ -328,6 +409,15 @@ def _fit_one_survivalpfn(
     :func:`_survival_targets`'s ``(T, delta)`` pair rather than a
     per-horizon binary outcome, and one fit produces every horizon's
     wrapper at once instead of looping ``horizons`` to fit separately.
+
+    ``enrich_events``, if True, replaces the default uniform-random
+    subject subsample with :func:`_grouped_subsample_enriched` -- a
+    SENSITIVITY ANALYSIS path, not the comparator protocol default (see
+    that function's docstring for why and its calibration warning).
+    Reflected in the cache key so an enriched fit never collides with the
+    protocol's own uniform one, and in every fitted model's ``params``
+    (``n_context_events``, ``enriched``) so a caller/report always knows
+    which path produced a given number.
 
     ``cache``, if given, is checked/updated per event (this baseline's
     natural fit granularity -- one context serves every horizon) --
@@ -344,14 +434,18 @@ def _fit_one_survivalpfn(
             "Use feature_set='basic' (16 columns), not 'strong'."
         )
     # The cap is part of the key: a fit made against a different follow-up
-    # window answers a different question (see _survival_targets).
+    # window answers a different question (see _survival_targets). The
+    # sampling path is part of the key too: enriched and uniform fits on
+    # the same event answer different questions (rank-only sensitivity vs
+    # the calibrated comparator protocol) and must never share a cache slot.
     cap_tag = (
         "uncapped" if followup_cap_hours is None else f"cap{followup_cap_hours:g}h"
     )
-    cache_key = f"survivalpfn/{cap_tag}/{event_name}"
+    sample_tag = "enriched" if enrich_events else "uniform"
+    cache_key = f"survivalpfn/{cap_tag}/{sample_tag}/{event_name}"
     cached = cache.load(cache_key) if cache is not None else None
     if cached is not None:
-        estimator, n_context_rows, elapsed, row_capped = cached
+        estimator, n_context_rows, n_context_events, elapsed, row_capped = cached
     else:
         t_all, delta_all, keep_idx = _survival_targets(rows, times, followup_cap_hours)
         if (
@@ -371,7 +465,12 @@ def _fit_one_survivalpfn(
         rng = np.random.default_rng(seed)
         n_at_risk = len(keep_idx)
         if n_at_risk > max_rows:
-            sub = _grouped_subsample(np.arange(n_at_risk), groups, max_rows, rng)
+            if enrich_events:
+                sub = _grouped_subsample_enriched(
+                    np.arange(n_at_risk), groups, delta_all, max_rows, rng
+                )
+            else:
+                sub = _grouped_subsample(np.arange(n_at_risk), groups, max_rows, rng)
             keep_idx = keep_idx[sub]
             t_all = t_all[sub]
             delta_all = delta_all[sub]
@@ -383,20 +482,27 @@ def _fit_one_survivalpfn(
         estimator.fit(X=x_fit, delta=delta_all, T=t_all)
         elapsed = time.time() - t0
         n_context_rows = len(keep_idx)
+        n_context_events = int(delta_all.sum())
         row_capped = len(keep_idx) < n_at_risk
         logger.info(
-            "[survivalpfn] %s: fit on %d rows (%.1f%% event, %.1f%% censored) "
-            "in %.1fs, serves %d horizons, follow-up %s",
+            "[survivalpfn] %s: fit on %d rows (%d events, %.1f%% event, "
+            "%.1f%% censored) in %.1fs, serves %d horizons, follow-up %s, "
+            "sampling=%s",
             event_name,
             n_context_rows,
+            n_context_events,
             100 * float(delta_all.mean()),
             100 * (1 - float(delta_all.mean())),
             elapsed,
             len(horizons),
             cap_tag,
+            sample_tag,
         )
         if cache is not None:
-            cache.save(cache_key, (estimator, n_context_rows, elapsed, row_capped))
+            cache.save(
+                cache_key,
+                (estimator, n_context_rows, n_context_events, elapsed, row_capped),
+            )
 
     out: dict[float, SurvivalPFNBaselineModel] = {}
     for h in horizons:
@@ -407,8 +513,10 @@ def _fit_one_survivalpfn(
             n_features=int(x_all.shape[1]),
             params={
                 "n_context_rows": float(n_context_rows),
+                "n_context_events": float(n_context_events),
                 "fit_seconds": elapsed,
                 "row_capped": float(row_capped),
+                "enriched": float(enrich_events),
             },
         )
     return out
@@ -428,6 +536,7 @@ def fit_survivalpfn_baselines(
     followup_cap_hours: Optional[float] = _CAP_AT_MAX_HORIZON,
     cache: Optional[FitCache] = None,
     features: Optional[dict[str, np.ndarray]] = None,
+    enrich_events: bool = False,
 ) -> dict[tuple[str, float], SurvivalPFNBaselineModel]:
     """One SurvivalPFN context per event, evaluated at every horizon.
 
@@ -445,6 +554,13 @@ def fit_survivalpfn_baselines(
     fit answers the same question the horizon-binned baselines do. Pass
     ``None`` for the uncapped fit, which produced a degenerate (constant)
     death column on MIMIC-IV -- see :func:`_survival_targets`.
+
+    ``enrich_events``, default False (the comparator protocol), passed
+    straight through to :func:`_fit_one_survivalpfn` -- see
+    :func:`_grouped_subsample_enriched`'s docstring for what it does and
+    its calibration warning. A caller running the sensitivity analysis
+    passes ``enrich_events=True`` and reports both columns, never one in
+    place of the other.
 
     Requires the optional ``survivalpfn`` package (see the module
     docstring); raises ``ImportError`` with install instructions if it is
@@ -482,6 +598,7 @@ def fit_survivalpfn_baselines(
             max_rows=resolved_max_rows,
             followup_cap_hours=resolved_cap,
             cache=cache,
+            enrich_events=enrich_events,
         )
         for h, model in per_horizon.items():
             models[(name, h)] = model

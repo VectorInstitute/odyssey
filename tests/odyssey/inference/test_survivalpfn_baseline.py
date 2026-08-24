@@ -527,9 +527,10 @@ def test_followup_cap_defaults_to_the_largest_horizon() -> None:
     )
     assert default is spfn._CAP_AT_MAX_HORIZON
     # and the cap is part of the cache key, so a differently-capped fit is
-    # never silently reused (the feature-set lesson, same day)
+    # never silently reused (the feature-set lesson, same day); the sample
+    # path (uniform vs enriched) is part of it too, added the same day.
     source = inspect.getsource(spfn)
-    assert 'cache_key = f"survivalpfn/{cap_tag}/{event_name}"' in source
+    assert 'cache_key = f"survivalpfn/{cap_tag}/{sample_tag}/{event_name}"' in source
 
 
 def test_predict_proba_keeps_tiny_probabilities_and_warns_on_a_dead_column(
@@ -583,3 +584,216 @@ def test_predict_proba_keeps_tiny_probabilities_and_warns_on_a_dead_column(
     assert small.dtype == np.float64
     assert all(0.0 < v < 1e-5 for v in small)
     assert not any("numerical artifact" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# _grouped_subsample_enriched: the sensitivity-analysis sampling primitive
+# ---------------------------------------------------------------------------
+
+
+def test_grouped_subsample_enriched_keeps_every_event_subject() -> None:
+    # 50 subjects, 4 rows each; only subjects 0-2 have any observed event
+    # (delta=1 on one of their rows). A tight cap that would very likely
+    # drop a 3-in-50 minority under uniform random sampling must still
+    # keep every one of them here.
+    n_subjects, rows_per_subject, cap = 50, 4, 20
+    keep = np.arange(n_subjects * rows_per_subject)
+    groups = np.repeat(np.arange(n_subjects), rows_per_subject)
+    delta = np.zeros(n_subjects * rows_per_subject)
+    for event_subject in (0, 1, 2):
+        delta[event_subject * rows_per_subject] = 1.0
+
+    rng = np.random.default_rng(0)
+    result = survivalpfn_module._grouped_subsample_enriched(
+        keep, groups, delta, cap, rng
+    )
+    kept_groups = set(groups[np.isin(keep, result)].tolist())
+    assert {0, 1, 2}.issubset(kept_groups)
+    assert len(result) <= cap
+
+
+def test_grouped_subsample_enriched_never_splits_a_subject() -> None:
+    n_subjects, rows_per_subject, cap = 20, 5, 37
+    keep = np.arange(n_subjects * rows_per_subject)
+    groups = np.repeat(np.arange(n_subjects), rows_per_subject)
+    delta = np.zeros(n_subjects * rows_per_subject)
+    delta[: 2 * rows_per_subject] = 1.0  # subjects 0-1 are event subjects
+
+    rng = np.random.default_rng(0)
+    result = survivalpfn_module._grouped_subsample_enriched(
+        keep, groups, delta, cap, rng
+    )
+    kept_groups = groups[np.isin(keep, result)]
+    _, counts = np.unique(kept_groups, return_counts=True)
+    assert (counts == rows_per_subject).all()
+
+
+def test_grouped_subsample_enriched_subsamples_among_event_subjects_if_they_alone_exceed_cap() -> (
+    None
+):
+    # Every subject has an event: the "keep all event subjects" branch
+    # cannot be satisfied in full, so it must fall back to subsampling
+    # among them, still whole-subject and still under cap.
+    n_subjects, rows_per_subject, cap = 20, 5, 37
+    keep = np.arange(n_subjects * rows_per_subject)
+    groups = np.repeat(np.arange(n_subjects), rows_per_subject)
+    delta = np.ones(n_subjects * rows_per_subject)
+
+    rng = np.random.default_rng(0)
+    result = survivalpfn_module._grouped_subsample_enriched(
+        keep, groups, delta, cap, rng
+    )
+    kept_groups = groups[np.isin(keep, result)]
+    _, counts = np.unique(kept_groups, return_counts=True)
+    assert (counts == rows_per_subject).all()
+    assert len(result) <= cap
+
+
+def test_grouped_subsample_enriched_beats_uniform_on_event_count_same_seed() -> None:
+    # Deterministic inequality, not a statistical claim: for the same
+    # data/cap/seed, enriched keeps every event subject (up to cap) while
+    # uniform draws subjects blind to event status, so enriched's kept
+    # event count can never be lower.
+    n_subjects, rows_per_subject, cap = 200, 3, 30
+    keep = np.arange(n_subjects * rows_per_subject)
+    groups = np.repeat(np.arange(n_subjects), rows_per_subject)
+    delta = np.zeros(n_subjects * rows_per_subject)
+    for event_subject in range(5):  # 5 of 200 subjects: a rare event
+        delta[event_subject * rows_per_subject] = 1.0
+
+    uniform_result = survivalpfn_module._grouped_subsample(
+        keep, groups, cap, np.random.default_rng(0)
+    )
+    enriched_result = survivalpfn_module._grouped_subsample_enriched(
+        keep, groups, delta, cap, np.random.default_rng(0)
+    )
+    n_events_uniform = int(delta[np.isin(keep, uniform_result)].sum())
+    n_events_enriched = int(delta[np.isin(keep, enriched_result)].sum())
+    assert n_events_enriched >= n_events_uniform
+    assert n_events_enriched == 5  # all 5 rare-event subjects survive enrichment
+
+
+# ---------------------------------------------------------------------------
+# enrich_events wiring through _fit_one_survivalpfn / fit_survivalpfn_baselines
+# ---------------------------------------------------------------------------
+
+
+def test_fit_survivalpfn_baselines_enrich_events_reaches_the_sampler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(survivalpfn_module, "SURVIVALPFN_MAX_ROWS", 10)
+    monkeypatch.setattr(survivalpfn_module, "SURVIVALPFN_MIN_ROWS", 2)
+    calls = {"enriched": 0, "uniform": 0}
+    real_enriched = survivalpfn_module._grouped_subsample_enriched
+    real_uniform = survivalpfn_module._grouped_subsample
+
+    def _tracked_enriched(*args: object, **kwargs: object) -> np.ndarray:
+        calls["enriched"] += 1
+        return real_enriched(*args, **kwargs)  # type: ignore[arg-type]
+
+    def _tracked_uniform(*args: object, **kwargs: object) -> np.ndarray:
+        calls["uniform"] += 1
+        return real_uniform(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        survivalpfn_module, "_grouped_subsample_enriched", _tracked_enriched
+    )
+    monkeypatch.setattr(survivalpfn_module, "_grouped_subsample", _tracked_uniform)
+
+    events = _events(40)
+    binned = add_value_tokens(events)
+    times = all_event_times(binned, ALERT_EVENTS, "mimic_iv")
+    rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+
+    fit_survivalpfn_baselines(
+        binned, rows, times, horizons=(8.0,), feature_set="basic", enrich_events=True
+    )
+    assert calls["enriched"] == 1
+    assert calls["uniform"] == 0
+
+
+def test_fit_survivalpfn_baselines_default_uses_uniform_sampling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(survivalpfn_module, "SURVIVALPFN_MAX_ROWS", 10)
+    monkeypatch.setattr(survivalpfn_module, "SURVIVALPFN_MIN_ROWS", 2)
+    calls = {"enriched": 0, "uniform": 0}
+    real_uniform = survivalpfn_module._grouped_subsample
+
+    def _tracked_uniform(*args: object, **kwargs: object) -> np.ndarray:
+        calls["uniform"] += 1
+        return real_uniform(*args, **kwargs)  # type: ignore[arg-type]
+
+    def _fail_if_called(*args: object, **kwargs: object) -> np.ndarray:
+        calls["enriched"] += 1
+        raise AssertionError("enriched sampler must not run when enrich_events=False")
+
+    monkeypatch.setattr(survivalpfn_module, "_grouped_subsample", _tracked_uniform)
+    monkeypatch.setattr(
+        survivalpfn_module, "_grouped_subsample_enriched", _fail_if_called
+    )
+
+    events = _events(40)
+    binned = add_value_tokens(events)
+    times = all_event_times(binned, ALERT_EVENTS, "mimic_iv")
+    rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+
+    fit_survivalpfn_baselines(binned, rows, times, horizons=(8.0,), feature_set="basic")
+    assert calls["uniform"] == 1
+    assert calls["enriched"] == 0
+
+
+def test_fit_one_survivalpfn_records_n_context_events_and_enriched_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(survivalpfn_module, "SURVIVALPFN_MIN_ROWS", 2)
+    events = _events(24)
+    binned = add_value_tokens(events)
+    times = all_event_times(binned, ALERT_EVENTS, "mimic_iv")
+    rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+
+    models = fit_survivalpfn_baselines(
+        binned, rows, times, horizons=(8.0,), feature_set="basic", enrich_events=True
+    )
+    model = models[("vasopressor_start", 8.0)]
+    assert model.params["enriched"] == 1.0
+    assert model.params["n_context_events"] >= 0
+
+    models_uniform = fit_survivalpfn_baselines(
+        binned, rows, times, horizons=(8.0,), feature_set="basic", enrich_events=False
+    )
+    assert models_uniform[("vasopressor_start", 8.0)].params["enriched"] == 0.0
+
+
+def test_fit_survivalpfn_baselines_enriched_and_uniform_do_not_share_a_cache_slot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(survivalpfn_module, "SURVIVALPFN_MIN_ROWS", 2)
+    events = _events(24)
+    binned = add_value_tokens(events)
+    times = all_event_times(binned, ALERT_EVENTS, "mimic_iv")
+    rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+    cache = FitCache(cache_dir=tmp_path / "fit_cache")
+
+    fit_survivalpfn_baselines(
+        binned,
+        rows,
+        times,
+        horizons=(8.0,),
+        feature_set="basic",
+        cache=cache,
+        enrich_events=False,
+    )
+    n_after_uniform = len(_FakeEstimator.instances)
+    fit_survivalpfn_baselines(
+        binned,
+        rows,
+        times,
+        horizons=(8.0,),
+        feature_set="basic",
+        cache=cache,
+        enrich_events=True,
+    )
+    # a real second fit happened (not a cache hit against the uniform
+    # entry) -- one more estimator instance was created.
+    assert len(_FakeEstimator.instances) == n_after_uniform + 1
