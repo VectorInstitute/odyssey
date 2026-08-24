@@ -63,7 +63,7 @@ from odyssey.data.sequences import PatientSequence
 from odyssey.data.sidecars import activate_sidecars, active_sidecar_names
 from odyssey.data.signal_panel import SignalPanelResolver
 from odyssey.data.streaming import PackedLaneSampler
-from odyssey.data.value_binning import QuantileBinner, add_value_tokens
+from odyssey.data.value_binning import CLIP_TAIL, QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import PAD_ID, Vocabulary
 from odyssey.models.backbones.base import TimeAwareState
 from odyssey.models.concept_bottleneck import ConceptBottleneckLossWeights
@@ -344,6 +344,16 @@ class TrainingConfig:
     target carries a value. Off by default -- every existing run and
     checkpoint stays unaffected; this is purely additive alongside the
     bin-token representation of value, which is unchanged either way."""
+
+    value_tail_transform: str = CLIP_TAIL
+    """How the standardized input value's tail is treated:
+    ``"clip"`` (the default, and what every run before 2026-08-24 used)
+    saturates at ``+-VALUE_Z_CLIP``, ``"symlog"`` compresses it while
+    staying strictly monotone. The scale is robust (IQR / 1.349), so the
+    clip threshold sits inside the clinically abnormal range for skewed
+    labs; see :func:`odyssey.data.value_binning._tail_expr`. Saved on the
+    run's ``quantile_binner.json``, so evaluation reproduces it without
+    needing this flag."""
 
     value_head_hidden: int = 0
     """Hidden width of the value head's MLP readout; 0 = the single linear
@@ -854,7 +864,10 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
 
     logger.info("[data] fitting quantile binner on train split")
     binner = QuantileBinner.fit(
-        train_events, n_bins=config.quantile_n_bins, min_count=config.quantile_min_count
+        train_events,
+        n_bins=config.quantile_n_bins,
+        min_count=config.quantile_min_count,
+        tail_transform=config.value_tail_transform,
     )
     binner.save(output_dir / "quantile_binner.json")
     train_events_binned = add_value_tokens(train_events, binner, source=config.source)
@@ -950,6 +963,7 @@ def _train_streaming(config: TrainingConfig, output_dir: Path, device: str) -> P
         n_bins=config.quantile_n_bins,
         min_count=config.quantile_min_count,
         seed=config.seed,
+        tail_transform=config.value_tail_transform,
     )
     binner.save(output_dir / "quantile_binner.json")
     logger.info("[stream] corpus statistics, concept labels and event times")

@@ -40,7 +40,7 @@ from odyssey.data.concepts import AnyConceptDefinition
 from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.sequences import PatientSequence
 from odyssey.data.signal_panel import SignalPanelResolver
-from odyssey.data.value_binning import QuantileBinner, add_value_tokens
+from odyssey.data.value_binning import CLIP_TAIL, QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import Vocabulary, code_type
 from odyssey.training.data import (
     build_concept_first_times,
@@ -97,6 +97,7 @@ def fit_binner_streaming(
     seed: int = 0,
     code_col: str = "code",
     value_col: str = "numeric_value",
+    tail_transform: str = CLIP_TAIL,
 ) -> QuantileBinner:
     """Fit :class:`QuantileBinner` from a seeded per-code value sample across shards.
 
@@ -134,9 +135,13 @@ def fit_binner_streaming(
         samples.append(sampled.select(code_col, pl.col(value_col).cast(pl.Float64)))
     eligible = [code for code, n in counts.items() if n >= min_count]
     if not samples or not eligible:
-        return QuantileBinner(boundaries={}, n_bins=n_bins)
+        return QuantileBinner(
+            boundaries={}, n_bins=n_bins, tail_transform=tail_transform
+        )
     sample = pl.concat(samples).filter(pl.col(code_col).is_in(eligible))
-    return QuantileBinner.fit(sample, n_bins=n_bins, min_count=1)
+    return QuantileBinner.fit(
+        sample, n_bins=n_bins, min_count=1, tail_transform=tail_transform
+    )
 
 
 # ---------------------------------------------------------------------------
