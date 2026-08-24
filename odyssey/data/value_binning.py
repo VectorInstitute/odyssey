@@ -60,6 +60,20 @@ VALUE_Z_CLIP = 5.0
 
 CLIP_TAIL = "clip"
 SYMLOG_TAIL = "symlog"
+SYMLOG_CEILING = 2.0 * VALUE_Z_CLIP
+"""Outer bound on ``"symlog"``, twice the linear band.
+
+The compression is gentle by design, but
+:func:`~odyssey.models.embeddings.value_features` feeds the embedding
+``[z, z^2, has]``, and the square amplifies whatever the tail does. Real
+clinical extremes stay well inside this bound (a 30 mg/dL creatinine maps
+to 9.12, a 25 mmol/L lactate to 8.00), so it never touches a value a
+clinician would recognize. Data-entry errors are what it is for: without
+a bound, ``z = 1e6`` reaches the projection as ``z^2 = 354`` against a
+training range that had never exceeded 25, which is a loss spike waiting
+to happen and would be indistinguishable from the intervention failing.
+Note this risk is specific to the default ``[z, z^2, has]`` encoding;
+``value_fourier`` is bounded by construction."""
 TAIL_TRANSFORMS = (CLIP_TAIL, SYMLOG_TAIL)
 
 
@@ -76,11 +90,15 @@ def _tail_expr(z: pl.Expr, transform: str, clip: float) -> pl.Expr:
 
     ``"symlog"`` is the identity inside ``+-clip`` and grows as
     ``sign(z) * (clip + log1p(|z| - clip))`` outside it: strictly
-    monotone, so ordering in the tail survives; continuous with unit
+    monotone, so ordering in the tail survives, and continuous with unit
     derivative at the boundary, so nothing inside the normal range moves
-    at all; and still bounded in practice (``z = 100`` maps to ~9.6), so
-    it does not hand the embedding projection a wild input scale. It is a
-    representation change only -- bin tokens are untouched.
+    at all. A creatinine of 4.0 / 6.0 / 9.0 / 15.6 mg/dL reaches the
+    model as 6.09 / 7.01 / 7.65 / 8.37 instead of a single saturated 5.0.
+    Bounded at :data:`SYMLOG_CEILING` so a data-entry error cannot hand
+    the embedding projection an input scale it never saw in training;
+    monotonicity therefore holds up to that bound, which no real clinical
+    value approaches. It is a representation change only -- bin tokens
+    are untouched.
     """
     if transform == CLIP_TAIL:
         return z.clip(-clip, clip)
@@ -93,7 +111,7 @@ def _tail_expr(z: pl.Expr, transform: str, clip: float) -> pl.Expr:
         pl.when(magnitude <= clip)
         .then(z)
         .otherwise(z.sign() * (clip + (magnitude - clip).log1p()))
-    )
+    ).clip(-SYMLOG_CEILING, SYMLOG_CEILING)
 
 
 # value: (ascending (threshold, label-for-values-below) cut points,
