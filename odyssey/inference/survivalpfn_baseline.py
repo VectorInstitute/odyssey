@@ -264,9 +264,28 @@ class SurvivalPFNBaselineModel:
             h = torch.full(
                 (chunk.shape[0],), float(self.horizon_hours), dtype=torch.float32
             )
-            survival = dist.survival_at(h)
+            # float64 before subtracting: float32's eps is ~1.2e-7, so for a
+            # rare event at a short horizon -- where survival genuinely is
+            # ~1 -- ``1 - S(h)`` rounds to exactly 0 for every row and the
+            # column comes out a constant (measured 2026-08-23: death@8h and
+            # @24h, and vasopressor@8h/@24h down to 175 distinct values at
+            # magnitudes ~1e-4). Widening to float64 buys ~1e-16 of
+            # resolution. If the estimator's own survival_at saturates to
+            # exactly 1.0 internally, no cast here can recover it -- that is
+            # what the degeneracy check below detects and says out loud,
+            # rather than letting a constant column reach a results table.
+            survival = dist.survival_at(h).double()
             chunks.append((1.0 - survival).detach().cpu().numpy())
         result: np.ndarray = np.concatenate(chunks)
+        if result.size and float(result.max()) <= 0.0:
+            logger.warning(
+                "[survivalpfn] horizon %.0fh: every predicted probability is 0 -- "
+                "the estimator's own survival curve saturates at 1 for this "
+                "(event, horizon), so 1 - S(h) carries no information even in "
+                "float64. This column is a numerical artifact, NOT a "
+                "measurement; do not report it as AUROC 0.5.",
+                self.horizon_hours,
+            )
         if len(result) != x.shape[0]:
             raise AssertionError(
                 f"batched predict_proba returned {len(result)} rows for "
