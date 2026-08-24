@@ -1043,3 +1043,200 @@ def test_default_checkpoint_prefers_best_matching_the_clis(tmp_path: Path) -> No
     assert _latest_checkpoint(tmp_path) == tmp_path / "checkpoint_final.pt"
     (tmp_path / "checkpoint_best.pt").touch()
     assert _latest_checkpoint(tmp_path) == tmp_path / "checkpoint_best.pt"
+
+
+# ---------------------------------------------------------------------------
+# value_head: config round-trip through load_run, and streaming metrics
+# ---------------------------------------------------------------------------
+
+
+def _write_transformer_run(
+    tmp_path: Path,
+    vocab: Vocabulary,
+    *,
+    value_head: bool,
+    value_fourier: bool = False,
+    value_embeddings: bool = True,
+    hidden_size: int = 16,
+) -> Path:
+    """Build a real (CPU-only) transformer BaselineSequenceModel run dir."""
+    torch.manual_seed(0)
+    model = BaselineSequenceModel(
+        backbone=TransformerBackbone(
+            vocab_size=len(vocab),
+            hidden_size=hidden_size,
+            num_hidden_layers=2,
+            num_heads=4,
+            padding_idx=0,
+            use_values=value_embeddings,
+            use_value_fourier=value_fourier,
+        ),
+        vocab_size=len(vocab),
+        padding_idx=0,
+        time_bin_edges=DEFAULT_TIME_BIN_EDGES_HOURS,
+        value_head=value_head,
+    )
+    config = TrainingConfig(
+        train_shard_dir="a",
+        tuning_shard_dir="b",
+        output_dir="c",
+        model_kind="baseline",
+        backbone="transformer",
+        hidden_size=hidden_size,
+        num_hidden_layers=2,
+        attn_num_heads=4,
+        time_to_event=True,
+        value_head=value_head,
+        value_fourier=value_fourier,
+        value_embeddings=value_embeddings,
+    )
+    (tmp_path / "config.json").write_text(json.dumps(config.__dict__))
+    vocab.save(tmp_path / "vocabulary.json")
+    (tmp_path / "quantile_binner.json").write_text(
+        json.dumps({"n_bins": 5, "boundaries": {}})
+    )
+    torch.save({"model": model.state_dict()}, tmp_path / "checkpoint_final.pt")
+    return tmp_path
+
+
+def test_load_run_reconstructs_value_head(tmp_path: Path) -> None:
+    vocab = _vocab()
+    _write_transformer_run(tmp_path, vocab, value_head=True, value_fourier=True)
+
+    model, _, _, config = load_run(tmp_path, device="cpu")
+
+    assert config.value_head is True
+    assert config.value_fourier is True
+    assert model.value_head is not None
+    embeddings = model.backbone.embeddings.embeddings
+    assert embeddings.value_proj is not None
+    from odyssey.models.embeddings import N_FOURIER_FEATURES  # noqa: PLC0415
+
+    assert embeddings.value_proj.in_features == N_FOURIER_FEATURES
+
+
+def test_load_run_value_head_false_checkpoint_unaffected(tmp_path: Path) -> None:
+    """No regression: a run with no value head loads exactly as before."""
+    vocab = _vocab()
+    _write_transformer_run(
+        tmp_path, vocab, value_head=False, value_fourier=False, value_embeddings=False
+    )
+
+    model, _, _, config = load_run(tmp_path, device="cpu")
+
+    assert config.value_head is False
+    assert config.value_fourier is False
+    assert model.value_head is None
+    assert model.backbone.embeddings.embeddings.value_proj is None
+
+
+def test_load_run_value_fourier_false_uses_three_features(tmp_path: Path) -> None:
+    vocab = _vocab()
+    _write_transformer_run(
+        tmp_path, vocab, value_head=True, value_fourier=False, value_embeddings=True
+    )
+
+    model, _, _, config = load_run(tmp_path, device="cpu")
+
+    assert config.value_fourier is False
+    assert model.backbone.embeddings.embeddings.value_proj.in_features == 3
+
+
+def test_load_run_round_trip_reproduces_identical_predictions(tmp_path: Path) -> None:
+    """Save, reload via load_run, predict again: outputs must be identical."""
+    vocab = _vocab()
+    _write_transformer_run(tmp_path, vocab, value_head=True, value_fourier=True)
+
+    model1, _, _, _ = load_run(tmp_path, device="cpu")
+    model2, _, _, _ = load_run(tmp_path, device="cpu")
+
+    torch.manual_seed(42)
+    ids = torch.randint(1, len(vocab), (2, 6))
+    from odyssey.data.types import (  # noqa: PLC0415
+        AuxiliaryInputs,
+        ClinicalSequenceBatch,
+    )
+
+    aux = AuxiliaryInputs(
+        type_ids=torch.zeros(2, 6, dtype=torch.long),
+        time_stamps=torch.arange(6).float().unsqueeze(0).repeat(2, 1),
+        ages=torch.zeros(2, 6),
+        visit_orders=torch.zeros(2, 6, dtype=torch.long),
+        visit_segments=torch.zeros(2, 6, dtype=torch.long),
+        values=torch.rand(2, 6),
+    )
+    batch = ClinicalSequenceBatch(concept_ids=ids, aux=aux)
+    with torch.no_grad():
+        fwd1 = model1.forward_with_features(batch)
+        fwd2 = model2.forward_with_features(batch)
+        emb1 = model1.backbone.embeddings.embeddings.word_embeddings(ids)
+        emb2 = model2.backbone.embeddings.embeddings.word_embeddings(ids)
+        q1 = model1.value_head(fwd1.features, emb1)
+        q2 = model2.value_head(fwd2.features, emb2)
+
+    assert torch.equal(fwd1.logits, fwd2.logits)
+    assert torch.equal(q1, q2)
+
+
+def test_streaming_inference_populates_value_metrics_for_transformer_backbone() -> None:
+    from odyssey.models.value_head import DEFAULT_QUANTILE_LEVELS  # noqa: PLC0415
+
+    vocab = _vocab()
+    torch.manual_seed(0)
+    model = BaselineSequenceModel(
+        backbone=TransformerBackbone(
+            vocab_size=len(vocab),
+            hidden_size=16,
+            num_hidden_layers=2,
+            num_heads=4,
+            padding_idx=0,
+            use_values=True,
+        ),
+        vocab_size=len(vocab),
+        padding_idx=0,
+        time_bin_edges=DEFAULT_TIME_BIN_EDGES_HOURS,
+        value_head=True,
+    )
+    codes = ["DIAGNOSIS//A", "MEDICATION//B", "LAB//220045//bpm", "PROCEDURE//C"]
+    events = _events_for_subjects({1: 10, 2: 10}, codes)
+    # iter_patient_sequences reads a pre-binned numeric_z column directly
+    # (VALUE_Z_COL) -- add_value_tokens's real output, faked here since
+    # this test skips the full binning pipeline.
+    events = events.with_columns(
+        pl.when(pl.col("code") == "LAB//220045//bpm")
+        .then(pl.Series(torch.randn(events.height).tolist()))
+        .otherwise(None)
+        .alias("numeric_z")
+    )
+
+    results = run_streaming_inference(
+        model,
+        events,
+        vocab,
+        {},
+        {},
+        device="cpu",
+        backbone="transformer",
+        num_lanes=2,
+        max_context=64,
+    )
+
+    # LAB//220045//bpm carries a real value, so real value targets exist.
+    assert results.value_metrics is not None
+    assert results.value_metrics.n_positions > 0
+    assert set(results.value_metrics.coverage.keys()) == {
+        f"{lvl:g}" for lvl in DEFAULT_QUANTILE_LEVELS
+    }
+
+
+def test_streaming_inference_no_value_metrics_without_value_head() -> None:
+    vocab = _vocab()
+    model = _transformer_model(vocab)  # no value_head
+    codes = ["DIAGNOSIS//A", "MEDICATION//B", "LAB//220045//bpm", "PROCEDURE//C"]
+    events = _events_for_subjects({1: 8, 2: 8}, codes)
+
+    results = run_streaming_inference(
+        model, events, vocab, {}, {}, device="cpu", backbone="transformer", num_lanes=2
+    )
+
+    assert results.value_metrics is None

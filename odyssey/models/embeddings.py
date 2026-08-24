@@ -5,7 +5,7 @@ sequence (token type, time since previous event, patient age, visit
 order/segment) into a single embedding consumed by any sequence backbone.
 """
 
-from typing import Optional
+from typing import Optional, Sequence, Tuple
 
 import torch
 from torch import nn
@@ -80,6 +80,46 @@ def value_features(values: torch.Tensor) -> torch.Tensor:
     return torch.stack([z, z * z, has.float()], dim=-1)
 
 
+#: Geometrically spaced frequencies for :func:`value_features_fourier`, chosen
+#: so the lowest frequency resolves the full clipped range
+#: (``[-VALUE_Z_CLIP, VALUE_Z_CLIP]``, see ``odyssey.data.value_binning``)
+#: in under one period and the highest resolves changes an order of
+#: magnitude finer than the standardization scale itself.
+_FOURIER_FREQUENCIES: Tuple[float, ...] = tuple(2.0**k for k in range(8))
+N_FOURIER_FEATURES = 2 * len(_FOURIER_FREQUENCIES) + 1
+"""Width of :func:`value_features_fourier`'s output: sin+cos per freq, plus ``has``."""
+
+
+def value_features_fourier(
+    values: torch.Tensor, frequencies: Sequence[float] = _FOURIER_FREQUENCIES
+) -> torch.Tensor:
+    """``(..., 2 * len(frequencies) + 1)`` Fourier features from standardized values.
+
+    A lone scalar ``z`` concatenated into a wide embedding and passed
+    through one linear projection is a weak input signal: the projection
+    can only ever see a single linear (or, after the token/type/time
+    embeddings are summed, entangled-linear) function of ``z``. Encoding
+    ``z`` as ``[sin(f_k * z), cos(f_k * z)]`` at ``len(frequencies)``
+    geometrically spaced frequencies ``f_k`` (NeRF/transformer positional-
+    encoding style) gives the same downstream projection many more basis
+    functions of ``z`` to combine, at no cost to what the projection
+    itself has to learn structurally -- it is still a linear layer, just
+    over a richer input. ``has`` (NaN-masked) is appended unchanged, same
+    as :func:`value_features`. Replaces ``[z, z^2, has]`` entirely rather
+    than extending it: this flag (``TrainingConfig.value_fourier``) is
+    designed to isolate "better input encoding" from "better output
+    objective" (``TrainingConfig.value_head``) in the A/B this feeds --
+    see :mod:`odyssey.models.value_head`'s module docstring.
+    """
+    has = ~torch.isnan(values)
+    z = torch.nan_to_num(values, nan=0.0).float()
+    freq = torch.as_tensor(frequencies, dtype=z.dtype, device=z.device)
+    angles = z.unsqueeze(-1) * freq
+    return torch.cat(
+        [torch.sin(angles), torch.cos(angles), has.float().unsqueeze(-1)], dim=-1
+    )
+
+
 class ClinicalEventEmbeddings(nn.Module):
     """Fuses token identity with clinical sequence structure.
 
@@ -107,6 +147,12 @@ class ClinicalEventEmbeddings(nn.Module):
         added to the token embedding, so the model sees *how far* into a
         bin a reading is (a creatinine of 0.8 vs 1.4 are both ``NORMAL``
         tokens). Off by default; targets are unaffected either way.
+    use_value_fourier : bool
+        Only meaningful when ``use_values`` is True: encode the
+        standardized value as Fourier features
+        (:func:`value_features_fourier`) instead of ``[z, z^2, has]``
+        (:func:`value_features`) before the same projection layer. See
+        :func:`value_features_fourier`'s docstring for why.
     """
 
     def __init__(
@@ -122,13 +168,17 @@ class ClinicalEventEmbeddings(nn.Module):
         layer_norm_eps: float = 1e-12,
         hidden_dropout_prob: float = 0.1,
         use_values: bool = False,
+        use_value_fourier: bool = False,
     ) -> None:
         """Initialize the clinical event embeddings."""
         super().__init__()
         self.use_values = use_values
-        # features: [z, z^2, has_value]; z is already clipped by the binner
+        self.use_value_fourier = use_value_fourier
+        # features: [z, z^2, has_value] (or the wider Fourier encoding);
+        # z is already clipped by the binner.
+        value_in = N_FOURIER_FEATURES if use_value_fourier else 3
         self.value_proj: Optional[nn.Linear] = (
-            nn.Linear(3, hidden_size) if use_values else None
+            nn.Linear(value_in, hidden_size) if use_values else None
         )
 
         self.word_embeddings = nn.Embedding(
@@ -180,7 +230,10 @@ class ClinicalEventEmbeddings(nn.Module):
                 values = torch.full(
                     input_ids.shape, float("nan"), device=input_ids.device
                 )
-            embeddings = embeddings + self.value_proj(value_features(values))
+            featurize = (
+                value_features_fourier if self.use_value_fourier else value_features
+            )
+            embeddings = embeddings + self.value_proj(featurize(values))
 
         result: torch.Tensor = self.layer_norm(self.dropout(embeddings))
         return result
