@@ -28,6 +28,7 @@ from typing import Dict, Iterator, List, NamedTuple, Optional, Sequence, Tuple, 
 import polars as pl
 import torch
 import torch.nn.functional as F  # noqa: N812
+from torch import nn
 
 from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.concepts import AnyConceptDefinition, concepts_for_source
@@ -35,10 +36,12 @@ from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.packed_context import PackedContextSampler
 from odyssey.data.sequences import PatientSequence
 from odyssey.data.sidecars import activate_sidecars
+from odyssey.data.signal_panel import SIGNAL_PANEL, SignalPanelResolver
 from odyssey.data.streaming import PackedLaneSampler, StreamingChunk
 from odyssey.data.value_binning import QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import Vocabulary, code_type
 from odyssey.models.concept_bottleneck import ConceptBottleneckOutput
+from odyssey.models.embeddings import N_FOURIER_FEATURES
 from odyssey.models.sequence_model import (
     RECENCY_DIM,
     SIGNAL_DIM,
@@ -58,6 +61,13 @@ from odyssey.models.time_to_event import (
     hazard_log_likelihood,
     probability_within,
 )
+from odyssey.models.value_head import (
+    ValueQuantileHead,
+    crps_from_quantiles,
+    median_absolute_error,
+    quantile_coverage,
+    value_target_valid_mask,
+)
 from odyssey.training.data import (
     build_concept_label_dicts,
     build_visit_concept_label_dicts,
@@ -69,6 +79,7 @@ from odyssey.training.metrics import (
     ObservabilityMetrics,
     TaskMetrics,
     TimeMetrics,
+    ValueMetrics,
     compute_concept_metrics,
     compute_observability_metrics,
     orthogonality_diagnostic,
@@ -103,6 +114,8 @@ class InferenceResults:
     n_patient_ends_scored: int
     time_metrics: Optional[TimeMetrics] = None
     """Time-to-next-event scoring; None for models without a time head."""
+    value_metrics: Optional[ValueMetrics] = None
+    """Value-quantile scoring; None for models without a value head."""
     tail_slice: Optional["InferenceResults"] = None
     """Same breakdown, restricted to patients PackedContextSampler had to
     truncate (backbone="transformer" only; None otherwise, or when
@@ -196,6 +209,82 @@ class _RunningTimeMetrics:
         )
 
 
+class _RunningValueMetrics:
+    """Streaming accumulator for :class:`~odyssey.training.metrics.ValueMetrics`.
+
+    Buffers valid ``(quantiles, target_value, target_token_id)`` rows
+    across chunks (small: only positions with a real target value, a
+    minority of positions) and scores everything at :meth:`finalize`,
+    rather than an online running mean -- CRPS and per-level coverage
+    both need the full sample, not just a sum that can be updated
+    incrementally.
+    """
+
+    def __init__(
+        self,
+        levels: Sequence[float],
+        vocab: Vocabulary,
+        signal_panel: Optional[SignalPanelResolver],
+    ) -> None:
+        self.levels = list(levels)
+        self.vocab = vocab
+        self.signal_panel = signal_panel
+        self._quantiles: List[torch.Tensor] = []
+        self._targets: List[torch.Tensor] = []
+        self._target_ids: List[torch.Tensor] = []
+
+    def update(
+        self,
+        quantiles: torch.Tensor,
+        target_value: torch.Tensor,
+        target_ids: torch.Tensor,
+        valid: torch.Tensor,
+    ) -> None:
+        if not bool(valid.any()):
+            return
+        self._quantiles.append(quantiles[valid].detach().cpu())
+        self._targets.append(target_value[valid].detach().cpu())
+        self._target_ids.append(target_ids[valid].detach().cpu())
+
+    def _score(
+        self,
+        quantiles: torch.Tensor,
+        target: torch.Tensor,
+        by_signal: Dict[str, ValueMetrics],
+    ) -> ValueMetrics:
+        crps = float(crps_from_quantiles(quantiles, target, self.levels).mean().item())
+        mae = float(median_absolute_error(quantiles, target, self.levels).item())
+        coverage_t = quantile_coverage(quantiles, target)
+        coverage = {
+            f"{level:g}": float(c) for level, c in zip(self.levels, coverage_t.tolist())
+        }
+        return ValueMetrics(
+            crps=crps,
+            n_positions=int(target.numel()),
+            coverage=coverage,
+            median_absolute_error=mae,
+            by_signal=by_signal,
+        )
+
+    def finalize(self) -> Optional[ValueMetrics]:
+        if not self._quantiles:
+            return None
+        quantiles = torch.cat(self._quantiles)
+        target = torch.cat(self._targets)
+        by_signal: Dict[str, ValueMetrics] = {}
+        if self.signal_panel is not None:
+            target_ids = torch.cat(self._target_ids)
+            codes = [
+                self.vocab.id_to_token.get(int(t), "") for t in target_ids.tolist()
+            ]
+            signal_idx = torch.tensor([self.signal_panel.resolve(c) for c in codes])
+            for idx, (name, _loinc) in enumerate(SIGNAL_PANEL):
+                mask = signal_idx == idx
+                if bool(mask.any()):
+                    by_signal[name] = self._score(quantiles[mask], target[mask], {})
+        return self._score(quantiles, target, by_signal)
+
+
 def _latest_checkpoint(run_dir: Path) -> Path:
     """Return the run's default evaluation checkpoint.
 
@@ -256,9 +345,26 @@ def load_run(
     config.value_embeddings = any(
         k.endswith("embeddings.value_proj.weight") for k in checkpoint["model"]
     )
+    # Fourier-encoded values widen value_proj's input from 3 ([z, z^2, has])
+    # to N_FOURIER_FEATURES; read off the checkpoint's own weight shape,
+    # same discipline as the recency/signal width inference below.
+    value_proj_w = next(
+        (
+            v
+            for k, v in checkpoint["model"].items()
+            if k.endswith("embeddings.value_proj.weight")
+        ),
+        None,
+    )
+    config.value_fourier = (
+        value_proj_w is not None
+        and value_proj_w.dim() > 1
+        and int(value_proj_w.shape[1]) == N_FOURIER_FEATURES
+    )
     config.event_hazards = any(
         k.startswith("event_heads.") for k in checkpoint["model"]
     )
+    config.value_head = any(k.startswith("value_head.") for k in checkpoint["model"])
     # Bottleneck variants: global concept pairs and the unknown slot's width
     # are read off the checkpoint's parameter shapes.
     state = checkpoint["model"]
@@ -658,11 +764,22 @@ class _StreamingAccumulators:
     """One split's running accumulators (the overall pass, or the tail slice)."""
 
     def __init__(
-        self, vocab: Vocabulary, *, device: str, time_head: Optional[TimeToEventHead]
+        self,
+        vocab: Vocabulary,
+        *,
+        device: str,
+        time_head: Optional[TimeToEventHead],
+        value_head: Optional[ValueQuantileHead],
+        signal_panel: Optional[SignalPanelResolver],
     ) -> None:
         self.task_stats = _RunningTaskMetrics(vocab, device=device)
         self.time_stats = (
             _RunningTimeMetrics(time_head.edges) if time_head is not None else None
+        )
+        self.value_stats = (
+            _RunningValueMetrics(value_head.quantile_levels, vocab, signal_panel)
+            if value_head is not None
+            else None
         )
         self.pooled = _PooledEnds()
 
@@ -673,6 +790,8 @@ class _StreamingAccumulators:
         logits: torch.Tensor,
         *,
         time_head: Optional[TimeToEventHead],
+        value_head: Optional[ValueQuantileHead],
+        target_embeddings: Optional[nn.Embedding],
         supervision: ConceptSupervision,
         restrict: Optional[torch.Tensor],
     ) -> None:
@@ -682,6 +801,18 @@ class _StreamingAccumulators:
             hazard_logits = time_head(fwd.features)
             gap, gap_valid = gap_survival_valid_mask(chunk.batch.aux.time_stamps, real)
             self.time_stats.update(hazard_logits, gap, gap_valid)
+        if (
+            self.value_stats is not None
+            and value_head is not None
+            and target_embeddings is not None
+            and chunk.batch.aux.values is not None
+        ):
+            target_value, value_valid = value_target_valid_mask(
+                chunk.batch.aux.values, real
+            )
+            target_embed = target_embeddings(chunk.targets)
+            quantiles = value_head(fwd.features, target_embed)
+            self.value_stats.update(quantiles, target_value, chunk.targets, value_valid)
         if real.any():
             set_hits = self.task_stats.block_set_hits(
                 logits.argmax(dim=-1),
@@ -742,6 +873,7 @@ def run_streaming_inference(
     concepts: Optional[Sequence[AnyConceptDefinition]] = None,
     backbone: str = "hybrid",
     max_context: int = 4096,
+    source: str = "mimic_iv",
 ) -> InferenceResults:
     """Stream held-out patients through ``model`` and score every eval question.
 
@@ -779,9 +911,24 @@ def run_streaming_inference(
     )
 
     time_head = getattr(model, "time_head", None)
-    overall = _StreamingAccumulators(vocab, device=device, time_head=time_head)
+    value_head = getattr(model, "value_head", None)
+    target_embeddings = model.backbone.embeddings.embeddings.word_embeddings
+    signal_panel = SignalPanelResolver(source) if value_head is not None else None
+    overall = _StreamingAccumulators(
+        vocab,
+        device=device,
+        time_head=time_head,
+        value_head=value_head,
+        signal_panel=signal_panel,
+    )
     tail = (
-        _StreamingAccumulators(vocab, device=device, time_head=time_head)
+        _StreamingAccumulators(
+            vocab,
+            device=device,
+            time_head=time_head,
+            value_head=value_head,
+            signal_panel=signal_panel,
+        )
         if isinstance(sampler, PackedContextSampler)
         else None
     )
@@ -800,6 +947,8 @@ def run_streaming_inference(
                 fwd,
                 logits,
                 time_head=time_head,
+                value_head=value_head,
+                target_embeddings=target_embeddings,
                 supervision=supervision,
                 restrict=None,
             )
@@ -815,13 +964,16 @@ def run_streaming_inference(
                         fwd,
                         logits,
                         time_head=time_head,
+                        value_head=value_head,
+                        target_embeddings=target_embeddings,
                         supervision=supervision,
                         restrict=is_tail,
                     )
 
-    task_stats, time_stats, pooled = (
+    task_stats, time_stats, value_stats, pooled = (
         overall.task_stats,
         overall.time_stats,
+        overall.value_stats,
         overall.pooled,
     )
     # tail is a real _StreamingAccumulators instance whenever the sampler
@@ -833,6 +985,7 @@ def run_streaming_inference(
         _finalize_inference_results(
             tail.task_stats,
             tail.time_stats,
+            tail.value_stats,
             tail.pooled,
             model=model,
             supervision=supervision,
@@ -848,6 +1001,7 @@ def run_streaming_inference(
     return _finalize_inference_results(
         task_stats,
         time_stats,
+        value_stats,
         pooled,
         model=model,
         supervision=supervision,
@@ -861,6 +1015,7 @@ def run_streaming_inference(
 def _finalize_inference_results(
     task_stats: "_RunningTaskMetrics",
     time_stats: Optional["_RunningTimeMetrics"],
+    value_stats: Optional["_RunningValueMetrics"],
     pooled: "_PooledEnds",
     *,
     model: SequenceModel,
@@ -897,6 +1052,7 @@ def _finalize_inference_results(
             orthogonality=float("nan"),
             n_patient_ends_scored=0,
             time_metrics=time_stats.finalize() if time_stats is not None else None,
+            value_metrics=value_stats.finalize() if value_stats is not None else None,
             tail_slice=tail_slice,
         )
 
@@ -932,6 +1088,7 @@ def _finalize_inference_results(
         orthogonality=orthogonality,
         n_patient_ends_scored=int(subject_ids.shape[0]),
         time_metrics=time_stats.finalize() if time_stats is not None else None,
+        value_metrics=value_stats.finalize() if value_stats is not None else None,
         tail_slice=tail_slice,
     )
 
@@ -995,6 +1152,7 @@ def evaluate_run(
         concepts=concepts,
         backbone=getattr(config, "backbone", "hybrid"),
         max_context=getattr(config, "max_context", 4096),
+        source=source,
     )
 
 

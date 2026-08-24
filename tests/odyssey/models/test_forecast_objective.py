@@ -220,7 +220,7 @@ def test_baseline_model_shares_objective_and_time_head() -> None:
     total, comp, _ = model.compute_streaming_loss(
         chunk, objective=ForecastObjective(bundle_invariant=True, time_weight=0.5)
     )
-    assert set(comp) == {"task_loss", "time_loss", "event_loss"}
+    assert set(comp) == {"task_loss", "time_loss", "event_loss", "value_loss"}
     total.backward()
 
 

@@ -62,6 +62,12 @@ from odyssey.models.time_to_event import (
     gap_survival_valid_mask,
     hazard_nll,
 )
+from odyssey.models.value_head import (
+    DEFAULT_QUANTILE_LEVELS,
+    ValueQuantileHead,
+    value_quantile_loss,
+    value_target_valid_mask,
+)
 
 
 if TYPE_CHECKING:  # the targets live in training; avoid a runtime import cycle
@@ -99,6 +105,11 @@ class ForecastObjective:
       to vasopressor start, ICU admission, ...), if the model has event
       heads; the targets come per chunk from
       :mod:`odyssey.training.event_targets`.
+    - ``value_head_weight``: weight of the masked pinball loss for the
+      next event's magnitude (:mod:`odyssey.models.value_head`), if the
+      model has a value head. Additive alongside ``time_weight`` and
+      ``event_hazard_weight``; the bin-token representation of value is
+      unchanged either way (see the value head module docstring).
 
     The default instance reproduces the original objective exactly.
     """
@@ -108,6 +119,7 @@ class ForecastObjective:
     token_types: Optional[torch.Tensor] = None
     time_weight: float = 0.0
     event_hazard_weight: float = 0.0
+    value_head_weight: float = 0.0
 
 
 # Recency block appended to head features when recency_features is on:
@@ -496,6 +508,40 @@ class _SequenceModelBase(nn.Module):
         )
         return hazard_nll(hazard_logits, gap, valid, time_head.edges), hazard_logits
 
+    def _streaming_value_loss(
+        self,
+        value_head: Optional[ValueQuantileHead],
+        features: torch.Tensor,
+        chunk: StreamingChunk,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """Masked pinball loss for the value-quantile head, and its quantiles (or None).
+
+        Conditions on the TARGET token's own embedding, looked up from
+        the model's own input embedding table (no second table) --
+        ``self.backbone.embeddings`` is a
+        :class:`~odyssey.models.embeddings.CachedEHREmbeddings` on every
+        backbone this project has (hybrid, transformer, the CPU tiny-GRU
+        stand-in), wrapping a
+        :class:`~odyssey.models.embeddings.ClinicalEventEmbeddings` whose
+        ``word_embeddings`` is exactly the table ``chunk.targets`` was
+        produced against.
+        """
+        if value_head is None:
+            return features.sum() * 0.0, None
+        if chunk.batch.aux.values is None:
+            return features.sum() * 0.0, None
+        target_value, valid = value_target_valid_mask(
+            chunk.batch.aux.values, chunk.real_mask
+        )
+        target_embedding = self.backbone.embeddings.embeddings.word_embeddings(
+            chunk.targets
+        )
+        quantiles = value_head(features, target_embedding)
+        loss = value_quantile_loss(
+            quantiles, target_value, valid, value_head.quantile_levels
+        )
+        return loss, quantiles
+
 
 class BaselineSequenceModel(_SequenceModelBase):
     """Next-token prediction directly from the backbone: no concept bottleneck."""
@@ -511,13 +557,17 @@ class BaselineSequenceModel(_SequenceModelBase):
         event_head_hidden: int = 0,
         recency_features: bool = False,
         signal_channels: bool = False,
+        value_head: bool = False,
         source: str = "mimic_iv",
     ) -> None:
         """Initialize the baseline sequence model.
 
         ``time_bin_edges`` adds a time-to-next-event hazard head over the
         backbone hidden state (see :mod:`odyssey.models.time_to_event`);
-        ``event_names`` adds per-event hazard heads (same bins).
+        ``event_names`` adds per-event hazard heads (same bins);
+        ``value_head`` adds the next-event value-quantile head (see
+        :mod:`odyssey.models.value_head`), reading the same head features
+        plus the target token's own embedding from ``backbone.embeddings``.
         """
         super().__init__(backbone, padding_idx=padding_idx)
         self.lm_head = nn.Linear(backbone.hidden_size, vocab_size)
@@ -540,6 +590,11 @@ class BaselineSequenceModel(_SequenceModelBase):
                 hidden_size=event_head_hidden,
             )
             if event_names
+            else None
+        )
+        self.value_head: Optional[ValueQuantileHead] = (
+            ValueQuantileHead(head_in, backbone.hidden_size, DEFAULT_QUANTILE_LEVELS)
+            if value_head
             else None
         )
 
@@ -609,10 +664,12 @@ class BaselineSequenceModel(_SequenceModelBase):
         event_loss = self._streaming_event_loss(
             self.event_heads, head_feats, event_targets
         )
+        value_loss, _ = self._streaming_value_loss(self.value_head, head_feats, chunk)
         total = (
             task_loss
             + objective.time_weight * time_loss
             + objective.event_hazard_weight * event_loss
+            + objective.value_head_weight * value_loss
         )
         return (
             total,
@@ -620,6 +677,7 @@ class BaselineSequenceModel(_SequenceModelBase):
                 "task_loss": task_loss.detach(),
                 "time_loss": time_loss.detach(),
                 "event_loss": event_loss.detach(),
+                "value_loss": value_loss.detach(),
             },
             new_state,
         )
@@ -644,6 +702,7 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         unknown_dim: Optional[int] = None,
         recency_features: bool = False,
         signal_channels: bool = False,
+        value_head: bool = False,
         source: str = "mimic_iv",
     ) -> None:
         """Initialize the concept-bottleneck sequence model.
@@ -651,7 +710,10 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         ``time_bin_edges`` adds a time-to-next-event hazard head that reads
         the bottleneck output (so timing forecasts flow through the
         concepts too); ``event_names`` adds per-event hazard heads on the
-        same bins and features; see :mod:`odyssey.models.time_to_event`.
+        same bins and features; ``value_head`` adds the next-event
+        value-quantile head, also reading the bottleneck output (plus the
+        target token embedding); see :mod:`odyssey.models.time_to_event`
+        and :mod:`odyssey.models.value_head`.
         """
         super().__init__(backbone, padding_idx=padding_idx)
         self.bottleneck = ConceptBottleneck(
@@ -681,6 +743,11 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
                 hidden_size=event_head_hidden,
             )
             if event_names
+            else None
+        )
+        self.value_head: Optional[ValueQuantileHead] = (
+            ValueQuantileHead(head_in, backbone.hidden_size, DEFAULT_QUANTILE_LEVELS)
+            if value_head
             else None
         )
 
@@ -822,10 +889,12 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         event_loss = self._streaming_event_loss(
             self.event_heads, head_feats, event_targets
         )
+        value_loss, _ = self._streaming_value_loss(self.value_head, head_feats, chunk)
         forecast_loss = (
             next_token_loss
             + objective.time_weight * time_loss
             + objective.event_hazard_weight * event_loss
+            + objective.value_head_weight * value_loss
         )
 
         pool_mask = chunk.patient_end if supervision == "stay" else chunk.visit_end
@@ -835,6 +904,7 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
                 "task_loss": next_token_loss.detach(),
                 "time_loss": time_loss.detach(),
                 "event_loss": event_loss.detach(),
+                "value_loss": value_loss.detach(),
                 "concept_loss": zero,
                 "orthogonality_loss": zero,
                 "observability_loss": zero,
@@ -890,4 +960,5 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         components["task_loss"] = next_token_loss.detach()
         components["time_loss"] = time_loss.detach()
         components["event_loss"] = event_loss.detach()
+        components["value_loss"] = value_loss.detach()
         return total, components, new_state
