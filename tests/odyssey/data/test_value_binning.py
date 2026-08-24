@@ -19,6 +19,8 @@ from odyssey.data.concepts import (
 from odyssey.data.value_binning import (
     _FALLBACK_LABEL,
     CLINICAL_RANGES,
+    SYMLOG_TAIL,
+    VALUE_Z_CLIP,
     QuantileBinner,
     add_value_tokens,
     clinical_ranges_for_source,
@@ -417,3 +419,61 @@ def test_gemini_creatinine_uses_si_clinical_range() -> None:
     ranges, fallback = clinical_ranges_for_source("gemini")
     assert ranges["LAB//3020564//"] == [(132.6, "NORMAL"), (353.7, "HIGH")]
     assert fallback["LAB//3020564//"] == "CRITICAL"
+
+
+def _tail_events(values: List[float]) -> pl.DataFrame:
+    return pl.DataFrame({"code": ["LAB//X"] * len(values), "numeric_value": values})
+
+
+def _tail_binner(transform: str) -> QuantileBinner:
+    """Build a binner whose per-code stats are exactly center 0, scale 1."""
+    return QuantileBinner(
+        boundaries={"LAB//X": [0.0]},
+        n_bins=2,
+        value_stats={"LAB//X": (0.0, 1.0)},
+        tail_transform=transform,
+    )
+
+
+def test_clip_tail_saturates_the_extremes_it_is_meant_to_distinguish() -> None:
+    """The default flattens everything past the threshold to one number.
+
+    Pinned as the behaviour symlog is the alternative to: because scale is
+    robust (IQR / 1.349), +-5 lands inside the clinically abnormal range
+    for skewed labs, so this is the tail the acute outcomes live in.
+    """
+    raw = [0.0, 2.0, VALUE_Z_CLIP + 1.0, 20.0, -20.0]
+    z = _tail_binner("clip").standardize(_tail_events(raw)).to_list()
+    assert z[:2] == [0.0, 2.0]  # inside the band, untouched
+    assert z[2] == z[3] == VALUE_Z_CLIP  # 6 and 20 are indistinguishable
+    assert z[4] == -VALUE_Z_CLIP
+
+
+def test_symlog_tail_is_identity_inside_the_band_and_monotone_outside() -> None:
+    """Symlog keeps ordering in the tail without moving the normal range."""
+    inside = [0.0, 1.0, -2.5, VALUE_Z_CLIP]
+    zi = _tail_binner(SYMLOG_TAIL).standardize(_tail_events(inside)).to_list()
+    assert zi == pytest.approx(inside)  # nothing inside the band moves at all
+
+    tail = [VALUE_Z_CLIP + 0.5, 6.0, 8.0, 20.0, 100.0]
+    zt = _tail_binner(SYMLOG_TAIL).standardize(_tail_events(tail)).to_list()
+    assert all(b > a for a, b in zip(zt, zt[1:]))  # strictly monotone: 4 != 8
+    assert zt[0] > VALUE_Z_CLIP  # continuous, above the boundary
+    assert zt[-1] < 10.0  # still bounded: z=100 does not blow up the input scale
+    # and it is symmetric
+    neg = _tail_binner(SYMLOG_TAIL).standardize(_tail_events([-20.0])).to_list()
+    assert neg[0] == pytest.approx(-zt[3])
+
+
+def test_tail_transform_round_trips_and_rejects_unknown_names(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Evaluation must rebuild the policy the run trained with, not the default."""
+    path = tmp_path / "binner.json"
+    _tail_binner(SYMLOG_TAIL).save(path)
+    assert QuantileBinner.load(path).tail_transform == SYMLOG_TAIL
+    # a binner written before the field existed reads back as the old behaviour
+    path.write_text('{"n_bins": 2, "boundaries": {}}')
+    assert QuantileBinner.load(path).tail_transform == "clip"
+    with pytest.raises(ValueError, match="unknown tail_transform"):
+        _tail_binner("logarithmic").standardize(_tail_events([9.0]))
+    with pytest.raises(ValueError, match="unknown tail_transform"):
+        QuantileBinner.fit(_tail_events([1.0, 2.0]), min_count=1, tail_transform="nope")

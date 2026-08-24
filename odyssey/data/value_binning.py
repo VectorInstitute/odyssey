@@ -58,6 +58,44 @@ from odyssey.data.code_mapping import prefixes_for_loinc, unit_for
 VALUE_Z_COL = "numeric_z"
 VALUE_Z_CLIP = 5.0
 
+CLIP_TAIL = "clip"
+SYMLOG_TAIL = "symlog"
+TAIL_TRANSFORMS = (CLIP_TAIL, SYMLOG_TAIL)
+
+
+def _tail_expr(z: pl.Expr, transform: str, clip: float) -> pl.Expr:
+    """Apply ``transform`` to a standardized-value expression outside ``+-clip``.
+
+    ``"clip"`` saturates at ``+-clip``: every value past the threshold
+    becomes the same number, so the model cannot tell a creatinine of 4
+    from one of 8. Because ``scale`` is robust (IQR / 1.349, not a
+    standard deviation), ``+-5`` is far tighter than five Gaussian SD and
+    lands inside the clinically abnormal range for skewed labs -- the
+    tail it flattens is the tail the acute outcomes live in, while a GBM
+    reading raw values keeps the distinction.
+
+    ``"symlog"`` is the identity inside ``+-clip`` and grows as
+    ``sign(z) * (clip + log1p(|z| - clip))`` outside it: strictly
+    monotone, so ordering in the tail survives; continuous with unit
+    derivative at the boundary, so nothing inside the normal range moves
+    at all; and still bounded in practice (``z = 100`` maps to ~9.6), so
+    it does not hand the embedding projection a wild input scale. It is a
+    representation change only -- bin tokens are untouched.
+    """
+    if transform == CLIP_TAIL:
+        return z.clip(-clip, clip)
+    if transform != SYMLOG_TAIL:
+        raise ValueError(
+            f"unknown tail_transform {transform!r}; expected one of {TAIL_TRANSFORMS}"
+        )
+    magnitude = z.abs()
+    return (
+        pl.when(magnitude <= clip)
+        .then(z)
+        .otherwise(z.sign() * (clip + (magnitude - clip).log1p()))
+    )
+
+
 # value: (ascending (threshold, label-for-values-below) cut points,
 # fallback label for values at or above every threshold).
 _RangeSpec = Tuple[List[Tuple[float, str]], str]
@@ -171,6 +209,14 @@ class QuantileBinner:
     median and a robust scale (IQR / 1.349, falling back to the standard
     deviation, then 1.0), for the same eligible codes as ``boundaries``.
     Empty on binners saved before this field existed."""
+    tail_transform: str = CLIP_TAIL
+    """How :meth:`standardize` treats ``|z| > VALUE_Z_CLIP``: ``"clip"``
+    saturates (the original behaviour, and the default), ``"symlog"``
+    compresses logarithmically and stays strictly monotone. Carried on
+    the binner rather than passed at each call site because a dozen entry
+    points construct sequences from a saved binner, and the policy has to
+    be the one the run trained with in every one of them; it round-trips
+    through :meth:`save`/:meth:`load` for exactly that reason."""
 
     @classmethod
     def fit(
@@ -181,6 +227,7 @@ class QuantileBinner:
         min_count: int = 100,
         code_col: str = "code",
         value_col: str = "numeric_value",
+        tail_transform: str = CLIP_TAIL,
     ) -> "QuantileBinner":
         """Compute per-code quantile boundaries from numeric-valued events.
 
@@ -197,8 +244,13 @@ class QuantileBinner:
         )
         counts = numeric.group_by(code_col).agg(pl.len().alias("n"))
         eligible = counts.filter(pl.col("n") >= min_count)[code_col].to_list()
+        if tail_transform not in TAIL_TRANSFORMS:
+            raise ValueError(
+                f"unknown tail_transform {tail_transform!r}; "
+                f"expected one of {TAIL_TRANSFORMS}"
+            )
         if not eligible:
-            return cls(boundaries={}, n_bins=n_bins)
+            return cls(boundaries={}, n_bins=n_bins, tail_transform=tail_transform)
 
         qcols = [f"_q{i}" for i in range(len(quantiles))]
         stats = (
@@ -227,7 +279,12 @@ class QuantileBinner:
             if not scale > 0:
                 scale = 1.0
             value_stats[row[code_col]] = (center, float(scale))
-        return cls(boundaries=boundaries, n_bins=n_bins, value_stats=value_stats)
+        return cls(
+            boundaries=boundaries,
+            n_bins=n_bins,
+            value_stats=value_stats,
+            tail_transform=tail_transform,
+        )
 
     def apply(
         self,
@@ -281,7 +338,10 @@ class QuantileBinner:
         value_col: str = "numeric_value",
         clip: float = VALUE_Z_CLIP,
     ) -> pl.Series:
-        """Return a ``Float32`` Series of standardized values, clipped to ``+-clip``.
+        """Return a ``Float32`` Series of standardized values, tail-limited.
+
+        Whether the tail is saturated or compressed is
+        :attr:`tail_transform`; see :func:`_tail_expr`.
 
         ``(value - center) / scale`` per code from :attr:`value_stats`;
         null where the code has no stats or the value is null. This is the
@@ -303,8 +363,11 @@ class QuantileBinner:
             .with_row_index("_row")
             .join(sframe, left_on=code_col, right_on="_code", how="left")
             .with_columns(
-                ((pl.col(value_col) - pl.col("_center")) / pl.col("_scale"))
-                .clip(-clip, clip)
+                _tail_expr(
+                    (pl.col(value_col) - pl.col("_center")) / pl.col("_scale"),
+                    self.tail_transform,
+                    clip,
+                )
                 .cast(pl.Float32)
                 .alias("_z")
             )
@@ -319,13 +382,18 @@ class QuantileBinner:
                     "n_bins": self.n_bins,
                     "boundaries": self.boundaries,
                     "value_stats": {k: list(v) for k, v in self.value_stats.items()},
+                    "tail_transform": self.tail_transform,
                 }
             )
         )
 
     @classmethod
     def load(cls, path: Union[str, Path]) -> "QuantileBinner":
-        """Load from JSON written by :meth:`save` (older files lack value_stats)."""
+        """Load from JSON written by :meth:`save`.
+
+        Files written before ``value_stats``/``tail_transform`` existed
+        lack those keys and read back as the original behaviour.
+        """
         data = json.loads(Path(path).read_text())
         return cls(
             boundaries=data["boundaries"],
@@ -334,6 +402,7 @@ class QuantileBinner:
                 k: (float(v[0]), float(v[1]))
                 for k, v in data.get("value_stats", {}).items()
             },
+            tail_transform=str(data.get("tail_transform", CLIP_TAIL)),
         )
 
 
