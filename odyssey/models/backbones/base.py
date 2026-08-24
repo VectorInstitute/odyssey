@@ -8,6 +8,7 @@ import torch
 from torch import nn
 
 from odyssey.data.types import ClinicalSequenceBatch
+from odyssey.models.embeddings import CachedEHREmbeddings
 
 
 @dataclass
@@ -75,6 +76,15 @@ class SequenceBackbone(nn.Module, ABC):
     """
 
     hidden_size: int
+    embeddings: CachedEHREmbeddings
+    """Every concrete backbone (hybrid, transformer, the tiny-GRU CPU
+    stand-in) assigns this in ``__init__`` -- declared here, not just
+    left to duck-typing, so callers that reach into the embedding table
+    directly (e.g. ``_SequenceModelBase._streaming_value_loss`` looking
+    up a target token's own embedding for
+    :mod:`odyssey.models.value_head`'s conditioning) type-check for real
+    instead of resolving through ``nn.Module.__getattr__``'s untyped
+    fallback."""
 
     @abstractmethod
     def forward(
