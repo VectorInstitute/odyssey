@@ -583,3 +583,59 @@ def test_predict_proba_keeps_tiny_probabilities_and_warns_on_a_dead_column(
     assert small.dtype == np.float64
     assert all(0.0 < v < 1e-5 for v in small)
     assert not any("numerical artifact" in r.message for r in caplog.records)
+
+
+def test_predict_proba_warns_on_a_resolution_limited_column(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A column can pass the constant-column check and still be unmeasurable.
+
+    Measured on MIMIC-IV 2026-08-24: vasopressor@8h and @24h came back with
+    175 and 242 distinct probabilities across 111,450 and 98,722 rows at
+    magnitudes ~1e-4, producing AUROCs of 0.522 and 0.537 that are largely
+    tie-breaking among a handful of levels. They passed the all-zero rule
+    and were nearly written into the comparator table as measurements. The
+    healthy cells on the same run sat at 0.17 to 0.97 distinct values per
+    row, two orders of magnitude away, so the threshold separates them
+    rather than splitting a boundary.
+    """
+    import logging  # noqa: PLC0415
+
+    from odyssey.inference import survivalpfn_baseline as spfn  # noqa: PLC0415
+
+    class _Dist:
+        def __init__(self, levels: torch.Tensor) -> None:
+            self._levels = levels
+
+        def survival_at(self, h: torch.Tensor) -> torch.Tensor:
+            n = h.shape[0]
+            return self._levels.repeat(n // self._levels.shape[0] + 1)[:n]
+
+    class _Estimator:
+        def __init__(self, n_levels: int) -> None:
+            # tiny probabilities, as in the real degenerate cells
+            self._levels = 1.0 - torch.arange(1, n_levels + 1) * 1e-5
+
+        def predict_event_distribution(self, x: np.ndarray) -> _Dist:
+            return _Dist(self._levels)
+
+    x = np.zeros((1000, 3), dtype=np.float32)
+
+    coarse = spfn.SurvivalPFNBaselineModel(
+        estimator=_Estimator(3), horizon_hours=8.0, feature_set="basic"
+    )
+    with caplog.at_level(logging.WARNING):
+        out = coarse.predict_proba(x)
+    assert np.unique(out).size == 3  # not constant, so the all-zero rule passes
+    assert not any("numerical artifact" in r.message for r in caplog.records)
+    assert any("resolution-limited" in r.message for r in caplog.records)
+
+    # a well-resolved column of the same size stays silent
+    fine = spfn.SurvivalPFNBaselineModel(
+        estimator=_Estimator(500), horizon_hours=8.0, feature_set="basic"
+    )
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        resolved = fine.predict_proba(x)
+    assert np.unique(resolved).size == 500
+    assert not any("resolution-limited" in r.message for r in caplog.records)
