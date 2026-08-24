@@ -82,6 +82,42 @@ class TimeMetrics:
 
 
 @dataclass(frozen=True)
+class ValueMetrics:
+    """How well the value-quantile head forecasts *how much*.
+
+    Scored on every held-out position whose target token carries a
+    standardized value (see :func:`~odyssey.models.value_head.value_target_valid_mask`).
+    ``crps`` is a proper scoring rule for the whole predicted
+    distribution (lower is better); ``coverage`` is per-quantile-level,
+    not just the outer interval, since a head can nail the median while
+    its tails are miscalibrated; ``median_absolute_error`` summarizes the
+    distribution's center as one number for a quick read, not the head's
+    actual target.
+    """
+
+    crps: float
+    """Mean quantile-based CRPS (see
+    :func:`~odyssey.models.value_head.crps_from_quantiles`)."""
+
+    n_positions: int
+
+    coverage: Dict[str, float]
+    """Quantile level (e.g. "0.1", "0.9") -> observed fraction of targets
+    at or below that predicted quantile. Well-calibrated when close to
+    the level itself."""
+
+    median_absolute_error: float
+
+    by_signal: Dict[str, "ValueMetrics"] = field(default_factory=dict)
+    """Same three metrics, restricted to positions whose target resolves
+    to one curated panel signal (:data:`odyssey.data.signal_panel.SIGNAL_PANEL`),
+    keyed by signal name -- "creatinine" especially, per the KDIGO
+    motivation in :mod:`odyssey.models.value_head`'s module docstring.
+    Always empty on a nested ``ValueMetrics`` (one level deep, not
+    recursive, same convention as :attr:`InferenceResults.tail_slice`)."""
+
+
+@dataclass(frozen=True)
 class TaskMetrics:
     """Next-token forecasting quality over a set of predictions."""
 
