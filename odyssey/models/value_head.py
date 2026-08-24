@@ -13,6 +13,16 @@ predicts a bin TOKEN, so nothing in the training objective forces the
 model's internal state to retain magnitude at all, only which quantile
 bucket a value fell in.
 
+The target inherits the input's tail policy. ``numeric_z`` is what this
+head regresses on, so under
+:data:`~odyssey.data.value_binning.CLIP_TAIL` (the default) the upper
+tail of the target is a point mass: 7.2% of creatinine observations are
+the literal constant 5.0 (measured, see ``docs/experiments.md``). No
+head can be well calibrated against that, which is the most likely
+reading of arm B's creatinine result (median absolute error 0.50 SD, its
+worst code). Runs that care about this head's calibration should set
+``value_tail_transform="symlog"``.
+
 This is not "teach a language model to spell digits". The sequence model
 is completing a marked temporal point process: WHEN the next event
 happens (:mod:`odyssey.models.time_to_event`'s hazard head), WHICH event
