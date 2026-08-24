@@ -62,6 +62,17 @@ authors-validated regime transfers; raise it only after a direct
 wall-clock/memory measurement at the higher row count, the same
 discipline entry 30's EBM speed-tuning used.
 
+Measured negative on cohort-size-driven memory scaling (2026-08-24, a
+real MIMIC rescore against a 4-shard held-out dump): fit RSS held flat
+at ~9.2-9.3GB across every (event, horizon) cell in a 4-event, 3-horizon
+run, including the transition into ``death`` -- the largest at-risk
+cohort measured (~135-137K rows) at roughly 1.4x the next-largest event
+(``icu_admission``, ~74.8K). No step change at that transition. Whatever
+dominates this process's fit memory, it is not context/cohort row count
+at this scale; do not assume a larger at-risk cohort needs proportionally
+more headroom without re-measuring, and do not assume this generalizes
+past the row counts actually measured here.
+
 NaN handling: confirmed empirically (not documented) that ``fit``/
 ``predict_event_distribution`` accept NaN-containing input, including an
 entirely-NaN column, and return finite, non-NaN output -- no
