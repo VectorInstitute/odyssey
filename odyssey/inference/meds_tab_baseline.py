@@ -263,6 +263,11 @@ def export_task_labels(
 ) -> dict[tuple[str, float], Path]:
     """Write one MEDS-Tab task-label parquet per (event, horizon).
 
+    Each file is always named ``0.parquet`` regardless of shard count --
+    that name is NOT a per-raw-shard split, it covers the WHOLE split
+    passed in. See the write site below for why this matters and what a
+    per-shard consumer must do about it.
+
     Columns ``(subject_id, prediction_time, boolean_value)`` -- MEDS-Tab's
     own task-label schema (``meds-tab-cache-task``'s
     ``label_column: boolean_value`` default, confirmed against the
@@ -315,6 +320,22 @@ def export_task_labels(
             )
             task_dir = output_dir / f"{event_name}_{h:g}h"
             task_dir.mkdir(parents=True, exist_ok=True)
+            # "0.parquet" is a fixed, literal filename, NOT a per-raw-shard
+            # split -- this single file holds every row of the WHOLE split
+            # passed in (every raw shard `rows`/`events_binned` covers), not
+            # just shard 0's own subjects. A real gate-check confirmed this
+            # the hard way (2026-08-24): treating this file as shard-0-scoped
+            # pulled in 136,832 rows from all 4 held_out shards instead of
+            # shard 0's own 33,035, and fed a single-shard MEDS-Tab
+            # tabularization a label file whose subjects didn't match its
+            # input, breaking get_sparse_static_rep's row-count alignment
+            # with an opaque IndexError. Do not change this filename --
+            # readers already depend on it -- but any per-shard consumer
+            # MUST filter this file to that shard's own subject_ids first
+            # (subject_id column, is_in shard's own subject set) before
+            # treating any subset of these rows as "shard N's rows". For a
+            # label file that IS already split per raw shard, use
+            # export_shard_aligned_labels instead.
             out_path = task_dir / "0.parquet"
             label_df.write_parquet(out_path)
             written = pl.read_parquet(out_path)
