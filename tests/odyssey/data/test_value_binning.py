@@ -19,6 +19,7 @@ from odyssey.data.concepts import (
 from odyssey.data.value_binning import (
     _FALLBACK_LABEL,
     CLINICAL_RANGES,
+    SYMLOG_CEILING,
     SYMLOG_TAIL,
     VALUE_Z_CLIP,
     QuantileBinner,
@@ -459,7 +460,7 @@ def test_symlog_tail_is_identity_inside_the_band_and_monotone_outside() -> None:
     zt = _tail_binner(SYMLOG_TAIL).standardize(_tail_events(tail)).to_list()
     assert all(b > a for a, b in zip(zt, zt[1:]))  # strictly monotone: 4 != 8
     assert zt[0] > VALUE_Z_CLIP  # continuous, above the boundary
-    assert zt[-1] < 10.0  # still bounded: z=100 does not blow up the input scale
+    assert zt[-1] < SYMLOG_CEILING  # bounded
     # and it is symmetric
     neg = _tail_binner(SYMLOG_TAIL).standardize(_tail_events([-20.0])).to_list()
     assert neg[0] == pytest.approx(-zt[3])
@@ -477,3 +478,42 @@ def test_tail_transform_round_trips_and_rejects_unknown_names(tmp_path) -> None:
         _tail_binner("logarithmic").standardize(_tail_events([9.0]))
     with pytest.raises(ValueError, match="unknown tail_transform"):
         QuantileBinner.fit(_tail_events([1.0, 2.0]), min_count=1, tail_transform="nope")
+
+
+def test_symlog_separates_the_aki_threshold_it_was_built_for() -> None:
+    """The point of the whole exercise, in the units it was measured in.
+
+    Creatinine's fitted stats (median 0.900, scale 0.445, one real MIMIC
+    train shard) put the +-5 clip at 3.12 mg/dL -- BELOW the 4.0 mg/dL
+    the aki_stage_3 concept triggers on -- so under clip a borderline 3.2
+    and a severe 15.6 reach the model as the same number.
+    """
+    binner_stats = {"LAB//RESULT//50912//mg/dL": (0.900, 0.445)}
+    raw = [3.2, 4.0, 6.0, 9.0, 15.6]
+    events = pl.DataFrame(
+        {"code": ["LAB//RESULT//50912//mg/dL"] * len(raw), "numeric_value": raw}
+    )
+    clipped = QuantileBinner(
+        boundaries={}, n_bins=2, value_stats=binner_stats
+    ).standardize(events)
+    assert clipped.to_list() == [VALUE_Z_CLIP] * len(raw)  # all indistinguishable
+
+    logged = QuantileBinner(
+        boundaries={}, n_bins=2, value_stats=binner_stats, tail_transform=SYMLOG_TAIL
+    ).standardize(events)
+    values = logged.to_list()
+    assert all(b > a for a, b in zip(values, values[1:]))  # every level distinct
+    assert values[-1] < SYMLOG_CEILING
+    # the gap that matters: a borderline 3.2 and a stage-3 4.0 are now
+    # nearly a full unit apart, where clip made them the same number
+    assert values[1] - values[0] > 0.5
+
+
+def test_symlog_ceiling_bounds_a_data_entry_error() -> None:
+    """A garbage value must not hand the embedding an unseen input scale.
+
+    value_features feeds ``[z, z^2, has]``, so an unbounded tail is
+    squared on its way into the projection.
+    """
+    absurd = _tail_binner(SYMLOG_TAIL).standardize(_tail_events([1e6, -1e6]))
+    assert absurd.to_list() == [SYMLOG_CEILING, -SYMLOG_CEILING]
