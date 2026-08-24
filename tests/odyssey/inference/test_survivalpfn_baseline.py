@@ -530,3 +530,56 @@ def test_followup_cap_defaults_to_the_largest_horizon() -> None:
     # never silently reused (the feature-set lesson, same day)
     source = inspect.getsource(spfn)
     assert 'cache_key = f"survivalpfn/{cap_tag}/{event_name}"' in source
+
+
+def test_predict_proba_keeps_tiny_probabilities_and_warns_on_a_dead_column(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """float64 before subtracting; a still-constant column says so out loud.
+
+    float32's eps is ~1.2e-7, so for a rare event at a short horizon --
+    where survival genuinely is ~1 -- ``1 - S(h)`` rounds to exactly 0 for
+    every row. Measured on MIMIC-IV 2026-08-23: death@8h and @24h came back
+    a literal constant 0.0 even after the follow-up cap fixed the
+    long-horizon case, and vasopressor@8h fell to 175 distinct values at
+    magnitudes ~1e-4.
+    """
+    import logging  # noqa: PLC0415
+
+    from odyssey.inference import survivalpfn_baseline as spfn  # noqa: PLC0415
+
+    class _Dist:
+        def __init__(self, survival: float) -> None:
+            self._s = survival
+
+        def survival_at(self, h: torch.Tensor) -> torch.Tensor:
+            return torch.full((h.shape[0],), self._s, dtype=torch.float32)
+
+    class _Estimator:
+        def __init__(self, survival: float) -> None:
+            self._s = survival
+
+        def predict_event_distribution(self, x: np.ndarray) -> _Dist:
+            return _Dist(self._s)
+
+    x = np.zeros((4, 3), dtype=np.float32)
+    # a survival of 1 - 3e-8 is NOT representable in float32 (rounds to 1.0),
+    # so this is the case the cast cannot rescue: it must warn, not go silent
+    dead = spfn.SurvivalPFNBaselineModel(
+        estimator=_Estimator(1.0), horizon_hours=8.0, feature_set="basic"
+    )
+    with caplog.at_level(logging.WARNING):
+        out = dead.predict_proba(x)
+    assert out.tolist() == [0.0, 0.0, 0.0, 0.0]
+    assert any("numerical artifact" in r.message for r in caplog.records)
+
+    # a survival that IS representable keeps its tiny probability in float64
+    alive = spfn.SurvivalPFNBaselineModel(
+        estimator=_Estimator(1.0 - 1e-6), horizon_hours=8.0, feature_set="basic"
+    )
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        small = alive.predict_proba(x)
+    assert small.dtype == np.float64
+    assert all(0.0 < v < 1e-5 for v in small)
+    assert not any("numerical artifact" in r.message for r in caplog.records)
