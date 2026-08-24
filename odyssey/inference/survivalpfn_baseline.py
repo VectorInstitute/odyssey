@@ -286,6 +286,33 @@ class SurvivalPFNBaselineModel:
                 "measurement; do not report it as AUROC 0.5.",
                 self.horizon_hours,
             )
+        elif result.size:
+            # Grade two. A column can pass the all-zero check and still be
+            # resolution-limited rather than measured: vasopressor@8h/@24h
+            # came back with 175 and 242 distinct probabilities across
+            # 111,450 and 98,722 rows at magnitudes ~1e-4, giving AUROCs of
+            # 0.522 and 0.537 that are largely tie-breaking among a handful
+            # of levels. Those passed the constant-column rule and were
+            # nearly written into the comparator table as measurements
+            # (2026-08-24). The healthy cells are two to three orders of
+            # magnitude better resolved on the same run (AKI and ICU
+            # admission at 0.8-0.97 distinct values per row, vasopressor@72h
+            # at 0.17), so the threshold below separates them cleanly rather
+            # than being tuned to a boundary.
+            distinct = int(np.unique(result).size)
+            if distinct < _MIN_DISTINCT_FRACTION * result.size:
+                logger.warning(
+                    "[survivalpfn] horizon %.0fh: only %d distinct predicted "
+                    "probabilities across %d rows (max %.3g). This column is "
+                    "resolution-limited, not constant: it will produce a "
+                    "near-chance AUROC driven largely by ties. Report it only "
+                    "with the distinct-value count attached; do not quote it "
+                    "as a measurement of discrimination.",
+                    self.horizon_hours,
+                    distinct,
+                    result.size,
+                    float(result.max()),
+                )
         if len(result) != x.shape[0]:
             raise AssertionError(
                 f"batched predict_proba returned {len(result)} rows for "
@@ -293,6 +320,14 @@ class SurvivalPFNBaselineModel:
                 "duplicated across batch chunks"
             )
         return result
+
+
+#: Below this many distinct predicted probabilities per row, a column is
+#: resolution-limited rather than measured, and its AUROC is mostly ties.
+#: Set from measured separation, not taste: the degenerate cells sat at
+#: 0.0016-0.0025 distinct values per row and the healthy ones at 0.17-0.97,
+#: two orders of magnitude apart, so anything in that gap works.
+_MIN_DISTINCT_FRACTION = 0.01
 
 
 def _fit_one_survivalpfn(
