@@ -336,6 +336,24 @@ class TrainingConfig:
 
     event_hazard_weight: float = 1.0
 
+    value_head: bool = False
+    """Add the next-event value-quantile head
+    (odyssey.models.value_head.ValueQuantileHead): K=9 quantiles of the
+    next event's standardized value, conditioned on the target token's
+    own embedding, trained with pinball loss masked to positions whose
+    target carries a value. Off by default -- every existing run and
+    checkpoint stays unaffected; this is purely additive alongside the
+    bin-token representation of value, which is unchanged either way."""
+
+    value_head_weight: float = 1.0
+
+    value_fourier: bool = False
+    """Only meaningful with value_embeddings=True: encode the standardized
+    input value as Fourier features (odyssey.models.embeddings.value_features_fourier)
+    instead of [z, z^2, has] before the value projection. Independent of
+    value_head -- lets an A/B separate "better input encoding" from
+    "better output objective"."""
+
     randint_prob: float = 0.25
     """Intervention-aware training (CEM's RandInt): at every training
     position, each observed concept's mixing probability is replaced by
@@ -528,6 +546,7 @@ def build_model(
             mamba_chunk_size=config.mamba_chunk_size,
             attn_num_heads=config.attn_num_heads,
             use_values=bool(getattr(config, "value_embeddings", False)),
+            use_value_fourier=bool(getattr(config, "value_fourier", False)),
         )
     elif backbone_kind == "transformer":
         backbone = TransformerBackbone(
@@ -537,6 +556,7 @@ def build_model(
             num_hidden_layers=config.num_hidden_layers,
             num_heads=config.attn_num_heads,
             use_values=bool(getattr(config, "value_embeddings", False)),
+            use_value_fourier=bool(getattr(config, "value_fourier", False)),
         )
     else:
         raise ValueError(
@@ -563,6 +583,7 @@ def build_model(
             event_head_hidden=event_head_hidden,
             recency_features=bool(getattr(config, "recency_features", False)),
             signal_channels=bool(getattr(config, "signal_channels", False)),
+            value_head=bool(getattr(config, "value_head", False)),
             source=getattr(config, "source", "mimic_iv"),
         )
     return ConceptBottleneckSequenceModel(
@@ -578,6 +599,7 @@ def build_model(
         unknown_dim=getattr(config, "unknown_dim", None),
         recency_features=bool(getattr(config, "recency_features", False)),
         signal_channels=bool(getattr(config, "signal_channels", False)),
+        value_head=bool(getattr(config, "value_head", False)),
         source=getattr(config, "source", "mimic_iv"),
     )
 
@@ -627,6 +649,9 @@ def build_objective(
         token_types=token_types,
         time_weight=config.time_weight if config.time_to_event else 0.0,
         event_hazard_weight=config.event_hazard_weight if config.event_hazards else 0.0,
+        value_head_weight=(
+            config.value_head_weight if getattr(config, "value_head", False) else 0.0
+        ),
     )
 
 
@@ -690,6 +715,7 @@ def _combined_val_loss(
     weights: ConceptBottleneckLossWeights,
     time_weight: float = 0.0,
     event_hazard_weight: float = 0.0,
+    value_head_weight: float = 0.0,
 ) -> float:
     """Compute the same task + weighted-auxiliary combination the training loss uses.
 
@@ -703,6 +729,7 @@ def _combined_val_loss(
         components["task_loss"]
         + time_weight * components.get("time_loss", 0.0)
         + event_hazard_weight * components.get("event_loss", 0.0)
+        + value_head_weight * components.get("value_loss", 0.0)
         + weights.concept * components.get("concept_loss", 0.0)
         + weights.orthogonality * components.get("orthogonality_loss", 0.0)
         + weights.observability * components.get("observability_loss", 0.0)
@@ -851,6 +878,7 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
         resume_keys = torch.load(config.resume_from, map_location="cpu")["model"].keys()
         config.time_to_event = any(k.startswith("time_head.") for k in resume_keys)
         config.event_hazards = any(k.startswith("event_heads.") for k in resume_keys)
+        config.value_head = any(k.startswith("value_head.") for k in resume_keys)
         del resume_keys
     objective = build_objective(config, vocab, train_events_binned, device)
 
@@ -1314,6 +1342,7 @@ def _run_training(  # noqa: PLR0912, PLR0915
                     loss_weights,
                     objective.time_weight,
                     objective.event_hazard_weight,
+                    objective.value_head_weight,
                 )
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
