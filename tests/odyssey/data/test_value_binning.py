@@ -517,3 +517,51 @@ def test_symlog_ceiling_bounds_a_data_entry_error() -> None:
     """
     absurd = _tail_binner(SYMLOG_TAIL).standardize(_tail_events([1e6, -1e6]))
     assert absurd.to_list() == [SYMLOG_CEILING, -SYMLOG_CEILING]
+
+
+def test_min_scale_floors_a_degenerate_iqr_and_is_off_by_default() -> None:
+    """A near-zero training IQR turns float noise into an astronomical z.
+
+    Measured on real held-out data 2026-08-24: INFUSION_END//228315 had a
+    fitted scale of 4.524e-05, and a sentinel reading of 999999.0 on
+    another code produced z above 1.2e7. Under the clip policy this was
+    invisible (everything past 5 saturated to 5); under symlog such values
+    reach SYMLOG_CEILING and their z^2 input feature quadruples. Off by
+    default so the value-tail arms differ in exactly one respect.
+    """
+    # a code whose values are all but identical: IQR is tiny but positive
+    # quartiles land on all-but-identical values: IQR is positive but tiny,
+    # which is the real shape (an exactly-zero IQR falls back to std instead)
+    events = pl.DataFrame(
+        {
+            "code": ["LAB//DEGENERATE"] * 8,
+            "numeric_value": [100.0] * 4 + [100.00001] * 4,
+        }
+    )
+    loose = QuantileBinner.fit(events, n_bins=2, min_count=1)
+    _, scale = loose.value_stats["LAB//DEGENERATE"]
+    assert scale < 1e-4  # the defect: a scale far below the value's magnitude
+
+    floored = QuantileBinner.fit(events, n_bins=2, min_count=1, min_scale=0.01)
+    _, floored_scale = floored.value_stats["LAB//DEGENERATE"]
+    assert floored_scale == pytest.approx(1.0)  # 1% of a centre of 100
+
+    # a mild real outlier is what the floor rescues: 30% above centre is a
+    # z of ~4e6 on the degenerate scale and a sane 30 once floored
+    mild = pl.DataFrame({"code": ["LAB//DEGENERATE"], "numeric_value": [130.0]})
+    raw_loose = (130.0 - 100.0) / scale
+    raw_floored = (130.0 - 100.0) / floored_scale
+    assert raw_loose > 1e6
+    assert raw_floored == pytest.approx(30.0)
+
+    # and the limitation, asserted rather than assumed: the floor does NOT
+    # rescue a sentinel value. 999999 is astronomically far from the centre
+    # even on a sane scale, so it still pins the ceiling under symlog. That
+    # is a data-quality problem and belongs upstream, not here.
+    sentinel = pl.DataFrame({"code": ["LAB//DEGENERATE"], "numeric_value": [999999.0]})
+    for stats in (loose.value_stats, floored.value_stats):
+        symlogged = QuantileBinner(
+            boundaries={}, n_bins=2, value_stats=stats, tail_transform=SYMLOG_TAIL
+        )
+        assert symlogged.standardize(sentinel).to_list()[0] == SYMLOG_CEILING
+        assert symlogged.standardize(mild).to_list()[0] <= SYMLOG_CEILING
