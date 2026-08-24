@@ -94,7 +94,13 @@ from scripts.meds_tab_alerts_baseline import (  # noqa: E402
 )
 
 
-DEFAULT_N_TRIALS = 200
+# 10, matching scripts/meds_tab_alerts_baseline.py's own DEFAULT_N_TRIALS
+# and the same fairness reasoning stated there: our own tuned GBM (the
+# comparator bar) gets 4 configs x 400 rounds, so MEDS-Tab's own xgboost
+# gets 10 trials, not MEDS-Tab's own much larger defaults -- the two
+# driver scripts had drifted apart (20 vs 200) until 2026-08-24; keep them
+# equal going forward.
+DEFAULT_N_TRIALS = 10
 DEFAULT_N_WORKERS = 4
 
 
