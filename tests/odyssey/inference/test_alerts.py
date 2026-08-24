@@ -19,7 +19,7 @@ from odyssey.data.alert_events import (
 from odyssey.data.concepts import concepts_for_source
 from odyssey.data.sequences import BIRTH_CODE
 from odyssey.data.streaming import NO_SUBJECT
-from odyssey.data.value_binning import add_value_tokens
+from odyssey.data.value_binning import QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference import alerts as alerts_module
 from odyssey.inference.alerts import (
@@ -35,6 +35,7 @@ from odyssey.inference.alerts import (
     _visit_starts,
     baseline_features,
     collect_model_scores,
+    exposure_mask,
     features_for_events,
     fit_baselines,
     fit_baselines_streaming,
@@ -635,6 +636,219 @@ def test_verify_packed_landmark_rows_tail_aware_all_three_arms() -> None:
         r.subject_id == 1 and r.time_hours < boundary
         for r in ground_truth["vasopressor_start"]
     )  # confirms the fixture actually exercises this arm, not vacuously
+
+
+def _binner_with_stats(
+    code: str, center: float, scale: float, *, tail_transform: str = "clip"
+) -> QuantileBinner:
+    return QuantileBinner(
+        boundaries={},
+        n_bins=5,
+        value_stats={code: (center, scale)},
+        tail_transform=tail_transform,
+    )
+
+
+def test_exposure_mask_flags_a_row_whose_lookback_contains_a_beyond_clip_value() -> (
+    None
+):
+    """Z = (200-80)/10 = 12, well past VALUE_Z_CLIP=5 -- the scored row is EXPOSED."""
+    events = pl.DataFrame(
+        {
+            "subject_id": [1, 1],
+            "code": ["LAB//220045//bpm", "LAB//220045//bpm"],
+            "time": [T0, T0 + timedelta(hours=2)],
+            "numeric_value": [200.0, 82.0],
+            "hadm_id": [1001, 1001],
+        }
+    )
+    binner = _binner_with_stats("LAB//220045//bpm", 80.0, 10.0)
+    binned = add_value_tokens(events, binner)
+    rows = [IndexRow(1, 1001, 3.0)]
+
+    mask = exposure_mask(binned, rows, binner, max_context=1000)
+
+    assert mask.dtype == bool
+    assert mask.tolist() == [True]
+
+
+def test_exposure_mask_does_not_flag_a_normal_value() -> None:
+    """Z = (85-80)/10 = 0.5, well inside the +-5 band -- never EXPOSED."""
+    events = pl.DataFrame(
+        {
+            "subject_id": [1],
+            "code": ["LAB//220045//bpm"],
+            "time": [T0],
+            "numeric_value": [85.0],
+            "hadm_id": [1001],
+        }
+    )
+    binner = _binner_with_stats("LAB//220045//bpm", 80.0, 10.0)
+    binned = add_value_tokens(events, binner)
+    rows = [IndexRow(1, 1001, 1.0)]
+
+    mask = exposure_mask(binned, rows, binner, max_context=1000)
+
+    assert mask.tolist() == [False]
+
+
+def test_exposure_mask_is_a_strict_lookback_ignores_a_future_value() -> None:
+    """An extreme value AFTER the landmark must not expose it -- no future leakage."""
+    events = pl.DataFrame(
+        {
+            "subject_id": [1, 1],
+            "code": ["LAB//220045//bpm", "LAB//220045//bpm"],
+            "time": [T0, T0 + timedelta(hours=10)],
+            "numeric_value": [82.0, 200.0],
+            "hadm_id": [1001, 1001],
+        }
+    )
+    binner = _binner_with_stats("LAB//220045//bpm", 80.0, 10.0)
+    binned = add_value_tokens(events, binner)
+    early_row = [IndexRow(1, 1001, 1.0)]
+    late_row = [IndexRow(1, 1001, 11.0)]
+
+    assert exposure_mask(binned, early_row, binner, max_context=1000).tolist() == [
+        False
+    ]
+    assert exposure_mask(binned, late_row, binner, max_context=1000).tolist() == [True]
+
+
+def test_exposure_mask_respects_truncation_a_dropped_extreme_value_does_not_expose() -> (
+    None
+):
+    """A truncated subject's dropped extreme value must not expose its later rows.
+
+    Subject 1: 20 hourly heart-rate readings, an extreme spike at hour 0,
+    then normal values through hour 19 -- truncated to the last
+    max_context=5 timed rows (hours 15..19), which never sees the spike.
+    Subject 2: the identical timeline, but never truncated (max_context
+    covers it whole) -- the same spike must expose it.
+    """
+    rows_raw: List[Tuple[int, str, datetime, Optional[float], int]] = []
+    for h in range(20):
+        val = 200.0 if h == 0 else 82.0
+        rows_raw.append((1, "LAB//220045//bpm", T0 + timedelta(hours=h), val, 1001))
+        rows_raw.append((2, "LAB//220045//bpm", T0 + timedelta(hours=h), val, 1002))
+    events = pl.DataFrame(
+        rows_raw,
+        schema={
+            "subject_id": pl.Int64,
+            "code": pl.Utf8,
+            "time": pl.Datetime,
+            "numeric_value": pl.Float32,
+            "hadm_id": pl.Int64,
+        },
+        orient="row",
+    )
+    binner = _binner_with_stats("LAB//220045//bpm", 80.0, 10.0)
+    binned = add_value_tokens(events, binner)
+    rows = [
+        IndexRow(1, 1001, 19.0, is_tail=True),  # subject 1: truncated, spike dropped
+        IndexRow(2, 1002, 19.0, is_tail=False),  # subject 2: whole, spike visible
+    ]
+
+    mask = exposure_mask(binned, rows, binner, max_context=5)
+
+    assert mask.tolist() == [False, True]
+
+
+def test_exposure_mask_uses_raw_value_stats_arm_agnostic_across_tail_transform() -> (
+    None
+):
+    """Same value_stats, clip vs symlog transform -- exposure must not depend on which.
+
+    Using QuantileBinner.standardize (the transform under test) instead of
+    raw value_stats would make this mask's own definition depend on which
+    arm's binner it was called with -- a v8-vs-E stratified comparison
+    would then be comparing two different exposure definitions, not one
+    definition applied to two arms.
+    """
+    events = pl.DataFrame(
+        {
+            "subject_id": [1],
+            "code": ["LAB//220045//bpm"],
+            "time": [T0],
+            "numeric_value": [200.0],
+            "hadm_id": [1001],
+        }
+    )
+    clip_binner = _binner_with_stats(
+        "LAB//220045//bpm", 80.0, 10.0, tail_transform="clip"
+    )
+    symlog_binner = _binner_with_stats(
+        "LAB//220045//bpm", 80.0, 10.0, tail_transform="symlog"
+    )
+    binned = add_value_tokens(events, clip_binner)
+    rows = [IndexRow(1, 1001, 1.0)]
+
+    mask_clip = exposure_mask(binned, rows, clip_binner, max_context=1000)
+    mask_symlog = exposure_mask(binned, rows, symlog_binner, max_context=1000)
+
+    assert mask_clip.tolist() == mask_symlog.tolist() == [True]
+
+
+def test_exposure_mask_empty_value_stats_returns_all_false_without_crashing() -> None:
+    events = _events(2)
+    binned = add_value_tokens(events)  # no binner -> no value_stats
+    binner = QuantileBinner(boundaries={}, n_bins=5)
+    rows = [IndexRow(1, 1001, 5.0), IndexRow(2, 1002, 5.0)]
+
+    mask = exposure_mask(binned, rows, binner, max_context=1000)
+
+    assert mask.tolist() == [False, False]
+
+
+def test_exposure_mask_code_allowlist_restricts_which_codes_can_expose() -> None:
+    """An extreme value on a code outside the allowlist must not expose the row."""
+    events = pl.DataFrame(
+        {
+            "subject_id": [1, 2],
+            "code": ["LAB//220045//bpm", "LAB//999999//other"],
+            "time": [T0, T0],
+            "numeric_value": [200.0, 200.0],
+            "hadm_id": [1001, 1002],
+        }
+    )
+    binner = QuantileBinner(
+        boundaries={},
+        n_bins=5,
+        value_stats={
+            "LAB//220045//bpm": (80.0, 10.0),
+            "LAB//999999//other": (80.0, 10.0),
+        },
+    )
+    binned = add_value_tokens(events, binner)
+    rows = [IndexRow(1, 1001, 1.0), IndexRow(2, 1002, 1.0)]
+
+    mask = exposure_mask(
+        binned, rows, binner, max_context=1000, code_allowlist=["LAB//220045"]
+    )
+
+    assert mask.tolist() == [True, False]
+
+
+def test_exposure_mask_code_allowlist_with_no_matching_codes_returns_all_false() -> (
+    None
+):
+    events = pl.DataFrame(
+        {
+            "subject_id": [1],
+            "code": ["LAB//220045//bpm"],
+            "time": [T0],
+            "numeric_value": [200.0],
+            "hadm_id": [1001],
+        }
+    )
+    binner = _binner_with_stats("LAB//220045//bpm", 80.0, 10.0)
+    binned = add_value_tokens(events, binner)
+    rows = [IndexRow(1, 1001, 1.0)]
+
+    mask = exposure_mask(
+        binned, rows, binner, max_context=1000, code_allowlist=["LAB//NOMATCH"]
+    )
+
+    assert mask.tolist() == [False]
 
 
 def test_collect_model_scores_marks_truncated_subjects_is_tail() -> None:
