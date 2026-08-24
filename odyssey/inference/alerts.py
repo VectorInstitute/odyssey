@@ -77,6 +77,7 @@ from odyssey.data.sequences import BIRTH_CODE
 from odyssey.data.sidecars import activate_sidecars
 from odyssey.data.streaming import NO_SUBJECT, PackedLaneSampler, StreamingChunk
 from odyssey.data.value_binning import (
+    VALUE_Z_CLIP,
     QuantileBinner,
     add_value_tokens,
     clinical_ranges_for_source,
@@ -1978,6 +1979,153 @@ def _visible_after_truncation(
         .drop("_row", "_pos", "_n")
     )
     return pl.concat([untouched, timed.select(untouched.columns)])
+
+
+def exposure_mask(
+    events_binned: pl.DataFrame,
+    rows: Sequence[IndexRow],
+    binner: QuantileBinner,
+    max_context: int,
+    *,
+    code_allowlist: Optional[Sequence[str]] = None,
+    code_col: str = "code",
+    value_col: str = "numeric_value",
+) -> np.ndarray:
+    """Boolean mask: True where a row's lookback has an allowed code beyond +-Z_CLIP.
+
+    EXPOSED, for the value-tail-transform arms (E, D, ...): a row whose
+    visible history contains at least one observation the transform under
+    test actually treats differently. Every value with ``|z_raw| <
+    VALUE_Z_CLIP`` is bit-identical whether ``tail_transform`` is
+    ``"clip"`` or ``"symlog"`` (see :func:`~odyssey.data.value_binning._tail_expr`)
+    -- only an EXPOSED row can show a transform effect at all, so this mask
+    is what turns "does the transform help" into a testable stratified
+    comparison rather than an aggregate that's mostly measuring rows where
+    every arm is bit-identical.
+
+    ``code_allowlist``, if given, is a collection of code PREFIXES
+    (``code.startswith(prefix)``, same matching convention
+    :func:`~odyssey.data.value_binning._clinical_label_expr` already uses
+    for :data:`~odyssey.data.value_binning.CLINICAL_RANGES`) restricting
+    which codes' values can trigger exposure. NOT an optional nicety:
+    measured on real held-out AKI rows (2026-08-24), the unrestricted
+    ("any code") rate is 84.4% -- a stratum that size isolates nothing.
+    Broken down, that 84.4% is dominated by two classes of degenerate
+    ``value_stats`` entries, not clinical extremes: literal sentinel values
+    (e.g. ``numeric_value=999999.0``, z in the millions) and codes with a
+    near-zero training-split scale (e.g. ``scale=4.5e-05``, where a
+    trivial float rounding difference reads as an astronomical z). The
+    creatinine-restricted rate on the same data is 78 events across 12
+    subjects -- small and enriched, matching the mechanism arm E actually
+    tests (the clip point sitting below the AKI stage-3 threshold on
+    creatinine). Filtering artifacts out of ``value_stats`` itself is a
+    data-quality decision and belongs upstream of this function, not
+    inside it -- ``code_allowlist`` restricts by clinical relevance, it
+    does not attempt to detect degenerate scales. Callers computing a
+    stratified readout should call this three ways and report all three:
+    the curated allowlist (the primary stratum, what the decision rule is
+    actually about), no allowlist (the any-code rate, for context), and an
+    allowlist of everything NOT curated (the artifact-only rate -- if an
+    arm's effect shows up only there, that is a warning sign, not a win).
+
+    Arm-agnostic by construction: ``z`` is computed directly from
+    ``binner.value_stats`` (``(value - center) / scale``, unclipped), NOT
+    via :meth:`QuantileBinner.standardize`, which applies
+    ``binner.tail_transform`` -- using that here would make the mask's own
+    definition depend on the transform being tested, silently changing
+    meaning between v8 (clip) and E (symlog) and making a v8-vs-E
+    stratified comparison incomparable.
+
+    ``events_binned`` is the POST-:func:`~odyssey.data.value_binning.add_value_tokens`
+    frame (what every other caller in this module receives): its
+    ``code_col`` has already been rewritten to ``"{raw_code}::{bin_label}"``
+    for any row with a value, so it no longer matches ``binner.value_stats``'s
+    raw-code keys directly. The raw code is recovered the same way
+    :mod:`~odyssey.inference.baseline_features` and
+    :mod:`~odyssey.data.signal_panel` already do it elsewhere in this
+    codebase (strip from the first ``"::"`` onward) -- at most one ``"::"``
+    is ever introduced by :func:`add_value_tokens` per code, so first-vs-last
+    split doesn't matter here.
+
+    "Visible lookback" accounts for context truncation, which is not
+    random: it hits the highest-volume (sickest) subjects, the same
+    population whose creatinines clip, so an untruncated lookback would
+    mislabel exactly the rows this stratification exists to isolate.
+    Truncated subjects are read off ``IndexRow.is_tail`` (set uniformly per
+    subject at collection time -- see :class:`IndexRow`), then
+    :func:`_visible_after_truncation` reproduces the packed sampler's exact
+    kept tail, the same function :func:`verify_packed_landmark_rows` uses
+    to validate the packed path against ground truth. Static rows never
+    carry a numeric value (verified on a sampled shard: 0 of 999), so
+    :func:`_visible_after_truncation`'s timed-rows-only truncation needs no
+    separate static-row exposure path. In practice this correction is
+    currently inert: every real run of this project (v8, E, D) trains
+    ``backbone="hybrid"``, which never uses ``PackedContextSampler`` --
+    ``IndexRow.is_tail`` is always False, so ``truncated`` is always empty
+    and this branch never triggers on real data (confirmed: 0/33,340 on a
+    sampled AKI shard). Built and tested anyway because this mask is meant
+    to outlive this arm and a future transformer-backbone run would hit it
+    for real.
+
+    A row is EXPOSED only if its subject's visible record contains an
+    exposed observation AT OR BEFORE the row's own ``time_hours`` -- a
+    genuine lookback, not the subject's whole record, so an early landmark
+    is never marked exposed by a value that arrives after it.
+    """
+    truncated = {r.subject_id for r in rows if r.is_tail}
+    visible = (
+        _visible_after_truncation(events_binned, truncated, max_context)
+        if truncated
+        else events_binned
+    )
+    if not binner.value_stats or value_col not in visible.columns:
+        return np.zeros(len(rows), dtype=bool)
+
+    value_stats = binner.value_stats
+    if code_allowlist is not None:
+        prefixes = tuple(code_allowlist)
+        value_stats = {
+            code: stats
+            for code, stats in value_stats.items()
+            if any(code.startswith(p) for p in prefixes)
+        }
+        if not value_stats:
+            return np.zeros(len(rows), dtype=bool)
+
+    origins = origin_hours(events_binned)
+    sframe = pl.DataFrame(
+        {
+            "_code": list(value_stats),
+            "_center": [c for c, _ in value_stats.values()],
+            "_scale": [s for _, s in value_stats.values()],
+        }
+    )
+    exposed_events = (
+        visible.filter(pl.col(value_col).is_not_null() & pl.col("time").is_not_null())
+        .select("subject_id", "time", code_col, value_col)
+        .with_columns(pl.col(code_col).str.replace(r"::.*$", "").alias("_raw_code"))
+        .join(sframe, left_on="_raw_code", right_on="_code", how="inner")
+        .filter(
+            (((pl.col(value_col) - pl.col("_center")) / pl.col("_scale")).abs())
+            >= VALUE_Z_CLIP
+        )
+        .select("subject_id", "time")
+    )
+    if exposed_events.height == 0:
+        return np.zeros(len(rows), dtype=bool)
+    exposed_events = hours_since_origin(exposed_events, "time", origins)
+    first_exposed = exposed_events.group_by("subject_id").agg(pl.col("time").min())
+    first_exposed_hours: Dict[int, float] = dict(
+        zip(first_exposed["subject_id"], first_exposed["time"])
+    )
+    return np.array(
+        [
+            row.subject_id in first_exposed_hours
+            and first_exposed_hours[row.subject_id] <= row.time_hours
+            for row in rows
+        ],
+        dtype=bool,
+    )
 
 
 def verify_packed_landmark_rows(
