@@ -199,3 +199,27 @@ def test_crps_and_coverage_correctness_on_known_distribution() -> None:
     bad_quantiles = torch.full_like(true_quantiles, 10.0)
     crps_bad = crps_from_quantiles(bad_quantiles, target, DEFAULT_QUANTILE_LEVELS)
     assert crps.mean().item() < crps_bad.mean().item()
+
+
+def test_value_head_hidden_gives_an_mlp_readout_and_stays_monotone() -> None:
+    """hidden>0 swaps the single linear layer for an MLP, quantiles still sorted.
+
+    Arm B (2026-08-24) ran the linear default and fit the value distribution
+    poorly (mid-quantile coverage 0.243 vs a nominal 0.3), so the capacity
+    knob exists to separate "distributional value prediction does not help"
+    from "a linear head could not fit it".
+    """
+    from torch import nn  # noqa: PLC0415
+
+    from odyssey.models.value_head import ValueQuantileHead  # noqa: PLC0415
+
+    linear = ValueQuantileHead(8, 4)
+    mlp = ValueQuantileHead(8, 4, hidden=32)
+    assert isinstance(linear.proj, nn.Linear)
+    assert isinstance(mlp.proj, nn.Sequential)
+    assert sum(p.numel() for p in mlp.parameters()) > sum(
+        p.numel() for p in linear.parameters()
+    )
+    q = mlp(torch.randn(5, 8), torch.randn(5, 4))
+    assert q.shape == (5, len(mlp.quantile_levels))
+    assert (q[:, 1:] >= q[:, :-1]).all()  # monotone by construction, MLP or not

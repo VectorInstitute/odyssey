@@ -558,6 +558,7 @@ class BaselineSequenceModel(_SequenceModelBase):
         recency_features: bool = False,
         signal_channels: bool = False,
         value_head: bool = False,
+        value_head_hidden: int = 0,
         source: str = "mimic_iv",
     ) -> None:
         """Initialize the baseline sequence model.
@@ -593,7 +594,12 @@ class BaselineSequenceModel(_SequenceModelBase):
             else None
         )
         self.value_head: Optional[ValueQuantileHead] = (
-            ValueQuantileHead(head_in, backbone.hidden_size, DEFAULT_QUANTILE_LEVELS)
+            ValueQuantileHead(
+                head_in,
+                backbone.hidden_size,
+                DEFAULT_QUANTILE_LEVELS,
+                hidden=value_head_hidden,
+            )
             if value_head
             else None
         )
@@ -703,6 +709,7 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         recency_features: bool = False,
         signal_channels: bool = False,
         value_head: bool = False,
+        value_head_hidden: int = 0,
         source: str = "mimic_iv",
     ) -> None:
         """Initialize the concept-bottleneck sequence model.
@@ -746,7 +753,12 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
             else None
         )
         self.value_head: Optional[ValueQuantileHead] = (
-            ValueQuantileHead(head_in, backbone.hidden_size, DEFAULT_QUANTILE_LEVELS)
+            ValueQuantileHead(
+                head_in,
+                backbone.hidden_size,
+                DEFAULT_QUANTILE_LEVELS,
+                hidden=value_head_hidden,
+            )
             if value_head
             else None
         )

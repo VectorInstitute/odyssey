@@ -72,12 +72,31 @@ class ValueQuantileHead(nn.Module):
         in_features: int,
         target_embedding_dim: int,
         quantile_levels: Sequence[float] = DEFAULT_QUANTILE_LEVELS,
+        hidden: int = 0,
     ) -> None:
-        """Initialize with ``len(quantile_levels)`` output quantiles."""
+        """Initialize with ``len(quantile_levels)`` output quantiles.
+
+        ``hidden > 0`` puts a one-hidden-layer MLP in front of the quantile
+        projection, the same option the per-event hazard heads have. The
+        linear default is what arm B ran (2026-08-24) and it fit the value
+        distribution poorly -- mid-quantile coverage 0.243 against a nominal
+        0.3, creatinine median absolute error 0.50 SD -- and a head that
+        predicts magnitude badly cannot force the shared state to retain
+        magnitude, which is the whole mechanism under test.
+        """
         super().__init__()
         self.quantile_levels: List[float] = list(quantile_levels)
         self.num_quantiles = len(self.quantile_levels)
-        self.proj = nn.Linear(in_features + target_embedding_dim, self.num_quantiles)
+        in_dim = in_features + target_embedding_dim
+        self.proj: nn.Module = (
+            nn.Linear(in_dim, self.num_quantiles)
+            if hidden <= 0
+            else nn.Sequential(
+                nn.Linear(in_dim, hidden),
+                nn.GELU(),
+                nn.Linear(hidden, self.num_quantiles),
+            )
+        )
 
     def forward(
         self, features: torch.Tensor, target_embedding: torch.Tensor

@@ -345,6 +345,11 @@ class TrainingConfig:
     checkpoint stays unaffected; this is purely additive alongside the
     bin-token representation of value, which is unchanged either way."""
 
+    value_head_hidden: int = 0
+    """Hidden width of the value head's MLP readout; 0 = the single linear
+    layer arm B ran, whose own calibration was poor (see
+    :class:`~odyssey.models.value_head.ValueQuantileHead`)."""
+
     value_head_weight: float = 1.0
 
     value_fourier: bool = False
@@ -584,6 +589,7 @@ def build_model(
             recency_features=bool(getattr(config, "recency_features", False)),
             signal_channels=bool(getattr(config, "signal_channels", False)),
             value_head=bool(getattr(config, "value_head", False)),
+            value_head_hidden=int(getattr(config, "value_head_hidden", 0) or 0),
             source=getattr(config, "source", "mimic_iv"),
         )
     return ConceptBottleneckSequenceModel(
@@ -600,6 +606,7 @@ def build_model(
         recency_features=bool(getattr(config, "recency_features", False)),
         signal_channels=bool(getattr(config, "signal_channels", False)),
         value_head=bool(getattr(config, "value_head", False)),
+        value_head_hidden=int(getattr(config, "value_head_hidden", 0) or 0),
         source=getattr(config, "source", "mimic_iv"),
     )
 
