@@ -86,7 +86,19 @@ from odyssey.utils.joblib_tmp import ensure_joblib_temp_folder  # noqa: E402
 # justifies). Fixed seed for reproducibility of the sweep itself.
 PINNED_NTHREAD = 12
 PINNED_SEED = 0
-DEFAULT_N_TRIALS = 20
+# 10, not MEDS-Tab's own default (1000) or an arbitrarily "generous"
+# number: a fairness argument, not a compute-budget one. Our OWN tuned
+# GBM -- the bar MEDS-Tab is compared against in the alerts table -- gets
+# 4 configs x 400 rounds, no more. Letting MEDS-Tab's own xgboost search
+# 200+ trials x up to 1000 boosting rounds (its own configs/model_launcher/
+# xgboost.yaml default) would tune the comparator an order of magnitude
+# harder than the model it's compared to -- a different experiment, not
+# "field standard". 10 trials is still more search than our own GBM gets,
+# so the comparison stays honest in MEDS-Tab's favour. Kept identical to
+# scripts/meds_tab_shared_landmark.py's own DEFAULT_N_TRIALS for the same
+# reason -- do not let the two drivers drift apart again (they did: this
+# one was 20, the shared driver's was 200, until 2026-08-24).
+DEFAULT_N_TRIALS = 10
 DEFAULT_N_WORKERS = 8
 
 # MEDS-Tab's default tabularization.aggs includes "static/first"
