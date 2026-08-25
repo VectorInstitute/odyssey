@@ -106,9 +106,37 @@ def estimate_peak_gb(n_context_rows: int, n_features: int, n_estimators: int) ->
 
 
 def check_inference_cost(
-    n_context_rows: int, n_features: int, n_estimators: int, *, context: str
+    n_context_rows: int,
+    n_features: int,
+    n_estimators: int,
+    *,
+    context: str,
+    offload_mode: str = "auto",
+    disk_offload_dir: Optional[str] = None,
 ) -> None:
-    """Raise before fitting a TabICL configuration that cannot then be scored."""
+    """Raise before fitting a TabICL configuration that cannot then be scored.
+
+    This GB estimate assumes the column-wise embedding tensor -- the
+    documented ``(n_estimators, n_rows, n_columns, embed_dim)`` memory
+    bottleneck -- stays resident (GPU or CPU RAM). That assumption holds
+    for ``offload_mode`` "gpu"/"cpu"/"auto": "auto"'s own fallback chain
+    ends in "CPU (swap as last resort)" (per tabicl's
+    ``_resolve_offload_mode``), and this host has zero configured swap
+    (measured 2026-08-25, ``free -h``), so a fit that would exceed the
+    budget under those modes is a real, unrecoverable kernel-OOM-kill
+    risk, not a conservative guess -- the gate stays a hard block there.
+
+    ``offload_mode="disk"`` with a working ``disk_offload_dir`` changes
+    the actual constraint from resident memory to disk space and I/O
+    wall-clock, which this GB estimate does not model at all; blocking
+    on it here would be wrong in the other direction (refusing a fit
+    that would actually succeed, just slower). That combination skips
+    this check -- callers are responsible for checking disk headroom
+    themselves (e.g. a ``df`` check before fitting), since there is no
+    equivalent measured constant for disk throughput yet.
+    """
+    if offload_mode == "disk" and disk_offload_dir:
+        return
     peak = estimate_peak_gb(n_context_rows, n_features, n_estimators)
     if peak > _MEMORY_BUDGET_GB:
         raise ValueError(
@@ -120,8 +148,10 @@ def check_inference_cost(
             "OOM-kills, 2026-08-23, the last from a single 2000-row call). Use "
             "the basic feature set (what every completed TabICL run in this "
             "project has used: ~8 GB at the same context size), lower "
-            "TABICL_MAX_ROWS, or raise ODYSSEY_TABICL_MEMORY_BUDGET_GB knowing "
-            "the memory is real."
+            "TABICL_MAX_ROWS, raise ODYSSEY_TABICL_MEMORY_BUDGET_GB knowing "
+            "the memory is real, or pass offload_mode='disk' with a "
+            "disk_offload_dir (this check does not apply to that combination, "
+            "since the constraint becomes disk space/I-O, not RAM)."
         )
 
 
@@ -199,7 +229,7 @@ class TabICLBaselineModel:
 
     feature_set: str = "strong"
     n_features: int = 0
-    params: dict[str, float] = field(default_factory=dict)
+    params: dict[str, Any] = field(default_factory=dict)
     all_nan_cols: np.ndarray | None = None
     """Boolean ``(n_features,)`` mask of columns that were entirely NaN in
     the fit-time context, or ``None`` if none were. tabicl's own
@@ -253,6 +283,9 @@ def _fit_one_tabicl(
     n_estimators: int,
     device: str | None,
     cache: Optional[FitCache] = None,
+    offload_mode: str = "auto",
+    batch_size: Optional[int] = 8,
+    disk_offload_dir: Optional[str] = None,
 ) -> dict[float, TabICLBaselineModel]:
     """Fit one TabICL context per horizon for a single event.
 
@@ -263,6 +296,15 @@ def _fit_one_tabicl(
     means -- is the only thing that differs, since TabICL's ``fit`` just
     stores the (capped, seeded-subsampled) context rather than running
     gradient descent.
+
+    ``offload_mode``/``batch_size``/``disk_offload_dir`` are passed
+    straight through to ``TabICLClassifier`` -- see that class's own
+    docstring for what each controls (in short: where the column-wise
+    embedding tensor, the module's documented memory bottleneck, is
+    materialized, and how many ensemble members are processed per
+    forward pass). Recorded in the fitted model's ``params`` for
+    provenance, the same way ``n_context_rows``/``n_estimators`` already
+    are.
 
     ``cache``, if given, is checked per horizon before fitting and
     written to immediately after -- see :mod:`odyssey.inference.fit_cache`.
@@ -306,12 +348,17 @@ def _fit_one_tabicl(
             n_estimators=n_estimators,
             device=device,
             random_state=seed,
+            offload_mode=offload_mode,
+            batch_size=batch_size,
+            disk_offload_dir=disk_offload_dir,
         )
         check_inference_cost(
             len(keep),
             int(x_all.shape[1]),
             n_estimators,
             context=f"{event_name}@{h:g}h ({feature_set} features)",
+            offload_mode=offload_mode,
+            disk_offload_dir=disk_offload_dir,
         )
         clf.fit(x_fit, y_fit)
         out[h] = TabICLBaselineModel(
@@ -321,6 +368,9 @@ def _fit_one_tabicl(
             params={
                 "n_context_rows": float(len(keep)),
                 "n_estimators": float(n_estimators),
+                "offload_mode": offload_mode,
+                "batch_size": batch_size,
+                "disk_offload_dir": disk_offload_dir,
             },
             all_nan_cols=all_nan_cols if all_nan_cols.any() else None,
         )
@@ -350,6 +400,9 @@ def fit_tabicl_baselines(
     device: str | None = None,
     cache: Optional[FitCache] = None,
     features: Optional[dict[str, np.ndarray]] = None,
+    offload_mode: str = "auto",
+    batch_size: Optional[int] = 8,
+    disk_offload_dir: Optional[str] = None,
 ) -> dict[tuple[str, float], TabICLBaselineModel]:
     """One TabICLv2 context per (event, horizon), on the same features as the GBM.
 
@@ -372,6 +425,12 @@ def fit_tabicl_baselines(
     ``feature_set`` (see
     :func:`odyssey.inference.baseline_prep.prepare_baseline_data`);
     ``train_events_binned`` is then unused and may be empty.
+
+    ``offload_mode``/``batch_size``/``disk_offload_dir`` pass straight
+    through to every ``TabICLClassifier`` this call fits -- see
+    :func:`_fit_one_tabicl` and ``TabICLClassifier``'s own docstring.
+    Defaults match ``TabICLClassifier``'s own defaults (``"auto"``/``8``/
+    ``None``), so omitting them reproduces prior behavior exactly.
     """
     models: dict[tuple[str, float], TabICLBaselineModel] = {}
     if features is None:
@@ -392,6 +451,9 @@ def fit_tabicl_baselines(
             n_estimators=n_estimators,
             device=device,
             cache=cache,
+            offload_mode=offload_mode,
+            batch_size=batch_size,
+            disk_offload_dir=disk_offload_dir,
         )
         for h, model in per_horizon.items():
             models[(name, h)] = model
