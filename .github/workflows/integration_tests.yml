@@ -72,7 +72,7 @@ jobs:
       # docstring; the extraction, tokenization, and model forward pass
       # steps are never skipped or softened, only the redundant re-download.
       - name: Cache MIMIC-IV demo extraction
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/meds_demo_cache
           key: mimic-iv-demo-${{ hashFiles('uv.lock') }}
