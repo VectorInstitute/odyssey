@@ -14,6 +14,8 @@ from odyssey.data.concepts import (
     ConceptDefinition,
     ConceptRule,
     DerivedGcsTotalRule,
+    DerivedSofaSignalRule,
+    DerivedUrineRateRule,
     SustainedRule,
 )
 from odyssey.data.value_binning import (
@@ -142,6 +144,19 @@ def test_empty_events_frame_is_a_noop() -> None:
 # ---------------------------------------------------------------------------
 
 
+#: Rule types with no single fixed threshold on one charted code's value
+#: (see :func:`_threshold_rules`); a rule type absent from both this tuple
+#: and the handled branches raises, so a newly added one cannot slip
+#: through this consistency check unnoticed.
+_NO_FIXED_THRESHOLD = (
+    BaselineRelativeRule,
+    DerivedGcsTotalRule,
+    CodeOccurrenceRule,
+    DerivedSofaSignalRule,
+    DerivedUrineRateRule,
+)
+
+
 def _threshold_rules(concept: ConceptDefinition) -> List[Tuple[str, float]]:
     """Yield every (code_prefix, threshold) pair reachable from a concept.
 
@@ -153,8 +168,13 @@ def _threshold_rules(concept: ConceptDefinition) -> List[Tuple[str, float]]:
     a personal baseline, not a fixed value, and
     :class:`~odyssey.data.concepts.DerivedGcsTotalRule` sums three
     different codes, not one -- neither maps to a single CLINICAL_RANGES
-    prefix's bin edge, so both are skipped here. Recurses into
-    :class:`~odyssey.data.concepts.AnyOf`, which nests further rules.
+    prefix's bin edge, so both are skipped here, and so are
+    :class:`~odyssey.data.concepts.DerivedSofaSignalRule` and
+    :class:`~odyssey.data.concepts.DerivedUrineRateRule`, whose thresholds
+    are on a *derived* signal (a PaO2/FiO2 ratio, a trailing-window urine
+    rate in mL/kg/h) that no single charted code's value channel carries.
+    Recurses into :class:`~odyssey.data.concepts.AnyOf`, which nests
+    further rules.
 
     :class:`~odyssey.data.concepts.CompositeConceptDefinition` (SIRS,
     qSOFA) is out of scope entirely, not just certain rule types within
@@ -171,16 +191,11 @@ def _threshold_rules(concept: ConceptDefinition) -> List[Tuple[str, float]]:
             for sub_rule in rule.rules:
                 if isinstance(sub_rule, (ConceptRule, SustainedRule)):
                     out.append((sub_rule.code_prefix, sub_rule.threshold))
-                elif not isinstance(
-                    sub_rule,
-                    (BaselineRelativeRule, DerivedGcsTotalRule, CodeOccurrenceRule),
-                ):
+                elif not isinstance(sub_rule, _NO_FIXED_THRESHOLD):
                     raise TypeError(f"unhandled rule type in AnyOf: {type(sub_rule)!r}")
         elif isinstance(rule, (ConceptRule, SustainedRule)):
             out.append((rule.code_prefix, rule.threshold))
-        elif not isinstance(
-            rule, (BaselineRelativeRule, DerivedGcsTotalRule, CodeOccurrenceRule)
-        ):
+        elif not isinstance(rule, _NO_FIXED_THRESHOLD):
             raise TypeError(f"unhandled rule type: {type(rule)!r}")
     return out
 
