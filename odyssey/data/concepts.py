@@ -45,6 +45,15 @@ per research_journal/04_concept_pipeline.html decision (b):
   readings within ``max_component_gap_minutes`` (GCS components are
   typically charted together in practice) and summing.
 
+Rule types added since, each alongside the concept that needed it rather
+than to that original list: :class:`CodeOccurrenceRule` (the event's
+occurrence is the whole signal, no numeric value -- vasopressor
+administration, renal-replacement-therapy initiation),
+:class:`DerivedSofaSignalRule` and :class:`Sepsis3Rule` (signals derived
+by :mod:`odyssey.data.sofa`), and :class:`DerivedUrineRateRule` (KDIGO's
+urine-output leg: mL/kg/h over a 6/12/24 h trailing window, or absolute
+mL for the anuria branch).
+
 :class:`CompositeConceptDefinition` combines several of the above into an
 "N of M criteria" concept (SIRS/qSOFA-style), optionally nesting
 :class:`AnyOf` where one criterion is itself satisfied by any of several
@@ -76,6 +85,7 @@ from odyssey.data.sofa import (
     sofa_supported,
     sofa_timeseries,
     urine_output_24h,
+    urine_output_rate,
 )
 
 
@@ -283,6 +293,61 @@ class DerivedSofaSignalRule:
 
 
 @dataclass(frozen=True)
+class DerivedUrineRateRule:
+    """KDIGO's urine-output leg: trailing urine output crosses a threshold.
+
+    :class:`DerivedSofaSignalRule`'s ``urine_24h`` signal is fixed at
+    SOFA's own shape (absolute mL, 24 h). KDIGO stages AKI on a
+    *weight-normalized rate* (mL/kg/h) over three different windows
+    (6 h, 12 h, 24 h), so the window and the normalization are rule
+    parameters here, resolved by
+    :func:`~odyssey.data.sofa.urine_output_rate`:
+
+    - ``weight_normalized=True``: ``value`` is mL/kg/h, and a window is
+      scored only where a body weight was charted at or before it (daily
+      weight preferred, admission weight as the early-stay fallback).
+      Windows with no weight at all are not scored -- see that function
+      for why defaulting a weight would be worse than abstaining.
+    - ``weight_normalized=False``: ``value`` is absolute mL over the
+      window, which is what Stage 3's anuria branch (0 mL over 12 h)
+      needs -- 0 mL is 0 mL at any body weight, so that branch stays
+      assessable for the majority of keys that have no weight reading.
+
+    ``source`` is fixed at expansion time for the same reason as
+    :class:`DerivedSofaSignalRule`: the derivation needs that source's
+    non-LOINC weight item ids.
+    """
+
+    threshold: float
+    direction: Direction
+    window_hours: float
+    source: str
+    weight_normalized: bool = True
+
+
+# Renal replacement therapy: KDIGO makes RRT initiation an automatic AKI
+# Stage 3, whatever creatinine and urine output say. The item ids are
+# mimic-code's own ``mimic-iv/concepts/treatment/rrt.sql``
+# ``dialysis_active = 1`` procedureevents set, and its two deliberate
+# exclusions are excluded here too: 224270 (Dialysis Catheter -- line
+# placement, not therapy) and 225436 (CRRT Filter Change -- maintenance on
+# an already-active line, which would double-count an episode already
+# caught by its own START row). The codes take the same
+# ``PROCEDURE//START//{itemid}`` shape as the ventilation item ids in
+# :data:`odyssey.data.sofa.SOFA_SOURCE_CONFIG`; the alternation is anchored
+# so a longer item id that merely begins with one of these cannot match.
+RRT_ITEMIDS: Tuple[str, ...] = (
+    "225441",  # Hemodialysis (intermittent, IHD)
+    "225802",  # Dialysis - CRRT
+    "225803",  # Dialysis - CVVHD
+    "225805",  # Peritoneal Dialysis
+    "225809",  # Dialysis - CVVHDF
+    "225955",  # Dialysis - SCUF
+)
+RRT_CODE_PATTERN = r"^PROCEDURE//START//(" + "|".join(RRT_ITEMIDS) + r")(//|$)"
+
+
+@dataclass(frozen=True)
 class Sepsis3Rule:
     """Sepsis-3 onset (Singer 2016) as operationalized by mimic-code's ``sepsis3``.
 
@@ -320,6 +385,7 @@ ComponentRule = Union[
     CodeOccurrenceRule,
     Sepsis3Rule,
     DerivedSofaSignalRule,
+    DerivedUrineRateRule,
 ]
 
 
@@ -477,6 +543,24 @@ class CanonicalSofaSignal:
 
 
 @dataclass(frozen=True)
+class CanonicalUrineRate:
+    """Canonical form of :class:`DerivedUrineRateRule` (source-agnostic).
+
+    The urine LOINC itself resolves through the mapping layer inside
+    :func:`~odyssey.data.sofa.urine_output_rate`; what is source-specific
+    is only the weight item ids, so this rule -- like
+    :class:`CanonicalSofaSignal` -- expands wherever
+    :func:`~odyssey.data.sofa.sofa_supported` holds and is dropped
+    elsewhere.
+    """
+
+    threshold: float
+    window_hours: float
+    direction: Direction = "below"
+    weight_normalized: bool = True
+
+
+@dataclass(frozen=True)
 class CanonicalSepsis3:
     """Canonical Sepsis-3: expands to :class:`Sepsis3Rule` where SOFA is scorable."""
 
@@ -491,6 +575,7 @@ CanonicalRule = Union[
     CodeOccurrenceRule,
     CanonicalSepsis3,
     CanonicalSofaSignal,
+    CanonicalUrineRate,
 ]
 
 
@@ -551,7 +636,7 @@ def _prefix_threshold(rule: LoincThreshold, prefix: str, source: str) -> float:
     )
 
 
-def _expand_non_loinc(
+def _expand_non_loinc(  # noqa: PLR0911
     rule: CanonicalRule, source: str
 ) -> Optional[List[ComponentRule]]:
     """Expand the non-LOINC-keyed rules; ``None`` when ``rule`` is LOINC-keyed."""
@@ -565,6 +650,18 @@ def _expand_non_loinc(
                 signal=rule.signal,
                 threshold=rule.threshold,
                 direction=rule.direction,
+                source=source,
+            )
+        ]
+    if isinstance(rule, CanonicalUrineRate):
+        if not sofa_supported(source):
+            return []
+        return [
+            DerivedUrineRateRule(
+                threshold=rule.threshold,
+                direction=rule.direction,
+                window_hours=rule.window_hours,
+                weight_normalized=rule.weight_normalized,
                 source=source,
             )
         ]
@@ -606,7 +703,13 @@ def _expand_rule(rule: CanonicalRule, source: str) -> List[ComponentRule]:
             )
         ]
     assert not isinstance(  # for mypy
-        rule, (CodeOccurrenceRule, CanonicalSepsis3, CanonicalSofaSignal)
+        rule,
+        (
+            CodeOccurrenceRule,
+            CanonicalSepsis3,
+            CanonicalSofaSignal,
+            CanonicalUrineRate,
+        ),
     )
     prefixes = _loinc_prefixes(rule.loincs, source)
     if isinstance(rule, LoincThreshold):
@@ -871,13 +974,22 @@ CANONICAL_CONCEPTS: List[AnyCanonicalConcept] = [
             LoincBaselineRelative(
                 _CREATININE, ratio=1.5, direction="above", window_hours=168.0
             ),
+            # KDIGO's urine leg: < 0.5 mL/kg/h for 6-12h. Evaluated at the
+            # 6h lower bound, since every rule here is a single-instant
+            # check rather than a multi-criteria interval test: a window
+            # that stays under the rate past 12h has already triggered at
+            # 6h, and Stage 2 is the >= 12h escalation of the same rate.
+            CanonicalUrineRate(threshold=0.5, window_hours=6.0),
         ),
-        "KDIGO AKI Stage 1 (either trigger): serum creatinine rose by >= 0.3 "
+        "KDIGO AKI Stage 1 (any trigger): serum creatinine rose by >= 0.3 "
         "mg/dL within 48 hours, OR rose to >= 1.5x an earlier reading within "
-        "7 days (168h). Replaces v1's 'creatinine > 1.5 mg/dL' single-value "
-        "proxy, which ignored a patient's own baseline. See aki_stage_2 and "
-        "aki_stage_3 for higher severity; urine-output-based staging is not "
-        "implemented -- see 'still open'.",
+        "7 days (168h), OR urine output under 0.5 mL/kg/h over a trailing 6 "
+        "hours. Replaces v1's 'creatinine > 1.5 mg/dL' single-value proxy, "
+        "which ignored a patient's own baseline. See aki_stage_2 and "
+        "aki_stage_3 for higher severity. The urine leg needs a charted body "
+        "weight at or before the window (daily weight preferred, admission "
+        "weight as the early-stay fallback) and is simply not scored without "
+        "one, so it adds triggers without ever adding a silent negative.",
     ),
     CanonicalConcept(
         "aki_stage_2",
@@ -885,10 +997,12 @@ CANONICAL_CONCEPTS: List[AnyCanonicalConcept] = [
             LoincBaselineRelative(
                 _CREATININE, ratio=2.0, direction="above", window_hours=168.0
             ),
+            CanonicalUrineRate(threshold=0.5, window_hours=12.0),
         ),
-        "KDIGO AKI Stage 2: serum creatinine rose to >= 2.0x an earlier "
-        "reading within 7 days. Urine-output-based staging (<0.5 mL/kg/h for "
-        ">= 12h) is not implemented -- see 'still open'.",
+        "KDIGO AKI Stage 2 (either trigger): serum creatinine rose to >= 2.0x "
+        "an earlier reading within 7 days, OR urine output under 0.5 mL/kg/h "
+        "over a trailing 12 hours (the same rate as Stage 1, sustained twice "
+        "as long).",
     ),
     CanonicalConcept(
         "aki_stage_3",
@@ -898,12 +1012,30 @@ CANONICAL_CONCEPTS: List[AnyCanonicalConcept] = [
             ),
             # KDIGO: >= 4.0, inclusive
             LoincThreshold(_CREATININE, "at_or_above", 4.0),
+            # RRT initiation is an automatic Stage 3 in KDIGO, whatever
+            # creatinine and urine output say (mimic-code's rrt.sql item ids;
+            # see RRT_CODE_PATTERN). First occurrence only, which is what
+            # CodeOccurrenceRule already reports.
+            CodeOccurrenceRule(RRT_CODE_PATTERN, observed_families=("PROCEDURE",)),
+            CanonicalUrineRate(threshold=0.3, window_hours=24.0),
+            # Anuria: 0 mL over 12h. Absolute volume, not a rate, so it needs
+            # no body weight (0 mL is 0 mL at any weight) and stays
+            # assessable for the many keys with no weight charted.
+            CanonicalUrineRate(
+                threshold=0.0,
+                window_hours=12.0,
+                direction="at_or_below",
+                weight_normalized=False,
+            ),
         ),
-        "KDIGO AKI Stage 3 (either trigger): serum creatinine rose to "
-        ">= 3.0x an earlier reading within 7 days, OR any reading >= 4.0 "
-        "mg/dL. Renal-replacement-therapy initiation and urine-output-based "
-        "staging (<0.3 mL/kg/h for >= 24h, or anuria for >= 12h) are not "
-        "implemented -- see 'still open'.",
+        "KDIGO AKI Stage 3 (any trigger): serum creatinine rose to >= 3.0x an "
+        "earlier reading within 7 days, OR any reading >= 4.0 mg/dL, OR "
+        "renal-replacement therapy was initiated (hemodialysis, CRRT, CVVHD, "
+        "CVVHDF, SCUF or peritoneal dialysis -- an automatic Stage 3 in "
+        "KDIGO, independent of creatinine and urine output), OR urine output "
+        "under 0.3 mL/kg/h over a trailing 24 hours, OR anuria (0 mL) over a "
+        "trailing 12 hours. The rate leg needs a charted body weight and is "
+        "not scored without one; the anuria and RRT legs need no weight.",
     ),
     CanonicalComposite(
         "sirs",
@@ -1380,6 +1512,15 @@ def _component_ids(  # noqa: PLR0911
             value_col=value_col,
             time_col=time_col,
         )
+    if isinstance(rule, DerivedUrineRateRule):
+        return _urine_rate_ids(
+            events,
+            rule,
+            subject_id_col=subject_id_col,
+            code_col=code_col,
+            value_col=value_col,
+            time_col=time_col,
+        )
     if isinstance(rule, Sepsis3Rule):
         return _sepsis3_ids(
             events,
@@ -1390,6 +1531,28 @@ def _component_ids(  # noqa: PLR0911
             time_col=time_col,
         )
     raise TypeError(f"unknown component rule type: {type(rule)!r}")
+
+
+def _derived_reading_ids(
+    readings: pl.DataFrame,
+    threshold: float,
+    direction: Direction,
+    *,
+    subject_id_col: str,
+    time_col: str,
+) -> Tuple[Set[int], FirstTimes]:
+    """Observed keys and first-trigger times of a derived (key, time, value) frame.
+
+    Observed = the keys the derivation could actually be evaluated for
+    (it emits no row where a needed ingredient is missing: no pairable
+    FiO2, no full trailing window, no body weight), so an absent key is
+    "not assessable", never a silent negative.
+    """
+    observed = set(readings[subject_id_col].to_list())
+    if readings.height == 0:
+        return observed, {}
+    fired = readings.filter(_threshold_expr(pl.col("value"), threshold, direction))
+    return observed, _first_times(fired, subject_id_col, time_col)
 
 
 def _sofa_signal_ids(
@@ -1410,13 +1573,42 @@ def _sofa_signal_ids(
         value_col=value_col,
         time_col=time_col,
     )
-    observed = set(readings[subject_id_col].to_list())
-    if readings.height == 0:
-        return observed, {}
-    fired = readings.filter(
-        _threshold_expr(pl.col("value"), rule.threshold, rule.direction)
+    return _derived_reading_ids(
+        readings,
+        rule.threshold,
+        rule.direction,
+        subject_id_col=subject_id_col,
+        time_col=time_col,
     )
-    return observed, _first_times(fired, subject_id_col, time_col)
+
+
+def _urine_rate_ids(
+    events: pl.DataFrame,
+    rule: DerivedUrineRateRule,
+    *,
+    subject_id_col: str,
+    code_col: str,
+    value_col: str,
+    time_col: str,
+) -> Tuple[Set[int], FirstTimes]:
+    """Observed keys and first-trigger times for KDIGO's urine-output leg."""
+    readings = urine_output_rate(
+        events,
+        source=rule.source,
+        key=subject_id_col,
+        code_col=code_col,
+        value_col=value_col,
+        time_col=time_col,
+        window_hours=rule.window_hours,
+        weight_normalized=rule.weight_normalized,
+    )
+    return _derived_reading_ids(
+        readings,
+        rule.threshold,
+        rule.direction,
+        subject_id_col=subject_id_col,
+        time_col=time_col,
+    )
 
 
 _SIDECAR_WARNED: Set[str] = set()
