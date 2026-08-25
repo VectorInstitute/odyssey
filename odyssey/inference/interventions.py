@@ -213,7 +213,6 @@ def run_streaming_intervention(
         events_binned,
         vocab,
         max_seq_len=max_seq_len,
-        signal_panel=getattr(model, "signal_panel", None),
     )
     sampler = PackedLaneSampler(
         patients, num_lanes=num_lanes, chunk_size=chunk_size, reset_prob=0.0

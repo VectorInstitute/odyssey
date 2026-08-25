@@ -141,9 +141,7 @@ def collect_feature_bank(
 
     model.eval()
     gen = torch.Generator().manual_seed(seed)
-    patients: Iterator[PatientSequence] = iter_patient_sequences(
-        events_binned, vocab, signal_panel=getattr(model, "signal_panel", None)
-    )
+    patients: Iterator[PatientSequence] = iter_patient_sequences(events_binned, vocab)
     sampler = PackedLaneSampler(
         patients, num_lanes=num_lanes, chunk_size=chunk_size, reset_prob=0.0
     )

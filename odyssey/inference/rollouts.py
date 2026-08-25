@@ -11,8 +11,8 @@ them:
   same instant, so bundles fall out naturally: several events at one
   timestamp before the clock advances);
 - feed the sampled event back in as the next input, with its structural
-  metadata derived exactly as the tokenizer would (family id, time, age,
-  and the recency / panel-signal channels advanced), and repeat.
+  metadata derived exactly as the tokenizer would (family id, time, age),
+  and repeat.
 
 The summary over samples is what is reportable: for each alert event, the
 fraction of sampled futures in which it occurs within a horizon (a Monte
@@ -37,12 +37,10 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
 
-import numpy as np
 import torch
 
 from odyssey.data.alert_events import AlertEvent
-from odyssey.data.sequences import N_RECENCY_FAMILIES, PatientSequence
-from odyssey.data.signal_panel import N_PANEL_SIGNALS
+from odyssey.data.sequences import PatientSequence
 from odyssey.data.streaming import PackedLaneSampler
 from odyssey.data.types import AuxiliaryInputs, ClinicalSequenceBatch
 from odyssey.data.vocabulary import PAD_ID, Vocabulary, code_type
@@ -147,61 +145,26 @@ class _RolloutState:
     """The per-token structural metadata a generated token needs.
 
     Mirrors what :func:`~odyssey.data.sequences.build_patient_sequence`
-    computes for a real token -- family recency, panel-signal staleness,
-    age, visit ids -- advanced one sampled token at a time so a rollout
-    feeds the model the same shape of input it was trained on. Sampled
-    tokens carry no numeric value (the model samples a bin token, which
-    already encodes the range), so the value and signal-value channels see
-    NaN for them, exactly as a valueless real event would.
+    computes for a real token -- age, visit ids -- advanced one sampled
+    token at a time so a rollout feeds the model the same shape of input
+    it was trained on. Sampled tokens carry no numeric value (the model
+    samples a bin token, which already encodes the range), so the value
+    channel sees NaN for them, exactly as a valueless real event would.
     """
 
-    def __init__(self, seq: PatientSequence, position: int, resolver: object) -> None:
+    def __init__(self, seq: PatientSequence, position: int) -> None:
         """Seed from a real sequence's state at ``position``."""
         self.time = float(seq.time_stamps[position])
         self.age = float(seq.ages[position])
         self.visit_order = int(seq.visit_orders[position])
         self.visit_id = int(seq.visit_ids[position]) if seq.visit_ids else -1
-        self.resolver = resolver
-        last = seq.family_recency[position] if seq.family_recency else None
-        self.family_last: List[float] = [
-            self.time - v if last is not None and not np.isnan(v) else float("nan")
-            for v in (last or [float("nan")] * N_RECENCY_FAMILIES)
-        ]
-        self.signal_last: List[float] = [float("nan")] * N_PANEL_SIGNALS
-        if seq.signal_state is not None:
-            row = seq.signal_state[position]
-            for k in range(N_PANEL_SIGNALS):
-                if not np.isnan(row[k]):
-                    self.signal_last[k] = self.time - float(row[k])
 
     def advance(self, code: str, gap_hours: float) -> Dict[str, object]:
         """Advance the clock by ``gap_hours`` and absorb ``code``; return its aux."""
         self.time += gap_hours
         self.age += gap_hours / HOURS_PER_YEAR
         type_id = code_type(code)
-        recency = [
-            self.time - last if not np.isnan(last) else float("nan")
-            for last in self.family_last
-        ]
-        signal = [
-            self.time - last if not np.isnan(last) else float("nan")
-            for last in self.signal_last
-        ] + [float("nan")] * N_PANEL_SIGNALS
-        aux = {
-            "type_id": type_id,
-            "time": self.time,
-            "age": self.age,
-            "recency": recency,
-            "signal": signal,
-        }
-        if 1 <= type_id <= N_RECENCY_FAMILIES:
-            self.family_last[type_id - 1] = self.time
-        resolve = getattr(self.resolver, "resolve", None)
-        if resolve is not None:
-            idx = resolve(code)
-            if idx >= 0:
-                self.signal_last[idx] = self.time
-        return aux
+        return {"type_id": type_id, "time": self.time, "age": self.age}
 
 
 def _step_batch(
@@ -221,12 +184,6 @@ def _step_batch(
             visit_orders=t(visit_order, torch.long),
             visit_segments=t(1, torch.long),
             values=t(float("nan"), torch.float),
-            family_recency=torch.tensor(
-                [[aux["recency"]]], dtype=torch.float, device=device
-            ),
-            signal_state=torch.tensor(
-                [[aux["signal"]]], dtype=torch.float, device=device
-            ),
         ),
     )
 
@@ -279,11 +236,10 @@ def rollout_from_position(
         raise ValueError("empty prefix: nothing to roll out from")
 
     index_time = float(prefix.time_stamps[-1])
-    resolver = getattr(model, "signal_panel", None)
     samples: List[RolloutSample] = []
     for s in range(n_samples):
         generator = torch.Generator(device="cpu").manual_seed(seed * 100_003 + s)
-        rs = _RolloutState(prefix, len(prefix) - 1, resolver)
+        rs = _RolloutState(prefix, len(prefix) - 1)
         step_state = state
         logits, features = logits_at_index, features_at_index
         codes: List[str] = []

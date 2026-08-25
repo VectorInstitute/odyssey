@@ -1,14 +1,10 @@
-"""The curated vital/lab signal panel shared by the baselines and the model.
+"""The curated vital/lab signal panel shared by the baselines and value metrics.
 
 One place defines *which* clinical signals count as "the panel" and how a
 MEDS code resolves to one of them, so that the tuned tabular baselines
-(:mod:`odyssey.inference.baseline_features`) and the sequence model's
-per-signal staleness/last-value head channels
-(:class:`~odyssey.data.sequences.PatientSequence.signal_state`) read the
-same signals. Matched inputs are the point: when the bespoke GBM wins an
-alert because it was handed ``hours_since_last`` creatinine and the model
-was not, the comparison is about inputs, not model families; giving both
-the same panel closes that gap by construction.
+(:mod:`odyssey.inference.baseline_features`) and the model's per-signal
+value-metric breakdown (:class:`~odyssey.inference.run_inference._RunningValueMetrics`,
+e.g. "creatinine CRPS") read the same signals.
 
 Resolution goes through the per-source LOINC tables in
 :mod:`odyssey.data.code_mapping` (a signal a source does not chart simply

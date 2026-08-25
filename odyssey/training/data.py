@@ -25,7 +25,6 @@ from odyssey.data.concepts import (
     label_concepts_by_visit,
 )
 from odyssey.data.sequences import BIRTH_CODE, PatientSequence, build_patient_sequence
-from odyssey.data.signal_panel import SignalPanelResolver
 from odyssey.data.vocabulary import Vocabulary, code_type
 
 
@@ -143,12 +142,8 @@ def iter_patient_sequences(
     max_seq_len: Optional[int] = None,
     shuffle_seed: Optional[int] = None,
     shuffle_buffer_size: int = 4096,
-    signal_panel: Optional[SignalPanelResolver] = None,
 ) -> Iterator[PatientSequence]:
     """Yield one :class:`PatientSequence` per subject in ``events``.
-
-    ``signal_panel`` switches on the per-signal ``signal_state`` channel
-    (pass the model's own resolver, ``model.signal_panel``).
 
     Subjects are shuffled before tokenizing when ``shuffle_seed`` is
     given, matching :class:`~odyssey.data.streaming.PackedLaneSampler`'s
@@ -178,9 +173,7 @@ def iter_patient_sequences(
         for _, frame in events.group_by("subject_id", maintain_order=True):
             if frame.height == 0:
                 continue
-            seq = build_patient_sequence(
-                frame, vocab, max_seq_len=max_seq_len, signal_panel=signal_panel
-            )
+            seq = build_patient_sequence(frame, vocab, max_seq_len=max_seq_len)
             if len(seq) > 0:
                 yield seq
 

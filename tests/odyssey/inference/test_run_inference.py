@@ -982,60 +982,6 @@ def test_unknown_dim_round_trips_for_the_non_global_pairs_unequal_width_case(
     assert seen["unknown_dim"] == unknown_dim
 
 
-def test_recency_features_reconstructs_for_a_baseline_model_kind(
-    tmp_path: Path,
-) -> None:
-    """load_run's recency-shape check has a separate base for model_kind='baseline'.
-
-    Bottleneck models measure the head input against
-    n_concepts*embedding_dim + unknown_dim; a baseline (no bottleneck)
-    model measures it against hidden_size directly instead -- that
-    second branch had zero test coverage. Same monkeypatch-build_model
-    technique as test_unknown_dim_round_trips_..., not a real model.
-    """
-    from odyssey.models.sequence_model import RECENCY_DIM  # noqa: PLC0415
-
-    hidden_size = 16
-    run_dir = tmp_path
-    config = TrainingConfig(
-        train_shard_dir="a",
-        tuning_shard_dir="b",
-        output_dir="c",
-        model_kind="baseline",
-        hidden_size=hidden_size,
-    )
-    (run_dir / "config.json").write_text(json.dumps(config.__dict__))
-    Vocabulary({"[PAD]": 0, "[UNK]": 1, "LAB//220045//bpm": 2}).save(
-        run_dir / "vocabulary.json"
-    )
-    (run_dir / "quantile_binner.json").write_text(
-        json.dumps({"n_bins": 5, "boundaries": {}})
-    )
-    # in_features = hidden_size + RECENCY_DIM: the shape a real
-    # recency-enabled baseline model's time head would have (see
-    # BaselineSequenceModel.__init__'s head_in computation).
-    state = {"time_head.proj.weight": torch.zeros(3, hidden_size + RECENCY_DIM)}
-    torch.save({"model": state}, run_dir / "checkpoint_final.pt")
-
-    seen = {}
-
-    def fake_build_model(cfg, *, vocab_size, num_concepts):  # noqa: ARG001
-        seen["recency_features"] = cfg.recency_features
-        seen["model_kind"] = cfg.model_kind
-        raise RuntimeError("stop here")
-
-    original = ri.build_model
-    ri.build_model = fake_build_model
-    try:
-        with pytest.raises(RuntimeError, match="stop here"):
-            load_run(run_dir, device="cpu")
-    finally:
-        ri.build_model = original
-
-    assert seen["model_kind"] == "baseline"
-    assert seen["recency_features"] is True
-
-
 def test_default_checkpoint_prefers_best_matching_the_clis(tmp_path: Path) -> None:
     """Library default and CLI default must resolve the same checkpoint."""
     (tmp_path / "checkpoint_500.pt").touch()

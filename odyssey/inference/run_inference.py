@@ -43,8 +43,6 @@ from odyssey.data.vocabulary import Vocabulary, code_type
 from odyssey.models.concept_bottleneck import ConceptBottleneckOutput
 from odyssey.models.embeddings import N_FOURIER_FEATURES
 from odyssey.models.sequence_model import (
-    RECENCY_DIM,
-    SIGNAL_DIM,
     BaselineSequenceModel,
     ConceptLabelDict,
     ConceptSupervision,
@@ -380,25 +378,6 @@ def load_run(
             if "bottleneck.unknown_prob_weight" not in state:
                 n_known -= 1  # shared (num_slots, 2d) weight includes the unknown row
             config.unknown_dim = (rows - n_known * 2 * emb) // 2
-    # Recency features widen the head inputs by RECENCY_DIM; infer from the
-    # time head's weight shape against the bottleneck/backbone width.
-    time_w = checkpoint["model"].get("time_head.proj.weight")
-    if time_w is not None:
-        n_c = len(
-            concepts_for_source(
-                getattr(config, "source", "mimic_iv"),
-                task_set=getattr(config, "task_set", "v1"),
-            )
-        )
-        if getattr(config, "model_kind", "bottleneck") == "baseline":
-            base = config.hidden_size
-        else:
-            base = n_c * config.embedding_dim + (
-                getattr(config, "unknown_dim", None) or config.embedding_dim
-            )
-        extra = int(time_w.shape[1]) - base
-        config.recency_features = extra in (RECENCY_DIM, RECENCY_DIM + SIGNAL_DIM)
-        config.signal_channels = extra in (SIGNAL_DIM, RECENCY_DIM + SIGNAL_DIM)
     # MLP readout (event_heads.proj.0/2.*) vs the linear one (event_heads.proj.*)
     first_layer = checkpoint["model"].get("event_heads.proj.0.weight")
     config.event_head_hidden = (
@@ -900,7 +879,6 @@ def run_streaming_inference(
         events_binned,
         vocab,
         max_seq_len=max_seq_len,
-        signal_panel=getattr(model, "signal_panel", None),
     )
     sampler = _build_sampler(
         patients,

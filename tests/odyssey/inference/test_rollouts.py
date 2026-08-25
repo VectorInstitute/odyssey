@@ -110,9 +110,7 @@ def test_rollout_is_seeded_bounded_and_advances_structure() -> None:
     binned = add_value_tokens(events)
     vocab = Vocabulary.build(binned["code"].to_list(), min_count=1)
     model = _model(vocab)
-    seq = build_patient_sequence(
-        binned.filter(pl.col("subject_id") == 1), vocab, signal_panel=None
-    )
+    seq = build_patient_sequence(binned.filter(pl.col("subject_id") == 1), vocab)
     position = len(seq) - 5
     index_time = seq.time_stamps[position]
     common = {
@@ -140,9 +138,7 @@ def test_summary_reports_event_fractions_and_family_counts() -> None:
     binned = add_value_tokens(events)
     vocab = Vocabulary.build(binned["code"].to_list(), min_count=1)
     model = _model(vocab)
-    seq = build_patient_sequence(
-        binned.filter(pl.col("subject_id") == 1), vocab, signal_panel=None
-    )
+    seq = build_patient_sequence(binned.filter(pl.col("subject_id") == 1), vocab)
     position = len(seq) - 5
     samples = rollout_from_position(
         model,
