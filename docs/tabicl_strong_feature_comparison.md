@@ -55,6 +55,58 @@ features. It is evidence that zero-shot, single-member, context-capped in-contex
 competitive with a fully-supervised, tuned GBM on this task family. That is a narrower and
 different claim.
 
+## Can TabICL run at its actual full capability instead of reduced?
+
+Amrit asked directly for this, since a reduced config (1 estimator instead of 8, a 20,000-row
+context instead of this project's usual 50,000) is not TabICL at its documented best, and a
+comparison against it is not the fairest one to draw conclusions from. This section reports what
+was tried to get the real thing running, and why it still is not the number reported above.
+
+**First, a real bug was found and worked around.** The `offload_mode`/`disk_offload_dir`
+parameters used in this project's code only affect one stage of TabICL's pipeline, the
+column-wise embedding step (`COL_CONFIG`), per the library's own docstring. That stage's disk
+offload does work: a controlled test with synthetic data (50,000 rows, 609 features, 8
+estimators, `disk_dtype` forced to float16 through the library's `inference_config` option)
+produced a real memory-mapped file in the configured directory, sized close to the predicted
+7.4 GB per estimator, and completed a fit in 27 seconds without touching more than that at once
+(each estimator's file is written, used, and deleted before the next one starts). This is the
+config that should be used if a full-capability fit is ever attempted again: `offload_mode="disk"`
+plus `inference_config={"COL_CONFIG": {"disk_dtype": torch.float16}}`. It fits without any memory
+error on this host, at either 82 GB free disk or the 82 GB of RAM this project already measured
+as its ceiling.
+
+**But it is not fast enough to use.** Fitting the full-capability context (27 seconds) was never
+the problem. Scoring it is. A single `predict_proba` call for just 200 query rows against that
+same 50,000-row, 8-estimator context took 728.9 seconds (about 12 minutes), because each
+estimator's column-embedding file has to be written to disk and read back for every call, and
+there is no caching between calls by default. A second test, scoring 8,192 query rows (this
+project's actual per-batch size in `TabICLBaselineModel.predict_proba`) did not finish inside a
+15-minute timeout at all, confirming the cost grows meaningfully with query size and is not just
+a fixed per-call overhead.
+
+Extrapolated conservatively: this project's smallest MIMIC alert cell has about 48,000 held-out
+rows, meaning at least 6 batches of 8,192 rows each. If even one such batch takes 15 minutes or
+more, a single (event, horizon) cell would take multiple hours, and the 12 cells in the table
+below would take, at minimum, a day or more of sequential compute, not something achievable in a
+single working session on this hardware.
+
+**The actual constraint is not memory. It is that TabICL re-reads its entire context on every
+single scoring call, and at 609 features that context is large enough that reading it from disk
+repeatedly is prohibitively slow, even though it comfortably fits on disk.** Reducing context
+rows and ensemble size (what the reported config below does) reduces the size of that context so
+disk round-trips are fast enough to be practical. There is one untested option that might close
+part of this gap without reducing capacity: TabICL's `kv_cache="repr"` mode, which caches part of
+the column and row embeddings across calls at about 24x less memory than full key-value caching,
+which could avoid re-reading the same context from disk on every batch. This was not tried here
+and should not be assumed to work; it is a real next step if this is worth revisiting.
+
+**Bottom line: full-capability TabICL (8 estimators, 50,000-row context) on the 609-feature
+panel can be fit and scored without crashing, but not in practical time on this hardware with
+the caching this library ships with by default.** The reduced-config result below is not a
+stand-in chosen for convenience; it is what is actually achievable in a reasonable amount of time
+right now, and should be read with that in mind, not as a claim that TabICL cannot do better in
+principle.
+
 ## Results
 
 95% subject-clustered bootstrap confidence intervals, 1000 resamples
@@ -109,3 +161,7 @@ ceiling, not as its true performance.
   moved somewhere durable.
 - GBM (strong) scores: `~/runs/subset_run_v8_taskset_v3/alerts_rows_v3.parquet` on
   `odyssey-cbm-a100` (already-registered run, unchanged by this work)
+- Full-capability timing test (synthetic data, not committed, since removed from the host):
+  `~/tabicl_disk_test/probe.py`, a standalone script isolating just the fit/predict cost at
+  50,000 rows x 609 features x 8 estimators with disk offload, independent of this project's
+  data-loading pipeline
