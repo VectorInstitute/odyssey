@@ -33,24 +33,30 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.preprocessing import StandardScaler
 
-from odyssey.data.alert_events import AlertEvent, EventTimes, all_event_times
+from odyssey.data.alert_events import (
+    AlertEvent,
+    EventTimes,
+    alert_events_for,
+    all_event_times,
+)
 from odyssey.data.concepts import concepts_for_source
 from odyssey.data.sidecars import activate_sidecars
 from odyssey.data.streaming import PackedLaneSampler
 from odyssey.data.value_binning import add_value_tokens
+from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.alerts import (
     HORIZONS_HOURS,
     IndexRow,
     LandmarkState,
     _load_prepared_raw,
-    _move_chunk_to_device,
     _select_index_positions,
     _visit_starts,
-    alert_events_for,
     outcome_at_horizon,
 )
 from odyssey.inference.run_inference import load_run
+from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
 from odyssey.training.data import iter_patient_sequences
+from odyssey.training.train import _move_chunk_to_device
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -60,9 +66,9 @@ READMISSION_HORIZONS = (168.0, 720.0)
 
 
 def collect_embeddings(
-    model,
+    model: ConceptBottleneckSequenceModel,
     binned: pl.DataFrame,
-    vocab,
+    vocab: Vocabulary,
     *,
     landmark_alerts: Sequence[AlertEvent],
     visit_end_alerts: Sequence[AlertEvent],
@@ -228,6 +234,12 @@ def main() -> None:  # noqa: PLR0915
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model, vocab, binner, config = load_run(args.run_dir, device=device)
+    if not isinstance(model, ConceptBottleneckSequenceModel):
+        raise ValueError(
+            f"{args.run_dir} is not a concept-bottleneck run (model_kind must be "
+            "'cbm'): this script probes pre/post-bottleneck embeddings, which "
+            "only exist on ConceptBottleneckSequenceModel."
+        )
     source = getattr(config, "source", "mimic_iv")
     task_set = getattr(config, "task_set", "v1")
     concept_names = [c.name for c in concepts_for_source(source, task_set=task_set)]
@@ -242,7 +254,14 @@ def main() -> None:  # noqa: PLR0915
         [a.name for a in visit_end_alerts],
     )
 
-    def load_split(shard_dir: str, max_shards: int):
+    def load_split(
+        shard_dir: str, max_shards: int
+    ) -> tuple[
+        pl.DataFrame,
+        dict[tuple[int, int], float],
+        dict[str, EventTimes],
+        dict[str, EventTimes],
+    ]:
         activate_sidecars(shard_dir)
         raw = _load_prepared_raw(shard_dir, max_shards, config, source)
         visit_start = _visit_starts(raw)
