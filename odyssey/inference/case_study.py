@@ -354,9 +354,7 @@ def build_case_studies(
     for subject_id in subject_ids:
         logger.info("[case_study] tracing subject %d", subject_id)
         subject_events = events_binned.filter(pl.col("subject_id") == subject_id)
-        seq = build_patient_sequence(
-            subject_events, vocab, signal_panel=getattr(model, "signal_panel", None)
-        )
+        seq = build_patient_sequence(subject_events, vocab)
         traces.append(
             extract_patient_case(
                 model,

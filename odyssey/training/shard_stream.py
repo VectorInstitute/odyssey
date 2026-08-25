@@ -39,7 +39,6 @@ from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.concepts import AnyConceptDefinition
 from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.sequences import PatientSequence
-from odyssey.data.signal_panel import SignalPanelResolver
 from odyssey.data.value_binning import CLIP_TAIL, QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import Vocabulary, code_type
 from odyssey.training.data import (
@@ -270,7 +269,6 @@ def iter_patients_streaming(
     source: str,
     max_seq_len: Optional[int] = None,
     shuffle_seed: Optional[int] = None,
-    signal_panel: Optional[SignalPanelResolver] = None,
 ) -> Iterator[PatientSequence]:
     """Yield patient sequences shard by shard; shards and subjects shuffled per seed."""
     order = list(paths)
@@ -283,7 +281,6 @@ def iter_patients_streaming(
             vocab,
             max_seq_len=max_seq_len,
             shuffle_seed=None if shuffle_seed is None else shuffle_seed * 7919 + k,
-            signal_panel=signal_panel,
         )
 
 

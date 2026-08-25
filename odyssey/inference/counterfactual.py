@@ -192,9 +192,7 @@ def score_record_at(
     """
     model.eval()
     binned = add_value_tokens(raw_subject_events, binner, source=source)
-    seq = build_patient_sequence(
-        binned, vocab, signal_panel=getattr(model, "signal_panel", None)
-    )
+    seq = build_patient_sequence(binned, vocab)
     if len(seq) == 0:
         raise ValueError("empty tokenized record")
     timed = binned.filter(pl.col("time").is_not_null() & (pl.col("code") != BIRTH_CODE))
