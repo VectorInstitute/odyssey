@@ -27,10 +27,18 @@ Component rules (mimic-code's thresholds; deviations stated inline):
   once the key has at least 24 h of record behind it (a partial window
   would read as oliguria).
 
-Vasopressor item ids and ventilation procedure ids are not LOINC-keyed and
-live in a per-source table here (:data:`SOFA_SOURCE_CONFIG`); the
-numeric-signal codes resolve through the shared LOINC tables. Only sources
-with an entry can be scored (MIMIC-IV today).
+Vasopressor item ids, ventilation procedure ids and body-weight item ids
+are not LOINC-keyed and live in a per-source table here
+(:data:`SOFA_SOURCE_CONFIG`); the numeric-signal codes resolve through the
+shared LOINC tables. Only sources with an entry can be scored (MIMIC-IV
+today).
+
+Beyond SOFA itself, :func:`urine_output_rate` generalizes the renal
+component's trailing urine sum to an arbitrary window and, optionally, to
+KDIGO's own weight-normalized mL/kg/h form -- the shape
+:mod:`odyssey.data.concepts`' AKI staging needs.
+:func:`urine_output_24h` is now the (unchanged) 24 h absolute-volume
+special case of it.
 """
 
 import functools
@@ -67,6 +75,18 @@ class SofaSourceConfig:
     infusion_end_prefix: str
     ventilation_start: Tuple[str, ...]
     ventilation_end: Tuple[str, ...]
+    daily_weight: Tuple[str, ...] = ()
+    """Code prefixes of the recurring charted body weight, in kg.
+
+    Body weight is only needed by :func:`urine_output_rate` (KDIGO's
+    mL/kg/h form), never by SOFA itself, so a source may leave both
+    weight fields empty: the rate criterion is then simply unassessable
+    there, exactly as it is for a key with no weight charted.
+    """
+    admission_weight: Tuple[str, ...] = ()
+    """Code prefixes of the once-per-stay admission weight, in kg (the
+    fallback :func:`urine_output_rate` uses before any recurring weight
+    has been charted)."""
 
 
 SOFA_SOURCE_CONFIG: Dict[str, SofaSourceConfig] = {
@@ -79,6 +99,14 @@ SOFA_SOURCE_CONFIG: Dict[str, SofaSourceConfig] = {
         infusion_end_prefix="INFUSION_END//",
         ventilation_start=("PROCEDURE//START//225792", "PROCEDURE//START//225794"),
         ventilation_end=("PROCEDURE//END//225792", "PROCEDURE//END//225794"),
+        # chartevents 224639 "Daily Weight" / 226512 "Admission Weight (Kg)",
+        # both charted in kg. Deliberately NOT routed through the LOINC layer:
+        # both carry the same body-weight LOINC, so a LOINC lookup could not
+        # keep them apart, and urine_output_rate's fallback order (daily
+        # first, admission only until a daily weight exists) needs exactly
+        # that distinction.
+        daily_weight=("LAB//224639//",),
+        admission_weight=("LAB//226512//",),
     ),
 }
 
@@ -567,7 +595,8 @@ def pf_ratio_readings(
     return pf.select(key, time_col, "value", "ventilated")
 
 
-def urine_output_24h(
+@_quiet_asof
+def urine_output_rate(
     events: pl.DataFrame,
     *,
     source: str = "mimic_iv",
@@ -575,15 +604,52 @@ def urine_output_24h(
     code_col: str = "code",
     value_col: str = "numeric_value",
     time_col: str = "time",
+    window_hours: float = WINDOW_HOURS,
+    weight_normalized: bool = True,
 ) -> pl.DataFrame:
-    """(key, time, value=mL voided in the trailing 24h) per urine-output reading.
+    """Trailing urine output per reading: (key, time, value).
 
-    Only at times with at least :data:`WINDOW_HOURS` of record behind them:
-    a partial window sums less urine simply because less time has passed,
-    which would read as oliguria. Weight-normalized rates
-    (mL/kg/h, KDIGO's own form) are not used -- weight is not reliably
-    present per key in the extractions -- so this is the absolute-volume
-    form SOFA's renal component uses.
+    ``value`` is millilitres per kilogram per hour (KDIGO's own form)
+    when ``weight_normalized``, and plain millilitres over the window
+    otherwise (SOFA's renal component and the ``oliguria`` concept, and
+    KDIGO Stage 3's anuria branch, which is "0 mL" regardless of weight
+    and so must not require one).
+
+    Rows are emitted only at times with at least ``window_hours`` of
+    record behind them: a partial window sums less urine simply because
+    less time has passed, which would read as oliguria. Multiple
+    collection routes (Foley, void, condom cath, suprapubic,
+    nephrostomy, ureteral stents) are summed, resolved through the LOINC
+    layer, not hardcoded.
+
+    Weight (``weight_normalized=True`` only) is attached by a backward
+    ``join_asof``, so each window uses the most recent weight
+    charted at or before its end instant, never a later one:
+
+    - the most recent **daily** weight if the key has one by then (it is
+      the current weight, which is what a mL/kg/h rate means clinically);
+    - otherwise the **admission** weight, the best available estimate
+      early in a stay before any daily weight has been charted;
+    - otherwise the window is **dropped**, not scored against a default
+      or population-average weight. Weight coverage in the real MIMIC-IV
+      extraction is poor (~10-17% of subjects have any reading at all),
+      so this criterion is genuinely unassessable for most keys --
+      inventing a weight would silently turn "unknown" into a gold-
+      standard label. A non-positive charted weight (bad data) is
+      dropped the same way rather than dividing by it.
+
+    Callers therefore must treat the *absence* of a key from this frame
+    as "not assessable", not as "not oliguric" -- the same observability
+    convention :func:`assessable_keys` gives the SOFA-derived concepts.
+
+    Known limitation, inherited from the 24 h form and deliberately not
+    changed here: a window is summed over whatever urine rows it
+    contains, so *sparse charting* is indistinguishable from low output.
+    A key charted once a day reads as oliguric (and, if that one row is
+    0 mL, as anuric) on the strength of a single row. Guarding it would
+    need a minimum-readings-per-window rule, which is a modelling
+    decision affecting the existing ``oliguria`` concept too, not
+    something to slip in with this change.
     """
     urine = _numeric(
         events,
@@ -595,20 +661,85 @@ def urine_output_24h(
     )
     if urine.height == 0:
         return urine
+    window_minutes = int(round(window_hours * 60))
     first_time = (
         events.filter(pl.col(time_col).is_not_null())
         .group_by(key)
         .agg(pl.col(time_col).min().alias("_first"))
     )
-    return (
+    rolled = (
         urine.sort([key, time_col])
-        .rolling(index_column=time_col, period="24h", group_by=key)
+        .rolling(index_column=time_col, period=f"{window_minutes}m", group_by=key)
         .agg(pl.col("value").sum().alias("value"))
         .join(first_time, on=key, how="left")
         .filter(
-            (pl.col(time_col) - pl.col("_first")) >= pl.duration(hours=WINDOW_HOURS)
+            (pl.col(time_col) - pl.col("_first")) >= pl.duration(minutes=window_minutes)
         )
         .select(key, time_col, "value")
+    )
+    if not weight_normalized:
+        return rolled
+
+    cfg = SOFA_SOURCE_CONFIG[source]
+    out = rolled.sort([key, time_col])
+    for field, alias in (
+        (cfg.daily_weight, "_w_daily"),
+        (cfg.admission_weight, "_w_admission"),
+    ):
+        weights = _numeric(
+            events,
+            list(field),
+            key=key,
+            code_col=code_col,
+            value_col=value_col,
+            time_col=time_col,
+        ).rename({"value": alias})
+        if weights.height == 0:
+            out = out.with_columns(pl.lit(None, dtype=pl.Float64).alias(alias))
+            continue
+        out = out.join_asof(
+            weights.sort([key, time_col]),
+            on=time_col,
+            by=key,
+            strategy="backward",
+        )
+    return (
+        out.with_columns(pl.coalesce("_w_daily", "_w_admission").alias("_weight"))
+        .filter(pl.col("_weight").is_not_null() & (pl.col("_weight") > 0))
+        .with_columns(
+            (pl.col("value") / pl.col("_weight") / window_hours).alias("value")
+        )
+        .select(key, time_col, "value")
+    )
+
+
+def urine_output_24h(
+    events: pl.DataFrame,
+    *,
+    source: str = "mimic_iv",
+    key: str = "subject_id",
+    code_col: str = "code",
+    value_col: str = "numeric_value",
+    time_col: str = "time",
+) -> pl.DataFrame:
+    """(key, time, value=mL voided in the trailing 24h) per urine-output reading.
+
+    The absolute-volume, 24 h special case of
+    :func:`urine_output_rate` -- what SOFA's renal component and the
+    ``oliguria`` concept score. Weight-normalized rates (mL/kg/h,
+    KDIGO's own form) are deliberately *not* used here: weight is not
+    reliably present per key in the extractions, and SOFA's own renal
+    bands are defined on absolute volume anyway.
+    """
+    return urine_output_rate(
+        events,
+        source=source,
+        key=key,
+        code_col=code_col,
+        value_col=value_col,
+        time_col=time_col,
+        window_hours=WINDOW_HOURS,
+        weight_normalized=False,
     )
 
 
@@ -780,6 +911,7 @@ __all__ = [
     "COMPONENTS",
     "pf_ratio_readings",
     "urine_output_24h",
+    "urine_output_rate",
     "assessable_keys",
     "SOFA_SOURCE_CONFIG",
     "SofaSourceConfig",
