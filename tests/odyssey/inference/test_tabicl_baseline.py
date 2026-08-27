@@ -452,6 +452,98 @@ def test_inference_cost_guard_matches_the_measured_configurations() -> None:
     check_inference_cost(5_000, 609, 8, context="strong, small context")
 
 
+# ---------------------------------------------------------------------------
+# offload_mode / batch_size / disk_offload_dir: threaded through to the
+# classifier and recorded for provenance (Track: strong-feature TabICL)
+# ---------------------------------------------------------------------------
+
+
+def test_fit_tabicl_baselines_passes_offload_params_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tabicl_module, "TABICL_MIN_ROWS", 10)
+    events = _events(24)
+    binned = add_value_tokens(events)
+    times = all_event_times(binned, ALERT_EVENTS, "mimic_iv")
+    rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+
+    fit_tabicl_baselines(
+        binned,
+        rows,
+        times,
+        horizons=(8.0,),
+        feature_set="strong",
+        offload_mode="disk",
+        batch_size=1,
+        disk_offload_dir="/tmp/tabicl_offload",
+    )
+    assert _RecordingFakeClassifier.instances
+    fit_kwargs = _RecordingFakeClassifier.instances[0].kwargs
+    assert fit_kwargs["offload_mode"] == "disk"
+    assert fit_kwargs["batch_size"] == 1
+    assert fit_kwargs["disk_offload_dir"] == "/tmp/tabicl_offload"
+
+    model = list(
+        fit_tabicl_baselines(
+            binned,
+            rows,
+            times,
+            horizons=(8.0,),
+            feature_set="strong",
+            offload_mode="disk",
+            batch_size=1,
+            disk_offload_dir="/tmp/tabicl_offload",
+        ).values()
+    )[0]
+    assert model.params["offload_mode"] == "disk"
+    assert model.params["batch_size"] == 1
+    assert model.params["disk_offload_dir"] == "/tmp/tabicl_offload"
+
+
+def test_fit_tabicl_baselines_defaults_reproduce_prior_offload_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Omitting the new kwargs must fit exactly as before their addition."""
+    monkeypatch.setattr(tabicl_module, "TABICL_MIN_ROWS", 10)
+    events = _events(24)
+    binned = add_value_tokens(events)
+    times = all_event_times(binned, ALERT_EVENTS, "mimic_iv")
+    rows = _index_rows_from_events(binned, ALERT_EVENTS, landmark_hours=4.0)
+
+    fit_tabicl_baselines(binned, rows, times, horizons=(8.0,), feature_set="basic")
+    fit_kwargs = _RecordingFakeClassifier.instances[0].kwargs
+    assert fit_kwargs["offload_mode"] == "auto"
+    assert fit_kwargs["batch_size"] == 8
+    assert fit_kwargs["disk_offload_dir"] is None
+
+
+def test_check_inference_cost_skips_the_ram_budget_for_disk_offload() -> None:
+    """Disk offload bypasses the RAM-budget gate; the bare flag alone does not."""
+    from odyssey.inference.tabicl_baseline import check_inference_cost  # noqa: PLC0415
+
+    with pytest.raises(ValueError, match="per predict_proba call"):
+        check_inference_cost(50_000, 609, 8, context="strong, no offload")
+    with pytest.raises(ValueError, match="per predict_proba call"):
+        # offload_mode alone, with no disk_offload_dir, does not bypass the
+        # gate -- "disk" without a directory cannot actually offload.
+        check_inference_cost(
+            50_000,
+            609,
+            8,
+            context="strong, disk requested but no dir",
+            offload_mode="disk",
+        )
+    # disk offload WITH a directory bypasses the RAM-budget gate entirely.
+    check_inference_cost(
+        50_000,
+        609,
+        8,
+        context="strong, disk offload configured",
+        offload_mode="disk",
+        disk_offload_dir="/tmp/tabicl_offload",
+    )
+
+
 def test_fit_cache_keys_include_the_feature_set() -> None:
     """A fit is only reusable for the feature matrix it was fit on."""
     import inspect  # noqa: PLC0415
