@@ -1,6 +1,6 @@
-# GBM (strong) vs TabICL (strong, reduced) on MIMIC
+# GBM (strong) vs TabICL (strong, full capability) on MIMIC
 
-**Date:** 2026-08-25
+**Date:** 2026-08-27
 
 ## Why this run exists
 
@@ -10,35 +10,46 @@ panel. TabICL never saw the wide panel at all: a naive fit at 50,000 context row
 and the library's default of 8 estimators costs an estimated ~70 GB per `predict_proba` call, and
 reliably OOM-killed the host (three confirmed kills on 2026-08-23).
 
-This is the first TabICL run on the strong panel. To make it fit in memory, three settings were
-changed from this project's usual TabICL defaults:
+This report is the first TabICL run on the strong panel at its actual full capability
+(`n_estimators=8`, 50,000-row context, no reduction). Getting there took three attempts:
 
-- `offload_mode="cpu"` (moves the library's large column-wise embedding tensor off GPU VRAM)
-- `n_estimators` reduced from the library default of 8 to **1**
-- the in-context row cap (`TABICL_MAX_ROWS`) cut from this project's usual 50,000 to **20,000**
-
-Two earlier attempts at the full-default configuration failed before this one worked:
-
-1. `offload_mode="disk"` with `batch_size=1` stalled in what looked like a disk I/O deadlock at
-   the standard 50,000-row, 8-estimator scale. Never resolved, just abandoned.
-2. `offload_mode="cpu"` with all 12 models fit up front and held in memory for the whole predict
-   loop was kernel OOM-killed partway through (9 of 12 cells done, `shmem-rss` around 75 GB). This
-   was a repeat of a memory-accumulation problem this project had already hit and fixed once
-   before, not a new failure mode.
-
-The run reported here fits, scores, and drops one model at a time, which is what let all 12 cells
-finish cleanly.
+1. A reduced config (`n_estimators=1`, 20,000-row context) fit and scored fine on the original
+   82 GB-RAM host, but it isn't TabICL at its documented best, and Amrit asked for the real thing.
+2. Disk offload (`offload_mode="disk"`) was tried next, to fit the full config in less RAM. It
+   works for fitting, but TabICL rereads its entire context from disk on every `predict_proba`
+   call with no caching. Scoring 200 rows took 12 minutes; scoring a normal batch (8,192 rows)
+   did not finish in 15 minutes. Extrapolated, the full comparison would take a day or more. Not
+   a memory problem, a disk I/O throughput problem.
+3. The fix was hardware, not software: the host was migrated to `a2-ultragpu-1g` (170 GB RAM, one
+   A100-80GB, `odyssey-cbm-a100-ultra`, `us-central1-a`). RAM-resident full capability
+   (`offload_mode="cpu"`, no disk) fits comfortably (peak RSS ~102 GB) and scores at normal
+   compute speed, just slower than the reduced config because there is more to compute: roughly
+   1,800 seconds (30 minutes) to score one horizon, versus ~120 seconds for the reduced config.
+   All 12 cells took about 6 hours of sequential GPU compute.
 
 ## Setup
 
 - Checkpoint: `subset_run_v8_taskset_v3` (MIMIC, task_set v3, `model_kind=cbm`)
-- GPU host: `odyssey-cbm-a100`
+- GPU host: `odyssey-cbm-a100-ultra` (`a2-ultragpu-1g`, 170 GB RAM, one A100-80GB)
 - GBM (strong) scores: the existing registered alerts run (`alerts_rows_v3.parquet`), fit on 30
   train shards, scored on 4 held-out shards
-- TabICL (strong, reduced) scores: fit on 8 of those same 30 train shards (not all 30; TabICL's
-  in-context window caps out well below 30 shards' worth of rows regardless), scored on the same
-  4 held-out shards
+- TabICL (strong, full): `n_estimators=8`, 50,000-row context (this project's real defaults, not
+  reduced), fit on 8 of the 30 train shards, `offload_mode="cpu"`, scored on the same 4 held-out
+  shards. One model fit, scored, and dropped at a time; no more than one model resident at once.
 - Both models are scored on exactly the same rows and labels
+- Script: `scripts/tabicl_strong_compare.py` (committed, reusable; reuses the existing GBM scores
+  instead of refitting)
+
+**Label caveat, found after this sweep completed, not yet corrected:** the acute kidney injury
+label used here, for both the GBM and TabICL scores, comes from `alerts_rows_v3.parquet`,
+generated 2026-08-25 05:07 UTC. The KDIGO AKI staging completeness fix (commit `3d7ecbb`, adding
+the renal-replacement-therapy and urine-output legs that were previously missing, creatinine-only
+staging before that) landed later the same day, at 14:04 UTC. The model checkpoint itself was
+also trained before the fix (03:35 UTC). So every AKI number in this report, GBM and TabICL both,
+uses the old, incomplete label, which under-counts true AKI-3 cases that only qualify through RRT
+or oliguria, not creatinine. This does not explain away the AKI gap below, since the same label
+is used for both models, but it means the true AKI numbers (positive or negative for either model)
+are not yet known. Worth a rerun with a fresh alerts dump once that's a priority.
 
 ## The caveat that matters most
 
@@ -46,135 +57,61 @@ Matching the feature set controls how much information each model gets per row. 
 control the modeling approach itself. The GBM is gradient-boosted and hyperparameter-tuned per
 task on the full training set (400 rounds, grid search over 4 configs). TabICL is zero-shot
 in-context learning: no gradient descent on this data at all, just one forward pass conditioned
-on a capped, subsampled 20,000-row context, with only 1 ensemble member instead of the library's
-usual 8 (so the random feature/class permutation averaging TabICL normally relies on for
-robustness is largely absent here).
-
-If TabICL still loses after matching features, that is not evidence TabICL "can't use" these
-features. It is evidence that zero-shot, single-member, context-capped in-context learning is not
-competitive with a fully-supervised, tuned GBM on this task family. That is a narrower and
-different claim.
-
-## Can TabICL run at full capability instead of reduced?
-
-We tried. Here is what happened.
-
-The `offload_mode`/`disk_offload_dir` params in this project's code only cover one stage of
-TabICL, the column-wise embedding step. That stage's disk offload works: a test with synthetic
-data at full scale (50,000 rows, 609 features, 8 estimators, `disk_dtype` set to float16) wrote a
-real file to disk, about 7.4 GB per estimator, and fit in 27 seconds with no memory error.
-
-Fitting was never the problem. Scoring is. TabICL rereads its entire context from disk on every
-`predict_proba` call, with no caching by default. Scoring 200 rows against the full context took
-728.9 seconds (about 12 minutes). Scoring 8,192 rows (this project's normal batch size) did not
-finish inside a 15-minute timeout.
-
-At that rate, one MIMIC alert cell (about 48,000 held-out rows, 6+ batches) would take hours, and
-the full 12-cell comparison would take a day or more of sequential compute. Not memory. Disk I/O
-repeated on every call.
-
-One thing we did not try: `kv_cache="repr"`, which caches embeddings across calls and might avoid
-the repeated disk reads. Flagged as a real next step, not assumed to work.
-
-Bottom line: full capability (8 estimators, 50,000-row context) fits and scores without crashing,
-just not in a practical amount of time on this hardware. The reduced-config result below is what
-was actually achievable, not a shortcut taken for convenience.
-
-## Update, 2026-08-26: full capability tested on new hardware
-
-The host was migrated to `a2-ultragpu-1g` (170 GB RAM, one A100-80GB, `odyssey-cbm-a100-ultra`,
-`us-central1-a`), specifically to test whether more RAM, not disk, fixes this. It does, partly.
-
-RAM-resident full capability (`offload_mode="cpu"`, `n_estimators=8`, 50,000-row context, no
-disk) works. It does not hang and does not crash. Peak RSS during a single (event, horizon)
-fit and predict reached about 98 GB, comfortably inside the new 165 GB free RAM, with zero swap
-use. This confirms the diagnosis: disk I/O was the wrong lever, not memory capacity.
-
-One full cell was run end to end: vasopressor_start@8h. Fit took 109 seconds for all 3 horizons
-of this event together. Scoring the held-out rows for just the 8h horizon took 1,854 seconds
-(31 minutes). Result:
-
-| Event | Horizon | n | GBM (strong) | TabICL (strong, reduced) | TabICL (strong, full) |
-|---|---|---|---|---|---|
-| Vasopressor start | 8h | 111,450 | 0.934 [0.916, 0.950] | 0.859 [0.832, 0.887] | 0.915 [0.896, 0.936] |
-
-Full capability closes most of the gap. The reduced config's 0.075 AUROC deficit against the
-GBM drops to 0.019, and the confidence intervals now overlap (0.916-0.950 vs 0.896-0.936): at
-full capability, this cell is statistically indistinguishable from the GBM, not a real loss.
-The reduced config was a real handicap, not just a formality.
-
-But 31 minutes for one horizon of one event is real, and it does not fit in one session for all
-12 cells. At the measured rate (about 0.0166 seconds per held-out row), scoring all 12 core
-(event, horizon) cells in the table below would take on the order of 5 hours of sequential
-compute, not counting fit time (negligible by comparison). This was not run to completion. The
-process was stopped deliberately after this one cell, and the VM was stopped, rather than run
-the full sweep unattended on an hourly-billed A100-80GB host without asking first.
-
-Where this leaves the table below: it is a real result, honestly obtained, and still the only
-complete 12-cell comparison that exists. But the vasopressor@8h data point above shows it likely
-understates TabICL's true performance across the board, not just for that one cell. Whether to
-spend the roughly 5 hours of GPU time to get the real, full 12-cell table at full capability is
-a decision for Amrit, not something to default into.
+on a subsampled context. At full capability, that context is closer to the library's own
+validated regime (its authors report strong results up to 50,000 rows), so this asymmetry is
+smaller here than it was in the reduced-config run, but it has not gone away.
 
 ## Results
 
 95% subject-clustered bootstrap confidence intervals, 1000 resamples
 (`odyssey.inference.uncertainty.bootstrap_auroc`).
 
-| Event | Horizon | n | GBM (strong) AUROC | TabICL (strong, reduced) AUROC | Gap | Verdict |
+| Event | Horizon | n | GBM (strong) AUROC | TabICL (strong, full) AUROC | Gap | Verdict |
 |---|---|---|---|---|---|---|
-| Acute kidney injury | 8h | 95,471 | 0.894 [0.881, 0.906] | 0.723 [0.702, 0.745] | 0.171 | real gap |
-| Acute kidney injury | 24h | 84,147 | 0.845 [0.827, 0.861] | 0.714 [0.690, 0.736] | 0.131 | real gap |
-| Acute kidney injury | 72h | 57,442 | 0.782 [0.758, 0.805] | 0.674 [0.646, 0.702] | 0.108 | real gap |
-| Death | 8h | 136,850 | 0.953 [0.934, 0.969] | 0.941 [0.921, 0.958] | 0.012 | within noise |
-| Death | 24h | 135,061 | 0.959 [0.947, 0.969] | 0.924 [0.900, 0.945] | 0.035 | real gap |
-| Death | 72h | 130,818 | 0.940 [0.923, 0.954] | 0.903 [0.879, 0.926] | 0.036 | within noise (barely) |
-| ICU admission | 8h | 85,838 | 0.968 [0.962, 0.974] | 0.957 [0.950, 0.964] | 0.011 | within noise |
-| ICU admission | 24h | 74,839 | 0.954 [0.945, 0.963] | 0.940 [0.929, 0.950] | 0.014 | within noise |
-| ICU admission | 72h | 48,971 | 0.931 [0.912, 0.946] | 0.907 [0.886, 0.926] | 0.024 | within noise |
-| Vasopressor start | 8h | 111,450 | 0.934 [0.916, 0.950] | 0.859 [0.832, 0.887] | 0.075 | real gap |
-| Vasopressor start | 24h | 98,722 | 0.914 [0.895, 0.933] | 0.848 [0.820, 0.877] | 0.066 | real gap |
-| Vasopressor start | 72h | 67,385 | 0.883 [0.850, 0.913] | 0.812 [0.778, 0.845] | 0.070 | real gap |
+| Acute kidney injury | 8h | 95,471 | 0.894 [0.881, 0.906] | 0.766 [0.746, 0.786] | 0.128 | real gap |
+| Acute kidney injury | 24h | 84,147 | 0.845 [0.827, 0.861] | 0.739 [0.714, 0.761] | 0.106 | real gap |
+| Acute kidney injury | 72h | 57,442 | 0.782 [0.758, 0.805] | 0.685 [0.657, 0.714] | 0.097 | real gap |
+| Death | 8h | 136,850 | 0.953 [0.934, 0.969] | 0.961 [0.941, 0.975] | -0.007 | within noise |
+| Death | 24h | 135,061 | 0.959 [0.947, 0.969] | 0.940 [0.917, 0.958] | 0.020 | within noise |
+| Death | 72h | 130,818 | 0.940 [0.923, 0.954] | 0.925 [0.905, 0.944] | 0.015 | within noise |
+| ICU admission | 8h | 85,838 | 0.968 [0.962, 0.974] | 0.963 [0.956, 0.969] | 0.005 | within noise |
+| ICU admission | 24h | 74,839 | 0.954 [0.945, 0.963] | 0.940 [0.929, 0.951] | 0.014 | within noise |
+| ICU admission | 72h | 48,971 | 0.931 [0.912, 0.946] | 0.914 [0.894, 0.933] | 0.017 | within noise |
+| Vasopressor start | 8h | 111,450 | 0.934 [0.916, 0.950] | 0.916 [0.896, 0.936] | 0.018 | within noise |
+| Vasopressor start | 24h | 98,722 | 0.914 [0.895, 0.933] | 0.893 [0.871, 0.915] | 0.021 | within noise |
+| Vasopressor start | 72h | 67,385 | 0.883 [0.850, 0.913] | 0.868 [0.840, 0.893] | 0.014 | within noise |
 
 "Real gap" means the two confidence intervals do not overlap. "Within noise" means they do.
 
 ## What this means
 
-Matching features does not close the gap. TabICL (strong, reduced) loses to the tuned GBM on all
-12 cells, and the loss is statistically real on 7 of them.
+Full capability changes the answer. At the reduced config, TabICL lost on all 12 cells, 7 of them
+a real (CI-separated) loss. At full capability, TabICL is statistically indistinguishable from
+the tuned GBM on 9 of 12 cells: all of death, all of ICU admission, all of vasopressor start.
+Death@8h even slightly favors TabICL, though within noise.
 
-AKI has the largest and most consistent gap (0.108 to 0.171, real on all three horizons). This
-matches an earlier finding in this project (`docs/experiments.md`, journal entry 52): the GBM's
-edge on AKI comes from window aggregates and trend statistics it computes explicitly from the raw
-values. TabICL sees the same raw features but has no equivalent way to aggregate them across time
-in a single zero-shot forward pass.
+The reduced config was a real handicap, not a formality. Cutting the ensemble from 8 members to 1
+and the context from 50,000 rows to 20,000 cost TabICL real, measurable performance across the
+board, not just on the cells that happened to look weak.
 
-ICU admission is where TabICL comes closest to the GBM. That also matches the same earlier
-finding: the GBM's edge on ICU admission concentrates in a small set of count features, which may
-be easier for in-context learning to pick up directly from raw values than a window trend is.
-
-The remaining gap is probably a mix of two things this run cannot separate: the real zero-shot vs.
-tuned-and-supervised difference, and the memory-driven reductions (1 estimator instead of 8,
-20,000-row context instead of 50,000). A full-ensemble, full-context run was not achievable on
-this host in a reasonable time. Treat this result as a lower bound on TabICL (strong)'s real
-ceiling, not as its true performance.
+Acute kidney injury is the one place a real gap survives at full capability (0.097 to 0.128,
+separated on all three horizons). This matches an earlier finding in this project
+(`docs/experiments.md`, journal entry 52): the GBM's edge on AKI comes from window aggregates and
+trend statistics it computes explicitly from the raw values, not from having more context to work
+with. TabICL sees the same raw features but has no equivalent way to aggregate them across time
+in a single forward pass, at any context size. But see the label caveat above: this comparison
+used an AKI label known to be incomplete, so the true size of this gap (bigger, smaller, or
+possibly gone) is not yet established.
 
 ## Where things live
 
-- Comparison script (not committed, diagnostic only): `scripts/tabicl_strong_compare.py`, run on
-  the GPU host from a disposable git worktree (since removed)
-- Code changes needed to make this run possible: `odyssey/inference/tabicl_baseline.py` (adds
+- Comparison script (committed): `scripts/tabicl_strong_compare.py`
+- Code changes that made this possible: `odyssey/inference/tabicl_baseline.py` (adds
   `offload_mode`, `batch_size`, and `disk_offload_dir` passthrough to `TabICLClassifier`)
-- Raw per-cell results, including full bootstrap output (mean, std, resample counts):
-  `compare_result.json`, pulled to `/tmp/compare_result.json` this session. Ask if you want it
-  moved somewhere durable.
-- GBM (strong) scores: `~/runs/subset_run_v8_taskset_v3/alerts_rows_v3.parquet` on
-  `odyssey-cbm-a100` (already-registered run, unchanged by this work)
-- Full-capability timing test (synthetic data, not committed, since removed from the host):
-  `~/tabicl_disk_test/probe.py`, a standalone script isolating just the fit/predict cost at
-  50,000 rows x 609 features x 8 estimators with disk offload, independent of this project's
-  data-loading pipeline
-- Full-capability real-data script (not committed, diagnostic only): `scripts/tabicl_strong_compare.py`
-  on `odyssey-cbm-a100-ultra` (`us-central1-a`), fits/scores one (event, horizon) cell at a time using
-  the existing `alerts_rows_v3.parquet` for GBM reference scores. The one completed cell's full
-  bootstrap output is in `~/tabicl_full_validate.json` on that host.
+- Raw per-cell results, including full bootstrap output (mean, std, resample counts): pulled to
+  `/tmp/tabicl_full_sweep.json` this session. Ask if you want it moved somewhere durable.
+- GBM (strong) scores: `~/runs/subset_run_v8_taskset_v3/alerts_rows_v3.parquet`, generated
+  2026-08-25 05:07 UTC (see the label caveat above)
+- GPU host used for this run: `odyssey-cbm-a100-ultra` (`a2-ultragpu-1g`, `us-central1-a`),
+  stopped after this sweep completed. The original host, `odyssey-cbm-a100` (`a2-highgpu-1g`,
+  `us-central1-f`), is stopped and untouched, kept as a fallback.
