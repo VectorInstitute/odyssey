@@ -13,7 +13,7 @@ test_score_alerts_extra_baselines_scores_alongside_the_gbm.
 """
 
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
 import numpy as np
 import polars as pl
@@ -46,11 +46,11 @@ from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
 
 
 T0 = datetime(2024, 1, 1)
-_EventRow = Tuple[int, str, datetime, Optional[float], int]
-_KEY = Tuple[int, int, float]
+_EventRow = tuple[int, str, datetime, Optional[float], int]
+_KEY = tuple[int, int, float]
 
 
-def _separable_xy(n: int = 200, seed: int = 0) -> Tuple[np.ndarray, np.ndarray]:
+def _separable_xy(n: int = 200, seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
     """Two well-separated Gaussian blobs in 4D, an easy binary classification."""
     rng = np.random.default_rng(seed)
     half = n // 2
@@ -116,7 +116,7 @@ def test_fit_probe_baselines_skips_cells_with_too_few_at_risk_rows() -> None:
 
 def test_fit_probe_baselines_skips_cells_with_single_class_labels() -> None:
     """Enough rows, but every outcome is the same class -- AUROC would be undefined."""
-    keys: List[_KEY] = [(1, 1001, float(h)) for h in range(60)]
+    keys: list[_KEY] = [(1, 1001, float(h)) for h in range(60)]
     rows = {"anemia": [IndexRow(s, v, t) for s, v, t in keys]}
     # never onsets, follow-up always reaches past the horizon -> every row "0"
     times = {
@@ -130,9 +130,9 @@ def test_fit_probe_baselines_skips_cells_with_single_class_labels() -> None:
 
 
 def test_fit_probe_baselines_fits_when_enough_rows_of_both_classes() -> None:
-    keys: List[_KEY] = []
-    onset: Dict[Tuple[int, int], float] = {}
-    censor: Dict[Tuple[int, int], float] = {}
+    keys: list[_KEY] = []
+    onset: dict[tuple[int, int], float] = {}
+    censor: dict[tuple[int, int], float] = {}
     for sid in range(1, 31):
         key = (sid, 1000 + sid)
         censor[key] = 100.0
@@ -162,7 +162,7 @@ def _small_cohort(n_subjects: int) -> pl.DataFrame:
     -- the integration test below only checks that fitted probes, if any,
     plug into score_alerts cleanly, not that a specific task is fittable).
     """
-    rows: List[_EventRow] = []
+    rows: list[_EventRow] = []
     for sid in range(1, n_subjects + 1):
         hadm = 1000 + sid
         for h in range(24):
@@ -186,7 +186,7 @@ def _small_cohort(n_subjects: int) -> pl.DataFrame:
 
 
 def test_probe_features_by_event_reuses_one_array_across_every_task() -> None:
-    keys: List[_KEY] = [(1, 1001, 4.0), (1, 1001, 8.0)]
+    keys: list[_KEY] = [(1, 1001, 4.0), (1, 1001, 8.0)]
     embeddings = np.arange(8).reshape(2, 4).astype(np.float32)
 
     features = probe_features_by_event(PROBE_EVENTS, keys, embeddings)
@@ -197,7 +197,7 @@ def test_probe_features_by_event_reuses_one_array_across_every_task() -> None:
 
 
 def test_probe_features_by_event_raises_on_length_mismatch() -> None:
-    keys: List[_KEY] = [(1, 1001, 4.0)]
+    keys: list[_KEY] = [(1, 1001, 4.0)]
     embeddings = np.zeros((2, 4))  # one too many rows
 
     with pytest.raises(ValueError, match="length mismatch"):
@@ -215,7 +215,7 @@ def test_long_los_task_labels_by_total_visit_span_not_the_snapshot_time() -> Non
         (1, 100): (0.0, 200.0),  # long stay: 200h > 168h threshold
         (2, 200): (0.0, 48.0),  # short stay: well under threshold
     }
-    keys: List[_KEY] = [(1, 100, 24.0), (2, 200, 24.0)]
+    keys: list[_KEY] = [(1, 100, 24.0), (2, 200, 24.0)]
     embeddings = np.array([[1.0, 2.0], [3.0, 4.0]])
 
     filtered_keys, filtered_x, y = long_los_task(keys, embeddings, envelope)
@@ -228,7 +228,7 @@ def test_long_los_task_labels_by_total_visit_span_not_the_snapshot_time() -> Non
 def test_long_los_task_keeps_only_the_earliest_row_inside_the_snapshot_band() -> None:
     """Two candidate landmark rows for one visit inside the band -> earliest wins."""
     envelope = {(1, 100): (0.0, 200.0)}
-    keys: List[_KEY] = [
+    keys: list[_KEY] = [
         (1, 100, 26.0),
         (1, 100, 22.0),
         (1, 100, 40.0),
@@ -244,8 +244,8 @@ def test_long_los_task_keeps_only_the_earliest_row_inside_the_snapshot_band() ->
 
 def test_long_los_task_drops_rows_with_no_envelope_entry() -> None:
     """A key whose visit never appears in ``envelope`` is silently excluded."""
-    envelope: Dict[Tuple[int, int], Tuple[float, float]] = {}
-    keys: List[_KEY] = [(1, 100, 24.0)]
+    envelope: dict[tuple[int, int], tuple[float, float]] = {}
+    keys: list[_KEY] = [(1, 100, 24.0)]
     embeddings = np.array([[1.0]])
 
     filtered_keys, filtered_x, y = long_los_task(keys, embeddings, envelope)
@@ -257,7 +257,7 @@ def test_long_los_task_drops_rows_with_no_envelope_entry() -> None:
 
 def test_long_los_task_drops_rows_outside_the_snapshot_band() -> None:
     envelope = {(1, 100): (0.0, 200.0)}
-    keys: List[_KEY] = [(1, 100, 5.0), (1, 100, 100.0)]  # both outside (20, 28)
+    keys: list[_KEY] = [(1, 100, 5.0), (1, 100, 100.0)]  # both outside (20, 28)
     embeddings = np.array([[1.0], [2.0]])
 
     filtered_keys, _filtered_x, y = long_los_task(keys, embeddings, envelope)
@@ -268,7 +268,7 @@ def test_long_los_task_drops_rows_outside_the_snapshot_band() -> None:
 
 def test_visit_envelope_feeds_long_los_task_end_to_end() -> None:
     """visit_envelope's real output plugs into long_los_task without adaptation."""
-    rows: List[_EventRow] = [
+    rows: list[_EventRow] = [
         (1, "LAB//220045//bpm", T0, 80.0, 100),
         (1, "LAB//220045//bpm", T0 + timedelta(hours=24), 80.0, 100),
         (1, "LAB//220045//bpm", T0 + timedelta(hours=200), 80.0, 100),  # long stay
@@ -285,7 +285,7 @@ def test_visit_envelope_feeds_long_los_task_end_to_end() -> None:
         orient="row",
     )
     envelope = visit_envelope(events)
-    keys: List[_KEY] = [(1, 100, 24.0)]
+    keys: list[_KEY] = [(1, 100, 24.0)]
     embeddings = np.array([[1.0]])
 
     filtered_keys, _x, y = long_los_task(keys, embeddings, envelope)

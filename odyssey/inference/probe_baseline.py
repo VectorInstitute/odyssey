@@ -40,11 +40,10 @@ and :func:`run_probe_benchmark` are built so adding either later is one
 more registry entry, not a redesign.
 """
 
-from __future__ import annotations
-
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple, cast
+from typing import Optional, cast
 
 import numpy as np
 import polars as pl
@@ -105,7 +104,7 @@ PROBE_LABEL_TASK_SET = "v3"
 #: not a landmark sweep (predicting it late in a long stay is trivial).
 #: This is the snapshot window in hours-into-visit; the earliest landmark
 #: row inside it is used, one row per visit.
-LONG_LOS_SNAPSHOT_BAND_HOURS: Tuple[float, float] = (20.0, 28.0)
+LONG_LOS_SNAPSHOT_BAND_HOURS: tuple[float, float] = (20.0, 28.0)
 LONG_LOS_THRESHOLD_HOURS = 168.0  # 7 days
 
 
@@ -131,7 +130,7 @@ class ProbeBaselineModel:
         self.clf = clf
         self.feature_set = feature_set
         self.n_features = int(scaler.n_features_in_)
-        self.params: Dict[str, float] = {"C": float(clf.C)}
+        self.params: dict[str, float] = {"C": float(clf.C)}
 
     def predict_proba(self, x: np.ndarray) -> np.ndarray:
         """Positive-class probabilities, ``(n,)``."""
@@ -151,13 +150,13 @@ def fit_binary_probe(
 
 
 def fit_probe_baselines(
-    train_rows: Dict[str, List[IndexRow]],
-    train_embeddings_by_event: Dict[str, np.ndarray],
-    train_times: Dict[str, EventTimes],
+    train_rows: dict[str, list[IndexRow]],
+    train_embeddings_by_event: dict[str, np.ndarray],
+    train_times: dict[str, EventTimes],
     *,
     horizons: Sequence[float] = HORIZONS_HOURS,
     embedding_kind: str = "post_bottleneck",
-) -> Dict[Tuple[str, float], ProbeBaselineModel]:
+) -> dict[tuple[str, float], ProbeBaselineModel]:
     """One probe per (event, horizon), on embeddings instead of GBM features.
 
     Signature deliberately mirrors
@@ -171,7 +170,7 @@ def fit_probe_baselines(
     whole point (it is the ceiling this benchmark is measuring, not a
     tuned classifier).
     """
-    models: Dict[Tuple[str, float], ProbeBaselineModel] = {}
+    models: dict[tuple[str, float], ProbeBaselineModel] = {}
     for name, rows in train_rows.items():
         if not rows or name not in train_embeddings_by_event:
             continue
@@ -193,7 +192,7 @@ def fit_probe_baselines(
 
 def probe_features_by_event(
     alerts: Sequence[AlertEvent], keys: Sequence[Key], embeddings: np.ndarray
-) -> Dict[str, np.ndarray]:
+) -> dict[str, np.ndarray]:
     """Build the ``features_by_event`` shape ``score_alerts``'s hook wants.
 
     Every :data:`~odyssey.data.alert_events.PROBE_EVENTS` task shares the
@@ -213,11 +212,11 @@ def probe_features_by_event(
 def long_los_task(
     keys: Sequence[Key],
     embeddings: np.ndarray,
-    envelope: Dict[Tuple[int, int], Tuple[float, float]],
+    envelope: dict[tuple[int, int], tuple[float, float]],
     *,
     threshold_hours: float = LONG_LOS_THRESHOLD_HOURS,
-    snapshot_band_hours: Tuple[float, float] = LONG_LOS_SNAPSHOT_BAND_HOURS,
-) -> Tuple[List[Key], np.ndarray, np.ndarray]:
+    snapshot_band_hours: tuple[float, float] = LONG_LOS_SNAPSHOT_BAND_HOURS,
+) -> tuple[list[Key], np.ndarray, np.ndarray]:
     """One row per visit, from the earliest landmark inside the snapshot band.
 
     ``long_los`` does not fit :func:`~odyssey.inference.alerts.outcome_at_horizon`'s
@@ -238,7 +237,7 @@ def long_los_task(
     landmark taken on day 6 is nearly trivial and would inflate AUROC for
     reasons unrelated to representation quality.
     """
-    best_for_visit: Dict[Tuple[int, int], int] = {}
+    best_for_visit: dict[tuple[int, int], int] = {}
     for i, (s, v, t) in enumerate(keys):
         env = envelope.get((s, v))
         if env is None:
@@ -301,16 +300,16 @@ class ProbeCell:
 class ProbeBenchmarkResult:
     """Full report: the concept-trigger cells, then long_los, then raw AlertMetrics."""
 
-    cells: List[ProbeCell] = field(default_factory=list)
-    alert_metrics: List[AlertMetrics] = field(default_factory=list)
+    cells: list[ProbeCell] = field(default_factory=list)
+    alert_metrics: list[AlertMetrics] = field(default_factory=list)
 
 
 def _load_split(
     shard_dir: str, max_shards: int, config: object, source: str
-) -> Tuple[
+) -> tuple[
     pl.DataFrame,
-    Dict[Tuple[int, int], float],
-    Dict[Tuple[int, int], Tuple[float, float]],
+    dict[tuple[int, int], float],
+    dict[tuple[int, int], tuple[float, float]],
 ]:
     activate_sidecars(shard_dir)
     raw = _load_prepared_raw(shard_dir, max_shards, config, source)
@@ -447,18 +446,18 @@ def _score_concept_trigger_tasks(
     held_raw: pl.DataFrame,
     train_binned: pl.DataFrame,
     held_binned: pl.DataFrame,
-    train_keys: List[Key],
+    train_keys: list[Key],
     train_pre: np.ndarray,
     train_post: np.ndarray,
-    held_keys: List[Key],
+    held_keys: list[Key],
     held_pre: np.ndarray,
     held_post: np.ndarray,
     source: str,
     horizons: Sequence[float],
     n_boot: int,
     seed: int,
-    cells_out: List[ProbeCell],
-) -> List[AlertMetrics]:
+    cells_out: list[ProbeCell],
+) -> list[AlertMetrics]:
     train_rows = {a.name: _rows_from_keys(train_keys) for a in PROBE_EVENTS}
     held_rows = {a.name: _rows_from_keys(held_keys) for a in PROBE_EVENTS}
     train_times = all_event_times(
@@ -501,7 +500,7 @@ def _score_concept_trigger_tasks(
         # though this is sound (nothing here mutates the dict as a
         # different concrete model type).
         extra_baselines=cast(
-            "Dict[str, Tuple[Dict[Tuple[str, float], _ScoredBaseline], Dict[str, np.ndarray]]]",
+            "dict[str, tuple[dict[tuple[str, float], _ScoredBaseline], dict[str, np.ndarray]]]",
             {
                 "probe_pre": (probe_pre_models, held_pre_features),
                 "probe_post": (probe_post_models, held_post_features),
@@ -509,7 +508,7 @@ def _score_concept_trigger_tasks(
         ),
     )
 
-    by_task: Dict[Tuple[str, float], Dict[str, AlertMetrics]] = {}
+    by_task: dict[tuple[str, float], dict[str, AlertMetrics]] = {}
     for m in metrics:
         by_task.setdefault((m.event, m.horizon_hours), {})[m.scorer] = m
     subject_ids = np.array([k[0] for k in held_keys])
@@ -552,13 +551,13 @@ def _score_concept_trigger_tasks(
     return metrics
 
 
-def _rows_from_keys(keys: Sequence[Key]) -> List[IndexRow]:
+def _rows_from_keys(keys: Sequence[Key]) -> list[IndexRow]:
     return [IndexRow(s, v, t) for s, v, t in keys]
 
 
 def _cell_labels(
-    rows: List[IndexRow], times: EventTimes, horizon: float
-) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    rows: list[IndexRow], times: EventTimes, horizon: float
+) -> Optional[tuple[np.ndarray, np.ndarray]]:
     """At-risk (non-censored) labels and the row mask they came from, or None."""
     outcomes = [outcome_at_horizon(r, times, horizon) for r in rows]
     mask = np.array([o is not None for o in outcomes])
@@ -586,15 +585,15 @@ def _bootstrap_ci(
 
 def _score_long_los(
     *,
-    train_keys: List[Key],
+    train_keys: list[Key],
     train_post: np.ndarray,
-    train_envelope: Dict[Tuple[int, int], Tuple[float, float]],
-    held_keys: List[Key],
+    train_envelope: dict[tuple[int, int], tuple[float, float]],
+    held_keys: list[Key],
     held_post: np.ndarray,
-    held_envelope: Dict[Tuple[int, int], Tuple[float, float]],
+    held_envelope: dict[tuple[int, int], tuple[float, float]],
     n_boot: int,
     seed: int,
-    cells_out: List[ProbeCell],
+    cells_out: list[ProbeCell],
 ) -> None:
     train_los_keys, train_los_x, train_los_y = long_los_task(
         train_keys, train_post, train_envelope

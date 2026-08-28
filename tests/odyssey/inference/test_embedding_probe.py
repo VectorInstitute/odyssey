@@ -7,7 +7,7 @@ real test of the streaming embedding-collection pass itself.
 """
 
 from datetime import datetime, timedelta
-from typing import List, Optional, Tuple
+from typing import Optional
 
 import numpy as np
 import polars as pl
@@ -23,12 +23,12 @@ from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
 
 
 T0 = datetime(2024, 1, 1)
-_EventRow = Tuple[int, str, datetime, Optional[float], int]
+_EventRow = tuple[int, str, datetime, Optional[float], int]
 
 
 def _events(n_subjects: int = 8) -> pl.DataFrame:
     """Hourly heart-rate readings; every other subject starts a vasopressor at 14h."""
-    rows: List[_EventRow] = []
+    rows: list[_EventRow] = []
     for sid in range(1, n_subjects + 1):
         hadm = 1000 + sid
         for h in range(24):
