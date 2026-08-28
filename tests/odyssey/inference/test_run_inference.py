@@ -1076,6 +1076,35 @@ def test_load_run_value_head_false_checkpoint_unaffected(tmp_path: Path) -> None
     assert model.backbone.embeddings.embeddings.value_proj is None
 
 
+def test_load_run_ignores_config_fields_removed_from_training_config(
+    tmp_path: Path,
+) -> None:
+    """A run saved before a field was removed from TrainingConfig must still load.
+
+    Regression: ``recency_features``/``signal_channels`` were removed from
+    ``TrainingConfig`` (commit cd96842) after runs had already saved
+    ``config.json`` with those keys; ``TrainingConfig(**json.loads(...))``
+    previously rejected the unknown kwarg outright, permanently orphaning
+    every run predating the removal (found 2026-08-28 loading
+    subset_run_v8_taskset_v3, a real ~4.5 GPU-hour training run).
+    """
+    vocab = _vocab()
+    run_dir = _write_transformer_run(
+        tmp_path, vocab, value_head=False, value_fourier=False, value_embeddings=False
+    )
+    raw = json.loads((run_dir / "config.json").read_text())
+    raw["recency_features"] = False
+    raw["a_field_that_has_never_existed"] = "stale"
+    (run_dir / "config.json").write_text(json.dumps(raw))
+
+    model, _, _, config = load_run(run_dir, device="cpu")
+
+    assert not hasattr(config, "recency_features")
+    assert not hasattr(config, "a_field_that_has_never_existed")
+    assert model is not None
+    assert config.value_head is False  # known fields still load correctly
+
+
 def test_load_run_value_fourier_false_uses_three_features(tmp_path: Path) -> None:
     vocab = _vocab()
     _write_transformer_run(

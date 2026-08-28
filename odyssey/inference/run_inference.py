@@ -21,7 +21,7 @@ probe still needs a real design decision, not implemented yet.
 import json
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Dict, Iterator, List, NamedTuple, Optional, Sequence, Tuple, Union
 
@@ -325,7 +325,28 @@ def load_run(
     :func:`_latest_checkpoint`).
     """
     run_dir = Path(run_dir)
-    config = TrainingConfig(**json.loads((run_dir / "config.json").read_text()))
+    raw_config = json.loads((run_dir / "config.json").read_text())
+    # A run saved before a field was REMOVED from TrainingConfig (e.g.
+    # recency_features/signal_channels, cd96842) carries that field in its
+    # own config.json forever -- the checkpoint is a historical artifact,
+    # not code, and does not get to be rewritten. TrainingConfig(**dict)
+    # rejects unknown kwargs outright, so every run predating such a
+    # removal would otherwise become permanently unloadable. Filtering to
+    # today's known fields is symmetric with the checkpoint-authority
+    # handling a few lines below for the opposite case (a run PREDATING a
+    # field addition, which just gets that field's current default).
+    known_fields = {f.name for f in fields(TrainingConfig)}
+    dropped = sorted(set(raw_config) - known_fields)
+    if dropped:
+        logger.info(
+            "[load_run] %s: config.json has fields no longer in TrainingConfig "
+            "(dropped by a since-removed feature): %s",
+            run_dir,
+            dropped,
+        )
+    config = TrainingConfig(
+        **{k: v for k, v in raw_config.items() if k in known_fields}
+    )
     vocab = Vocabulary.load(run_dir / "vocabulary.json")
     binner = QuantileBinner.load(run_dir / "quantile_binner.json")
 
