@@ -18,9 +18,8 @@ depends on: the model-driven and model-free landmark selectors produce the
 identical (subject, visit, time) row set for the same ``landmark_hours``).
 """
 
-from __future__ import annotations
-
-from typing import Dict, List, Optional, Sequence, Tuple
+from collections.abc import Sequence
+from typing import Optional
 
 import numpy as np
 import polars as pl
@@ -36,7 +35,7 @@ from odyssey.training.data import iter_patient_sequences
 from odyssey.training.train import _move_chunk_to_device
 
 
-Key = Tuple[int, int, float]
+Key = tuple[int, int, float]
 
 
 def collect_embeddings(
@@ -46,12 +45,12 @@ def collect_embeddings(
     *,
     landmark_alerts: Sequence[AlertEvent],
     visit_end_alerts: Sequence[AlertEvent],
-    visit_start: Dict[Tuple[int, int], float],
+    visit_start: dict[tuple[int, int], float],
     landmark_hours: float,
     num_lanes: int,
     chunk_size: int,
     device: str,
-) -> Tuple[List[Key], np.ndarray, np.ndarray, List[Key], np.ndarray, np.ndarray]:
+) -> tuple[list[Key], np.ndarray, np.ndarray, list[Key], np.ndarray, np.ndarray]:
     """One streaming pass: (keys, pre, post) for landmark and visit-end rows.
 
     ``landmark_alerts``/``visit_end_alerts`` only gate WHICH index-position
@@ -66,12 +65,12 @@ def collect_embeddings(
     sampler = PackedLaneSampler(
         patients, num_lanes=num_lanes, chunk_size=chunk_size, reset_prob=0.0
     )
-    lm_keys: List[Key] = []
-    lm_pre_blocks: List[np.ndarray] = []
-    lm_post_blocks: List[np.ndarray] = []
-    ve_keys: List[Key] = []
-    ve_pre_blocks: List[np.ndarray] = []
-    ve_post_blocks: List[np.ndarray] = []
+    lm_keys: list[Key] = []
+    lm_pre_blocks: list[np.ndarray] = []
+    lm_post_blocks: list[np.ndarray] = []
+    ve_keys: list[Key] = []
+    ve_pre_blocks: list[np.ndarray] = []
+    ve_post_blocks: list[np.ndarray] = []
 
     state = None
     landmark_state: Optional[LandmarkState] = None
@@ -149,7 +148,7 @@ def collect_embeddings(
                     ve_keys.extend(zip(sel_sids, sel_vids, sel_times))
             del hidden_states, bottleneck_out
 
-    def _cat(blocks: List[np.ndarray], dim: int) -> np.ndarray:
+    def _cat(blocks: list[np.ndarray], dim: int) -> np.ndarray:
         return (
             np.concatenate(blocks, axis=0)
             if blocks
