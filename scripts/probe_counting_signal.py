@@ -31,11 +31,12 @@ with nothing handed in?
   from its own state as a training signal (never as an input), or (b)
   capacity/context-length changes -- not feeding the counts in directly.
 
-Reuses probe_bottleneck_signal.collect_embeddings for identical row selection
-and embeddings, and odyssey.inference.baseline_features.StrongFeatureBuilder
-(the GBM's own feature code) to compute the regression TARGETS at the same
-(subject, visit, time) keys -- so "what the GBM would have seen" and "what
-the backbone/bottleneck already represents" are measured on identical rows.
+Reuses odyssey.inference.embedding_probe.collect_embeddings for identical
+row selection and embeddings, and
+odyssey.inference.baseline_features.StrongFeatureBuilder (the GBM's own
+feature code) to compute the regression TARGETS at the same (subject,
+visit, time) keys -- so "what the GBM would have seen" and "what the
+backbone/bottleneck already represents" are measured on identical rows.
 
 Not wired into any CI/registry path. Run directly:
 
@@ -63,9 +64,9 @@ from odyssey.data.sidecars import activate_sidecars
 from odyssey.data.value_binning import add_value_tokens
 from odyssey.inference.alerts import _load_prepared_raw, _visit_starts
 from odyssey.inference.baseline_features import StrongFeatureBuilder, feature_names
+from odyssey.inference.embedding_probe import collect_embeddings
 from odyssey.inference.run_inference import load_run
 from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
-from scripts.probe_bottleneck_signal import collect_embeddings
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -86,7 +87,8 @@ def _counting_columns() -> list[int]:
     idx = [
         i
         for i, n in enumerate(names)
-        if (n.startswith("drug.") or n.startswith("family.")) and n.endswith(keep_suffixes)
+        if (n.startswith("drug.") or n.startswith("family."))
+        and n.endswith(keep_suffixes)
     ]
     idx += [names.index("n_prior_visits"), names.index("n_events_visit")]
     return sorted(idx)
@@ -244,14 +246,10 @@ def main() -> None:
     )
     logger.info("worst-recovered (by pre-bottleneck R^2):")
     for i in order[:10]:
-        logger.info(
-            "  %-40s pre=%.4f post=%.4f", count_names[i], pre_r2[i], post_r2[i]
-        )
+        logger.info("  %-40s pre=%.4f post=%.4f", count_names[i], pre_r2[i], post_r2[i])
     logger.info("best-recovered (by pre-bottleneck R^2):")
     for i in order[-10:][::-1]:
-        logger.info(
-            "  %-40s pre=%.4f post=%.4f", count_names[i], pre_r2[i], post_r2[i]
-        )
+        logger.info("  %-40s pre=%.4f post=%.4f", count_names[i], pre_r2[i], post_r2[i])
 
     print("\nfeature,pre_bottleneck_r2,post_bottleneck_r2,delta")
     for i, name in enumerate(count_names):

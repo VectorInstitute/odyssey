@@ -99,6 +99,35 @@ def alert_events_for(task_set: str = "v1") -> Tuple[AlertEvent, ...]:
     return ALERT_TASK_SETS[task_set]
 
 
+# EHRSHOT-style PROBE tasks (Wornow et al., NeurIPS D&B 2023): frozen-probe
+# evaluation targets, deliberately NOT trained alert heads. Amrit's 2026-08-28
+# directive: don't keep adding heads that compete for shared-backbone
+# gradient (documented cost, e.g. eicu_subset_v9's recency channel: -2 to
+# -9pp on other families) -- instead measure whether the GENERAL
+# representation already supports these tasks under a frozen probe (see
+# odyssey.inference.probe_baseline). These 5 are the "Anticipating Lab Test
+# Values" category, adapted from EHRSHOT's 5-way severity multiclass to a
+# binary "does the existing task_set=v3 concept trigger within horizon h"
+# (the concepts already exist; EHRSHOT's literal severity buckets do not).
+# "Long length of stay" and the "Assignment of New Diagnoses"/"Chest X-ray
+# Findings" categories are NOT expressible as first-trigger-of-a-concept-or-
+# code-family AlertEvents (LOS is a static per-visit label; new-diagnosis
+# needs vetted ICD/SNOMED code lists not yet in this repo; chest x-ray needs
+# structured labels this project doesn't have) -- LOS gets its own path in
+# odyssey.inference.probe_baseline (visit_envelope + a fixed early snapshot,
+# not a landmark sweep); the rest are left for when their inputs exist.
+PROBE_EVENTS: Tuple[AlertEvent, ...] = tuple(
+    AlertEvent(name=c, concept=c)
+    for c in (
+        "anemia",
+        "hyperkalemia",
+        "hypoglycemia",
+        "hyponatremia",
+        "thrombocytopenia",
+    )
+)
+
+
 # ---------------------------------------------------------------------------
 # Onset and censoring times
 # ---------------------------------------------------------------------------
@@ -135,6 +164,39 @@ def hours_since_origin(
     return frame.join(origins, on="subject_id", how="left").with_columns(
         ((pl.col(col) - pl.col("_origin")).dt.total_seconds() / 3600.0).alias(col)
     )
+
+
+def visit_envelope(events: pl.DataFrame) -> Dict[Tuple[int, int], Tuple[float, float]]:
+    """(subject_id, hadm_id) -> (hours of first event, hours of last event).
+
+    Shared building block for tasks defined over a visit's TOTAL span
+    (e.g. length of stay) rather than a first-trigger onset -- distinct
+    from :func:`event_times`, whose ``last`` groupby only ever becomes the
+    right-censoring time, never a label input itself.
+    """
+    origins = origin_hours(events)
+    timed = events.filter(
+        pl.col("time").is_not_null() & pl.col("hadm_id").is_not_null()
+    )
+    span = (
+        timed.group_by("subject_id", "hadm_id")
+        .agg(pl.col("time").min().alias("_start"), pl.col("time").max().alias("_end"))
+        .join(origins, on="subject_id", how="left")
+        .with_columns(
+            ((pl.col("_start") - pl.col("_origin")).dt.total_seconds() / 3600.0).alias(
+                "_start"
+            ),
+            ((pl.col("_end") - pl.col("_origin")).dt.total_seconds() / 3600.0).alias(
+                "_end"
+            ),
+        )
+    )
+    return {
+        (int(s), int(v)): (float(a), float(b))
+        for s, v, a, b in zip(
+            span["subject_id"], span["hadm_id"], span["_start"], span["_end"]
+        )
+    }
 
 
 def _next_visit_onsets(
@@ -287,8 +349,10 @@ __all__ = [
     "ALERT_EVENTS",
     "AlertEvent",
     "EventTimes",
+    "PROBE_EVENTS",
     "all_event_times",
     "event_times",
     "hours_since_origin",
     "origin_hours",
+    "visit_envelope",
 ]

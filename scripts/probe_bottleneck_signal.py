@@ -11,6 +11,12 @@ each, separately, per (event, horizon). Mirrors the precedent frozen-
 feature probe cited in commit cd96842 (per-family recency recoverable at
 R^2 0.925 pre-bottleneck / 0.916 post-bottleneck on subset_run_v8).
 
+``collect_embeddings``/``labels_for`` now live in
+:mod:`odyssey.inference.embedding_probe` as tested library code (this
+script duplicated them, untested, until 2026-08-28) -- also the
+foundation :mod:`odyssey.inference.probe_baseline`'s EHRSHOT-style
+benchmark builds on. This script is now a thin CLI over that library.
+
 Not wired into any CI/registry path. Run directly:
 
     uv run python scripts/probe_bottleneck_signal.py \
@@ -24,7 +30,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-from collections.abc import Sequence
 
 import numpy as np
 import polars as pl
@@ -33,177 +38,20 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.preprocessing import StandardScaler
 
-from odyssey.data.alert_events import (
-    AlertEvent,
-    EventTimes,
-    alert_events_for,
-    all_event_times,
-)
+from odyssey.data.alert_events import EventTimes, alert_events_for, all_event_times
 from odyssey.data.concepts import concepts_for_source
 from odyssey.data.sidecars import activate_sidecars
-from odyssey.data.streaming import PackedLaneSampler
 from odyssey.data.value_binning import add_value_tokens
-from odyssey.data.vocabulary import Vocabulary
-from odyssey.inference.alerts import (
-    HORIZONS_HOURS,
-    IndexRow,
-    LandmarkState,
-    _load_prepared_raw,
-    _select_index_positions,
-    _visit_starts,
-    outcome_at_horizon,
-)
+from odyssey.inference.alerts import HORIZONS_HOURS, _load_prepared_raw, _visit_starts
+from odyssey.inference.embedding_probe import collect_embeddings, labels_for
 from odyssey.inference.run_inference import load_run
 from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
-from odyssey.training.data import iter_patient_sequences
-from odyssey.training.train import _move_chunk_to_device
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("probe_bottleneck_signal")
 
 READMISSION_HORIZONS = (168.0, 720.0)
-
-
-def collect_embeddings(
-    model: ConceptBottleneckSequenceModel,
-    binned: pl.DataFrame,
-    vocab: Vocabulary,
-    *,
-    landmark_alerts: Sequence[AlertEvent],
-    visit_end_alerts: Sequence[AlertEvent],
-    visit_start: dict[tuple[int, int], float],
-    landmark_hours: float,
-    num_lanes: int,
-    chunk_size: int,
-    device: str,
-) -> tuple[
-    list[tuple[int, int, float]],
-    np.ndarray,
-    np.ndarray,
-    list[tuple[int, int, float]],
-    np.ndarray,
-    np.ndarray,
-]:
-    """One streaming pass: (keys, pre, post) for landmark and visit-end rows."""
-    model.eval()
-    patients = iter_patient_sequences(binned, vocab)
-    sampler = PackedLaneSampler(
-        patients, num_lanes=num_lanes, chunk_size=chunk_size, reset_prob=0.0
-    )
-    lm_keys: list[tuple[int, int, float]] = []
-    lm_pre_blocks: list[np.ndarray] = []
-    lm_post_blocks: list[np.ndarray] = []
-    ve_keys: list[tuple[int, int, float]] = []
-    ve_pre_blocks: list[np.ndarray] = []
-    ve_post_blocks: list[np.ndarray] = []
-
-    state = None
-    landmark_state: LandmarkState | None = None
-    with torch.no_grad():
-        for chunk in sampler:
-            chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
-            hidden_states, state = model.backbone(
-                chunk.batch, state=state, reset_mask=chunk.reset_mask
-            )
-            bottleneck_out = model.bottleneck(hidden_states)
-            sids = chunk.subject_ids
-            vids = chunk.visit_ids
-            times = chunk.batch.aux.time_stamps
-
-            keys = torch.stack([sids, vids], dim=-1).reshape(-1, 2)
-            unique_keys, inverse = torch.unique(keys, dim=0, return_inverse=True)
-            unique_starts = torch.tensor(
-                [
-                    visit_start.get((int(s), int(v)), 0.0)
-                    for s, v in unique_keys.tolist()
-                ],
-                dtype=times.dtype,
-                device=times.device,
-            )
-            starts = unique_starts[inverse].view_as(times)
-
-            if landmark_alerts:
-                keep, landmark_state = _select_index_positions(
-                    "landmark",
-                    chunk,
-                    times=times,
-                    sids=sids,
-                    vids=vids,
-                    landmark_hours=landmark_hours,
-                    starts=starts,
-                    landmark_state=landmark_state,
-                )
-                if keep.any():
-                    idx = keep.nonzero(as_tuple=False)
-                    b, t = idx[:, 0], idx[:, 1]
-                    lm_pre_blocks.append(
-                        hidden_states[b, t].detach().float().cpu().numpy()
-                    )
-                    lm_post_blocks.append(
-                        bottleneck_out.bottleneck[b, t].detach().float().cpu().numpy()
-                    )
-                    sel_sids = sids[b, t].tolist()
-                    sel_vids = vids[b, t].tolist()
-                    sel_times = times[b, t].tolist()
-                    lm_keys.extend(zip(sel_sids, sel_vids, sel_times))
-
-            if visit_end_alerts:
-                keep_ve, _ = _select_index_positions(
-                    "visit_end",
-                    chunk,
-                    times=times,
-                    sids=sids,
-                    vids=vids,
-                    landmark_hours=landmark_hours,
-                    starts=starts,
-                    landmark_state=None,
-                )
-                if keep_ve.any():
-                    idx = keep_ve.nonzero(as_tuple=False)
-                    b, t = idx[:, 0], idx[:, 1]
-                    ve_pre_blocks.append(
-                        hidden_states[b, t].detach().float().cpu().numpy()
-                    )
-                    ve_post_blocks.append(
-                        bottleneck_out.bottleneck[b, t].detach().float().cpu().numpy()
-                    )
-                    sel_sids = sids[b, t].tolist()
-                    sel_vids = vids[b, t].tolist()
-                    sel_times = times[b, t].tolist()
-                    ve_keys.extend(zip(sel_sids, sel_vids, sel_times))
-            del hidden_states, bottleneck_out
-
-    def _cat(blocks: list[np.ndarray], dim: int) -> np.ndarray:
-        return (
-            np.concatenate(blocks, axis=0)
-            if blocks
-            else np.zeros((0, dim), dtype=np.float32)
-        )
-
-    hidden_dim = model.backbone.hidden_size
-    bottleneck_dim = model.bottleneck.output_dim
-    return (
-        lm_keys,
-        _cat(lm_pre_blocks, hidden_dim),
-        _cat(lm_post_blocks, bottleneck_dim),
-        ve_keys,
-        _cat(ve_pre_blocks, hidden_dim),
-        _cat(ve_post_blocks, bottleneck_dim),
-    )
-
-
-def labels_for(
-    keys: Sequence[tuple[int, int, float]], times: EventTimes, horizon: float
-) -> np.ndarray:
-    """Binary outcome-at-horizon label for each (subject, visit, time) key."""
-    labels = np.full(len(keys), np.nan, dtype=np.float64)
-    for i, (sid, vid, t) in enumerate(keys):
-        row = IndexRow(sid, vid, t)
-        y = outcome_at_horizon(row, times, horizon)
-        if y is not None:
-            labels[i] = y
-    return labels
 
 
 def probe_auroc(

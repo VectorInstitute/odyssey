@@ -191,6 +191,50 @@ def test_harness_end_to_end_with_planted_signal() -> None:
     assert gbm.n_censored > 0
 
 
+def test_collect_model_scores_and_score_alerts_skip_hazard_cleanly_when_event_hazards_false() -> (
+    None
+):
+    """A model with no event heads must score cleanly end to end, not just pass guards.
+
+    ``TrainingConfig.event_hazards=False`` (``run_inference.load_run``
+    infers this straight from the checkpoint, ``run_inference.py:362-364``)
+    must flow through the whole scoring path with zero hazard rows and no
+    crash. ``_model()`` already builds with ``event_names=None`` (the
+    default), so ``model.event_heads is None`` here already -- this pins
+    that the FULL pipeline, not just the unit-level guards, handles it.
+    """
+    events = _events(8)
+    binned = add_value_tokens(events)
+    vocab = _vocab(binned)
+    concepts = concepts_for_source("mimic_iv")
+    model = _model(len(vocab), len(concepts))
+    assert model.event_heads is None  # the precondition this test is pinning
+
+    times = all_event_times(events, ALERT_EVENTS, "mimic_iv")
+    rows = collect_model_scores(
+        model,
+        binned,
+        vocab,
+        [c.name for c in concepts],
+        ALERT_EVENTS,
+        visit_start=_visit_starts(events),
+        landmark_hours=4.0,
+        num_lanes=2,
+        chunk_size=16,
+        device="cpu",
+    )
+    # no hazard@ key on any row -- the head simply never ran, not "ran and
+    # produced nothing"
+    for event_rows in rows.values():
+        for r in event_rows:
+            assert not any(k.startswith("hazard@") for k in r.scores)
+            assert "next_mass" in r.scores  # the other scorers are unaffected
+
+    results = score_alerts(rows, times, horizons=(8.0,))
+    assert results  # concept/next_mass rows still score
+    assert not any(r.scorer == "hazard" for r in results)
+
+
 def test_landmark_mask_state_prevents_a_spurious_landmark_at_a_chunk_boundary() -> None:
     """Direct unit test of the LandmarkState mechanism, isolated from the sampler.
 
