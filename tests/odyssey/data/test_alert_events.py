@@ -13,10 +13,13 @@ import polars as pl
 import pytest
 
 from odyssey.data.alert_events import (
+    COUNTING_AUXILIARY_EVENTS,
     PROBE_EVENTS,
     AlertEvent,
     _next_visit_onsets,
+    alert_events_for,
     event_times,
+    hazard_events_for,
     origin_hours,
     visit_envelope,
 )
@@ -193,3 +196,63 @@ def test_probe_events_names_match_their_own_concept() -> None:
         assert alert.code_prefix is None
         assert not alert.subject_scoped
         assert not alert.next_visit
+
+
+def test_code_regex_onset_matches_anywhere_in_the_code_case_insensitively() -> None:
+    """A regex alert onsets on the first row whose raw code matches anywhere.
+
+    Mirrors DRUG_CLASSES' own matching convention
+    (odyssey.inference.baseline_features): case-insensitive, substring
+    search over the raw code, not a prefix.
+    """
+    rows: List[_EventRow] = [
+        (1, "LAB//220045//bpm", T0, 80.0, 1001),
+        # mixed case, mid-string -- must still match a lowercase pattern
+        (
+            1,
+            "MEDICATION//NOREPINEPHRINE//Administered",
+            T0 + timedelta(hours=5),
+            None,
+            1001,
+        ),
+    ]
+    events = pl.DataFrame(
+        rows,
+        schema={
+            "subject_id": pl.Int64,
+            "code": pl.Utf8,
+            "time": pl.Datetime,
+            "numeric_value": pl.Float32,
+            "hadm_id": pl.Int64,
+        },
+        orient="row",
+    )
+    alert = AlertEvent("vasopressor", code_regex=r"norepinephrine|vasopressin")
+
+    times = event_times(events, alert)
+
+    assert times.onset[(1, 1001)] == 5.0
+
+
+def test_code_regex_with_next_visit_raises() -> None:
+    """next_visit is only implemented for code_prefix -- silently wrong otherwise."""
+    with pytest.raises(ValueError, match="next_visit"):
+        AlertEvent("bad", code_regex="x", next_visit=True)
+
+
+def test_hazard_events_for_with_no_auxiliary_names_matches_alert_events_for() -> None:
+    """Empty auxiliary_event_names must reproduce alert_events_for exactly."""
+    for task_set in ("v1", "v2", "v3"):
+        assert hazard_events_for(task_set) == alert_events_for(task_set)
+        assert hazard_events_for(task_set, ()) == alert_events_for(task_set)
+
+
+def test_hazard_events_for_appends_requested_auxiliary_events() -> None:
+    names = ("vasopressor", "inotrope")
+    result = hazard_events_for("v3", names)
+
+    assert result == alert_events_for("v3") + tuple(
+        a for a in COUNTING_AUXILIARY_EVENTS if a.name in names
+    )
+    # auxiliary events are never mixed into alert_events_for's own output
+    assert not any(a.name in names for a in alert_events_for("v3"))

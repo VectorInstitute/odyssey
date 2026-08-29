@@ -49,12 +49,12 @@ import logging
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterator, Optional, Sequence, TypeVar, Union
+from typing import Callable, Dict, Iterator, Optional, Sequence, Tuple, TypeVar, Union
 
 import polars as pl
 import torch
 
-from odyssey.data.alert_events import alert_events_for, all_event_times
+from odyssey.data.alert_events import all_event_times, hazard_events_for
 from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.concepts import AnyConceptDefinition, concepts_for_source
 from odyssey.data.history_recap import maybe_history_recap
@@ -324,6 +324,15 @@ class TrainingConfig:
 
     event_hazard_weight: float = 1.0
 
+    auxiliary_event_names: Tuple[str, ...] = ()
+    """Extra events (from odyssey.data.alert_events.COUNTING_AUXILIARY_EVENTS_BY_NAME)
+    trained by the SAME per-event hazard heads as event_hazards' curated
+    events, but never scored as alerts (odyssey.inference.alerts iterates
+    alert_events_for(task_set) directly, which never includes these) --
+    an auxiliary training signal only. See hazard_events_for. Empty (the
+    default) reproduces today's event_names exactly for every existing
+    config/checkpoint."""
+
     value_head: bool = False
     """Add the next-event value-quantile head
     (odyssey.models.value_head.ValueQuantileHead): K=9 quantiles of the
@@ -564,7 +573,13 @@ def build_model(
         else None
     )
     event_names = (
-        [a.name for a in alert_events_for(getattr(config, "task_set", "v1"))]
+        [
+            a.name
+            for a in hazard_events_for(
+                getattr(config, "task_set", "v1"),
+                getattr(config, "auxiliary_event_names", ()),
+            )
+        ]
         if getattr(config, "event_hazards", False)
         else None
     )
@@ -811,7 +826,7 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
     tuning_event_tables: Optional[EventTimeTables] = None
     if config.event_hazards:
         logger.info("[data] computing alert-event onset/censoring times")
-        alerts = alert_events_for(config.task_set)
+        alerts = hazard_events_for(config.task_set, config.auxiliary_event_names)
         event_names = [a.name for a in alerts]
         train_event_tables = EventTimeTables(
             all_event_times(
@@ -951,7 +966,11 @@ def _train_streaming(config: TrainingConfig, output_dir: Path, device: str) -> P
         concepts=concepts,
         concept_supervision=config.concept_supervision,
         with_first_times=config.randint_prob > 0.0,
-        alerts=alert_events_for(config.task_set) if config.event_hazards else None,
+        alerts=(
+            hazard_events_for(config.task_set, config.auxiliary_event_names)
+            if config.event_hazards
+            else None
+        ),
         task_set=config.task_set,
     )
     logger.info(
@@ -980,7 +999,7 @@ def _train_streaming(config: TrainingConfig, output_dir: Path, device: str) -> P
         )
     else:
         tuning_labels, tuning_masks = build_concept_label_dicts(tuning_events, concepts)
-    alerts = alert_events_for(config.task_set)
+    alerts = hazard_events_for(config.task_set, config.auxiliary_event_names)
     event_names = [a.name for a in alerts]
     train_event_tables = (
         EventTimeTables(stats.event_times, event_names)

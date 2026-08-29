@@ -33,6 +33,16 @@ class AlertEvent:
     code_prefix: Optional[str] = None
     """Code family whose first occurrence defines onset."""
 
+    code_regex: Optional[str] = None
+    """Regex over the raw ``code`` string (case-insensitive) whose first
+    match defines onset -- for events that aren't a clean prefix (e.g. a
+    drug class matched by ingredient name anywhere in the code), the way
+    :data:`~odyssey.inference.baseline_features.DRUG_CLASSES` already
+    matches for the GBM baseline. Mutually exclusive with ``code_prefix``
+    in practice, not enforced. Distinct from ``token_regex``, which
+    matches already-tokenized VOCABULARY tokens (post-binning) for the
+    next-event-mass score, not raw codes for onset computation."""
+
     subject_scoped: bool = False
     """Onset and censoring are taken over the subject's whole record
     rather than the visit (death is not tied to a hadm_id)."""
@@ -45,6 +55,19 @@ class AlertEvent:
     """Onset is the first occurrence of ``code_prefix`` strictly AFTER the
     visit's last event (the next admission); follow-up runs to the end of
     the subject's record, not the visit's (30-day readmission)."""
+
+    def __post_init__(self) -> None:
+        """``next_visit`` is only implemented for ``code_prefix``, not ``code_regex``.
+
+        Silently falling through to plain first-occurrence semantics for
+        that combination would be a wrong-answer bug, not a clean error --
+        ``_next_visit_onsets`` only knows ``str.starts_with``.
+        """
+        if self.code_regex is not None and self.next_visit:
+            raise ValueError(
+                f"alert {self.name!r}: next_visit is only implemented for "
+                "code_prefix, not code_regex"
+            )
 
 
 ALERT_EVENTS_V1: Tuple[AlertEvent, ...] = (
@@ -97,6 +120,87 @@ def alert_events_for(task_set: str = "v1") -> Tuple[AlertEvent, ...]:
             f"unknown task_set {task_set!r}; known: {sorted(ALERT_TASK_SETS)}"
         )
     return ALERT_TASK_SETS[task_set]
+
+
+# Widened counting-hazard AUXILIARY events (2026-08-28): the GBM
+# feature-group ablation found explicit drug-class occurrence counts
+# explain 70-99% of the GBM's margin on vasopressor_start/icu_admission;
+# a follow-up probe (scripts/probe_counting_signal.py) measured that the
+# backbone's own hidden state cannot linearly recover these specific
+# counts (R^2 0.01-0.33) the way it already recovers recency (R^2 0.92)
+# or general activity counts like lab/visit volume (R^2 0.6-0.9). The
+# mechanism under test: training the model to be accurate at predicting
+# TIME TO NEXT OCCURRENCE of a code is, for a roughly rate-stationary
+# process, an estimator of the same underlying quantity a window COUNT
+# estimates (count ~ rate x window; inter-arrival time ~
+# Exponential(rate)) -- so widening the existing per-event hazard-head
+# machinery (the same mechanism vasopressor_start/death/etc. already use)
+# to include these specific codes as an AUXILIARY training signal should
+# force that rate-like representation, the same way the curated events
+# already do for the concepts they cover. These are trained but never
+# scored as alerts (see TrainingConfig.auxiliary_event_names,
+# hazard_events_for below) -- deliberately NOT added to any
+# ALERT_TASK_SETS entry.
+#
+# Regex strings are copied from odyssey.inference.baseline_features.
+# DRUG_CLASSES (the GBM's own drug-class matching) rather than imported --
+# baseline_features.py already imports FROM this module (origin_hours),
+# so the reverse import would be circular. Keep these in sync with
+# DRUG_CLASSES by hand if either changes. Limited to the 6 classes the
+# counting probe found worst-recovered (R^2 < 0.1, plus vasopressor at
+# 0.15-0.33 as the clinically central one) rather than all 13 in
+# DRUG_CLASSES, to keep this a small, targeted experiment.
+COUNTING_AUXILIARY_EVENTS: Tuple[AlertEvent, ...] = (
+    AlertEvent(
+        "vasopressor",
+        code_regex=(
+            r"norepinephrine|levophed|epinephrine|vasopressin|phenylephrine"
+            r"|neo-?synephrine|dopamine|angiotensin"
+        ),
+    ),
+    AlertEvent("inotrope", code_regex=r"dobutamine|milrinone"),
+    AlertEvent(
+        "antiarrhythmic", code_regex=r"amiodarone|diltiazem|esmolol|adenosine|lidocaine"
+    ),
+    AlertEvent(
+        "neuromuscular_blocker",
+        code_regex=r"cisatracurium|vecuronium|rocuronium|succinylcholine",
+    ),
+    AlertEvent(
+        "corticosteroid",
+        code_regex=(
+            r"hydrocortisone|methylprednisolone|dexamethasone|prednisone"
+            r"|prednisolone"
+        ),
+    ),
+    AlertEvent("bicarbonate", code_regex=r"sodium bicarbonate|bicarb"),
+)
+
+COUNTING_AUXILIARY_EVENTS_BY_NAME: Dict[str, AlertEvent] = {
+    a.name: a for a in COUNTING_AUXILIARY_EVENTS
+}
+
+
+def hazard_events_for(
+    task_set: str, auxiliary_event_names: Sequence[str] = ()
+) -> Tuple[AlertEvent, ...]:
+    """Return the full event list an ``EventHazardHeads`` trains.
+
+    Single shared source for what was three independently-duplicated
+    ``alert_events_for(task_set)`` call sites in
+    :mod:`odyssey.training.train`/:mod:`odyssey.training.shard_stream`.
+    ``auxiliary_event_names`` names entries from
+    :data:`COUNTING_AUXILIARY_EVENTS_BY_NAME`; empty (the default)
+    reproduces ``alert_events_for(task_set)`` exactly, so every existing
+    config/checkpoint is unaffected. Auxiliary events are deliberately
+    NOT included in :func:`alert_events_for`'s own output -- they are
+    trained but never read by :mod:`odyssey.inference.alerts`' scoring,
+    which iterates ``alert_events_for(task_set)`` directly.
+    """
+    extra = tuple(
+        COUNTING_AUXILIARY_EVENTS_BY_NAME[name] for name in auxiliary_event_names
+    )
+    return alert_events_for(task_set) + extra
 
 
 # EHRSHOT-style PROBE tasks (Wornow et al., NeurIPS D&B 2023): frozen-probe
@@ -296,8 +400,12 @@ def event_times(
         }
     elif alert.code_prefix is not None and alert.next_visit:
         onset = _next_visit_onsets(timed, alert.code_prefix, origins)
-    elif alert.code_prefix is not None:
-        hits = timed.filter(pl.col("code").str.starts_with(alert.code_prefix))
+    elif alert.code_prefix is not None or alert.code_regex is not None:
+        hits = (
+            timed.filter(pl.col("code").str.starts_with(alert.code_prefix))
+            if alert.code_prefix is not None
+            else timed.filter(pl.col("code").str.contains(f"(?i){alert.code_regex}"))
+        )
         if alert.subject_scoped:
             first = hits.group_by("subject_id").agg(pl.col("time").min().alias("_t"))
             first = hours_since_origin(first, "_t", origins)
@@ -316,7 +424,7 @@ def event_times(
             }
     else:
         raise ValueError(
-            f"alert {alert.name!r} defines neither concept nor code_prefix"
+            f"alert {alert.name!r} defines neither concept, code_prefix, nor code_regex"
         )
     return EventTimes(onset=onset, censor=censor, subject_scoped=alert.subject_scoped)
 
@@ -348,10 +456,13 @@ __all__ = [
     "alert_events_for",
     "ALERT_EVENTS",
     "AlertEvent",
+    "COUNTING_AUXILIARY_EVENTS",
+    "COUNTING_AUXILIARY_EVENTS_BY_NAME",
     "EventTimes",
     "PROBE_EVENTS",
     "all_event_times",
     "event_times",
+    "hazard_events_for",
     "hours_since_origin",
     "origin_hours",
     "visit_envelope",

@@ -14,6 +14,7 @@ import pytest
 import torch
 
 import odyssey.training.train as train_module
+from odyssey.data.alert_events import hazard_events_for
 from odyssey.data.streaming import PackedLaneSampler
 from odyssey.data.types import AuxiliaryInputs, ClinicalSequenceBatch
 from odyssey.data.vocabulary import Vocabulary
@@ -386,6 +387,51 @@ def test_build_model_hybrid_and_transformer_are_directly_comparable_by_param_cou
     n_params = sum(p.numel() for p in model.backbone.parameters())
 
     assert n_params > 0
+
+
+def test_build_model_widens_event_heads_with_auxiliary_events() -> None:
+    """auxiliary_event_names appends to, never replaces, the task_set's own events."""
+    config = TrainingConfig(
+        train_shard_dir="/train",
+        tuning_shard_dir="/tuning",
+        output_dir="/out",
+        backbone="transformer",
+        hidden_size=16,
+        num_hidden_layers=1,
+        attn_num_heads=4,
+        task_set="v1",
+        auxiliary_event_names=("vasopressor", "inotrope"),
+    )
+
+    model = build_model(config, vocab_size=50, num_concepts=5)
+
+    expected = [a.name for a in hazard_events_for("v1", ("vasopressor", "inotrope"))]
+    assert model.event_heads is not None
+    assert model.event_heads.event_names == expected
+    assert model.event_heads.event_names[:-2] == [
+        a.name for a in hazard_events_for("v1")
+    ]
+
+
+def test_build_model_auxiliary_event_names_default_matches_pre_existing_behavior() -> (
+    None
+):
+    """Empty auxiliary_event_names (the default) must not change event_names at all."""
+    config = TrainingConfig(
+        train_shard_dir="/train",
+        tuning_shard_dir="/tuning",
+        output_dir="/out",
+        backbone="transformer",
+        hidden_size=16,
+        num_hidden_layers=1,
+        attn_num_heads=4,
+        task_set="v1",
+    )
+
+    model = build_model(config, vocab_size=50, num_concepts=5)
+
+    assert model.event_heads is not None
+    assert model.event_heads.event_names == [a.name for a in hazard_events_for("v1")]
 
 
 # ---------------------------------------------------------------------------
