@@ -8,12 +8,14 @@ import json
 import math
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Tuple
 
 import polars as pl
 import pytest
 import torch
 
 import odyssey.inference.run_inference as ri
+from odyssey.data.alert_events import hazard_events_for
 from odyssey.data.concepts import ConceptDefinition, ConceptRule
 from odyssey.data.packed_context import PackedContextSampler
 from odyssey.data.streaming import PackedLaneSampler
@@ -1004,9 +1006,23 @@ def _write_transformer_run(
     value_fourier: bool = False,
     value_embeddings: bool = True,
     hidden_size: int = 16,
+    event_hazards: bool = False,
+    task_set: str = "v1",
+    auxiliary_event_names: Tuple[str, ...] = (),
 ) -> Path:
-    """Build a real (CPU-only) transformer BaselineSequenceModel run dir."""
+    """Build a real (CPU-only) transformer BaselineSequenceModel run dir.
+
+    ``event_hazards`` defaults to False, preserving every existing
+    caller's behavior exactly (no event_heads.* keys at all) -- only set
+    it to exercise hazard-head reconstruction (see
+    test_load_run_reconstructs_widened_event_heads below).
+    """
     torch.manual_seed(0)
+    event_names = (
+        [a.name for a in hazard_events_for(task_set, auxiliary_event_names)]
+        if event_hazards
+        else None
+    )
     model = BaselineSequenceModel(
         backbone=TransformerBackbone(
             vocab_size=len(vocab),
@@ -1021,6 +1037,7 @@ def _write_transformer_run(
         padding_idx=0,
         time_bin_edges=DEFAULT_TIME_BIN_EDGES_HOURS,
         value_head=value_head,
+        event_names=event_names,
     )
     config = TrainingConfig(
         train_shard_dir="a",
@@ -1035,6 +1052,9 @@ def _write_transformer_run(
         value_head=value_head,
         value_fourier=value_fourier,
         value_embeddings=value_embeddings,
+        event_hazards=event_hazards,
+        task_set=task_set,
+        auxiliary_event_names=auxiliary_event_names,
     )
     (tmp_path / "config.json").write_text(json.dumps(config.__dict__))
     vocab.save(tmp_path / "vocabulary.json")
@@ -1043,6 +1063,54 @@ def _write_transformer_run(
     )
     torch.save({"model": model.state_dict()}, tmp_path / "checkpoint_final.pt")
     return tmp_path
+
+
+def test_load_run_reconstructs_widened_event_heads(tmp_path: Path) -> None:
+    """auxiliary_event_names round-trips through config.json without a width mismatch.
+
+    The one real failure mode found designing this feature: event_names
+    is reconstructed at both train time and load time purely from
+    config.task_set/auxiliary_event_names (there is no persisted name
+    list) via the single shared hazard_events_for helper -- if the two
+    reconstructions ever disagreed, load_state_dict's strict=True default
+    would raise a size-mismatch RuntimeError, not silently misalign.
+    """
+    vocab = _vocab()
+    auxiliary = ("vasopressor", "inotrope")
+    run_dir = _write_transformer_run(
+        tmp_path,
+        vocab,
+        value_head=False,
+        event_hazards=True,
+        task_set="v1",
+        auxiliary_event_names=auxiliary,
+    )
+
+    model, _, _, config = load_run(run_dir, device="cpu")
+
+    expected_names = [a.name for a in hazard_events_for("v1", auxiliary)]
+    # JSON has no tuple type, so config.json round-trips this field as a
+    # list -- functionally identical (hazard_events_for just iterates it),
+    # so compare as tuples rather than assert exact type preservation.
+    assert tuple(config.auxiliary_event_names) == auxiliary
+    assert model.event_heads is not None
+    assert model.event_heads.event_names == expected_names
+
+
+def test_load_run_auxiliary_event_names_empty_matches_pre_existing_behavior(
+    tmp_path: Path,
+) -> None:
+    """The default (no auxiliary events) must reproduce today's event list exactly."""
+    vocab = _vocab()
+    run_dir = _write_transformer_run(
+        tmp_path, vocab, value_head=False, event_hazards=True
+    )
+
+    model, _, _, config = load_run(run_dir, device="cpu")
+
+    assert tuple(config.auxiliary_event_names) == ()
+    assert model.event_heads is not None
+    assert model.event_heads.event_names == [a.name for a in hazard_events_for("v1")]
 
 
 def test_load_run_reconstructs_value_head(tmp_path: Path) -> None:
