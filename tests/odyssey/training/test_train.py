@@ -14,6 +14,7 @@ import torch
 
 import odyssey.training.train as train_module
 from odyssey.data.alert_events import hazard_events_for
+from odyssey.data.sidecars import activate_sidecars
 from odyssey.data.streaming import PackedLaneSampler
 from odyssey.data.types import AuxiliaryInputs, ClinicalSequenceBatch
 from odyssey.data.vocabulary import Vocabulary
@@ -816,3 +817,28 @@ def test_batch_config_fields_excludes_non_resume_relevant_hyperparameters() -> N
     )
     assert "learning_rate" not in _batch_config_fields(base)
     assert _batch_config_fields(base) == _batch_config_fields(different_lr)
+
+
+def test_sidecar_gate_is_source_resolved(tmp_path: Path) -> None:
+    """The sepsis3/microbiology sidecar guard follows source resolution.
+
+    task_set v3 supervises sepsis3 on MIMIC-IV (sidecar required) but
+    sepsis3 drops on eICU, where the same task_set must train without
+    the sidecar (the R6 launch failure of 2026-08-30).
+    """
+    base = {
+        "train_shard_dir": str(tmp_path),
+        "tuning_shard_dir": str(tmp_path),
+        "output_dir": str(tmp_path / "out"),
+        "task_set": "v3",
+    }
+    try:
+        train_module._activate_run_sidecars(
+            TrainingConfig(source="eicu", **base)  # type: ignore[arg-type]
+        )
+        with pytest.raises(FileNotFoundError, match="microbiology"):
+            train_module._activate_run_sidecars(
+                TrainingConfig(source="mimic_iv", **base)  # type: ignore[arg-type]
+            )
+    finally:
+        activate_sidecars(None)
