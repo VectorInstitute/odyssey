@@ -34,8 +34,13 @@ scripts/gemini/'s ``GEMINI_MEDS_OUTPUT_DIR``)::
         --baseline-shard-dir <data_root>/train \\
         --output-root ~/missingness/<run>
 
-Re-running with the same ``--output-root`` skips cells/results that already
-exist (idempotent, resumable after a crash) unless ``--overwrite`` is given.
+Re-running with the same ``--output-root`` resumes after a crash: degraded
+shard generation and already-scored degraded cells are skipped, and (when
+no ``--baseline-shard-dir`` is involved) an existing clean result is
+reused too. With ``--baseline-shard-dir``, an existing clean result stops
+the run instead: the clean pass is also what fits the frozen GBM the
+degraded cells reuse (Principle 1), so it cannot be skipped without
+refitting -- pass ``--overwrite`` to redo everything from scratch.
 """
 
 from __future__ import annotations
@@ -177,50 +182,79 @@ def run_sweep(
     checkpoint_path = run_dir / checkpoint
     clean_json = results_dir / "clean_alerts.json"
     clean_rows = results_dir / "clean_alerts_rows.parquet"
-    refuse_existing_output(
-        clean_json, overwrite=overwrite, kind="missingness sweep clean alerts"
-    )
 
-    logger.info(
-        "[sweep] scoring the clean baseline (fits the GBM once, if "
-        "--baseline-shard-dir was given)"
-    )
     fitted: Dict[Tuple[str, float], BaselineModel] = {}
-    clean_results = evaluate_alerts(
-        run_dir,
-        held_out_shard_dir,
-        baseline_shard_dir=baseline_shard_dir,
-        fitted_baselines_out=fitted,
-        max_shards=max_shards,
-        max_baseline_shards=max_baseline_shards,
-        landmark_hours=landmark_hours,
-        num_lanes=num_lanes,
-        chunk_size=chunk_size,
-        checkpoint_path=checkpoint_path,
-        baseline_feature_set=baseline_feature_set,
-        tune_baselines=tune_baselines,
-        stream_baseline=stream_baseline,
-        dump_rows_path=clean_rows,
+    # Resume: an existing clean result can only be reused when the clean
+    # pass fits nothing (no --baseline-shard-dir). With a baseline dir the
+    # clean pass is also what fits the frozen GBM every degraded cell
+    # reuses (Principle 1: one fit, never refit) -- skipping it and
+    # refitting fresh would confound the degradation signal with
+    # fit-to-fit variance, and mix provenance with cells scored earlier;
+    # refuse_existing_output keeps that case a loud stop instead.
+    resume_clean = (
+        not overwrite
+        and baseline_shard_dir is None
+        and clean_json.is_file()
+        and clean_rows.is_file()
     )
-    _write_cell_result(
-        clean_json,
-        cell=CLEAN_CELL,
-        metadata=None,
-        run_dir=run_dir,
-        held_out_shard_dir=held_out_shard_dir,
-        results=clean_results,
-    )
-    if baseline_shard_dir is not None and not fitted:
-        logger.warning(
-            "[sweep] --baseline-shard-dir was given but no GBM was fit for any "
-            "(event, horizon) -- degraded cells will score without a GBM "
-            "baseline. Check the held-out split has enough positives."
+    if resume_clean:
+        logger.info(
+            "[sweep] clean result already at %s (no GBM to fit), reusing it",
+            clean_json,
         )
+    else:
+        refuse_existing_output(
+            clean_json, overwrite=overwrite, kind="missingness sweep clean alerts"
+        )
+        logger.info(
+            "[sweep] scoring the clean baseline (fits the GBM once, if "
+            "--baseline-shard-dir was given)"
+        )
+        clean_results = evaluate_alerts(
+            run_dir,
+            held_out_shard_dir,
+            baseline_shard_dir=baseline_shard_dir,
+            fitted_baselines_out=fitted,
+            max_shards=max_shards,
+            max_baseline_shards=max_baseline_shards,
+            landmark_hours=landmark_hours,
+            num_lanes=num_lanes,
+            chunk_size=chunk_size,
+            checkpoint_path=checkpoint_path,
+            baseline_feature_set=baseline_feature_set,
+            tune_baselines=tune_baselines,
+            stream_baseline=stream_baseline,
+            dump_rows_path=clean_rows,
+        )
+        _write_cell_result(
+            clean_json,
+            cell=CLEAN_CELL,
+            metadata=None,
+            run_dir=run_dir,
+            held_out_shard_dir=held_out_shard_dir,
+            results=clean_results,
+        )
+        if baseline_shard_dir is not None and not fitted:
+            logger.warning(
+                "[sweep] --baseline-shard-dir was given but no GBM was fit for "
+                "any (event, horizon) -- degraded cells will score without a "
+                "GBM baseline. Check the held-out split has enough positives."
+            )
 
     per_cell_json: Dict[str, Path] = {CLEAN_CELL: clean_json}
     for name, cell_dir in cell_dirs.items():
         cell_json = results_dir / f"{name}_alerts.json"
         cell_rows = results_dir / f"{name}_alerts_rows.parquet"
+        if not overwrite and cell_json.is_file():
+            # Resume: this cell was fully scored (the JSON is written last,
+            # after the rows dump) -- reuse it rather than aborting the
+            # whole sweep, which is what refuse_existing_output used to do
+            # despite the module docstring's resumability promise.
+            logger.info(
+                "[sweep] cell %s already scored at %s, skipping", name, cell_json
+            )
+            per_cell_json[name] = cell_json
+            continue
         refuse_existing_output(
             cell_json, overwrite=overwrite, kind=f"missingness sweep {name} alerts"
         )

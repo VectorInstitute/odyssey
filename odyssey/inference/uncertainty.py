@@ -185,6 +185,122 @@ def bootstrap_auroc(
     return BootstrapAUROC(point_estimate, mean, std, ci_low, ci_high, n_used, n_skipped)
 
 
+@dataclass(frozen=True)
+class BootstrapAUROCDelta:
+    """A subject-clustered PAIRED bootstrap of an AUROC difference.
+
+    For two scorers evaluated on the SAME rows, the right question is
+    "does scorer A beat scorer B on this sample", and the right interval
+    is on the per-resample DIFFERENCE ``auroc_a - auroc_b`` -- the two
+    scores are highly correlated across resamples (same rows, same
+    outcomes), so comparing two independently-bootstrapped intervals for
+    overlap both understates power (overlapping CIs do not establish "no
+    difference") and ignores the pairing entirely. Carries the same
+    finite-sample-variance-only caveat as :class:`BootstrapAUROC`.
+    """
+
+    point_estimate: float
+    """``auroc_a - auroc_b`` on the data exactly as observed."""
+    mean: Optional[float]
+    std: Optional[float]
+    ci_low: Optional[float]
+    ci_high: Optional[float]
+    n_boot_used: int
+    n_boot_skipped: int
+
+    def excludes_zero(self) -> Optional[bool]:
+        """Whether the CI excludes 0 (a paired-significant difference).
+
+        ``None`` when no interval exists (every resample skipped).
+        """
+        if self.ci_low is None or self.ci_high is None:
+            return None
+        return self.ci_low > 0.0 or self.ci_high < 0.0
+
+
+def bootstrap_auroc_delta(
+    y: Union[np.ndarray, Sequence[float]],
+    p_a: Union[np.ndarray, Sequence[float]],
+    p_b: Union[np.ndarray, Sequence[float]],
+    subject_ids: Union[np.ndarray, Sequence[int]],
+    *,
+    n_boot: int = 1000,
+    seed: int = 0,
+    alpha: float = 0.05,
+) -> Optional[BootstrapAUROCDelta]:
+    """Paired, subject-clustered bootstrap of ``AUROC(p_a) - AUROC(p_b)``.
+
+    ``y``, ``p_a``, ``p_b``, and ``subject_ids`` must describe the same
+    rows -- the caller is responsible for intersecting the two scorers'
+    row sets first (scoring each arm on a different subset is exactly the
+    unpaired mistake this function exists to prevent). Each resample
+    draws subjects with replacement ONCE and scores both arms on that
+    identical row multiset, so the interval is on the paired difference.
+    Returns ``None`` if the observed ``y`` is single-class (AUROC, and
+    hence the difference, is undefined for the cell). Resampling,
+    clustering, and the weighted Mann-Whitney scoring all reuse
+    :func:`bootstrap_auroc`'s machinery; with the same ``seed`` the drawn
+    resamples are identical to that function's, so a delta interval and
+    the two per-arm intervals from the same seed are mutually consistent.
+    """
+    y_arr = np.asarray(y, dtype=np.float64)
+    a_arr = np.asarray(p_a, dtype=np.float64)
+    b_arr = np.asarray(p_b, dtype=np.float64)
+    subject_arr = np.asarray(subject_ids)
+    if not (len(y_arr) == len(a_arr) == len(b_arr) == len(subject_arr)):
+        raise ValueError(
+            "bootstrap_auroc_delta: y, p_a, p_b, and subject_ids must "
+            f"describe the same rows; got lengths {len(y_arr)}, {len(a_arr)}, "
+            f"{len(b_arr)}, {len(subject_arr)}"
+        )
+    n_rows = len(y_arr)
+    if len(np.unique(y_arr)) < 2:
+        return None
+
+    point = float(roc_auc_score(y_arr, a_arr) - roc_auc_score(y_arr, b_arr))
+
+    unique_subjects, inverse = np.unique(subject_arr, return_inverse=True)
+    n_subjects = len(unique_subjects)
+    subj_order = np.argsort(inverse, kind="stable")
+    subj_counts = np.bincount(inverse, minlength=n_subjects)
+    subj_boundaries = np.concatenate([[0], np.cumsum(subj_counts)])
+
+    a_group_of_row, a_groups = _group_p_ties(a_arr)
+    b_group_of_row, b_groups = _group_p_ties(b_arr)
+
+    rng = np.random.default_rng(seed)
+    deltas = []
+    n_skipped = 0
+    for _ in range(n_boot):
+        drawn = rng.integers(0, n_subjects, size=n_subjects)
+        row_idx = _gather_rows_for_drawn_subjects(
+            drawn, subj_boundaries, subj_order, subj_counts
+        )
+        auc_a = _weighted_auroc(row_idx, y_arr, a_group_of_row, n_rows, a_groups)
+        auc_b = _weighted_auroc(row_idx, y_arr, b_group_of_row, n_rows, b_groups)
+        # A single-class resample is single-class for both arms (same y),
+        # so auc_a is None exactly when auc_b is.
+        if auc_a is None or auc_b is None:
+            n_skipped += 1
+            continue
+        deltas.append(auc_a - auc_b)
+
+    n_used = len(deltas)
+    if n_used == 0:
+        return BootstrapAUROCDelta(point, None, None, None, None, 0, n_boot)
+
+    deltas_arr = np.array(deltas)
+    return BootstrapAUROCDelta(
+        point_estimate=point,
+        mean=float(deltas_arr.mean()),
+        std=float(deltas_arr.std(ddof=1)) if n_used > 1 else None,
+        ci_low=float(np.percentile(deltas_arr, 100 * alpha / 2)),
+        ci_high=float(np.percentile(deltas_arr, 100 * (1 - alpha / 2))),
+        n_boot_used=n_used,
+        n_boot_skipped=n_skipped,
+    )
+
+
 def _group_p_ties(p: np.ndarray) -> tuple[np.ndarray, int]:
     """Bucket rows by tied ``p`` value: ``(p_group_of_row, n_groups)``.
 

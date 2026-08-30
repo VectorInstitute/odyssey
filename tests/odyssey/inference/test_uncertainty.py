@@ -10,6 +10,7 @@ from odyssey.inference.uncertainty import (
     _group_p_ties,
     _weighted_auroc,
     bootstrap_auroc,
+    bootstrap_auroc_delta,
 )
 
 
@@ -221,6 +222,79 @@ def test_weighted_auroc_matches_sklearn_exactly_under_ties_and_multiplicity() ->
         expected = roc_auc_score(y_b, p_b)
 
         assert actual == pytest.approx(expected, abs=1e-9)
+
+
+def test_delta_of_a_scorer_against_itself_is_exactly_zero() -> None:
+    """Pairing must make an identical-scorer comparison exactly zero, CI included."""
+    y, p, subjects = _correlated_fixture()
+
+    delta = bootstrap_auroc_delta(y, p, p, subjects, n_boot=200, seed=0)
+
+    assert delta is not None
+    assert delta.point_estimate == 0.0
+    assert delta.ci_low == 0.0
+    assert delta.ci_high == 0.0
+    assert delta.excludes_zero() is False
+
+
+def test_delta_point_estimate_matches_sklearn_difference() -> None:
+    y, p_a, subjects = _correlated_fixture()
+    rng = np.random.default_rng(3)
+    p_b = np.clip(p_a + rng.normal(0, 0.2, len(p_a)), 0.0, 1.0)
+
+    delta = bootstrap_auroc_delta(y, p_a, p_b, subjects, n_boot=50, seed=0)
+
+    assert delta is not None
+    expected = roc_auc_score(y, p_a) - roc_auc_score(y, p_b)
+    assert delta.point_estimate == pytest.approx(expected)
+
+
+def test_delta_detects_a_real_gap_a_ci_overlap_reading_would_miss() -> None:
+    """The paired CI separates a small consistent gap even when per-arm CIs overlap.
+
+    Scorer A is scorer B plus a small, uniform improvement on every
+    positive row: the per-arm AUROCs sit well inside each other's
+    intervals (subject resampling moves both together), but the paired
+    difference is positive on essentially every resample -- the exact
+    situation the old CI-overlap verdict misreads as "within noise".
+    """
+    rng = np.random.default_rng(0)
+    n_subjects = 60
+    rows_per_subject = 3
+    subjects = np.repeat(np.arange(n_subjects), rows_per_subject)
+    y = np.repeat((np.arange(n_subjects) % 2).astype(float), rows_per_subject)
+    noise = rng.uniform(0, 1, len(y))
+    p_b = np.where(y == 1, 0.25 + 0.6 * noise, 0.05 + 0.6 * noise)
+    p_a = np.where(y == 1, p_b + 0.04, p_b)  # small consistent lift
+
+    a_ci = bootstrap_auroc(y, p_a, subjects, n_boot=500, seed=0)
+    b_ci = bootstrap_auroc(y, p_b, subjects, n_boot=500, seed=0)
+    delta = bootstrap_auroc_delta(y, p_a, p_b, subjects, n_boot=500, seed=0)
+
+    assert a_ci is not None and b_ci is not None and delta is not None
+    assert a_ci.ci_low is not None and b_ci.ci_high is not None
+    overlap = not (a_ci.ci_low > b_ci.ci_high)
+    assert overlap  # per-arm intervals overlap...
+    assert delta.point_estimate > 0
+    assert delta.excludes_zero() is True  # ...but the paired delta separates
+
+
+def test_delta_single_class_observed_y_returns_none() -> None:
+    y = np.ones(10)
+    p = np.linspace(0, 1, 10)
+    subjects = np.arange(10)
+
+    assert bootstrap_auroc_delta(y, p, p[::-1], subjects) is None
+
+
+def test_delta_shape_mismatch_raises() -> None:
+    y = np.array([0.0, 1.0, 0.0])
+    p_a = np.array([0.1, 0.9, 0.2])
+    p_b = np.array([0.1, 0.9])
+    subjects = np.array([1, 2, 3])
+
+    with pytest.raises(ValueError, match="same rows"):
+        bootstrap_auroc_delta(y, p_a, p_b, subjects)
 
 
 def test_bootstrap_auroc_result_is_frozen() -> None:

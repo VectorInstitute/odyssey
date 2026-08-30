@@ -11,6 +11,7 @@ from odyssey.data.sequences import build_patient_sequence
 from odyssey.data.value_binning import add_value_tokens
 from odyssey.data.vocabulary import PAD_ID, Vocabulary, code_type
 from odyssey.inference.rollouts import (
+    RolloutSample,
     _sample_code,
     _sample_gap_hours,
     hazard_probabilities_at,
@@ -131,6 +132,49 @@ def test_rollout_is_seeded_bounded_and_advances_structure() -> None:
         assert all(t <= index_time + 24.0 for t in s.times)  # nor past the horizon
         assert s.times == sorted(s.times)  # time never runs backwards
         assert all(c != "[PAD]" for c in s.codes)
+
+
+def test_rollout_conditions_only_on_the_prefix_up_to_position() -> None:
+    """A mid-stay rollout must not see (or start from) the sequence's tail.
+
+    Regression test: ``rollout_from_position`` once built its "history"
+    with ``seq.tail(position + 1)`` -- the LAST ``position + 1`` tokens --
+    so a mid-stay rollout was conditioned on the very future it was
+    forecasting and anchored at the record's final timestamp. Rolling out
+    from ``seq`` at ``position`` must be identical to rolling out from the
+    explicitly-truncated ``seq.head(position + 1)``, and every sampled
+    time must sit inside the horizon window anchored at
+    ``seq.time_stamps[position]``, not at the sequence's end.
+    """
+    events = _events()
+    binned = add_value_tokens(events)
+    vocab = Vocabulary.build(binned["code"].to_list(), min_count=1)
+    model = _model(vocab)
+    seq = build_patient_sequence(binned.filter(pl.col("subject_id") == 1), vocab)
+    position = 5  # early in a ~30-event stay whose tail runs a day later
+    index_time = seq.time_stamps[position]
+    horizon = 4.0
+    common = {
+        "position": position,
+        "horizon_hours": horizon,
+        "n_samples": 4,
+        "max_steps": 20,
+        "seed": 0,
+        "device": "cpu",
+    }
+    from_full = rollout_from_position(model, seq, vocab, **common)
+    from_head = rollout_from_position(model, seq.head(position + 1), vocab, **common)
+    assert [s.codes for s in from_full] == [s.codes for s in from_head]
+    assert [s.times for s in from_full] == [s.times for s in from_head]
+    for s in from_full:
+        assert all(index_time <= t <= index_time + horizon for t in s.times)
+
+
+def test_events_within_excludes_the_index_instant() -> None:
+    """The horizon window is (index, index + h]: same-instant tokens excluded."""
+    sample = RolloutSample(codes=["a", "b", "c", "d"], times=[5.0, 5.0, 7.0, 10.0])
+    assert sample.events_within(5.0, 4.0) == ["c"]  # 5.0 excluded, 10.0 past 9.0
+    assert sample.events_within(5.0, 5.0) == ["c", "d"]
 
 
 def test_summary_reports_event_fractions_and_family_counts() -> None:

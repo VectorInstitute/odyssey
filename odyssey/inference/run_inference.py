@@ -729,7 +729,16 @@ class _RunningTaskMetrics:
 
 @dataclass
 class _PooledEnds:
-    """Per-chunk pooled bottleneck readouts at supervision positions, on CPU."""
+    """Per-chunk pooled bottleneck readouts at supervision positions, on CPU.
+
+    Pooling happens at visit/patient END, after the model has seen every
+    event of the visit -- including any trigger events -- so the concept
+    AUROCs computed from these readouts measure concept DETECTION (does
+    the bottleneck recognize what happened), the right validation for the
+    supervised bottleneck itself. They are not forecasting numbers and
+    must never be quoted next to the alerts/landmark results, whose
+    scorers only ever see the record up to an index time.
+    """
 
     subject_ids: List[torch.Tensor] = field(default_factory=list)
     visit_ids: List[torch.Tensor] = field(default_factory=list)

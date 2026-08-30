@@ -526,10 +526,12 @@ def test_followup_cap_defaults_to_the_largest_horizon() -> None:
         .default
     )
     assert default is spfn._CAP_AT_MAX_HORIZON
-    # and the cap is part of the cache key, so a differently-capped fit is
-    # never silently reused (the feature-set lesson, same day)
+    # and the cap AND the feature set are part of the cache key, so a
+    # differently-capped or differently-featured fit is never silently
+    # reused (the pickled payload is a bare tuple, so load_for_feature_set
+    # cannot guard this family -- the key itself has to)
     source = inspect.getsource(spfn)
-    assert 'cache_key = f"survivalpfn/{cap_tag}/{event_name}"' in source
+    assert 'cache_key = f"survivalpfn/{feature_set}/{cap_tag}/{event_name}"' in source
 
 
 def test_predict_proba_keeps_tiny_probabilities_and_warns_on_a_dead_column(

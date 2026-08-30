@@ -63,8 +63,20 @@ class RolloutSample:
     """Hours since the subject's first event, per sampled token."""
 
     def events_within(self, index_time: float, horizon: float) -> List[str]:
-        """Codes sampled in ``(index_time, index_time + horizon]``."""
-        return [c for c, t in zip(self.codes, self.times) if t <= index_time + horizon]
+        """Codes sampled in ``(index_time, index_time + horizon]``.
+
+        The lower bound is strict, matching
+        :func:`~odyssey.inference.alerts.outcome_at_horizon`'s at-risk
+        convention (an onset at exactly the index instant does not count as
+        a future event) -- a bin-0 gap draw keeps a sampled bundle at the
+        index instant, and those tokens must not read as the horizon's
+        outcome when the fractions are checked against the hazard heads.
+        """
+        return [
+            c
+            for c, t in zip(self.codes, self.times)
+            if index_time < t <= index_time + horizon
+        ]
 
 
 @dataclass
@@ -211,12 +223,18 @@ def rollout_from_position(
     ``position`` is streamed once and its recurrent state reused for every
     sample, so cost is one prefix pass plus ``n_samples * steps`` one-token
     forwards.
+
+    The prefix is the sequence's HEAD up to and including ``position``
+    (:meth:`~odyssey.data.sequences.PatientSequence.head`) -- never its
+    tail: conditioning on the last ``position + 1`` tokens would stream
+    events *after* the index position into the state, leaking exactly the
+    future the rollout is supposed to forecast.
     """
     model.eval()
     time_head = getattr(model, "time_head", None)
     if time_head is None:
         raise ValueError("rollouts need a model with a time-to-event head")
-    prefix = seq.tail(position + 1) if position + 1 < len(seq) else seq
+    prefix = seq.head(position + 1)
     state = None
     logits_at_index: Optional[torch.Tensor] = None
     features_at_index: Optional[torch.Tensor] = None

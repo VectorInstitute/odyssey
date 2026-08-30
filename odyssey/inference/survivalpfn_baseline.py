@@ -368,11 +368,16 @@ def _fit_one_survivalpfn(
             "Use feature_set='basic' (16 columns), not 'strong'."
         )
     # The cap is part of the key: a fit made against a different follow-up
-    # window answers a different question (see _survival_targets).
+    # window answers a different question (see _survival_targets). So is
+    # the feature set: the pickled payload here is a bare tuple, not a
+    # wrapper with a ``feature_set`` attribute, so the
+    # ``FitCache.load_for_feature_set`` guard the other baseline families
+    # rely on cannot apply -- the key itself must carry it, or a fit made
+    # on one feature matrix could silently score another of the same width.
     cap_tag = (
         "uncapped" if followup_cap_hours is None else f"cap{followup_cap_hours:g}h"
     )
-    cache_key = f"survivalpfn/{cap_tag}/{event_name}"
+    cache_key = f"survivalpfn/{feature_set}/{cap_tag}/{event_name}"
     cached = cache.load(cache_key) if cache is not None else None
     if cached is not None:
         estimator, n_context_rows, elapsed, row_capped = cached
