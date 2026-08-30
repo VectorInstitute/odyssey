@@ -53,6 +53,7 @@ import argparse
 import logging
 
 import numpy as np
+import polars as pl
 import torch
 from sklearn.linear_model import Ridge
 from sklearn.metrics import r2_score
@@ -74,7 +75,7 @@ logger = logging.getLogger("probe_counting_signal")
 
 
 def _counting_columns() -> list[int]:
-    """Indices of the pure occurrence-COUNT columns in the strong feature matrix.
+    """Return the indices of the occurrence-COUNT columns in the strong matrix.
 
     Drug-class n_6h/n_24h/ever_visit and family n_6h/n_24h/n_visit (drops
     `hours_since_last`, which is recency, already probed by the cd96842
@@ -108,10 +109,12 @@ def probe_r2(
     reg = Ridge(alpha=alpha)
     reg.fit(x_scaler.transform(train_x), y_scaler.transform(train_y))
     pred = reg.predict(x_scaler.transform(test_x))
-    return r2_score(y_scaler.transform(test_y), pred, multioutput="raw_values")
+    return np.asarray(
+        r2_score(y_scaler.transform(test_y), pred, multioutput="raw_values")
+    )
 
 
-def main() -> None:
+def main() -> None:  # noqa: PLR0915
     """Extract pre/post-bottleneck embeddings and report count-recovery R^2."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", required=True)
@@ -140,7 +143,9 @@ def main() -> None:
 
     landmark_alerts = [a for a in alert_events_for(task_set) if not a.next_visit]
 
-    def load_split(shard_dir: str, max_shards: int):
+    def load_split(
+        shard_dir: str, max_shards: int
+    ) -> tuple[pl.DataFrame, dict[tuple[int, int], float], StrongFeatureBuilder]:
         activate_sidecars(shard_dir)
         raw = _load_prepared_raw(shard_dir, max_shards, config, source)
         visit_start = _visit_starts(raw)
