@@ -200,7 +200,20 @@ def hazard_events_for(
     extra = tuple(
         COUNTING_AUXILIARY_EVENTS_BY_NAME[name] for name in auxiliary_event_names
     )
-    return alert_events_for(task_set) + extra
+    events = alert_events_for(task_set) + extra
+    names = [a.name for a in events]
+    if len(names) != len(set(names)):
+        # An auxiliary name listed twice, or colliding with a curated alert
+        # name, would silently collapse in all_event_times' name-keyed dict
+        # while EventHazardHeads still built one head per entry -- refuse
+        # loudly instead.
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        raise ValueError(
+            f"hazard_events_for: duplicate event name(s) {dupes} -- check "
+            "auxiliary_event_names for repeats or collisions with "
+            f"alert_events_for({task_set!r})"
+        )
+    return events
 
 
 # EHRSHOT-style PROBE tasks (Wornow et al., NeurIPS D&B 2023): frozen-probe

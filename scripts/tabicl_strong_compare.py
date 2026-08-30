@@ -146,9 +146,35 @@ def main() -> None:  # noqa: PLR0915
                     f"tabicl@{h:g}h": [float(v) for v in proba],
                 }
             )
-            joined = existing_ev.join(
-                new_cols, on=["subject_id", "visit_id", "time_hours"], how="inner"
-            )
+            # time_hours reaches the two sides through independent float
+            # code paths (the dump via the tokenizer, new_cols via polars
+            # arithmetic), so round to the same 6-decimal tolerance
+            # alerts._landmark_key_set uses before joining -- an exact
+            # float join silently drops every row that differs in the
+            # last bits. The height checks below make any remaining
+            # mismatch (or a duplicate dump key fanning out) loud instead
+            # of quietly shifting n and the CIs.
+            key_cols = ["subject_id", "visit_id", "time_hours"]
+            rounded = pl.col("time_hours").round(6)
+            new_keyed = new_cols.with_columns(rounded)
+            existing_keyed = existing_ev.with_columns(rounded)
+            for side_name, frame in (("dump", existing_keyed), ("new", new_keyed)):
+                n_dup = frame.height - frame.unique(subset=key_cols).height
+                if n_dup:
+                    raise RuntimeError(
+                        f"{event}@{h:g}h: {n_dup} duplicate "
+                        f"(subject, visit, time) keys on the {side_name} side -- "
+                        "an inner join would fan out; refusing to score"
+                    )
+            joined = existing_keyed.join(new_keyed, on=key_cols, how="inner")
+            if joined.height != new_keyed.height:
+                raise RuntimeError(
+                    f"{event}@{h:g}h: joined {joined.height} of "
+                    f"{new_keyed.height} freshly-scored rows against the dump "
+                    f"({existing_keyed.height} dump rows) -- the row sets "
+                    "disagree (different shards/landmark_hours/protocol?); "
+                    "refusing to score a silently-reduced overlap"
+                )
             y = joined[f"y@{h:g}h"].to_numpy()
             gbm_p = joined[f"gbm@{h:g}h"].to_numpy()
             tabicl_p = joined[f"tabicl@{h:g}h"].to_numpy()

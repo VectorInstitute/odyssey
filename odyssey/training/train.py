@@ -49,7 +49,17 @@ import logging
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterator, Optional, Sequence, Tuple, TypeVar, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterator,
+    Optional,
+    Sequence,
+    Tuple,
+    TypeVar,
+    Union,
+)
 
 import polars as pl
 import torch
@@ -152,6 +162,10 @@ class TrainingConfig:
     hidden_size: int = 256
     num_hidden_layers: int = 8
     value_embeddings: bool = False
+    """Feed standardized numeric values (``aux.values``) into the token
+    embeddings alongside the bin tokens (see
+    :class:`~odyssey.models.embeddings.ClinicalEventEmbeddings`). Opt-in;
+    an A/B against the bin-only input."""
     event_head_hidden: int = 0
     """Hidden width of the per-event hazard heads' MLP readout; 0 = the
     single linear layer every run before v8 used."""
@@ -175,10 +189,6 @@ class TrainingConfig:
     concept slot carries only its probability (see ConceptBottleneck)."""
     unknown_dim: Optional[int] = None
     """Width of the unknown (residual) slot; None = embedding_dim."""
-    """Feed standardized numeric values (``aux.values``) into the token
-    embeddings alongside the bin tokens (see
-    :class:`~odyssey.models.embeddings.ClinicalEventEmbeddings`). Opt-in;
-    an A/B against the bin-only input."""
     mamba_state_size: int = 128
     mamba_headdim: int = 64
     mamba_chunk_size: int = 256
@@ -749,6 +759,18 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
     """Run one full training job; returns the output directory."""
     output_dir = Path(config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    if config.resume_from is not None:
+        # The checkpoint is the authority on which heads exist: a run
+        # started before time_to_event / event_hazards existed must not be
+        # rebuilt with heads its weights do not have (mirrors load_run).
+        # Runs BEFORE config.json is written and before the
+        # stream_shards branch, so the streaming path adapts too and the
+        # on-disk config.json records the heads this run actually trains.
+        resume_keys = torch.load(config.resume_from, map_location="cpu")["model"].keys()
+        config.time_to_event = any(k.startswith("time_head.") for k in resume_keys)
+        config.event_hazards = any(k.startswith("event_heads.") for k in resume_keys)
+        config.value_head = any(k.startswith("value_head.") for k in resume_keys)
+        del resume_keys
     (output_dir / "config.json").write_text(json.dumps(asdict(config), indent=2))
     _activate_run_sidecars(config)
 
@@ -883,15 +905,6 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
     vocab.save(output_dir / "vocabulary.json")
     logger.info("[data] vocab size: %d", len(vocab))
 
-    if config.resume_from is not None:
-        # The checkpoint is the authority on which heads exist: a run
-        # started before time_to_event / event_hazards existed must not be
-        # rebuilt with heads its weights do not have (mirrors load_run).
-        resume_keys = torch.load(config.resume_from, map_location="cpu")["model"].keys()
-        config.time_to_event = any(k.startswith("time_head.") for k in resume_keys)
-        config.event_hazards = any(k.startswith("event_heads.") for k in resume_keys)
-        config.value_head = any(k.startswith("value_head.") for k in resume_keys)
-        del resume_keys
     objective = build_objective(config, vocab, train_events_binned, device)
 
     def make_train_patients(epoch: int) -> Iterator[PatientSequence]:
@@ -1484,6 +1497,29 @@ def _run_training(  # noqa: PLR0912, PLR0915
     return output_dir
 
 
+def _load_config_overrides(config_json: Optional[str]) -> Dict[str, Any]:
+    """Parse ``--config-json``: inline JSON first, then a path to a JSON file.
+
+    The module docstring has always promised both forms; only the path
+    form was implemented until now, so the docstring's own usage example
+    (inline JSON) died with ``FileNotFoundError``. Inline is tried first
+    -- a JSON object literal is never a valid path -- and the path
+    fallback keeps every existing invocation working unchanged.
+    """
+    if not config_json:
+        return {}
+    try:
+        parsed = json.loads(config_json)
+    except json.JSONDecodeError:
+        parsed = json.loads(Path(config_json).read_text())
+    if not isinstance(parsed, dict):
+        raise ValueError(
+            f"--config-json must hold a JSON object of TrainingConfig field "
+            f"overrides, got {type(parsed).__name__}"
+        )
+    return parsed
+
+
 def _parse_args() -> TrainingConfig:
     """Build a :class:`TrainingConfig` from the required paths plus optional overrides.
 
@@ -1504,13 +1540,14 @@ def _parse_args() -> TrainingConfig:
     parser.add_argument(
         "--config-json",
         default=None,
-        help="Path to a JSON file with any subset of TrainingConfig field overrides.",
+        help=(
+            "Inline JSON, or a path to a JSON file, with any subset of "
+            "TrainingConfig field overrides."
+        ),
     )
     args = parser.parse_args()
 
-    overrides = (
-        json.loads(Path(args.config_json).read_text()) if args.config_json else {}
-    )
+    overrides = _load_config_overrides(args.config_json)
     return TrainingConfig(
         train_shard_dir=args.train_shard_dir,
         tuning_shard_dir=args.tuning_shard_dir,

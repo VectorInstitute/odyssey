@@ -110,6 +110,37 @@ class PatientSequence:
             values=_tail(list(self.values)),  # type: ignore[arg-type]
         )
 
+    def head(self, n: int) -> "PatientSequence":
+        """Return the EARLIEST ``n`` tokens (the whole sequence if shorter).
+
+        The causal-prefix counterpart of :meth:`tail`: everything strictly
+        after position ``n - 1`` is dropped, so the result contains no
+        future information relative to that position. Times keep the
+        original origin (the first event is the sequence's first event, so
+        there is nothing to rebase). Optional per-token fields that were
+        never populated stay empty.
+        """
+        total = len(self)
+        if total <= n:
+            return self
+
+        def _head(values: List[object]) -> List[object]:
+            return values[:n] if len(values) == total else []
+
+        return PatientSequence(
+            subject_id=self.subject_id,
+            concept_ids=self.concept_ids[:n],
+            type_ids=self.type_ids[:n],
+            time_stamps=self.time_stamps[:n],
+            ages=self.ages[:n],
+            visit_orders=self.visit_orders[:n],
+            visit_segments=self.visit_segments[:n],
+            visit_ids=_head(list(self.visit_ids)),  # type: ignore[arg-type]
+            visit_ends=_head(list(self.visit_ends)),  # type: ignore[arg-type]
+            static_mask=_head(list(self.static_mask)),  # type: ignore[arg-type]
+            values=_head(list(self.values)),  # type: ignore[arg-type]
+        )
+
 
 def _assign_visits(
     hadm_ids: List[Optional[int]], max_num_visits: int
