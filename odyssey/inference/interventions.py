@@ -165,7 +165,7 @@ def _chunk_intervention(
     )
 
 
-def run_streaming_intervention(
+def run_streaming_intervention(  # noqa: PLR0915 -- one linear scoring pass
     model: ConceptBottleneckSequenceModel,
     events_binned: pl.DataFrame,
     vocab: Vocabulary,
@@ -181,8 +181,15 @@ def run_streaming_intervention(
     max_seq_len: int | None = None,
     seed: int = 0,
     uncertain_band: float | None = None,
+    per_subject_out: dict[int, list[int]] | None = None,
 ) -> InterventionResult:
     """Score next-event prediction under one intervention mode.
+
+    ``per_subject_out``, if given, accumulates ``{subject_id: [top1_hits,
+    n_predictions]}`` over the pass -- the raw material for a PAIRED
+    subject-clustered bootstrap on a truth-vs-flip accuracy delta
+    (scripts/intervention_cis.py), which the aggregate numbers alone
+    cannot support.
 
     The identical streaming pass as
     :func:`~odyssey.inference.run_inference.run_streaming_inference`
@@ -275,6 +282,13 @@ def run_streaming_intervention(
             preds = real_logits.argmax(dim=-1)
             hits = preds == real_targets
             top1_hits += int(hits.sum().item())
+            if per_subject_out is not None:
+                sids = chunk.subject_ids[real]
+                for sid in torch.unique(sids).tolist():
+                    sel = sids == sid
+                    entry = per_subject_out.setdefault(int(sid), [0, 0])
+                    entry[0] += int(hits[sel].sum().item())
+                    entry[1] += int(sel.sum().item())
             loss_sum += float(
                 F.cross_entropy(
                     real_logits, real_targets, ignore_index=PAD_ID, reduction="sum"
@@ -323,8 +337,13 @@ def evaluate_interventions(
     checkpoint_path: str | Path | None = None,
     seed: int = 0,
     uncertain_band: float | None = None,
+    per_subject_out: dict[str, dict[int, list[int]]] | None = None,
 ) -> list[InterventionResult]:
     """End-to-end: load a trained run, score every intervention mode.
+
+    ``per_subject_out``, if given, is filled as ``{mode: {subject_id:
+    [top1_hits, n_predictions]}}`` (see
+    :func:`run_streaming_intervention`).
 
     Data preparation matches
     :func:`~odyssey.inference.run_inference.evaluate_run` exactly (same
@@ -382,6 +401,9 @@ def evaluate_interventions(
     results = []
     for mode in modes:
         logger.info("[interventions] scoring mode %r", mode)
+        mode_subjects: dict[int, list[int]] | None = None
+        if per_subject_out is not None:
+            mode_subjects = per_subject_out.setdefault(mode, {})
         results.append(
             run_streaming_intervention(
                 model,
@@ -397,6 +419,7 @@ def evaluate_interventions(
                 device=device,
                 seed=seed,
                 uncertain_band=uncertain_band,
+                per_subject_out=mode_subjects,
             )
         )
         baseline = results[0]
@@ -438,6 +461,16 @@ def _main() -> None:
     parser.add_argument("--num-lanes", type=int, default=8)
     parser.add_argument("--chunk-size", type=int, default=256)
     parser.add_argument(
+        "--dump-per-subject",
+        action="store_true",
+        help=(
+            "also write <output-json stem>_per_subject.json with "
+            "{mode: {subject_id: [top1_hits, n_predictions]}} -- the input "
+            "scripts/intervention_cis.py needs for a paired subject-"
+            "clustered CI on mode-vs-mode accuracy deltas."
+        ),
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help=(
@@ -453,6 +486,9 @@ def _main() -> None:
     out = Path(args.output_json)
     refuse_existing_output(out, overwrite=args.overwrite, kind="interventions")
     run_dir = Path(args.run_dir)
+    per_subject: dict[str, dict[int, list[int]]] | None = (
+        {} if args.dump_per_subject else None
+    )
     results = evaluate_interventions(
         run_dir,
         args.held_out_shard_dir,
@@ -462,10 +498,22 @@ def _main() -> None:
         chunk_size=args.chunk_size,
         checkpoint_path=run_dir / (args.checkpoint or "checkpoint_best.pt"),
         uncertain_band=args.uncertain_band,
+        per_subject_out=per_subject,
     )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps([asdict(r) for r in results], indent=2))
     logger.info("[interventions] wrote %d modes to %s", len(results), out)
+    if per_subject is not None:
+        ps_out = out.with_name(out.stem + "_per_subject.json")
+        refuse_existing_output(
+            ps_out, overwrite=args.overwrite, kind="interventions per-subject"
+        )
+        ps_out.write_text(json.dumps(per_subject))
+        logger.info(
+            "[interventions] wrote per-subject outcomes for %d modes to %s",
+            len(per_subject),
+            ps_out,
+        )
 
 
 if __name__ == "__main__":

@@ -471,3 +471,34 @@ def test_main_refuses_to_overwrite_an_existing_output_before_evaluating(
 
     with pytest.raises(SystemExit, match="refusing to overwrite"):
         interventions_module._main()
+
+
+def test_per_subject_outcomes_sum_to_the_aggregate() -> None:
+    """--dump-per-subject's accumulator must partition the totals exactly.
+
+    The paired truth-vs-flip CI (scripts/intervention_cis.py) is only
+    valid if per-subject hits/counts sum to the aggregate the mode
+    reports and every subject contributes its full prediction count.
+    """
+    vocab = _vocab()
+    labels, masks = _labels_and_masks()
+    per_subject: dict[int, list[int]] = {}
+    result = run_streaming_intervention(
+        _model(len(vocab)),
+        _events(),
+        vocab,
+        labels,
+        masks,
+        mode="truth",
+        supervision="stay",
+        num_lanes=2,
+        chunk_size=8,
+        device="cpu",
+        seed=0,
+        per_subject_out=per_subject,
+    )
+    assert set(per_subject) == {1, 2, 3}
+    assert all(n == 19 for _, n in per_subject.values())
+    assert sum(n for _, n in per_subject.values()) == result.n_predictions
+    total_hits = sum(h for h, _ in per_subject.values())
+    assert total_hits / result.n_predictions == result.top1_accuracy

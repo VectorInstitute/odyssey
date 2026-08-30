@@ -38,7 +38,7 @@ alerts pipeline, and does not change any existing reported number --
 landed as a tested, standalone unit first.
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -296,6 +296,159 @@ def bootstrap_auroc_delta(
         std=float(deltas_arr.std(ddof=1)) if n_used > 1 else None,
         ci_low=float(np.percentile(deltas_arr, 100 * alpha / 2)),
         ci_high=float(np.percentile(deltas_arr, 100 * (1 - alpha / 2))),
+        n_boot_used=n_used,
+        n_boot_skipped=n_skipped,
+    )
+
+
+@dataclass(frozen=True)
+class BootstrapMetric:
+    """A subject-clustered bootstrap summary for an arbitrary row metric.
+
+    The generic (slow-path) sibling of :class:`BootstrapAUROC`: the metric
+    callable is re-evaluated per resample rather than computed from a
+    precomputed sort, so use :func:`bootstrap_auroc` for AUROC and this
+    for metrics with no fast path (AUPRC/average precision). Same
+    finite-sample-variance-only caveat as the module docstring.
+    """
+
+    point_estimate: float
+    mean: float | None
+    std: float | None
+    ci_low: float | None
+    ci_high: float | None
+    n_boot_used: int
+    n_boot_skipped: int
+
+
+def _subject_grouping(
+    subject_arr: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    """Return the module's subject-run grouping: (order, boundaries, counts, n)."""
+    unique_subjects, inverse = np.unique(subject_arr, return_inverse=True)
+    n_subjects = len(unique_subjects)
+    order = np.argsort(inverse, kind="stable")
+    counts = np.bincount(inverse, minlength=n_subjects)
+    boundaries = np.concatenate([[0], np.cumsum(counts)])
+    return order, boundaries, counts, n_subjects
+
+
+def bootstrap_metric(
+    y: np.ndarray | Sequence[float],
+    p: np.ndarray | Sequence[float],
+    subject_ids: np.ndarray | Sequence[int],
+    metric_fn: Callable[[np.ndarray, np.ndarray], float],
+    *,
+    n_boot: int = 1000,
+    seed: int = 0,
+    alpha: float = 0.05,
+) -> BootstrapMetric | None:
+    """Subject-clustered bootstrap of ``metric_fn(y, p)`` (slow path).
+
+    Same whole-subject with-replacement resampling as
+    :func:`bootstrap_auroc` and, with the same ``seed``, the identical
+    drawn resamples, so intervals from the two functions are mutually
+    consistent. ``metric_fn`` is called on the gathered (duplicated) rows
+    of each resample; a resample whose ``y`` is single-class is skipped
+    and counted. Returns ``None`` if the observed ``y`` is single-class.
+    """
+    y_arr = np.asarray(y, dtype=np.float64)
+    p_arr = np.asarray(p, dtype=np.float64)
+    subject_arr = np.asarray(subject_ids)
+    if not (len(y_arr) == len(p_arr) == len(subject_arr)):
+        raise ValueError(
+            "bootstrap_metric: y, p, and subject_ids must describe the same "
+            f"rows; got lengths {len(y_arr)}, {len(p_arr)}, {len(subject_arr)}"
+        )
+    if len(np.unique(y_arr)) < 2:
+        return None
+    point = float(metric_fn(y_arr, p_arr))
+
+    order, boundaries, counts, n_subjects = _subject_grouping(subject_arr)
+    rng = np.random.default_rng(seed)
+    scores = []
+    n_skipped = 0
+    for _ in range(n_boot):
+        drawn = rng.integers(0, n_subjects, size=n_subjects)
+        row_idx = _gather_rows_for_drawn_subjects(drawn, boundaries, order, counts)
+        y_b = y_arr[row_idx]
+        if y_b.min() == y_b.max():
+            n_skipped += 1
+            continue
+        scores.append(float(metric_fn(y_b, p_arr[row_idx])))
+
+    n_used = len(scores)
+    if n_used == 0:
+        return BootstrapMetric(point, None, None, None, None, 0, n_boot)
+    arr = np.array(scores)
+    return BootstrapMetric(
+        point_estimate=point,
+        mean=float(arr.mean()),
+        std=float(arr.std(ddof=1)) if n_used > 1 else None,
+        ci_low=float(np.percentile(arr, 100 * alpha / 2)),
+        ci_high=float(np.percentile(arr, 100 * (1 - alpha / 2))),
+        n_boot_used=n_used,
+        n_boot_skipped=n_skipped,
+    )
+
+
+def bootstrap_metric_delta(
+    y: np.ndarray | Sequence[float],
+    p_a: np.ndarray | Sequence[float],
+    p_b: np.ndarray | Sequence[float],
+    subject_ids: np.ndarray | Sequence[int],
+    metric_fn: Callable[[np.ndarray, np.ndarray], float],
+    *,
+    n_boot: int = 1000,
+    seed: int = 0,
+    alpha: float = 0.05,
+) -> BootstrapAUROCDelta | None:
+    """Paired subject-clustered bootstrap of a metric difference (slow path).
+
+    The generic sibling of :func:`bootstrap_auroc_delta` (whose result
+    dataclass it reuses): one subject draw per resample scores both arms
+    on the identical row multiset. The caller must intersect the two
+    scorers' row sets first.
+    """
+    y_arr = np.asarray(y, dtype=np.float64)
+    a_arr = np.asarray(p_a, dtype=np.float64)
+    b_arr = np.asarray(p_b, dtype=np.float64)
+    subject_arr = np.asarray(subject_ids)
+    if not (len(y_arr) == len(a_arr) == len(b_arr) == len(subject_arr)):
+        raise ValueError(
+            "bootstrap_metric_delta: y, p_a, p_b, and subject_ids must "
+            f"describe the same rows; got lengths {len(y_arr)}, {len(a_arr)}, "
+            f"{len(b_arr)}, {len(subject_arr)}"
+        )
+    if len(np.unique(y_arr)) < 2:
+        return None
+    point = float(metric_fn(y_arr, a_arr) - metric_fn(y_arr, b_arr))
+
+    order, boundaries, counts, n_subjects = _subject_grouping(subject_arr)
+    rng = np.random.default_rng(seed)
+    deltas = []
+    n_skipped = 0
+    for _ in range(n_boot):
+        drawn = rng.integers(0, n_subjects, size=n_subjects)
+        row_idx = _gather_rows_for_drawn_subjects(drawn, boundaries, order, counts)
+        y_b = y_arr[row_idx]
+        if y_b.min() == y_b.max():
+            n_skipped += 1
+            continue
+        deltas.append(
+            float(metric_fn(y_b, a_arr[row_idx]) - metric_fn(y_b, b_arr[row_idx]))
+        )
+
+    n_used = len(deltas)
+    if n_used == 0:
+        return BootstrapAUROCDelta(point, None, None, None, None, 0, n_boot)
+    arr = np.array(deltas)
+    return BootstrapAUROCDelta(
+        point_estimate=point,
+        mean=float(arr.mean()),
+        std=float(arr.std(ddof=1)) if n_used > 1 else None,
+        ci_low=float(np.percentile(arr, 100 * alpha / 2)),
+        ci_high=float(np.percentile(arr, 100 * (1 - alpha / 2))),
         n_boot_used=n_used,
         n_boot_skipped=n_skipped,
     )
