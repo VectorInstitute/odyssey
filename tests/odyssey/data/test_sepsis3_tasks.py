@@ -178,6 +178,28 @@ def test_sepsis3_fires_with_culture_antibiotic_and_sofa() -> None:
     assert row["sepsis3_first_time"] == T0 + 5 * H
 
 
+def test_sepsis3_first_time_waits_for_the_confirming_pair_to_complete() -> None:
+    """The first-trigger stamp is evidence-anchored, never before the pair.
+
+    Regression test for the 2026-08-30 running-label leak: culture at 1h,
+    SOFA >= 2 at 5h, antibiotic only at 50h. mimic-code's onset is
+    max(SOFA crossing, suspicion) = 5h -- but on day 1 nothing
+    distinguishes that culture from a never-confirmed one, so a running
+    label true from 5h encodes the day-2 antibiotic. The stamp must be
+    the pair's completion (50h); the label itself stays positive.
+    """
+    concepts = [
+        c for c in concepts_for_source("mimic_iv", task_set="v2") if c.name == "sepsis3"
+    ]
+    with sidecar_context({MICROBIOLOGY: _cultures(T0 + 1 * H)}):
+        labeled = label_concepts_by_visit(
+            _septic_visit(abx_offset_h=50.0), concepts, include_first_time=True
+        )
+    row = labeled.to_dicts()[0]
+    assert row["sepsis3"] == 1
+    assert row["sepsis3_first_time"] == T0 + 50 * H
+
+
 def test_sepsis3_negative_without_sofa_rise_or_outside_the_window() -> None:
     concepts = [
         c for c in concepts_for_source("mimic_iv", task_set="v2") if c.name == "sepsis3"

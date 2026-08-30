@@ -5,7 +5,7 @@ model's hazard heads with a gradient-boosted classifier fitted per event and
 horizon. For that comparison to mean anything the classifier has to be given
 what a careful bespoke-model builder would give it, not a token feature set.
 This module builds that "strong" feature set at each landmark index time
-from the events strictly before it:
+from the events at or before it:
 
 - **Signal panel** (:data:`SIGNAL_PANEL`): every vital and lab in the LOINC
   tables of :mod:`odyssey.data.code_mapping`, read as raw numeric values
@@ -22,12 +22,23 @@ from the events strictly before it:
   age, sex, prior visits, currently-in-ICU and hours since ICU admission,
   and event counts by code family over 6h / 24h / the visit so far.
 
-Everything is computed from the same record the model reads, strictly
-before the index time (an event AT the index time is not visible), by
-binary search over per-subject sorted arrays and ``ufunc.reduceat`` for
-window extrema, so a million index rows cost seconds per signal rather
-than a Python loop per row. Feature names are returned alongside the
-matrix so a report can list what the baseline saw.
+Everything is computed from the same record the model reads, from events
+AT OR BEFORE the index time, by binary search over per-subject sorted
+arrays and ``ufunc.reduceat`` for window extrema, so a million index
+rows cost seconds per signal rather than a Python loop per row. Feature
+names are returned alongside the matrix so a report can list what the
+baseline saw.
+
+Boundary convention (landmark protocol v4, 2026-08-30): the index time
+``t`` itself is INCLUDED -- windows are half-open ``(t - w, t]``. Before
+v4 baselines saw only events strictly before ``t`` while every
+model-side scorer was read at the hidden state that had already consumed
+the token AT ``t`` (the bucket-opening observation, often a fresh lab
+value), and MEDS-Tab's backward join also included ``t`` -- three
+different information boundaries, systematically favoring the model in
+every model-vs-baseline comparison. Including ``t`` cannot leak a label:
+a row whose event onsets at exactly ``t`` is excluded as not-at-risk by
+``outcome_at_horizon`` before any scorer sees it.
 """
 
 import re
@@ -208,10 +219,10 @@ def _reduce_windows(
 
 
 def _last_before(hours: np.ndarray, now: np.ndarray) -> np.ndarray:
-    """Time of the last entry strictly before each ``now``; NaN if none."""
+    """Time of the last entry at or before each ``now``; NaN if none."""
     if len(hours) == 0:
         return np.full(len(now), np.nan)
-    n = np.searchsorted(hours, now, side="left")
+    n = np.searchsorted(hours, now, side="right")
     return np.where(n > 0, hours[np.maximum(n - 1, 0)], np.nan)
 
 
@@ -243,14 +254,17 @@ def _signal_features(
     if series is None or len(series.hours) == 0:
         return
     h, v = series.hours, series.values
-    hi = np.searchsorted(h, now, side="left")  # strictly before now
+    # Windows are (now - w, now]: the reading AT the index instant is
+    # visible (protocol v4, see the module docstring), and one exactly w
+    # hours old has aged out.
+    hi = np.searchsorted(h, now, side="right")
     has = hi > 0
     last_idx = np.maximum(hi - 1, 0)
     last = np.where(has, v[last_idx], np.nan)
     out[:, col + 0] = last
     out[:, col + 1] = np.where(has, now - h[last_idx], np.nan)
-    lo24 = np.searchsorted(h, now - 24.0, side="left")
-    lo6 = np.searchsorted(h, now - 6.0, side="left")
+    lo24 = np.searchsorted(h, now - 24.0, side="right")
+    lo6 = np.searchsorted(h, now - 6.0, side="right")
     n24 = hi - lo24
     out[:, col + 2] = n24
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -289,9 +303,9 @@ def _occurrence_features(
     if series is None or len(series.hours) == 0:
         return
     h = series.hours
-    hi = np.searchsorted(h, now, side="left")
-    out[:, col + 0] = hi - np.searchsorted(h, now - 6.0, side="left")
-    out[:, col + 1] = hi - np.searchsorted(h, now - 24.0, side="left")
+    hi = np.searchsorted(h, now, side="right")  # (now - w, now], protocol v4
+    out[:, col + 0] = hi - np.searchsorted(h, now - 6.0, side="right")
+    out[:, col + 1] = hi - np.searchsorted(h, now - 24.0, side="right")
     has = hi > 0
     out[:, col + 2] = np.where(has, now - h[np.maximum(hi - 1, 0)], np.nan)
     out[:, col + 3] = (hi > np.searchsorted(h, visit_start, side="left")).astype(
@@ -507,9 +521,11 @@ class StrongFeatureBuilder:
             for d_idx in range(len(DRUG_CLASSES)):
                 _occurrence_features(subject.drugs.get(d_idx), now, v_start, block, col)
                 col += len(DRUG_STATS)
-            hi = np.searchsorted(subject.hours, now, side="left")
-            lo6 = np.searchsorted(subject.hours, now - 6.0, side="left")
-            lo24 = np.searchsorted(subject.hours, now - 24.0, side="left")
+            hi = np.searchsorted(subject.hours, now, side="right")
+            lo6 = np.searchsorted(subject.hours, now - 6.0, side="right")
+            lo24 = np.searchsorted(subject.hours, now - 24.0, side="right")
+            # "since visit start" keeps side="left": the visit's own first
+            # event (charted exactly at v_start) belongs to the visit.
             lo_v = np.searchsorted(subject.hours, v_start, side="left")
             cum = subject.family_cum
             for f_idx in range(len(FAMILY_IDS)):
@@ -542,6 +558,6 @@ class StrongFeatureBuilder:
         )
         block[:, 5] = in_icu.astype(np.float64)
         block[:, 6] = np.where(in_icu, now - last_admit, np.nan)
-        hi = np.searchsorted(subject.hours, now, side="left")
+        hi = np.searchsorted(subject.hours, now, side="right")
         lo_v = np.searchsorted(subject.hours, v_start, side="left")
         block[:, 7] = hi - lo_v

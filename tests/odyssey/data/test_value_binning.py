@@ -157,8 +157,8 @@ _NO_FIXED_THRESHOLD = (
 )
 
 
-def _threshold_rules(concept: ConceptDefinition) -> List[Tuple[str, float]]:
-    """Yield every (code_prefix, threshold) pair reachable from a concept.
+def _threshold_rules(concept: ConceptDefinition) -> List[Tuple[str, float, str]]:
+    """Yield every (code_prefix, threshold, direction) reachable from a concept.
 
     Only :class:`~odyssey.data.concepts.ConceptRule` and
     :class:`~odyssey.data.concepts.SustainedRule` represent a single
@@ -185,16 +185,26 @@ def _threshold_rules(concept: ConceptDefinition) -> List[Tuple[str, float]]:
     have no reason to share a bin edge with, say, ``tachycardia``'s
     HR > 100.
     """
-    out: List[Tuple[str, float]] = []
+    out: List[Tuple[str, float, str]] = []
     for rule in concept.rules:
         if isinstance(rule, AnyOf):
             for sub_rule in rule.rules:
                 if isinstance(sub_rule, (ConceptRule, SustainedRule)):
-                    out.append((sub_rule.code_prefix, sub_rule.threshold))
+                    out.append(
+                        (sub_rule.code_prefix, sub_rule.threshold, sub_rule.direction)
+                    )
+                    out.extend(
+                        (extra, sub_rule.threshold, sub_rule.direction)
+                        for extra in getattr(sub_rule, "extra_prefixes", ())
+                    )
                 elif not isinstance(sub_rule, _NO_FIXED_THRESHOLD):
                     raise TypeError(f"unhandled rule type in AnyOf: {type(sub_rule)!r}")
         elif isinstance(rule, (ConceptRule, SustainedRule)):
-            out.append((rule.code_prefix, rule.threshold))
+            out.append((rule.code_prefix, rule.threshold, rule.direction))
+            out.extend(
+                (extra, rule.threshold, rule.direction)
+                for extra in getattr(rule, "extra_prefixes", ())
+            )
         elif not isinstance(rule, _NO_FIXED_THRESHOLD):
             raise TypeError(f"unhandled rule type: {type(rule)!r}")
     return out
@@ -209,20 +219,47 @@ def test_clinical_ranges_reproduce_every_concept_rule_threshold() -> None:
     :func:`_threshold_rules`.
     """
     plain_concepts = [c for c in CONCEPTS if isinstance(c, ConceptDefinition)]
+    seen_any = False
     for concept in plain_concepts:
-        for code_prefix, threshold in _threshold_rules(concept):
+        for code_prefix, threshold, direction in _threshold_rules(concept):
+            if code_prefix not in CLINICAL_RANGES and not any(
+                code_prefix.startswith(p) for p in CLINICAL_RANGES
+            ):
+                # v3 electrolyte/hematology thresholds have no curated
+                # range yet (quantile bins); the transition check below is
+                # only meaningful for prefixes the clinical ranges cover.
+                continue
+            seen_any = True
             events = _events(
                 [
                     (code_prefix + "x", threshold - 0.01),
+                    (code_prefix + "x", threshold),
                     (code_prefix + "x", threshold + 0.01),
                 ]
             )
             out = add_value_tokens(events)
-            below_bin, above_bin = out["code"].to_list()
+            below_bin, boundary_bin, above_bin = out["code"].to_list()
             assert below_bin != above_bin, (
                 f"{concept.name}: {code_prefix} threshold {threshold} "
                 "produces no bin transition"
             )
+            # The exact boundary value must tokenize on the same side the
+            # rule puts it (2026-08-30 fix): a strict `> T` rule does NOT
+            # trigger at T, so T's token must be the below-side bin; an
+            # `at_or_above` rule triggers at T, so T joins the above side
+            # -- and symmetrically for the lower-bound directions.
+            boundary_side = {
+                "above": below_bin,
+                "at_or_below": below_bin,
+                "below": above_bin,
+                "at_or_above": above_bin,
+            }[direction]
+            assert boundary_bin == boundary_side, (
+                f"{concept.name}: {code_prefix} value {threshold} tokenizes "
+                f"as {boundary_bin} but its {direction!r} rule puts the "
+                f"boundary with {boundary_side}"
+            )
+    assert seen_any  # the check must never silently go vacuous
 
 
 # ---------------------------------------------------------------------------
@@ -433,7 +470,10 @@ def test_gemini_creatinine_uses_si_clinical_range() -> None:
     CRITICAL (a normal 80 umol/L is far above the 4.0 mg/dL cut).
     """
     ranges, fallback = clinical_ranges_for_source("gemini")
-    assert ranges["LAB//3020564//"] == [(132.6, "NORMAL"), (353.7, "HIGH")]
+    assert ranges["LAB//3020564//"] == [
+        (132.6, "NORMAL", True),
+        (353.7, "HIGH", False),
+    ]
     assert fallback["LAB//3020564//"] == "CRITICAL"
 
 

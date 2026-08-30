@@ -134,10 +134,24 @@ logger = logging.getLogger(__name__)
 #: semantics exactly, order-of-arrival no longer matters.
 #:
 #: _index_rows_from_events (the model-free path used for baseline fitting)
-#: was never affected -- it has no chunking at all -- so this version only
-#: describes collect_model_scores' output, and only that output carries
+#: was never affected -- it has no chunking at all -- so v1->v3 only
+#: describe collect_model_scores' output, and only that output carries
 #: the tag (see _stamp_landmark_protocol_version, load_index_row_table).
-LANDMARK_PROTOCOL_VERSION = 3
+#:
+#: v4 (current, 2026-08-30): ONE information boundary at the landmark
+#: instant for every scorer. Baseline features (both the basic set below
+#: and baseline_features.StrongFeatureBuilder) now include events AT the
+#: index time t -- windows are (t - w, t] -- matching the model-side
+#: scorers (read at the hidden state that has consumed the token at t)
+#: and MEDS-Tab's backward join. Under v1-v3 the tabular baselines saw
+#: only events strictly before t, one systematically task-relevant event
+#: less than the model at every landmark (the bucket-opening reading).
+#: The landmark ROW SET is unchanged from v3; only feature visibility
+#: moved. No label can leak in: a row whose event onsets at exactly t is
+#: excluded as not-at-risk by outcome_at_horizon before any scorer sees
+#: it. v4 numbers are not comparable with v1-v3 baseline columns; a
+#: protocol re-evaluation is a NEW registry row, never an edit.
+LANDMARK_PROTOCOL_VERSION = 4
 
 HORIZONS_HOURS: Tuple[float, ...] = (8.0, 24.0, 72.0)
 
@@ -852,14 +866,18 @@ class _SubjectHistory:
         return float(self.hours[mask].min()) if mask.any() else fallback
 
     def features_at(self, now: float, out: np.ndarray, offset: int) -> None:
-        """Fill latest-bin and trailing-24h-count features into ``out``."""
+        """Fill latest-bin and trailing-24h-count features into ``out``.
+
+        Windows are ``(now - 24h, now]`` -- the event AT the index instant
+        is visible (protocol v4; see :data:`LANDMARK_PROTOCOL_VERSION`).
+        """
         for p_idx, (ph, pb) in enumerate(zip(self.prefix_hours, self.prefix_bins)):
-            k = int(np.searchsorted(ph, now, side="left"))
+            k = int(np.searchsorted(ph, now, side="right"))
             if k > 0:
                 out[offset + p_idx] = pb[k - 1]
         n_prefix = len(self.prefix_hours)
-        hi = int(np.searchsorted(self.hours, now, side="left"))
-        lo = int(np.searchsorted(self.hours, now - 24.0, side="left"))
+        hi = int(np.searchsorted(self.hours, now, side="right"))
+        lo = int(np.searchsorted(self.hours, now - 24.0, side="right"))
         out[offset + n_prefix :] = self.cum_counts[hi] - self.cum_counts[lo]
 
 
@@ -869,14 +887,15 @@ def baseline_features(
     *,
     source: str = "mimic_iv",
 ) -> np.ndarray:
-    """Hand-built features at each index row, from events strictly before it.
+    """Hand-built features at each index row, from events at or before it.
 
     Columns: hours since visit start, age (years, if birth known), latest
     ordinal clinical bin per curated vital/lab prefix (NaN if never), and
     trailing-24h event counts per code family. All computable by hand
     from the same record; nothing from the model. Each subject's history
     is preprocessed once (cumulative family counts, per-prefix bin
-    arrays), so each row costs a few binary searches.
+    arrays), so each row costs a few binary searches. The index instant
+    itself is visible (protocol v4; see :data:`LANDMARK_PROTOCOL_VERSION`).
     """
     ranges, _ = clinical_ranges_for_source(source)
     prefixes = sorted(ranges)

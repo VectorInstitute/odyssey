@@ -481,6 +481,29 @@ def test_derived_gcs_total_sums_components_charted_together() -> None:
     assert labels["altered_mental_status_observed"].to_list() == [1]
 
 
+def test_derived_gcs_first_time_is_when_all_components_are_known() -> None:
+    """The trigger stamp is the LAST paired component's time, not the eye's.
+
+    Regression test for the 2026-08-30 fix: "nearest" pairing can pull a
+    verbal/motor reading charted minutes AFTER the eye reading, and
+    stamping the trigger at the eye time put that many minutes of future
+    information into first_times.
+    """
+    concepts = [ConceptDefinition("altered_mental_status", [_GCS_RULE], "GCS < 15")]
+    events = _events(
+        [
+            (1, "LAB//220739//", 3.0, T0),  # eye
+            (1, "LAB//223901//", 5.0, T0 + timedelta(minutes=5)),  # motor
+            (1, "LAB//223900//", 4.0, T0 + timedelta(minutes=10)),  # verbal, last
+        ]
+    )
+    labels = label_concepts(events, concepts, include_first_time=True)
+    assert labels["altered_mental_status"].to_list() == [1]
+    assert labels["altered_mental_status_first_time"].to_list() == [
+        T0 + timedelta(minutes=10)
+    ]
+
+
 def test_derived_gcs_total_full_score_does_not_trigger() -> None:
     concepts = [ConceptDefinition("altered_mental_status", [_GCS_RULE], "GCS < 15")]
     events = _events(
@@ -554,7 +577,14 @@ def test_composite_requires_min_criteria_met() -> None:
     assert labels["sirs_like"].to_list() == [0, 1]
 
 
-def test_composite_observed_if_any_component_observed() -> None:
+def test_composite_observed_needs_min_criteria_components_observed() -> None:
+    """Observed only when >= min_criteria components were measurable.
+
+    A subject with only one of two required criteria ever measured can
+    never reach min_criteria=2 no matter what the readings said --
+    supervising them as a negative (the pre-2026-08-30 any-component
+    mask) was label noise, not a genuine negative.
+    """
     concept = CompositeConceptDefinition(
         "sirs_like",
         components=[
@@ -564,7 +594,13 @@ def test_composite_observed_if_any_component_observed() -> None:
         min_criteria=2,
         description="both criteria required",
     )
-    events = _events([(1, "LAB//220045//", 50.0, T0)])  # observed, doesn't trigger
+    # only one component ever measured: structurally unassessable
+    events = _events([(1, "LAB//220045//", 50.0, T0)])
+    labels = label_concepts(events, [concept])
+    assert labels["sirs_like_observed"].to_list() == [0]
+    assert labels["sirs_like"].to_list() == [0]
+    # both components measured, neither triggering: a real negative
+    events = _events([(1, "LAB//220045//", 50.0, T0), (1, "LAB//220210//", 10.0, T0)])
     labels = label_concepts(events, [concept])
     assert labels["sirs_like_observed"].to_list() == [1]
     assert labels["sirs_like"].to_list() == [0]
@@ -1347,6 +1383,34 @@ def test_shock_requires_recurring_low_map_not_one_reading() -> None:
             (1, "LAB//220181//mmHg", 58.0, T0 + timedelta(hours=2)),
             # subject 2: a single low reading -- does not trigger
             (2, "LAB//220181//mmHg", 60.0, T0),
+        ]
+    )
+    labels = label_concepts(events, [concept]).sort("subject_id")
+    assert labels["shock"].to_list() == [1, 0]
+
+
+def test_shock_pools_cuff_and_arterial_map_for_the_recurrence_check() -> None:
+    """A low MAP on the cuff and later on the arterial line IS sustained.
+
+    Regression test for the 2026-08-30 fix: a multi-prefix LoincSustained
+    used to expand to one SustainedRule per prefix, so recurrence was
+    checked within each charting route separately and a cross-modality
+    recurrence (clinically the same sustained hypotension) never
+    triggered. The expansion is now a single pooled rule.
+    """
+    concept = _v3_concept("shock")
+    assert len(concept.rules) == 1
+    rule = concept.rules[0]
+    assert isinstance(rule, SustainedRule)
+    assert rule.extra_prefixes  # both MAP prefixes pooled into one rule
+    events = _events(
+        [
+            # low MAP on the cuff, then on the arterial line 2h later
+            (1, "LAB//220181//mmHg", 60.0, T0),
+            (1, "LAB//220052//mmHg", 58.0, T0 + timedelta(hours=2)),
+            # same two readings within one hour: gap not met, no trigger
+            (2, "LAB//220181//mmHg", 60.0, T0),
+            (2, "LAB//220052//mmHg", 58.0, T0 + timedelta(minutes=30)),
         ]
     )
     labels = label_concepts(events, [concept]).sort("subject_id")
