@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import argparse
 import logging
-from typing import Dict, Tuple
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -36,7 +36,7 @@ import torch
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 
-from odyssey.data.alert_events import all_event_times
+from odyssey.data.alert_events import EventTimes, alert_events_for, all_event_times
 from odyssey.data.concepts import concepts_for_source
 from odyssey.data.sidecars import activate_sidecars
 from odyssey.data.value_binning import add_value_tokens
@@ -44,22 +44,34 @@ from odyssey.inference.alerts import (
     HORIZONS_HOURS,
     _load_prepared_raw,
     _visit_starts,
-    alert_events_for,
 )
+from odyssey.inference.embedding_probe import Key, collect_embeddings, labels_for
 from odyssey.inference.run_inference import load_run
-from odyssey.inference.uncertainty import bootstrap_auroc, bootstrap_auroc_delta
-from scripts.probe_bottleneck_signal import (
-    READMISSION_HORIZONS,
-    collect_embeddings,
-    labels_for,
+from odyssey.inference.uncertainty import (
+    BootstrapAUROC,
+    BootstrapAUROCDelta,
+    bootstrap_auroc,
+    bootstrap_auroc_delta,
 )
+from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
+from scripts.probe_bottleneck_signal import READMISSION_HORIZONS
+
+
+_CellResult = tuple[
+    str,
+    float,
+    int,
+    BootstrapAUROC | None,
+    BootstrapAUROC | None,
+    BootstrapAUROCDelta | None,
+]
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("probe_ci_check")
 
 
-def _fmt(b) -> str:
+def _fmt(b: BootstrapAUROC | None) -> str:
     if b is None:
         return "n/a"
     if b.ci_low is None or b.ci_high is None:
@@ -67,7 +79,7 @@ def _fmt(b) -> str:
     return f"{b.point_estimate:.3f} [{b.ci_low:.3f}, {b.ci_high:.3f}]"
 
 
-def _fmt_delta(d) -> str:
+def _fmt_delta(d: BootstrapAUROCDelta | None) -> str:
     if d is None:
         return "n/a"
     if d.ci_low is None or d.ci_high is None:
@@ -75,7 +87,7 @@ def _fmt_delta(d) -> str:
     return f"{d.point_estimate:+.3f} [{d.ci_low:+.3f}, {d.ci_high:+.3f}]"
 
 
-def _verdict(delta) -> str:
+def _verdict(delta: BootstrapAUROCDelta | None) -> str:
     """Read the verdict off the PAIRED delta CI, never off CI overlap."""
     if delta is None:
         return "unscoreable"
@@ -102,6 +114,12 @@ def main() -> None:  # noqa: PLR0915
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model, vocab, binner, config = load_run(args.run_dir, device=device)
+    if not isinstance(model, ConceptBottleneckSequenceModel):
+        raise ValueError(
+            f"{args.run_dir} is not a concept-bottleneck run: this script "
+            "probes the post-bottleneck embedding, which only exists on "
+            "ConceptBottleneckSequenceModel."
+        )
     source = getattr(config, "source", "mimic_iv")
     task_set = getattr(config, "task_set", "v1")
     concepts_for_source(source, task_set=task_set)  # parity with alerts.py setup
@@ -110,7 +128,14 @@ def main() -> None:  # noqa: PLR0915
     landmark_alerts = [a for a in all_alerts if not a.next_visit]
     visit_end_alerts = [a for a in all_alerts if a.next_visit]
 
-    def load_split(shard_dir: str, max_shards: int):
+    def load_split(
+        shard_dir: str, max_shards: int
+    ) -> tuple[
+        pl.DataFrame,
+        dict[tuple[int, int], float],
+        dict[str, EventTimes],
+        dict[str, EventTimes],
+    ]:
         activate_sidecars(shard_dir)
         raw = _load_prepared_raw(shard_dir, max_shards, config, source)
         visit_start = _visit_starts(raw)
@@ -188,13 +213,13 @@ def main() -> None:  # noqa: PLR0915
     )
     logger.info("loaded alerts dump: %d rows, columns=%s", dump.height, dump.columns)
 
-    def dump_lookup(event_name: str) -> Dict[Tuple[int, int, float], dict]:
+    def dump_lookup(event_name: str) -> dict[tuple[int, int, float], dict[str, Any]]:
         sub = (
             dump.filter(pl.col("event") == event_name)
             if "event" in dump.columns
             else dump
         )
-        out = {}
+        out: dict[tuple[int, int, float], dict[str, Any]] = {}
         n_dup = 0
         for row in sub.iter_rows(named=True):
             key = (
@@ -213,20 +238,20 @@ def main() -> None:  # noqa: PLR0915
             )
         return out
 
-    results = []
+    results: list[_CellResult] = []
 
     def run_cell(
-        event_name,
-        horizon,
+        event_name: str,
+        horizon: float,
         *,
-        train_keys,
-        train_post,
-        train_times,
-        held_keys,
-        held_post,
-        held_times,
-        dump_by_key,
-    ):
+        train_keys: list[Key],
+        train_post: np.ndarray,
+        train_times: dict[str, EventTimes],
+        held_keys: list[Key],
+        held_post: np.ndarray,
+        held_times: dict[str, EventTimes],
+        dump_by_key: dict[tuple[int, int, float], dict[str, Any]],
+    ) -> None:
         y_train = labels_for(train_keys, train_times[event_name], horizon)
         y_held = labels_for(held_keys, held_times[event_name], horizon)
         m_train = ~np.isnan(y_train)
