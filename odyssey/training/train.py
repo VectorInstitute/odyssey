@@ -589,6 +589,7 @@ def build_model(
             for a in hazard_events_for(
                 getattr(config, "task_set", "v1"),
                 getattr(config, "auxiliary_event_names", ()),
+                source=getattr(config, "source", None),
             )
         ]
         if getattr(config, "event_hazards", False)
@@ -849,7 +850,9 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
     tuning_event_tables: EventTimeTables | None = None
     if config.event_hazards:
         logger.info("[data] computing alert-event onset/censoring times")
-        alerts = hazard_events_for(config.task_set, config.auxiliary_event_names)
+        alerts = hazard_events_for(
+            config.task_set, config.auxiliary_event_names, source=config.source
+        )
         event_names = [a.name for a in alerts]
         train_event_tables = EventTimeTables(
             all_event_times(
@@ -981,7 +984,9 @@ def _train_streaming(config: TrainingConfig, output_dir: Path, device: str) -> P
         concept_supervision=config.concept_supervision,
         with_first_times=config.randint_prob > 0.0,
         alerts=(
-            hazard_events_for(config.task_set, config.auxiliary_event_names)
+            hazard_events_for(
+                config.task_set, config.auxiliary_event_names, source=config.source
+            )
             if config.event_hazards
             else None
         ),
@@ -1013,7 +1018,9 @@ def _train_streaming(config: TrainingConfig, output_dir: Path, device: str) -> P
         )
     else:
         tuning_labels, tuning_masks = build_concept_label_dicts(tuning_events, concepts)
-    alerts = hazard_events_for(config.task_set, config.auxiliary_event_names)
+    alerts = hazard_events_for(
+        config.task_set, config.auxiliary_event_names, source=config.source
+    )
     event_names = [a.name for a in alerts]
     train_event_tables = (
         EventTimeTables(stats.event_times, event_names)

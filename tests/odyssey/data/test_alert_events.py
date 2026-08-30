@@ -255,3 +255,28 @@ def test_hazard_events_for_appends_requested_auxiliary_events() -> None:
     )
     # auxiliary events are never mixed into alert_events_for's own output
     assert not any(a.name in names for a in alert_events_for("v3"))
+
+
+def test_alert_events_are_source_resolved() -> None:
+    """Concept-backed alerts drop where their concept does not resolve.
+
+    sepsis3 does not resolve on eICU, so its alert event must drop with
+    it (the R6 launch failure of 2026-08-30); code-based events and
+    resolving concept events stay, and no source means no filtering.
+    """
+    unfiltered = alert_events_for("v3")
+    assert {a.name for a in unfiltered} >= {"sepsis3", "readmission_30d"}
+    eicu = alert_events_for("v3", source="eicu")
+    names = {a.name for a in eicu}
+    assert "sepsis3" not in names
+    assert {
+        "vasopressor_start",
+        "icu_admission",
+        "acute_kidney_injury",
+        "death",
+        "readmission_30d",
+    } <= names
+    mimic = alert_events_for("v3", source="mimic_iv")
+    assert {a.name for a in mimic} == {a.name for a in unfiltered}
+    hazard = hazard_events_for("v3", source="eicu")
+    assert {a.name for a in hazard} == names

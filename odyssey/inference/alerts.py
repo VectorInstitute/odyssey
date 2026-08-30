@@ -2541,7 +2541,7 @@ def evaluate_alerts(  # noqa: PLR0912, PLR0915
         # events; visit_end mode scores the discharge-anchored ones.
         alerts = [
             a
-            for a in alert_events_for(task_set)
+            for a in alert_events_for(task_set, source=source)
             if a.next_visit == (index_mode == "visit_end")
         ]
         if not alerts:
