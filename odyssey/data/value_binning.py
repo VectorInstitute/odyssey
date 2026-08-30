@@ -62,6 +62,19 @@ from odyssey.data.code_mapping import prefixes_for_loinc, unit_for
 VALUE_Z_COL = "numeric_z"
 VALUE_Z_CLIP = 5.0
 
+#: Versions of the curated clinical bin-edge semantics. "v1": every cut is
+#: exclusive (``value < threshold`` keeps the below-label), the behaviour
+#: every run trained before 2026-08-30 tokenized under -- HR=100 read as
+#: ``::HIGH`` although tachycardia's own rule (HR > 100, strict) says no.
+#: "v2": each edge honors its ``below_inclusive`` flag so the exact
+#: boundary value tokenizes on the same side its mirrored rule puts it.
+#: The version is stamped on :class:`QuantileBinner` at fit time and
+#: round-trips through save/load (like ``tail_transform``): tokenization
+#: is part of a trained checkpoint's input contract, so evaluating an old
+#: run must reproduce the edges it trained with, while new runs get the
+#: aligned ones.
+CLINICAL_EDGE_VERSIONS = ("v1", "v2")
+
 CLIP_TAIL = "clip"
 SYMLOG_TAIL = "symlog"
 #: Outer bound on ``"symlog"``, twice the linear band.
@@ -201,6 +214,8 @@ def _clinical_label_expr(
     value_col: str,
     ranges: Dict[str, List[Tuple[float, str, bool]]],
     fallbacks: Dict[str, str],
+    *,
+    edge_version: str = "v2",
 ) -> pl.Expr:
     """Build one polars expression giving the clinical bin label, or null.
 
@@ -210,14 +225,23 @@ def _clinical_label_expr(
     threshold branch would fall through to the *fallback* label -- and a
     heart-rate event with a missing reading would silently tokenize as
     ``::HIGH``.
+
+    ``edge_version`` "v1" ignores every ``below_inclusive`` flag (all cuts
+    strictly ``<``, the pre-2026-08-30 semantics old checkpoints trained
+    with); "v2" honors them. See :data:`CLINICAL_EDGE_VERSIONS`.
     """
+    if edge_version not in CLINICAL_EDGE_VERSIONS:
+        raise ValueError(
+            f"unknown clinical_edge_version {edge_version!r}; expected one of "
+            f"{CLINICAL_EDGE_VERSIONS}"
+        )
     label_expr = pl.lit(None, dtype=pl.Utf8)
     for prefix, cuts in ranges.items():
         prefix_label = pl.lit(fallbacks[prefix])
         for threshold, label, below_inclusive in reversed(cuts):
             below = (
                 pl.col(value_col) <= threshold
-                if below_inclusive
+                if below_inclusive and edge_version == "v2"
                 else pl.col(value_col) < threshold
             )
             prefix_label = pl.when(below).then(pl.lit(label)).otherwise(prefix_label)
@@ -257,6 +281,12 @@ class QuantileBinner:
     points construct sequences from a saved binner, and the policy has to
     be the one the run trained with in every one of them; it round-trips
     through :meth:`save`/:meth:`load` for exactly that reason."""
+    clinical_edge_version: str = "v2"
+    """Which clinical bin-edge semantics :func:`add_value_tokens` applies
+    when tokenizing with this binner (see :data:`CLINICAL_EDGE_VERSIONS`).
+    New fits stamp "v2"; :meth:`load` defaults a file without the key to
+    "v1", so a checkpoint trained before the 2026-08-30 edge fix is
+    evaluated under exactly the edges it trained with."""
 
     @classmethod
     def fit(
@@ -441,6 +471,7 @@ class QuantileBinner:
                     "boundaries": self.boundaries,
                     "value_stats": {k: list(v) for k, v in self.value_stats.items()},
                     "tail_transform": self.tail_transform,
+                    "clinical_edge_version": self.clinical_edge_version,
                 }
             )
         )
@@ -450,7 +481,9 @@ class QuantileBinner:
         """Load from JSON written by :meth:`save`.
 
         Files written before ``value_stats``/``tail_transform`` existed
-        lack those keys and read back as the original behaviour.
+        lack those keys and read back as the original behaviour; a file
+        without ``clinical_edge_version`` predates the 2026-08-30 edge
+        fix and reads back as "v1" (the edges that run trained with).
         """
         data = json.loads(Path(path).read_text())
         return cls(
@@ -461,6 +494,7 @@ class QuantileBinner:
                 for k, v in data.get("value_stats", {}).items()
             },
             tail_transform=str(data.get("tail_transform", CLIP_TAIL)),
+            clinical_edge_version=str(data.get("clinical_edge_version", "v1")),
         )
 
 
@@ -486,6 +520,14 @@ def add_value_tokens(
         return events
 
     ranges, fallbacks = clinical_ranges_for_source(source)
+    # The binner is the authority on which edge semantics this run's
+    # tokens follow (see QuantileBinner.clinical_edge_version): a binner
+    # saved before the 2026-08-30 edge fix loads as "v1" so its
+    # checkpoint's eval reproduces the tokens it trained with. No binner
+    # (tests, ad-hoc labeling) means current semantics.
+    edge_version = (
+        quantile_binner.clinical_edge_version if quantile_binner is not None else "v2"
+    )
     if quantile_binner is not None and quantile_binner.value_stats:
         # standardized values are keyed by the raw code, so compute them
         # before the bin suffix is folded into the code
@@ -495,7 +537,9 @@ def add_value_tokens(
             ).alias(VALUE_Z_COL)
         )
     events = events.with_columns(
-        _clinical_label_expr(value_col, ranges, fallbacks).alias("_bin_label")
+        _clinical_label_expr(
+            value_col, ranges, fallbacks, edge_version=edge_version
+        ).alias("_bin_label")
     )
 
     if quantile_binner is not None:
