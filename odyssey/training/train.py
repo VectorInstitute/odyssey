@@ -509,21 +509,28 @@ def _detach_state(state: TimeAwareState) -> TimeAwareState:
 
 
 def _activate_run_sidecars(config: TrainingConfig) -> None:
-    """Activate the label sidecars next to the training data; guard task_set v2.
+    """Activate the label sidecars next to the training data; guard sepsis3.
 
-    A v2 run supervises sepsis3, whose label needs the microbiology
-    sidecar: silently training with it absent would mask the concept
-    everywhere and leave an untrained sepsis head, so refuse loudly with
-    the fix (build it with scripts/build_mimic_sidecars.py and place it at
-    ``<root>/sidecars/`` next to ``data/``).
+    A run that supervises sepsis3 needs the microbiology sidecar:
+    silently training with it absent would mask the concept everywhere
+    and leave an untrained sepsis head, so refuse loudly with the fix
+    (build it with scripts/build_mimic_sidecars.py and place it at
+    ``<root>/sidecars/`` next to ``data/``). The guard is
+    source-resolved: on a source where sepsis3 does not resolve (eICU),
+    the same task_set trains without the sidecar.
     """
     names = activate_sidecars(config.train_shard_dir)
     if names:
         logger.info("[data] sidecars active: %s", ", ".join(names))
-    if config.task_set != "v1" and "microbiology" not in active_sidecar_names():
+    resolved = {
+        concept.name
+        for concept in concepts_for_source(config.source, task_set=config.task_set)
+    }
+    if "sepsis3" in resolved and "microbiology" not in active_sidecar_names():
         raise FileNotFoundError(
-            f"task_set={config.task_set!r} needs the 'microbiology' sidecar "
-            f"(sepsis3 label) but none was found next to {config.train_shard_dir} "
+            f"task_set={config.task_set!r} on source={config.source!r} "
+            "supervises sepsis3, which needs the 'microbiology' sidecar, "
+            f"but none was found next to {config.train_shard_dir} "
             "-- build it with scripts/build_mimic_sidecars.py and place it at "
             "<root>/sidecars/microbiology.parquet (sibling of data/)."
         )
