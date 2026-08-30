@@ -1,4 +1,4 @@
-# LaTeX build artifacts (main.pdf is committed on purpose so reviewers can read it)
+# LaTeX build artifacts
 *.aux
 *.bbl
 *.blg
@@ -10,3 +10,6 @@
 *.toc
 *.spl
 *.run.xml
+# The ML4H 2026 submission is double-blind: the draft stays local and is
+# never committed to this public repository until after decisions.
+ml4h/
