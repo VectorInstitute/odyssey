@@ -106,18 +106,25 @@ def test_reduce_windows_matches_a_python_loop() -> None:
             assert got_min[i] == seg.min() and got_max[i] == seg.max()
 
 
-def test_signal_stats_strictly_before_the_index_time() -> None:
+def test_signal_stats_include_the_index_instant() -> None:
+    """Protocol v4: the reading AT the index time is visible, (t-w, t] windows.
+
+    Before v4 the baseline saw only events strictly before t while the
+    model-side scorers had already consumed the token at t -- the fairness
+    asymmetry the 2026-08-30 leakage review flagged. One shared boundary
+    now: at hour 2.0 the reading charted at 2.0 (120) IS the last value.
+    """
     builder = StrongFeatureBuilder(_events(), source="mimic_iv")
-    # at hour 2.0 the reading AT 2.0 (120) is not visible: last = 90 at 1.0
     x = builder.features([1, 1], [10, 10], [2.0, 2.5])
     hr = "heart_rate"
-    assert x[0, _col(f"{hr}.last")] == pytest.approx(90.0)
-    assert x[0, _col(f"{hr}.hours_since_last")] == pytest.approx(1.0)
-    assert x[0, _col(f"{hr}.n_24h")] == 2
-    assert x[0, _col(f"{hr}.mean_24h")] == pytest.approx(85.0)
-    assert x[0, _col(f"{hr}.delta_prev")] == pytest.approx(10.0)
-    # at 2.5 the 120 reading is visible
+    assert x[0, _col(f"{hr}.last")] == pytest.approx(120.0)
+    assert x[0, _col(f"{hr}.hours_since_last")] == pytest.approx(0.0)
+    assert x[0, _col(f"{hr}.n_24h")] == 3
+    assert x[0, _col(f"{hr}.mean_24h")] == pytest.approx((80.0 + 90.0 + 120.0) / 3)
+    assert x[0, _col(f"{hr}.delta_prev")] == pytest.approx(30.0)
+    # at 2.5 the same three readings are visible, from half an hour later
     assert x[1, _col(f"{hr}.last")] == pytest.approx(120.0)
+    assert x[1, _col(f"{hr}.hours_since_last")] == pytest.approx(0.5)
     assert x[1, _col(f"{hr}.max_24h")] == pytest.approx(120.0)
     assert x[1, _col(f"{hr}.min_6h")] == pytest.approx(80.0)
     assert x[1, _col(f"{hr}.delta_visit_first")] == pytest.approx(40.0)
@@ -156,9 +163,11 @@ def test_drug_classes_context_and_families() -> None:
     assert x[1, _col("drug.vasopressor.ever_visit")] == 1
     assert x[1, _col("drug.vasopressor.hours_since_last")] == pytest.approx(24.5)
     assert x[1, _col("drug.vasopressor.n_24h")] == 0
-    # ICU: admitted at 1h, discharged at 25h
-    assert x[0, _col("in_icu")] == 0  # admission AT 1.0 is not yet visible
-    assert x[1, _col("in_icu")] == 0
+    # ICU: admitted at 1h, discharged at 25h. Protocol v4: the admission
+    # event AT the index instant is visible.
+    assert x[0, _col("in_icu")] == 1
+    assert x[0, _col("hours_since_icu_admission")] == pytest.approx(0.0)
+    assert x[1, _col("in_icu")] == 0  # discharged at 25h < 26h
     x2 = builder.features([1], [10], [3.0])
     assert x2[0, _col("in_icu")] == 1
     assert x2[0, _col("hours_since_icu_admission")] == pytest.approx(2.0)

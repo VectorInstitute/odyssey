@@ -31,9 +31,13 @@ Two sources of bins, applied in priority order:
 Run :func:`add_value_tokens` on the event stream *before* building the
 vocabulary and before :func:`~odyssey.data.sequences.build_patient_sequence`
 -- both already tokenize on ``code`` as given, so no changes to either are
-needed. Run :func:`~odyssey.data.concepts.label_concepts` on the original,
-un-rewritten events (or the rewritten ones -- both work, since rewriting
-only appends a suffix and ``code_prefix`` matching is a ``starts_with``).
+needed. Run :func:`~odyssey.data.concepts.label_concepts` on the ORIGINAL,
+un-rewritten events only. Rewriting appends a ``::bin`` suffix, which is
+harmless to ``code_prefix``/``starts_with`` rules but silently breaks any
+``$``-anchored occurrence regex (e.g. ``RRT_CODE_PATTERN``'s ``(//|$)``
+alternation: a suffixed procedure code would stop matching and drop
+automatic KDIGO Stage-3 triggers). Every current caller already labels
+the raw frame first -- keep it that way.
 """
 
 import json
@@ -115,41 +119,57 @@ def _tail_expr(z: pl.Expr, transform: str, clip: float) -> pl.Expr:
     ).clip(-SYMLOG_CEILING, SYMLOG_CEILING)
 
 
-# value: (ascending (threshold, label-for-values-below) cut points,
-# fallback label for values at or above every threshold).
-_RangeSpec = Tuple[List[Tuple[float, str]], str]
+# value: (ascending (threshold, label-for-values-below, below_inclusive)
+# cut points, fallback label for values past every threshold).
+#
+# ``below_inclusive`` aligns each edge with the STRICTNESS of the concept
+# rule it mirrors (2026-08-30 fix): the rules in odyssey/data/concepts.py
+# are precise about their boundary (tachycardia is HR > 100, strict;
+# KDIGO Stage 3 is creatinine >= 4.0, inclusive), and the bin token must
+# put the exact boundary value on the same side the rule does -- before
+# this flag, HR=100 tokenized ``::HIGH`` while the tachycardia label said
+# no, so the input token over-signaled relative to its own supervision.
+# True: values EQUAL to the threshold keep the below-label (mirrors a
+# strict ``>`` rule); False: they take the next label up (mirrors a
+# strict ``<`` lower rule from the other side, or an ``at_or_above``
+# upper rule like creatinine >= 4.0).
+_RangeSpec = Tuple[List[Tuple[float, str, bool]], str]
 CANONICAL_CLINICAL_RANGES: Dict[str, Dict[Optional[str], _RangeSpec]] = {
-    # heart rate
-    "8867-4": {None: ([(60.0, "LOW"), (100.0, "NORMAL")], "HIGH")},
-    # SBP: non-invasive cuff and arterial line, same range
-    "76534-7": {None: ([(90.0, "LOW"), (140.0, "NORMAL")], "HIGH")},
-    "8480-6": {None: ([(90.0, "LOW"), (140.0, "NORMAL")], "HIGH")},
-    # respiratory rate (only an upper rule exists)
-    "9279-1": {None: ([(20.0, "NORMAL")], "HIGH")},
-    # SpO2 (only a lower rule exists)
-    "59408-5": {None: ([(92.0, "LOW")], "NORMAL")},
-    # temperature: unit-split (see code_mapping._PREFIX_UNITS)
+    # heart rate: bradycardia < 60 (60 is not LOW); tachycardia > 100
+    # (100 is not HIGH)
+    "8867-4": {None: ([(60.0, "LOW", False), (100.0, "NORMAL", True)], "HIGH")},
+    # SBP: hypotension < 90; hypertension > 140. Non-invasive cuff and
+    # arterial line, same range
+    "76534-7": {None: ([(90.0, "LOW", False), (140.0, "NORMAL", True)], "HIGH")},
+    "8480-6": {None: ([(90.0, "LOW", False), (140.0, "NORMAL", True)], "HIGH")},
+    # respiratory rate: RR > 20 (SIRS / sustained_tachypnea), strict
+    "9279-1": {None: ([(20.0, "NORMAL", True)], "HIGH")},
+    # SpO2: hypoxia < 92 (92 is not LOW)
+    "59408-5": {None: ([(92.0, "LOW", False)], "NORMAL")},
+    # temperature: unit-split (see code_mapping._PREFIX_UNITS); fever is
+    # strictly above, hypothermia strictly below
     "8310-5": {
-        "F": ([(96.8, "LOW"), (100.4, "NORMAL")], "HIGH"),
-        "C": ([(36.0, "LOW"), (38.0, "NORMAL")], "HIGH"),
+        "F": ([(96.8, "LOW", False), (100.4, "NORMAL", True)], "HIGH"),
+        "C": ([(36.0, "LOW", False), (38.0, "NORMAL", True)], "HIGH"),
     },
-    # creatinine: NORMAL / HIGH (aki_stage_1) / CRITICAL (aki_stage_3).
+    # creatinine: NORMAL / HIGH (v1's > 1.5 proxy, strict) / CRITICAL
+    # (aki_stage_3's >= 4.0, INCLUSIVE -- 4.0 is CRITICAL).
     # umol/L entry = mg/dL cuts x 88.42 (SI conversion), for sources whose
     # creatinine prefix carries the umol/L unit tag (GEMINI; see
     # code_mapping._PREFIX_UNITS) -- applying the mg/dL cuts to umol/L
     # values would label nearly every reading CRITICAL.
     "2160-0": {
-        None: ([(1.5, "NORMAL"), (4.0, "HIGH")], "CRITICAL"),
-        "umol/L": ([(132.6, "NORMAL"), (353.7, "HIGH")], "CRITICAL"),
+        None: ([(1.5, "NORMAL", True), (4.0, "HIGH", False)], "CRITICAL"),
+        "umol/L": ([(132.6, "NORMAL", True), (353.7, "HIGH", False)], "CRITICAL"),
     },
-    # lactate
-    "32693-4": {None: ([(2.0, "NORMAL")], "HIGH")},
+    # lactate: elevated_lactate > 2.0, strict
+    "32693-4": {None: ([(2.0, "NORMAL", True)], "HIGH")},
 }
 
 
 def clinical_ranges_for_source(
     source: str = "mimic_iv",
-) -> Tuple[Dict[str, List[Tuple[float, str]]], Dict[str, str]]:
+) -> Tuple[Dict[str, List[Tuple[float, str, bool]]], Dict[str, str]]:
     """Expand :data:`CANONICAL_CLINICAL_RANGES` to one source's prefixes.
 
     Returns ``(ranges, fallback_labels)``, both keyed by concrete MEDS
@@ -158,7 +178,7 @@ def clinical_ranges_for_source(
     only reaches prefixes carrying that unit tag in
     :mod:`odyssey.data.code_mapping`.
     """
-    ranges: Dict[str, List[Tuple[float, str]]] = {}
+    ranges: Dict[str, List[Tuple[float, str, bool]]] = {}
     fallbacks: Dict[str, str] = {}
     for loinc, by_unit in CANONICAL_CLINICAL_RANGES.items():
         for prefix in sorted(prefixes_for_loinc(loinc, source=source)):
@@ -179,7 +199,7 @@ CLINICAL_RANGES, _FALLBACK_LABEL = clinical_ranges_for_source("mimic_iv")
 
 def _clinical_label_expr(
     value_col: str,
-    ranges: Dict[str, List[Tuple[float, str]]],
+    ranges: Dict[str, List[Tuple[float, str, bool]]],
     fallbacks: Dict[str, str],
 ) -> pl.Expr:
     """Build one polars expression giving the clinical bin label, or null.
@@ -194,12 +214,13 @@ def _clinical_label_expr(
     label_expr = pl.lit(None, dtype=pl.Utf8)
     for prefix, cuts in ranges.items():
         prefix_label = pl.lit(fallbacks[prefix])
-        for threshold, label in reversed(cuts):
-            prefix_label = (
-                pl.when(pl.col(value_col) < threshold)
-                .then(pl.lit(label))
-                .otherwise(prefix_label)
+        for threshold, label, below_inclusive in reversed(cuts):
+            below = (
+                pl.col(value_col) <= threshold
+                if below_inclusive
+                else pl.col(value_col) < threshold
             )
+            prefix_label = pl.when(below).then(pl.lit(label)).otherwise(prefix_label)
         label_expr = (
             pl.when(
                 pl.col("code").str.starts_with(prefix) & pl.col(value_col).is_not_null()

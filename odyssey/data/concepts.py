@@ -177,19 +177,29 @@ class SustainedRule:
     """A threshold crossing that must recur at least ``min_gap_hours`` apart.
 
     Operationalized as: among this subject's qualifying (threshold-crossing)
-    observations for this code, the earliest and latest are at least
+    observations for this signal, the earliest and latest are at least
     ``min_gap_hours`` apart. Weaker than "stayed above threshold
     continuously the whole time" (which would need every intervening
     reading to also qualify), but a real, cheaply-implementable
     improvement over a single instantaneous crossing: a lone transient
     spike has zero span and correctly does not trigger, while genuine
     recurring/sustained abnormality spread across the stay does.
+
+    ``extra_prefixes`` widens the match to clinically-interchangeable
+    measurements of the same signal (a cuff MAP and an arterial-line MAP),
+    POOLED before the recurrence check. Recurrence is a property of the
+    patient's physiology, not of one charting route: a MAP < 65 on the
+    cuff at t and on the arterial line at t+2h is sustained hypotension,
+    and evaluating each prefix separately (the pre-2026-08-30 expansion
+    of a multi-prefix ``LoincSustained``) silently missed exactly that
+    cross-modality recurrence.
     """
 
     code_prefix: str
     threshold: float
     direction: Direction
     min_gap_hours: float = 1.0
+    extra_prefixes: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -358,8 +368,22 @@ class Sepsis3Rule:
     antibiotic); the suspicion time is the earlier of the two. Sepsis =
     a SOFA total >= ``sofa_threshold`` (baseline assumed 0, as mimic-code
     does) at any instant from ``sofa_before_hours`` before to
-    ``sofa_after_hours`` after suspicion; onset is the first instant both
-    hold. Diagnosis codes are deliberately not used (no onset time).
+    ``sofa_after_hours`` after suspicion. Diagnosis codes are deliberately
+    not used (no onset time).
+
+    The reported first-trigger time departs from mimic-code's onset in one
+    deliberate way (2026-08-30): it is the first instant ALL the label's
+    ingredients exist in the record -- ``max(SOFA crossing, suspicion,
+    completion of the confirming culture/antibiotic pair)`` -- rather than
+    ``max(SOFA crossing, suspicion)``, which can precede the pair's second
+    element by up to ``antibiotic_after_hours``. The triggered set is
+    identical; only the stamp moves. This makes the time safe as a
+    running-label / hazard-onset anchor (nothing is labeled true before it
+    was determinable). Residual, documented limitation: the culture (and
+    the preferred antibiotic-order source) live in label-only sidecars the
+    models never see as inputs, so sepsis3 remains harder than concepts
+    whose trigger is an input-visible event -- that is a modeling
+    challenge, not leakage.
     """
 
     source: str
@@ -718,10 +742,22 @@ def _expand_rule(rule: CanonicalRule, source: str) -> List[ComponentRule]:
             for prefix in prefixes
         ]
     if isinstance(rule, LoincSustained):
-        return [
-            SustainedRule(prefix, rule.threshold, rule.direction, rule.min_gap_hours)
-            for prefix in prefixes
-        ]
+        # ONE pooled rule over every prefix, never one rule per prefix:
+        # per-prefix expansion would apply the recurrence check within
+        # each charting route separately (see SustainedRule.extra_prefixes).
+        return (
+            [
+                SustainedRule(
+                    prefixes[0],
+                    rule.threshold,
+                    rule.direction,
+                    rule.min_gap_hours,
+                    extra_prefixes=tuple(prefixes[1:]),
+                )
+            ]
+            if prefixes
+            else []
+        )
     if isinstance(rule, LoincBaselineRelative):
         expanded: List[ComponentRule] = []
         for prefix in prefixes:
@@ -1286,10 +1322,10 @@ def _sustained_ids(
     value_col: str,
     time_col: str,
 ) -> Tuple[Set[int], FirstTimes]:
-    matched = events.filter(
-        pl.col(code_col).str.starts_with(rule.code_prefix)
-        & pl.col(value_col).is_not_null()
-    )
+    prefix_match = pl.col(code_col).str.starts_with(rule.code_prefix)
+    for extra in rule.extra_prefixes:
+        prefix_match = prefix_match | pl.col(code_col).str.starts_with(extra)
+    matched = events.filter(prefix_match & pl.col(value_col).is_not_null())
     observed = set(matched[subject_id_col].to_list())
     comparison = _threshold_expr(pl.col(value_col), rule.threshold, rule.direction)
     qualifying = matched.filter(comparison)
@@ -1422,7 +1458,9 @@ def _derived_gcs_total_ids(
             "ignore", message="Sortedness of columns cannot be checked"
         )
         paired = eye.join_asof(
-            verbal.rename({value_col: f"{value_col}_verbal"}),
+            verbal.rename({value_col: f"{value_col}_verbal"}).with_columns(
+                pl.col(time_col).alias("_t_verbal")
+            ),
             on=time_col,
             by=subject_id_col,
             strategy="nearest",
@@ -1432,7 +1470,9 @@ def _derived_gcs_total_ids(
             [subject_id_col, time_col]
         )
         paired = paired.join_asof(
-            motor.rename({value_col: f"{value_col}_motor"}),
+            motor.rename({value_col: f"{value_col}_motor"}).with_columns(
+                pl.col(time_col).alias("_t_motor")
+            ),
             on=time_col,
             by=subject_id_col,
             strategy="nearest",
@@ -1446,7 +1486,16 @@ def _derived_gcs_total_ids(
         pl.col(value_col) + pl.col(f"{value_col}_verbal") + pl.col(f"{value_col}_motor")
     )
     comparison = _threshold_expr(total, rule.threshold, rule.direction)
-    triggered = _first_times(paired.filter(comparison), subject_id_col, time_col)
+    # Stamp the trigger at the LAST of the three paired component times,
+    # not the eye time: "nearest" pairing may pull a verbal/motor reading
+    # charted up to max_component_gap_minutes AFTER the eye reading, and a
+    # total is only computable once all three components exist. Stamping
+    # at the eye time put up to that many minutes of future information
+    # into first_times (a small but real running-label leak).
+    paired = paired.with_columns(
+        pl.max_horizontal(time_col, "_t_verbal", "_t_motor").alias("_t_known")
+    )
+    triggered = _first_times(paired.filter(comparison), subject_id_col, "_t_known")
     return observed, triggered
 
 
@@ -1759,10 +1808,24 @@ def _sepsis3_ids(  # noqa: PLR0915
     )
     if pairs.height == 0:
         return sofa_obs_keys, {}
+    # _si: mimic-code's suspicion time, the EARLIER element of the earliest
+    # valid pair -- it anchors the SOFA window below, exactly as published.
+    # _confirm: the earliest instant a valid pair is COMPLETE (the later
+    # element, minimized over pairs). Suspicion is only knowable once both
+    # elements exist: a culture on day 1 plus an antibiotic on day 3 is a
+    # valid pair, but on day 1 nothing distinguishes that culture from any
+    # never-confirmed one. Folding _confirm into the onset (below) keeps
+    # the first-trigger time at an instant the label was determinable,
+    # which is what running_labels.py's "true from first-trigger onward"
+    # contract needs -- without it, RandInt/CEM interventions were feeding
+    # up-to-72h-of-future sepsis3 "ground truth" into training.
     suspicion = (
-        pairs.with_columns(pl.min_horizontal("_ctime", "_atime").alias("_si"))
+        pairs.with_columns(
+            pl.min_horizontal("_ctime", "_atime").alias("_si"),
+            pl.max_horizontal("_ctime", "_atime").alias("_pair_done"),
+        )
         .group_by(key)
-        .agg(pl.col("_si").min())
+        .agg(pl.col("_si").min(), pl.col("_pair_done").min().alias("_confirm"))
     )
 
     # --- SOFA on the suspected keys only, suspicion instants added to the grid
@@ -1790,8 +1853,19 @@ def _sepsis3_ids(  # noqa: PLR0915
             )
         )
         .group_by(key)
-        .agg(pl.col(time_col).min().alias("_tsofa"), pl.col("_si").first())
-        .with_columns(pl.max_horizontal("_tsofa", "_si").alias("_onset"))
+        .agg(
+            pl.col(time_col).min().alias("_tsofa"),
+            pl.col("_si").first(),
+            pl.col("_confirm").first(),
+        )
+        # Onset = the first instant every ingredient of the label is in
+        # the record: the SOFA crossing, the suspicion instant, AND the
+        # pair's completion (_confirm, see above). mimic-code's own onset
+        # is max(_tsofa, _si), which can precede _confirm by up to
+        # antibiotic_after_hours -- correct as a retrospective epidemiology
+        # timestamp, but a leak when used as a running-label anchor. The
+        # triggered SET is unchanged by this; only the stamp moves later.
+        .with_columns(pl.max_horizontal("_tsofa", "_si", "_confirm").alias("_onset"))
     )
     onsets: FirstTimes = dict(zip(crossed[key].to_list(), crossed["_onset"].to_list()))
     return sofa_obs_keys, onsets
@@ -1884,8 +1958,11 @@ def label_concepts(
     :class:`CompositeConceptDefinition`, ``{name}`` is 1 if at least
     ``min_criteria`` of its components fired (anywhere in the subject's
     history, not necessarily simultaneously -- see that class's
-    docstring), and ``{name}_observed`` is 1 if at least one component
-    had at least one matching measurement.
+    docstring), and ``{name}_observed`` is 1 only if at least
+    ``min_criteria`` components each had at least one matching
+    measurement -- with fewer, the composite could never have reached
+    ``min_criteria`` no matter what the readings said, so the subject is
+    structurally unassessable, not a genuine negative.
 
     With ``include_first_time``, a ``{name}_first_time`` Datetime column
     is added: the earliest time at which the concept became satisfied
@@ -1904,7 +1981,7 @@ def label_concepts(
         if isinstance(concept, CompositeConceptDefinition):
             if not concept.components:
                 raise ValueError(f"concept {concept.name!r} has no components defined")
-            observed_ids: Set[int] = set()
+            observed_counts: Dict[int, int] = {}
             criteria_times: Dict[int, List[datetime]] = {}
             for component in concept.components:
                 obs, trig = _composite_component_ids(
@@ -1915,9 +1992,20 @@ def label_concepts(
                     value_col=value_col,
                     time_col=time_col,
                 )
-                observed_ids |= obs
+                for sid in obs:
+                    observed_counts[sid] = observed_counts.get(sid, 0) + 1
                 for sid, t in trig.items():
                     criteria_times.setdefault(sid, []).append(t)
+            # Observed = at least min_criteria components were measurable.
+            # A subject observed for only one SIRS criterion can never
+            # reach min_criteria=2, so "any one component observed" (the
+            # pre-2026-08-30 mask) supervised structurally-unassessable
+            # subjects as negatives -- label noise, not a real negative.
+            observed_ids: Set[int] = {
+                sid
+                for sid, count in observed_counts.items()
+                if count >= concept.min_criteria
+            }
             for sid, times in criteria_times.items():
                 if len(times) >= concept.min_criteria:
                     first_times[sid] = sorted(times)[concept.min_criteria - 1]
