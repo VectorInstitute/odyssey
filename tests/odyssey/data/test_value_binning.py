@@ -1,5 +1,7 @@
 """Tests for folding numeric event values into clinically meaningful tokens."""
 
+import json
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 import polars as pl
@@ -260,6 +262,37 @@ def test_clinical_ranges_reproduce_every_concept_rule_threshold() -> None:
                 f"boundary with {boundary_side}"
             )
     assert seen_any  # the check must never silently go vacuous
+
+
+def test_edge_version_v1_reproduces_pre_fix_tokens_for_old_binners(
+    tmp_path: Path,
+) -> None:
+    """A binner saved without the edge-version key evaluates under v1 edges.
+
+    Tokenization is part of a checkpoint's input contract: HR=100 trained
+    as ::HIGH before the 2026-08-30 fix, so an old run's eval must keep
+    reading it as ::HIGH, while new fits (stamped v2) put it with NORMAL
+    the way the strict tachycardia rule does.
+    """
+    boundary = _events([("LAB//220045//bpm", 100.0)])
+    # no binner / a fresh fit: current (v2) semantics
+    assert add_value_tokens(boundary)["code"][0].endswith("::NORMAL")
+    fresh = QuantileBinner.fit(
+        _events([("LAB//UNMAPPED//x", float(v)) for v in range(100)]),
+        n_bins=2,
+        min_count=50,
+    )
+    assert fresh.clinical_edge_version == "v2"
+    assert add_value_tokens(boundary, fresh)["code"][0].endswith("::NORMAL")
+    # a pre-fix binner file (no clinical_edge_version key): v1 semantics
+    legacy_path = tmp_path / "binner.json"
+    legacy_path.write_text(json.dumps({"n_bins": 2, "boundaries": {}}))
+    legacy = QuantileBinner.load(legacy_path)
+    assert legacy.clinical_edge_version == "v1"
+    assert add_value_tokens(boundary, legacy)["code"][0].endswith("::HIGH")
+    # and the stamp round-trips through save/load
+    fresh.save(tmp_path / "fresh.json")
+    assert QuantileBinner.load(tmp_path / "fresh.json").clinical_edge_version == "v2"
 
 
 # ---------------------------------------------------------------------------
