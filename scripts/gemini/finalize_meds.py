@@ -160,7 +160,7 @@ import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import pandas as pd
 import polars as pl
@@ -674,7 +674,7 @@ def _sort_and_finalize_shard(
     return frame.height, code_counts
 
 
-def _current_extractor_commit() -> Optional[str]:
+def _current_extractor_commit() -> str | None:
     """Return the extractor's git commit hash for dataset.json's etl_version."""
     try:
         result = subprocess.run(
@@ -690,7 +690,7 @@ def _current_extractor_commit() -> Optional[str]:
         return None
 
 
-def _write_dataset_json(root: Path, *, extractor_commit: Optional[str]) -> None:
+def _write_dataset_json(root: Path, *, extractor_commit: str | None) -> None:
     payload = {
         "dataset_name": "gemini_meds",
         "dataset_version": None,
@@ -748,7 +748,7 @@ def _write_all_metadata(
     _write_hadm_id_hospital(root, _fetch_hadm_id_hospital())
 
 
-def run_finalize(output_dir: Optional[Path] = None) -> dict[str, Any]:
+def run_finalize(output_dir: Path | None = None) -> dict[str, Any]:
     """Run the full finalize pass end to end and return a summary.
 
     Remaps subject ids, assigns splits, reshards, sorts, writes metadata,

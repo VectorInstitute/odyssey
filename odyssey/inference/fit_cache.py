@@ -32,7 +32,7 @@ import sys
 from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 
 logger = logging.getLogger(__name__)
@@ -45,14 +45,14 @@ logger = logging.getLogger(__name__)
 _FINGERPRINT_PACKAGES = ("tabicl", "interpret", "survivalpfn", "torch", "numpy")
 
 
-def _package_version(name: str) -> Optional[str]:
+def _package_version(name: str) -> str | None:
     try:
         return version(name)
     except PackageNotFoundError:
         return None
 
 
-def env_fingerprint() -> Dict[str, Optional[str]]:
+def env_fingerprint() -> dict[str, str | None]:
     """Return a dict identifying the current venv well enough to gate cache loads."""
     return {
         "python": sys.version,
@@ -65,7 +65,7 @@ class FitCache:
     """Pickles fitted baseline models to disk, keyed by a caller-chosen string."""
 
     cache_dir: Path
-    fingerprint: Dict[str, Optional[str]] = field(default_factory=env_fingerprint)
+    fingerprint: dict[str, str | None] = field(default_factory=env_fingerprint)
 
     def _path(self, key: str) -> Path:
         # "/" in a key becomes a real subdirectory (pathlib splits it that
@@ -74,7 +74,7 @@ class FitCache:
         # "a/b" with the distinct key "a__b".
         return self.cache_dir / f"{key}.pkl"
 
-    def load(self, key: str) -> Optional[Any]:
+    def load(self, key: str) -> Any | None:
         """Return the cached model for ``key``, or ``None`` if it must be (re)fit.
 
         ``None`` covers both "never cached" and "cached under a different

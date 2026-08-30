@@ -52,9 +52,9 @@ import hashlib
 import json
 import logging
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import polars as pl
@@ -76,10 +76,10 @@ METADATA_FILENAME = "metadata.json"
 #: The protocol's fixed grid (docs/missingness_protocol.md: "8 cells + clean
 #: baseline"). Not overridable via the CLI -- a different grid is a design
 #: change to the protocol itself, not a run-time knob.
-MCAR_PROBABILITIES: Tuple[float, ...] = (0.1, 0.3, 0.5)
-LAG_HOURS_GRID: Tuple[float, ...] = (4.0, 8.0)
+MCAR_PROBABILITIES: tuple[float, ...] = (0.1, 0.3, 0.5)
+LAG_HOURS_GRID: tuple[float, ...] = (4.0, 8.0)
 
-KNOWN_SOURCES: Tuple[str, ...] = ("mimic_iv", "eicu", "gemini")
+KNOWN_SOURCES: tuple[str, ...] = ("mimic_iv", "eicu", "gemini")
 
 
 # ---------------------------------------------------------------------------
@@ -99,12 +99,12 @@ class Cell:
     name: str
     transform: str  # "mcar" | "family_blackout" | "lab_lag"
     seed: int
-    params: Dict[str, object] = field(default_factory=dict)
+    params: dict[str, object] = field(default_factory=dict)
 
 
-def all_cells(seed: int) -> Dict[str, Cell]:
+def all_cells(seed: int) -> dict[str, Cell]:
     """Build the protocol's fixed 8-cell grid, seeded."""
-    cells: Dict[str, Cell] = {}
+    cells: dict[str, Cell] = {}
     for p in MCAR_PROBABILITIES:
         name = f"mcar_{p:g}".replace(".", "_")
         cells[name] = Cell(name=name, transform="mcar", seed=seed, params={"p": p})
@@ -126,7 +126,7 @@ def all_cells(seed: int) -> Dict[str, Cell]:
 # ---------------------------------------------------------------------------
 
 
-def _shard_seed(base_seed: int, path: Path) -> Tuple[int, int]:
+def _shard_seed(base_seed: int, path: Path) -> tuple[int, int]:
     """Per-shard seed: (base seed, shard's own numeric index).
 
     Not processing order -- shards are logically independent (a MEDS
@@ -203,7 +203,7 @@ def _assert_origin_preserved(
 
 
 def apply_mcar(
-    events: pl.DataFrame, *, p: float, seed: Union[int, Tuple[int, int]]
+    events: pl.DataFrame, *, p: float, seed: int | tuple[int, int]
 ) -> pl.DataFrame:
     """Drop each non-anchor, non-origin row independently with probability ``p``.
 
@@ -323,7 +323,7 @@ def generate_cell(
 ) -> None:
     """Materialize one degraded shard directory plus its ``metadata.json``."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    source_hashes: Dict[str, str] = {}
+    source_hashes: dict[str, str] = {}
     for path in shard_paths:
         source_hashes[path.name] = _sha256_file(path)
         dest = output_dir / path.name
@@ -363,7 +363,7 @@ def generate_cell(
     )
 
 
-def load_cell_metadata(cell_dir: Path) -> Dict[str, object]:
+def load_cell_metadata(cell_dir: Path) -> dict[str, object]:
     """Read back a degraded cell directory's ``metadata.json``."""
     path = cell_dir / METADATA_FILENAME
     if not path.is_file():
@@ -380,7 +380,7 @@ def load_cell_metadata(cell_dir: Path) -> Dict[str, object]:
 # ---------------------------------------------------------------------------
 
 
-def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Generate missingness-stress-protocol degraded MEDS shards "
@@ -405,7 +405,7 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv: Optional[Sequence[str]] = None) -> None:
+def main(argv: Sequence[str] | None = None) -> None:
     """CLI entry point: generate one degraded shard directory per selected cell."""
     args = _parse_args(argv)
 

@@ -3,7 +3,6 @@
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import polars as pl
 import pytest
@@ -39,8 +38,8 @@ def _write_dataset(
     root: Path,
     *,
     with_metadata: bool = True,
-    train_subjects: Optional[list[int]] = None,
-    held_out_subjects: Optional[list[int]] = None,
+    train_subjects: list[int] | None = None,
+    held_out_subjects: list[int] | None = None,
 ) -> None:
     train_subjects = train_subjects if train_subjects is not None else [1, 2]
     held_out_subjects = held_out_subjects if held_out_subjects is not None else [3]

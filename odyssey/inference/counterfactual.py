@@ -32,9 +32,10 @@ prefixes through the LOINC tables.
 import argparse
 import json
 import logging
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Sequence, Tuple
+from typing import Literal
 
 import polars as pl
 import torch
@@ -55,7 +56,7 @@ from odyssey.training.train import _move_chunk_to_device
 
 logger = logging.getLogger(__name__)
 
-HORIZONS_HOURS: Tuple[float, ...] = (8.0, 24.0, 72.0)
+HORIZONS_HOURS: tuple[float, ...] = (8.0, 24.0, 72.0)
 EditMode = Literal["set", "add", "scale", "remove"]
 _PANEL_LOINC = dict(SIGNAL_PANEL)
 
@@ -71,15 +72,15 @@ class ValueEdit:
     value: float = 0.0
     """``set``: new reading; ``add``: offset; ``scale``: multiplier;
     ``remove``: drop the readings (value unused)."""
-    window_hours: Optional[float] = 6.0
+    window_hours: float | None = 6.0
     """Only readings within this many hours before the index time are
     edited; ``None`` = every reading before it."""
-    expected_direction: Dict[str, int] = field(default_factory=dict)
+    expected_direction: dict[str, int] = field(default_factory=dict)
     """Optional: event name -> +1/-1, the clinically expected sign of the
     hazard shift (e.g. hypotension edit -> vasopressor_start +1). Used
     for the sign-agreement summary only."""
 
-    def prefixes(self, source: str) -> List[str]:
+    def prefixes(self, source: str) -> list[str]:
         """Code prefixes this edit touches in ``source``."""
         if "//" in self.signal:
             return [self.signal]
@@ -100,7 +101,7 @@ class ValueEdit:
         if mode not in ("set", "add", "scale", "remove"):
             raise ValueError(f"edit spec {spec!r}: unknown mode {mode!r}")
         value = float(parts[2]) if len(parts) > 2 and parts[2] != "" else 0.0
-        window: Optional[float] = 6.0
+        window: float | None = 6.0
         if len(parts) > 3:
             window = None if parts[3] == "all" else float(parts[3])
         return cls(signal=signal, mode=mode, value=value, window_hours=window)  # type: ignore[arg-type]
@@ -115,7 +116,7 @@ def apply_value_edits(
     code_col: str = "code",
     value_col: str = "numeric_value",
     time_col: str = "time",
-) -> Tuple[pl.DataFrame, int]:
+) -> tuple[pl.DataFrame, int]:
     """Return the edited raw events (one subject) and how many rows were touched.
 
     Only rows strictly before or at ``index_time`` and inside each edit's
@@ -162,17 +163,17 @@ class ForecastReadout:
     subject_id: int
     index_time_hours: float
     position: int
-    event_risk: Dict[str, Dict[str, float]]
+    event_risk: dict[str, dict[str, float]]
     """event -> {"8h": p, "24h": p, "72h": p}."""
-    concept_probs: Dict[str, float]
-    top_next: List[Tuple[str, float]]
+    concept_probs: dict[str, float]
+    top_next: list[tuple[str, float]]
 
 
 @torch.no_grad()
 def score_record_at(
     model: SequenceModel,
     vocab: Vocabulary,
-    binner: Optional[QuantileBinner],
+    binner: QuantileBinner | None,
     raw_subject_events: pl.DataFrame,
     *,
     index_time: object,
@@ -232,7 +233,7 @@ def score_record_at(
             (vocab.decode(int(t)), float(p))
             for t, p in zip(top_i.tolist(), top_p.tolist())
         ]
-        risk: Dict[str, Dict[str, float]] = {}
+        risk: dict[str, dict[str, float]] = {}
         if event_heads is not None:
             hz = event_heads(fwd.features[0, i : i + 1])  # (1, E, B)
             for e_idx, name in enumerate(event_heads.event_names):
@@ -242,7 +243,7 @@ def score_record_at(
                     )
                     for h in horizons
                 }
-        concepts: Dict[str, float] = {}
+        concepts: dict[str, float] = {}
         if fwd.bottleneck is not None:
             cp = fwd.bottleneck.concept_probs[0, i].tolist()
             concepts = {name: float(p) for name, p in zip(concept_names, cp)}
@@ -262,18 +263,18 @@ class CounterfactualResult:
     """Factual vs counterfactual forecast for one subject and one edit set."""
 
     subject_id: int
-    edits: List[Dict[str, object]]
+    edits: list[dict[str, object]]
     rows_edited: int
     factual: ForecastReadout
     counterfactual: ForecastReadout
-    delta_event_risk: Dict[str, Dict[str, float]]
-    delta_concepts: Dict[str, float]
+    delta_event_risk: dict[str, dict[str, float]]
+    delta_concepts: dict[str, float]
 
 
 def counterfactual_forecast(
     model: SequenceModel,
     vocab: Vocabulary,
-    binner: Optional[QuantileBinner],
+    binner: QuantileBinner | None,
     raw_subject_events: pl.DataFrame,
     edits: Sequence[ValueEdit],
     *,
@@ -336,7 +337,7 @@ def counterfactual_forecast(
 
 def _index_times_by_subject(
     raw_events: pl.DataFrame, *, index_hours: float
-) -> Dict[int, object]:
+) -> dict[int, object]:
     """Return subject -> last event time at or before ``index_hours`` into a visit.
 
     The first visit of each subject that lasts at least ``index_hours``.
@@ -369,22 +370,22 @@ def _index_times_by_subject(
 class CohortSummary:
     """Mean shift and sign agreement of one edit set over a cohort."""
 
-    edits: List[Dict[str, object]]
+    edits: list[dict[str, object]]
     n_subjects: int
     n_edited: int
     """Subjects where at least one reading was actually edited."""
-    mean_delta_event_risk: Dict[str, Dict[str, float]]
-    sign_agreement: Dict[str, Dict[str, float]]
+    mean_delta_event_risk: dict[str, dict[str, float]]
+    sign_agreement: dict[str, dict[str, float]]
     """event -> horizon -> fraction of edited subjects whose shift has the
     declared expected sign (only events with an expectation)."""
-    mean_delta_concepts: Dict[str, float]
-    per_subject: List[CounterfactualResult] = field(default_factory=list)
+    mean_delta_concepts: dict[str, float]
+    per_subject: list[CounterfactualResult] = field(default_factory=list)
 
 
 def cohort_counterfactual(
     model: SequenceModel,
     vocab: Vocabulary,
-    binner: Optional[QuantileBinner],
+    binner: QuantileBinner | None,
     raw_events: pl.DataFrame,
     edits: Sequence[ValueEdit],
     *,
@@ -404,7 +405,7 @@ def cohort_counterfactual(
         gen = torch.Generator().manual_seed(seed)
         pick = torch.randperm(len(subjects), generator=gen)[:max_subjects].tolist()
         subjects = sorted(subjects[i] for i in pick)
-    results: List[CounterfactualResult] = []
+    results: list[CounterfactualResult] = []
     for sid in subjects:
         sub = raw_events.filter(pl.col("subject_id") == sid)
         res = counterfactual_forecast(
@@ -422,9 +423,9 @@ def cohort_counterfactual(
         results.append(res)
     edited = [r for r in results if r.rows_edited > 0]
     events = sorted({ev for r in edited for ev in r.delta_event_risk})
-    mean_delta: Dict[str, Dict[str, float]] = {}
-    agree: Dict[str, Dict[str, float]] = {}
-    expected: Dict[str, int] = {}
+    mean_delta: dict[str, dict[str, float]] = {}
+    agree: dict[str, dict[str, float]] = {}
+    expected: dict[str, int] = {}
     for e in edits:
         expected.update(e.expected_direction)
     for ev in events:
@@ -467,7 +468,7 @@ def cohort_counterfactual(
 # ---------------------------------------------------------------------------
 
 # Standard what-ifs with their clinically expected hazard directions.
-STANDARD_EDITS: Dict[str, ValueEdit] = {
+STANDARD_EDITS: dict[str, ValueEdit] = {
     "hypotension_6h": ValueEdit(
         "sbp_noninvasive", "set", 80.0, 6.0, {"vasopressor_start": +1, "death": +1}
     ),

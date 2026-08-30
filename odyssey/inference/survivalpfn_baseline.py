@@ -72,7 +72,7 @@ import logging
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -162,7 +162,7 @@ _CAP_AT_MAX_HORIZON: Any = _CapAtMaxHorizon()
 def _survival_targets(
     rows: Sequence[IndexRow],
     times: EventTimes,
-    followup_cap_hours: Optional[float] = None,
+    followup_cap_hours: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Per-row ``(T, delta, keep_idx)`` for a survival-native fit.
 
@@ -341,8 +341,8 @@ def _fit_one_survivalpfn(
     event_name: str,
     device: str,
     max_rows: int,
-    followup_cap_hours: Optional[float],
-    cache: Optional[FitCache] = None,
+    followup_cap_hours: float | None,
+    cache: FitCache | None = None,
 ) -> dict[float, SurvivalPFNBaselineModel]:
     """Fit one SurvivalPFN context for a single event, shared across every horizon.
 
@@ -454,9 +454,9 @@ def fit_survivalpfn_baselines(
     feature_set: str = "basic",
     device: str = "cpu",
     max_rows: int | None = None,
-    followup_cap_hours: Optional[float] = _CAP_AT_MAX_HORIZON,
-    cache: Optional[FitCache] = None,
-    features: Optional[dict[str, np.ndarray]] = None,
+    followup_cap_hours: float | None = _CAP_AT_MAX_HORIZON,
+    cache: FitCache | None = None,
+    features: dict[str, np.ndarray] | None = None,
 ) -> dict[tuple[str, float], SurvivalPFNBaselineModel]:
     """One SurvivalPFN context per event, evaluated at every horizon.
 

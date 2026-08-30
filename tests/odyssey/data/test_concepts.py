@@ -4,7 +4,6 @@ import re
 import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Tuple, Union
 
 import polars as pl
 import pytest
@@ -33,10 +32,10 @@ from odyssey.data.concepts import (
 T0 = datetime(2024, 1, 1, 0, 0)
 
 
-_EventRow = Union[Tuple[int, str, float], Tuple[int, str, float, datetime]]
+_EventRow = tuple[int, str, float] | tuple[int, str, float, datetime]
 
 
-def _events(rows: List[_EventRow]) -> pl.DataFrame:
+def _events(rows: list[_EventRow]) -> pl.DataFrame:
     """Build a synthetic events frame; each row optionally includes a time.
 
     Rows may be ``(subject_id, code, value)`` (time defaults to ``T0``,

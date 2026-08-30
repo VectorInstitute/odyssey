@@ -12,7 +12,7 @@ learns anything meaningful.
 
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import polars as pl
 import torch
@@ -34,7 +34,7 @@ def _write_shards(shard_dir: Path, n_subjects: int, n_events_per_subject: int) -
     collection time and must stay skippable independently of this file.
     """
     shard_dir.mkdir(parents=True, exist_ok=True)
-    rows: List[Tuple[int, str, datetime, Optional[float], Optional[int]]] = []
+    rows: list[tuple[int, str, datetime, float | None, int | None]] = []
     for subject_id in range(n_subjects):
         base = T0 + timedelta(days=subject_id)
         for i in range(n_events_per_subject):
@@ -79,7 +79,7 @@ def _tiny_config(
     train_dir: Path, tuning_dir: Path, output_dir: Path, **overrides: Any
 ) -> TrainingConfig:
     """Build the smallest TrainingConfig that still exercises TransformerBackbone."""
-    defaults: Dict[str, Any] = {
+    defaults: dict[str, Any] = {
         "train_shard_dir": str(train_dir),
         "tuning_shard_dir": str(tuning_dir),
         "output_dir": str(output_dir),

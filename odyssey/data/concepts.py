@@ -71,9 +71,10 @@ yet express. See research_journal/04_concept_pipeline.html, Section 08,
 
 import logging
 import warnings
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Dict, List, Literal, Optional, Sequence, Set, Tuple, Union
+from typing import Literal
 
 import polars as pl
 
@@ -153,7 +154,7 @@ class CodeOccurrenceRule:
     code_pattern: str
     """Case-insensitive regex matched against the whole code string."""
 
-    observed_families: Tuple[str, ...] = (
+    observed_families: tuple[str, ...] = (
         "MEDICATION",
         "INFUSION_DRUG",
         "INFUSION_START",
@@ -199,7 +200,7 @@ class SustainedRule:
     threshold: float
     direction: Direction
     min_gap_hours: float = 1.0
-    extra_prefixes: Tuple[str, ...] = ()
+    extra_prefixes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -220,8 +221,8 @@ class BaselineRelativeRule:
     code_prefix: str
     direction: TrendDirection
     window_hours: float
-    delta: Optional[float] = None
-    ratio: Optional[float] = None
+    delta: float | None = None
+    ratio: float | None = None
 
     def __post_init__(self) -> None:
         """Require exactly one of ``delta``/``ratio``."""
@@ -346,7 +347,7 @@ class DerivedUrineRateRule:
 # ``PROCEDURE//START//{itemid}`` shape as the ventilation item ids in
 # :data:`odyssey.data.sofa.SOFA_SOURCE_CONFIG`; the alternation is anchored
 # so a longer item id that merely begins with one of these cannot match.
-RRT_ITEMIDS: Tuple[str, ...] = (
+RRT_ITEMIDS: tuple[str, ...] = (
     "225441",  # Hemodialysis (intermittent, IHD)
     "225802",  # Dialysis - CRRT
     "225803",  # Dialysis - CVVHD
@@ -401,16 +402,16 @@ class Sepsis3Rule:
     """Which medication rows count as the drug being given (not stopped)."""
 
 
-ComponentRule = Union[
-    ConceptRule,
-    SustainedRule,
-    BaselineRelativeRule,
-    DerivedGcsTotalRule,
-    CodeOccurrenceRule,
-    Sepsis3Rule,
-    DerivedSofaSignalRule,
-    DerivedUrineRateRule,
-]
+ComponentRule = (
+    ConceptRule
+    | SustainedRule
+    | BaselineRelativeRule
+    | DerivedGcsTotalRule
+    | CodeOccurrenceRule
+    | Sepsis3Rule
+    | DerivedSofaSignalRule
+    | DerivedUrineRateRule
+)
 
 
 @dataclass(frozen=True)
@@ -423,10 +424,10 @@ class AnyOf:
     criterion toward ``min_criteria``, not (potentially) two.
     """
 
-    rules: List[ComponentRule]
+    rules: list[ComponentRule]
 
 
-CompositeComponent = Union[ComponentRule, AnyOf]
+CompositeComponent = ComponentRule | AnyOf
 
 
 @dataclass(frozen=True)
@@ -434,7 +435,7 @@ class ConceptDefinition:
     """A clinical concept, derived by OR-ing one or more component rules."""
 
     name: str
-    rules: List[ComponentRule]
+    rules: list[ComponentRule]
     description: str
 
 
@@ -452,12 +453,12 @@ class CompositeConceptDefinition:
     """
 
     name: str
-    components: List[CompositeComponent]
+    components: list[CompositeComponent]
     min_criteria: int
     description: str
 
 
-AnyConceptDefinition = Union[ConceptDefinition, CompositeConceptDefinition]
+AnyConceptDefinition = ConceptDefinition | CompositeConceptDefinition
 
 
 # ---------------------------------------------------------------------------
@@ -492,10 +493,10 @@ class LoincThreshold:
     :func:`odyssey.data.code_mapping.unit_for`.
     """
 
-    loincs: Tuple[str, ...]
+    loincs: tuple[str, ...]
     direction: Direction
-    threshold: Optional[float] = None
-    unit_thresholds: Optional[Tuple[Tuple[str, float], ...]] = None
+    threshold: float | None = None
+    unit_thresholds: tuple[tuple[str, float], ...] | None = None
 
     def __post_init__(self) -> None:
         """Require exactly one of ``threshold``/``unit_thresholds``."""
@@ -511,7 +512,7 @@ class LoincThreshold:
 class LoincSustained:
     """Canonical form of :class:`SustainedRule`."""
 
-    loincs: Tuple[str, ...]
+    loincs: tuple[str, ...]
     threshold: float
     direction: Direction
     min_gap_hours: float = 1.0
@@ -530,12 +531,12 @@ class LoincBaselineRelative:
     the untagged-prefix case.
     """
 
-    loincs: Tuple[str, ...]
+    loincs: tuple[str, ...]
     direction: TrendDirection
     window_hours: float
-    delta: Optional[float] = None
-    ratio: Optional[float] = None
-    unit_deltas: Optional[Tuple[Tuple[str, float], ...]] = None
+    delta: float | None = None
+    ratio: float | None = None
+    unit_deltas: tuple[tuple[str, float], ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -591,26 +592,26 @@ class CanonicalSepsis3:
     sofa_threshold: int = 2
 
 
-CanonicalRule = Union[
-    LoincThreshold,
-    LoincSustained,
-    LoincBaselineRelative,
-    LoincGcsTotal,
-    CodeOccurrenceRule,
-    CanonicalSepsis3,
-    CanonicalSofaSignal,
-    CanonicalUrineRate,
-]
+CanonicalRule = (
+    LoincThreshold
+    | LoincSustained
+    | LoincBaselineRelative
+    | LoincGcsTotal
+    | CodeOccurrenceRule
+    | CanonicalSepsis3
+    | CanonicalSofaSignal
+    | CanonicalUrineRate
+)
 
 
 @dataclass(frozen=True)
 class CanonicalAnyOf:
     """Canonical form of :class:`AnyOf`."""
 
-    rules: Tuple[CanonicalRule, ...]
+    rules: tuple[CanonicalRule, ...]
 
 
-CanonicalComponent = Union[CanonicalRule, CanonicalAnyOf]
+CanonicalComponent = CanonicalRule | CanonicalAnyOf
 
 
 @dataclass(frozen=True)
@@ -618,7 +619,7 @@ class CanonicalConcept:
     """Canonical form of :class:`ConceptDefinition`."""
 
     name: str
-    rules: Tuple[CanonicalRule, ...]
+    rules: tuple[CanonicalRule, ...]
     description: str
 
 
@@ -627,17 +628,17 @@ class CanonicalComposite:
     """Canonical form of :class:`CompositeConceptDefinition`."""
 
     name: str
-    components: Tuple[CanonicalComponent, ...]
+    components: tuple[CanonicalComponent, ...]
     min_criteria: int
     description: str
 
 
-AnyCanonicalConcept = Union[CanonicalConcept, CanonicalComposite]
+AnyCanonicalConcept = CanonicalConcept | CanonicalComposite
 
 
-def _loinc_prefixes(loincs: Tuple[str, ...], source: str) -> List[str]:
+def _loinc_prefixes(loincs: tuple[str, ...], source: str) -> list[str]:
     """Every concrete prefix for ``loincs`` in ``source``, deterministic order."""
-    out: List[str] = []
+    out: list[str] = []
     for loinc in loincs:
         out.extend(sorted(prefixes_for_loinc(loinc, source=source)))
     return out
@@ -662,7 +663,7 @@ def _prefix_threshold(rule: LoincThreshold, prefix: str, source: str) -> float:
 
 def _expand_non_loinc(  # noqa: PLR0911
     rule: CanonicalRule, source: str
-) -> Optional[List[ComponentRule]]:
+) -> list[ComponentRule] | None:
     """Expand the non-LOINC-keyed rules; ``None`` when ``rule`` is LOINC-keyed."""
     if isinstance(rule, CodeOccurrenceRule):
         return [rule]
@@ -699,7 +700,7 @@ def _expand_non_loinc(  # noqa: PLR0911
     return None
 
 
-def _expand_rule(rule: CanonicalRule, source: str) -> List[ComponentRule]:
+def _expand_rule(rule: CanonicalRule, source: str) -> list[ComponentRule]:
     """Resolve one canonical rule to concrete rules; [] if unresolvable."""
     non_loinc = _expand_non_loinc(rule, source)
     if non_loinc is not None:
@@ -759,7 +760,7 @@ def _expand_rule(rule: CanonicalRule, source: str) -> List[ComponentRule]:
             else []
         )
     if isinstance(rule, LoincBaselineRelative):
-        expanded: List[ComponentRule] = []
+        expanded: list[ComponentRule] = []
         for prefix in prefixes:
             delta = rule.delta
             if rule.unit_deltas is not None:
@@ -783,7 +784,7 @@ def _expand_rule(rule: CanonicalRule, source: str) -> List[ComponentRule]:
 
 def _expand_component(
     component: CanonicalComponent, source: str
-) -> Optional[CompositeComponent]:
+) -> CompositeComponent | None:
     """Resolve one composite criterion; None if nothing resolves in ``source``."""
     if isinstance(component, CanonicalAnyOf):
         rules = [r for rule in component.rules for r in _expand_rule(rule, source)]
@@ -801,7 +802,7 @@ def _expand_component(
 # 15-concept registry every run before Aug 23 2026 trained with (its
 # checkpoints hard-code that count); "v2" adds sepsis3. A run records its
 # task_set in config.json so evaluation rebuilds exactly its concept list.
-TASK_SETS: Dict[str, Tuple[str, ...]] = {
+TASK_SETS: dict[str, tuple[str, ...]] = {
     "v1": (
         "tachycardia",
         "bradycardia",
@@ -847,7 +848,7 @@ DEFAULT_TASK_SET = "v1"
 
 def concepts_for_source(
     source: str = "mimic_iv", *, task_set: str = DEFAULT_TASK_SET
-) -> List[AnyConceptDefinition]:
+) -> list[AnyConceptDefinition]:
     """Expand the canonical registry to one source's concrete definitions.
 
     ``task_set`` selects which canonical concepts are included (see
@@ -860,7 +861,7 @@ def concepts_for_source(
     prefixes and, potentially, in its length -- always take concept
     names/count from the same expansion the model was trained with.
     """
-    out: List[AnyConceptDefinition] = []
+    out: list[AnyConceptDefinition] = []
     if task_set not in TASK_SETS:
         raise ValueError(f"unknown task_set {task_set!r}; known: {sorted(TASK_SETS)}")
     wanted = set(TASK_SETS[task_set])
@@ -941,7 +942,7 @@ _TEMP_HIGH = (("F", 100.4), ("C", 38.0))
 _TEMP_LOW = (("F", 96.8), ("C", 36.0))
 
 
-CANONICAL_CONCEPTS: List[AnyCanonicalConcept] = [
+CANONICAL_CONCEPTS: list[AnyCanonicalConcept] = [
     # -- Simple instantaneous vital-sign/lab concepts (v1, kept): no known
     # over-triggering problem, so an instantaneous threshold remains
     # appropriate -- see the module docstring for which v1 concepts were
@@ -1271,11 +1272,11 @@ CANONICAL_CONCEPTS: List[AnyCanonicalConcept] = [
 # every existing entry point (training config default source, tests,
 # report tooling) reads this exactly as before the canonical layer
 # existed. Other sources call concepts_for_source(...) directly.
-CONCEPTS: List[AnyConceptDefinition] = concepts_for_source("mimic_iv")
+CONCEPTS: list[AnyConceptDefinition] = concepts_for_source("mimic_iv")
 
 
 # subject (or visit key) -> the earliest time a rule/concept was satisfied.
-FirstTimes = Dict[int, datetime]
+FirstTimes = dict[int, datetime]
 
 
 def _first_times(frame: pl.DataFrame, subject_id_col: str, time_col: str) -> FirstTimes:
@@ -1302,7 +1303,7 @@ def _instantaneous_ids(
     code_col: str,
     value_col: str,
     time_col: str,
-) -> Tuple[Set[int], FirstTimes]:
+) -> tuple[set[int], FirstTimes]:
     matched = events.filter(
         pl.col(code_col).str.starts_with(rule.code_prefix)
         & pl.col(value_col).is_not_null()
@@ -1321,7 +1322,7 @@ def _sustained_ids(
     code_col: str,
     value_col: str,
     time_col: str,
-) -> Tuple[Set[int], FirstTimes]:
+) -> tuple[set[int], FirstTimes]:
     prefix_match = pl.col(code_col).str.starts_with(rule.code_prefix)
     for extra in rule.extra_prefixes:
         prefix_match = prefix_match | pl.col(code_col).str.starts_with(extra)
@@ -1351,7 +1352,7 @@ def _baseline_relative_ids(
     code_col: str,
     value_col: str,
     time_col: str,
-) -> Tuple[Set[int], FirstTimes]:
+) -> tuple[set[int], FirstTimes]:
     """Check whether any reading exceeds an earlier one (within window) by delta/ratio.
 
     Uses a per-subject rolling extreme (min for direction="above", max for
@@ -1424,7 +1425,7 @@ def _derived_gcs_total_ids(
     code_col: str,
     value_col: str,
     time_col: str,
-) -> Tuple[Set[int], FirstTimes]:
+) -> tuple[set[int], FirstTimes]:
     def _component(prefix: str) -> pl.DataFrame:
         return (
             events.filter(
@@ -1507,7 +1508,7 @@ def _component_ids(  # noqa: PLR0911
     code_col: str,
     value_col: str,
     time_col: str,
-) -> Tuple[Set[int], FirstTimes]:
+) -> tuple[set[int], FirstTimes]:
     if isinstance(rule, ConceptRule):
         return _instantaneous_ids(
             events,
@@ -1589,7 +1590,7 @@ def _derived_reading_ids(
     *,
     subject_id_col: str,
     time_col: str,
-) -> Tuple[Set[int], FirstTimes]:
+) -> tuple[set[int], FirstTimes]:
     """Observed keys and first-trigger times of a derived (key, time, value) frame.
 
     Observed = the keys the derivation could actually be evaluated for
@@ -1612,7 +1613,7 @@ def _sofa_signal_ids(
     code_col: str,
     value_col: str,
     time_col: str,
-) -> Tuple[Set[int], FirstTimes]:
+) -> tuple[set[int], FirstTimes]:
     """Observed keys and first-trigger times for a SOFA-derived signal."""
     readings = (pf_ratio_readings if rule.signal == "pf_ratio" else urine_output_24h)(
         events,
@@ -1639,7 +1640,7 @@ def _urine_rate_ids(
     code_col: str,
     value_col: str,
     time_col: str,
-) -> Tuple[Set[int], FirstTimes]:
+) -> tuple[set[int], FirstTimes]:
     """Observed keys and first-trigger times for KDIGO's urine-output leg."""
     readings = urine_output_rate(
         events,
@@ -1660,7 +1661,7 @@ def _urine_rate_ids(
     )
 
 
-_SIDECAR_WARNED: Set[str] = set()
+_SIDECAR_WARNED: set[str] = set()
 
 
 def _attribute_sidecar_rows(
@@ -1702,7 +1703,7 @@ def _sepsis3_ids(  # noqa: PLR0915
     code_col: str,
     value_col: str,
     time_col: str,
-) -> Tuple[Set[int], FirstTimes]:
+) -> tuple[set[int], FirstTimes]:
     """Sepsis-3 first-onset per key; see :class:`Sepsis3Rule`."""
     key = subject_id_col
     cultures = active_sidecar(MICROBIOLOGY)
@@ -1782,7 +1783,7 @@ def _sepsis3_ids(  # noqa: PLR0915
 
     # observed = the SOFA score could be assessed at all for this key,
     # whether or not infection was ever suspected.
-    sofa_obs_keys: Set[int] = set(
+    sofa_obs_keys: set[int] = set(
         assessable_keys(  # type: ignore[arg-type]
             timed,
             source=rule.source,
@@ -1878,7 +1879,7 @@ def _occurrence_ids(
     subject_id_col: str,
     code_col: str,
     time_col: str,
-) -> Tuple[Set[int], FirstTimes]:
+) -> tuple[set[int], FirstTimes]:
     """Observed/triggered sets for an occurrence-keyed rule.
 
     Observed = subjects with any event in ``rule.observed_families``
@@ -1911,9 +1912,9 @@ def _composite_component_ids(
     code_col: str,
     value_col: str,
     time_col: str,
-) -> Tuple[Set[int], FirstTimes]:
+) -> tuple[set[int], FirstTimes]:
     if isinstance(component, AnyOf):
-        observed: Set[int] = set()
+        observed: set[int] = set()
         triggered: FirstTimes = {}
         for rule in component.rules:
             obs, trig = _component_ids(
@@ -1981,8 +1982,8 @@ def label_concepts(
         if isinstance(concept, CompositeConceptDefinition):
             if not concept.components:
                 raise ValueError(f"concept {concept.name!r} has no components defined")
-            observed_counts: Dict[int, int] = {}
-            criteria_times: Dict[int, List[datetime]] = {}
+            observed_counts: dict[int, int] = {}
+            criteria_times: dict[int, list[datetime]] = {}
             for component in concept.components:
                 obs, trig = _composite_component_ids(
                     events,
@@ -2001,7 +2002,7 @@ def label_concepts(
             # reach min_criteria=2, so "any one component observed" (the
             # pre-2026-08-30 mask) supervised structurally-unassessable
             # subjects as negatives -- label noise, not a real negative.
-            observed_ids: Set[int] = {
+            observed_ids: set[int] = {
                 sid
                 for sid, count in observed_counts.items()
                 if count >= concept.min_criteria

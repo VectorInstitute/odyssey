@@ -42,7 +42,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import polars as pl
 
@@ -84,7 +84,7 @@ def _suppressed_code_count(n: int) -> str:
     return str(round(n / 1000) * 1000)
 
 
-def export_codes(output_dir: Optional[Path] = None) -> dict[str, Any]:
+def export_codes(output_dir: Path | None = None) -> dict[str, Any]:
     """Read ``metadata/codes.parquet`` and write the suppressed code inventory.
 
     Parameters

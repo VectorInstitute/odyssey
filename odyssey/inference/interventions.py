@@ -40,9 +40,9 @@ every mode -- there is no ground truth to feed there.
 
 import json
 import logging
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Union
 
 import polars as pl
 import torch
@@ -102,18 +102,18 @@ class InterventionResult:
     n_predictions: int
     top1_accuracy: float
     mean_task_loss: float
-    top1_by_code_type: Dict[str, float] = field(default_factory=dict)
-    n_by_code_type: Dict[str, int] = field(default_factory=dict)
+    top1_by_code_type: dict[str, float] = field(default_factory=dict)
+    n_by_code_type: dict[str, int] = field(default_factory=dict)
     n_intervened_positions: int = 0
     """Positions where at least one concept's mixing probability was
     actually replaced (0 for none/zero_* modes, which edit embeddings
     or nothing)."""
 
-    uncertain_band: Optional[float] = None
+    uncertain_band: float | None = None
     """If set, values were only injected where the model's own probability
     was within this distance of 0.5 (see BottleneckIntervention)."""
 
-    mean_abs_displacement: Optional[float] = None
+    mean_abs_displacement: float | None = None
     """Mean ``|injected value - model's own probability|`` over the
     concept entries actually replaced: how far the intervention pushed
     the bottleneck. Truth and flip displace by ``1 - p`` and ``p``
@@ -132,8 +132,8 @@ def _chunk_intervention(
     num_concepts: int,
     device: str,
     rng: torch.Generator,
-    uncertain_band: Optional[float] = None,
-) -> Optional[BottleneckIntervention]:
+    uncertain_band: float | None = None,
+) -> BottleneckIntervention | None:
     """Build the per-position intervention for one chunk, or None."""
     if mode == "none":
         return None
@@ -173,14 +173,14 @@ def run_streaming_intervention(
     concept_mask: ConceptLabelDict,
     *,
     mode: str,
-    concept_first_times: Optional[ConceptLabelDict] = None,
+    concept_first_times: ConceptLabelDict | None = None,
     supervision: ConceptSupervision = "stay",
     num_lanes: int = 8,
     chunk_size: int = 256,
     device: str = "cuda",
-    max_seq_len: Optional[int] = None,
+    max_seq_len: int | None = None,
     seed: int = 0,
-    uncertain_band: Optional[float] = None,
+    uncertain_band: float | None = None,
 ) -> InterventionResult:
     """Score next-event prediction under one intervention mode.
 
@@ -226,8 +226,8 @@ def run_streaming_intervention(
     n_intervened = 0
     displacement_sum = 0.0
     n_replaced_entries = 0
-    type_n: Dict[int, int] = {}
-    type_hits: Dict[int, int] = {}
+    type_n: dict[int, int] = {}
+    type_hits: dict[int, int] = {}
 
     state = None
     with torch.no_grad():
@@ -312,18 +312,18 @@ def run_streaming_intervention(
 
 
 def evaluate_interventions(
-    run_dir: Union[str, Path],
-    held_out_shard_dir: Union[str, Path],
+    run_dir: str | Path,
+    held_out_shard_dir: str | Path,
     *,
     modes: Sequence[str] = INTERVENTION_MODES,
-    max_shards: Optional[int] = None,
+    max_shards: int | None = None,
     num_lanes: int = 8,
     chunk_size: int = 256,
-    device: Optional[str] = None,
-    checkpoint_path: Optional[Union[str, Path]] = None,
+    device: str | None = None,
+    checkpoint_path: str | Path | None = None,
     seed: int = 0,
-    uncertain_band: Optional[float] = None,
-) -> List[InterventionResult]:
+    uncertain_band: float | None = None,
+) -> list[InterventionResult]:
     """End-to-end: load a trained run, score every intervention mode.
 
     Data preparation matches

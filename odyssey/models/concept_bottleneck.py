@@ -34,7 +34,7 @@ see ``research_journal/05_missingness.html`` for the full reasoning.
 """
 
 from dataclasses import dataclass
-from typing import Dict, NamedTuple, Optional, Tuple
+from typing import NamedTuple
 
 import torch
 import torch.nn.functional as F  # noqa: N812
@@ -88,17 +88,17 @@ class BottleneckIntervention:
     through each channel.
     """
 
-    probs: Optional[torch.Tensor] = None
+    probs: torch.Tensor | None = None
     """(..., num_concepts) replacement mixing probabilities for the
     known concepts (the unknown slot always keeps its own). Broadcasts
     against the hidden-state batch shape."""
 
-    probs_mask: Optional[torch.Tensor] = None
+    probs_mask: torch.Tensor | None = None
     """(..., num_concepts) bool: where True, ``probs`` replaces the
     model's own probability; elsewhere the model's own value is kept.
     None (with ``probs`` given) means replace everywhere."""
 
-    uncertain_band: Optional[float] = None
+    uncertain_band: float | None = None
     """When set, ``probs`` only replaces the model's own probability where
     that probability lies within ``uncertain_band`` of 0.5. Feeding a
     hard 0/1 value displaces the model's own ``p`` by ``1 - p`` toward
@@ -119,14 +119,14 @@ class BottleneckIntervention:
 
 def intervention_apply_mask(
     intervention: BottleneckIntervention, own_probs: torch.Tensor
-) -> Optional[torch.Tensor]:
+) -> torch.Tensor | None:
     """Where an intervention's ``probs`` actually replace the model's own.
 
     Combines ``probs_mask`` with the ``uncertain_band`` restriction;
     ``None`` means "everywhere". Exposed so an evaluation harness can
     account for exactly the entries the model replaced.
     """
-    apply: Optional[torch.Tensor] = None
+    apply: torch.Tensor | None = None
     if intervention.probs_mask is not None:
         apply = intervention.probs_mask.expand_as(own_probs)
     if intervention.uncertain_band is not None:
@@ -185,7 +185,7 @@ class ConceptBottleneck(nn.Module):
         *,
         concept_dropout: float = 0.1,
         global_pairs: bool = False,
-        unknown_dim: Optional[int] = None,
+        unknown_dim: int | None = None,
     ) -> None:
         """Initialize the concept bottleneck layer."""
         super().__init__()
@@ -258,7 +258,7 @@ class ConceptBottleneck(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        intervention: Optional[BottleneckIntervention] = None,
+        intervention: BottleneckIntervention | None = None,
     ) -> ConceptBottleneckOutput:
         """Project hidden states into known + unknown concept embeddings.
 
@@ -344,8 +344,8 @@ class ConceptBottleneck(nn.Module):
 def concept_loss(
     concept_logits: torch.Tensor,
     concept_labels: torch.Tensor,
-    concept_mask: Optional[torch.Tensor] = None,
-    pos_weight: Optional[torch.Tensor] = None,
+    concept_mask: torch.Tensor | None = None,
+    pos_weight: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Supervised BCE loss over known concepts.
 
@@ -430,7 +430,7 @@ class ConceptBottleneckLossWeights:
     representations that carry no gradient signal from what helps the
     forecast, only from being a correct, well-separated concept."""
 
-    concept_pos_weight: Optional[torch.Tensor] = None
+    concept_pos_weight: torch.Tensor | None = None
     """Optional per-concept ``(num_concepts,)`` positive-class weight for
     :func:`concept_loss` (see its docstring); ``None`` keeps plain BCE."""
 
@@ -443,9 +443,9 @@ def combined_loss(
     unknown_embedding: torch.Tensor,
     *,
     observability_logits: torch.Tensor,
-    concept_mask: Optional[torch.Tensor] = None,
-    weights: Optional[ConceptBottleneckLossWeights] = None,
-) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    concept_mask: torch.Tensor | None = None,
+    weights: ConceptBottleneckLossWeights | None = None,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Combine task, concept, orthogonality, and observability losses.
 
     ``concept_mask`` serves double duty when given: it excludes

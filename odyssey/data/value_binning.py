@@ -43,7 +43,6 @@ the raw frame first -- keep it that way.
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
 
 import polars as pl
 
@@ -146,8 +145,8 @@ def _tail_expr(z: pl.Expr, transform: str, clip: float) -> pl.Expr:
 # strict ``>`` rule); False: they take the next label up (mirrors a
 # strict ``<`` lower rule from the other side, or an ``at_or_above``
 # upper rule like creatinine >= 4.0).
-_RangeSpec = Tuple[List[Tuple[float, str, bool]], str]
-CANONICAL_CLINICAL_RANGES: Dict[str, Dict[Optional[str], _RangeSpec]] = {
+_RangeSpec = tuple[list[tuple[float, str, bool]], str]
+CANONICAL_CLINICAL_RANGES: dict[str, dict[str | None, _RangeSpec]] = {
     # heart rate: bradycardia < 60 (60 is not LOW); tachycardia > 100
     # (100 is not HIGH)
     "8867-4": {None: ([(60.0, "LOW", False), (100.0, "NORMAL", True)], "HIGH")},
@@ -182,7 +181,7 @@ CANONICAL_CLINICAL_RANGES: Dict[str, Dict[Optional[str], _RangeSpec]] = {
 
 def clinical_ranges_for_source(
     source: str = "mimic_iv",
-) -> Tuple[Dict[str, List[Tuple[float, str, bool]]], Dict[str, str]]:
+) -> tuple[dict[str, list[tuple[float, str, bool]]], dict[str, str]]:
     """Expand :data:`CANONICAL_CLINICAL_RANGES` to one source's prefixes.
 
     Returns ``(ranges, fallback_labels)``, both keyed by concrete MEDS
@@ -191,8 +190,8 @@ def clinical_ranges_for_source(
     only reaches prefixes carrying that unit tag in
     :mod:`odyssey.data.code_mapping`.
     """
-    ranges: Dict[str, List[Tuple[float, str, bool]]] = {}
-    fallbacks: Dict[str, str] = {}
+    ranges: dict[str, list[tuple[float, str, bool]]] = {}
+    fallbacks: dict[str, str] = {}
     for loinc, by_unit in CANONICAL_CLINICAL_RANGES.items():
         for prefix in sorted(prefixes_for_loinc(loinc, source=source)):
             spec = by_unit.get(unit_for(prefix, source=source))
@@ -212,8 +211,8 @@ CLINICAL_RANGES, _FALLBACK_LABEL = clinical_ranges_for_source("mimic_iv")
 
 def _clinical_label_expr(
     value_col: str,
-    ranges: Dict[str, List[Tuple[float, str, bool]]],
-    fallbacks: Dict[str, str],
+    ranges: dict[str, list[tuple[float, str, bool]]],
+    fallbacks: dict[str, str],
     *,
     edge_version: str = "v2",
 ) -> pl.Expr:
@@ -265,10 +264,10 @@ class QuantileBinner:
     token frequencies.
     """
 
-    boundaries: Dict[str, List[float]]
+    boundaries: dict[str, list[float]]
     """code -> ascending list of ``n_bins - 1`` quantile cut points."""
     n_bins: int
-    value_stats: Dict[str, Tuple[float, float]] = field(default_factory=dict)
+    value_stats: dict[str, tuple[float, float]] = field(default_factory=dict)
     """code -> (center, scale) for :meth:`standardize`: the training-split
     median and a robust scale (IQR / 1.349, falling back to the standard
     deviation, then 1.0), for the same eligible codes as ``boundaries``.
@@ -356,7 +355,7 @@ class QuantileBinner:
             )
         )
         boundaries = {}
-        value_stats: Dict[str, Tuple[float, float]] = {}
+        value_stats: dict[str, tuple[float, float]] = {}
         for row in stats.iter_rows(named=True):
             boundaries[row[code_col]] = sorted({row[c] for c in qcols})
             center = float(row["_median"]) if row["_median"] is not None else 0.0
@@ -393,7 +392,7 @@ class QuantileBinner:
 
         rows = []
         for code, cuts in self.boundaries.items():
-            row: Dict[str, object] = {"_code": code, "_found": True}
+            row: dict[str, object] = {"_code": code, "_found": True}
             for i in range(self.n_bins - 1):
                 row[f"_cut{i}"] = cuts[i] if i < len(cuts) else None
             rows.append(row)
@@ -462,7 +461,7 @@ class QuantileBinner:
         )
         return joined.sort("_row")["_z"]
 
-    def save(self, path: Union[str, Path]) -> None:
+    def save(self, path: str | Path) -> None:
         """Save as JSON."""
         Path(path).write_text(
             json.dumps(
@@ -477,7 +476,7 @@ class QuantileBinner:
         )
 
     @classmethod
-    def load(cls, path: Union[str, Path]) -> "QuantileBinner":
+    def load(cls, path: str | Path) -> "QuantileBinner":
         """Load from JSON written by :meth:`save`.
 
         Files written before ``value_stats``/``tail_transform`` existed
@@ -500,7 +499,7 @@ class QuantileBinner:
 
 def add_value_tokens(
     events: pl.DataFrame,
-    quantile_binner: Optional[QuantileBinner] = None,
+    quantile_binner: QuantileBinner | None = None,
     *,
     code_col: str = "code",
     value_col: str = "numeric_value",

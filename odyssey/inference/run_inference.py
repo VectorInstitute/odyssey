@@ -21,9 +21,10 @@ probe still needs a real design decision, not implemented yet.
 import json
 import logging
 import math
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Dict, Iterator, List, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import NamedTuple, Optional
 
 import polars as pl
 import torch
@@ -105,14 +106,14 @@ class InferenceResults:
     """Everything scored from one streaming pass over a held-out split."""
 
     task_metrics: TaskMetrics
-    task_metrics_by_code_type: Dict[str, TaskMetrics]
-    concept_metrics: List[ConceptMetrics]
-    observability_metrics: List[ObservabilityMetrics]
+    task_metrics_by_code_type: dict[str, TaskMetrics]
+    concept_metrics: list[ConceptMetrics]
+    observability_metrics: list[ObservabilityMetrics]
     orthogonality: float
     n_patient_ends_scored: int
-    time_metrics: Optional[TimeMetrics] = None
+    time_metrics: TimeMetrics | None = None
     """Time-to-next-event scoring; None for models without a time head."""
-    value_metrics: Optional[ValueMetrics] = None
+    value_metrics: ValueMetrics | None = None
     """Value-quantile scoring; None for models without a value head."""
     tail_slice: Optional["InferenceResults"] = None
     """Same breakdown, restricted to patients PackedContextSampler had to
@@ -125,7 +126,7 @@ class InferenceResults:
 
 
 # Horizons are bin edges of DEFAULT_TIME_BIN_EDGES_HOURS so P(within h) is exact.
-_TIME_HORIZONS_HOURS: Dict[str, float] = {"1h": 1.0, "8h": 8.0, "24h": 24.0}
+_TIME_HORIZONS_HOURS: dict[str, float] = {"1h": 1.0, "8h": 8.0, "24h": 24.0}
 
 
 class _RunningTimeMetrics:
@@ -177,7 +178,7 @@ class _RunningTimeMetrics:
                     (gaps[positive] <= horizon).sum().item()
                 )
 
-    def finalize(self) -> Optional[TimeMetrics]:
+    def finalize(self) -> TimeMetrics | None:
         if self.n == 0:
             return None
         return TimeMetrics(
@@ -222,14 +223,14 @@ class _RunningValueMetrics:
         self,
         levels: Sequence[float],
         vocab: Vocabulary,
-        signal_panel: Optional[SignalPanelResolver],
+        signal_panel: SignalPanelResolver | None,
     ) -> None:
         self.levels = list(levels)
         self.vocab = vocab
         self.signal_panel = signal_panel
-        self._quantiles: List[torch.Tensor] = []
-        self._targets: List[torch.Tensor] = []
-        self._target_ids: List[torch.Tensor] = []
+        self._quantiles: list[torch.Tensor] = []
+        self._targets: list[torch.Tensor] = []
+        self._target_ids: list[torch.Tensor] = []
 
     def update(
         self,
@@ -248,7 +249,7 @@ class _RunningValueMetrics:
         self,
         quantiles: torch.Tensor,
         target: torch.Tensor,
-        by_signal: Dict[str, ValueMetrics],
+        by_signal: dict[str, ValueMetrics],
     ) -> ValueMetrics:
         crps = float(crps_from_quantiles(quantiles, target, self.levels).mean().item())
         mae = float(median_absolute_error(quantiles, target, self.levels).item())
@@ -264,12 +265,12 @@ class _RunningValueMetrics:
             by_signal=by_signal,
         )
 
-    def finalize(self) -> Optional[ValueMetrics]:
+    def finalize(self) -> ValueMetrics | None:
         if not self._quantiles:
             return None
         quantiles = torch.cat(self._quantiles)
         target = torch.cat(self._targets)
-        by_signal: Dict[str, ValueMetrics] = {}
+        by_signal: dict[str, ValueMetrics] = {}
         if self.signal_panel is not None:
             target_ids = torch.cat(self._target_ids)
             codes = [
@@ -307,11 +308,11 @@ def _latest_checkpoint(run_dir: Path) -> Path:
 
 
 def load_run(
-    run_dir: Union[str, Path],
+    run_dir: str | Path,
     *,
     device: str = "cuda",
-    checkpoint_path: Optional[Union[str, Path]] = None,
-) -> Tuple[SequenceModel, Vocabulary, QuantileBinner, TrainingConfig]:
+    checkpoint_path: str | Path | None = None,
+) -> tuple[SequenceModel, Vocabulary, QuantileBinner, TrainingConfig]:
     """Reconstruct a trained model and its tokenization artifacts from a run dir.
 
     ``run_dir`` is a :func:`~odyssey.training.train.train` output
@@ -420,10 +421,10 @@ def load_run(
 
 
 def load_and_bin_held_out(
-    shard_dir: Union[str, Path],
+    shard_dir: str | Path,
     binner: QuantileBinner,
     *,
-    max_shards: Optional[int] = None,
+    max_shards: int | None = None,
     source: str = "mimic_iv",
 ) -> pl.DataFrame:
     """Load a held-out MEDS split and apply the *train-fit* binner to it.
@@ -450,7 +451,7 @@ def _build_type_lookup(vocab: Vocabulary, device: str) -> torch.Tensor:
     return lookup.to(device)
 
 
-def _build_category_lookup(vocab: Vocabulary, device: str) -> Tuple[torch.Tensor, int]:
+def _build_category_lookup(vocab: Vocabulary, device: str) -> tuple[torch.Tensor, int]:
     """``(vocab_size,)`` token id -> ICD 3-character category id, or -1.
 
     Every ICD-coded diagnosis/procedure token (a full code or an ``icd3``
@@ -459,7 +460,7 @@ def _build_category_lookup(vocab: Vocabulary, device: str) -> Tuple[torch.Tensor
     gets -1. Returns the lookup and the number of category ids.
     """
     lookup = torch.full((len(vocab),), -1, dtype=torch.long)
-    categories: Dict[str, int] = {}
+    categories: dict[str, int] = {}
     for token_id, token in vocab.id_to_token.items():
         parts = token.split("//")
         if (
@@ -501,7 +502,7 @@ class _RunningBucket:
     """
 
     ce_sum: float = 0.0
-    hit_sums: Dict[int, int] = field(default_factory=dict)
+    hit_sums: dict[int, int] = field(default_factory=dict)
     n: int = 0
     set_hit_sum: int = 0
     n_set: int = 0
@@ -513,7 +514,7 @@ class _RunningBucket:
         logits: torch.Tensor,
         targets: torch.Tensor,
         top_k: Sequence[int],
-        set_hits: Optional[BlockSetHits] = None,
+        set_hits: BlockSetHits | None = None,
     ) -> None:
         """``logits`` is ``(n, vocab_size)``, ``targets`` is ``(n,)``: one chunk.
 
@@ -565,7 +566,7 @@ def _block_set_hits(
     real_mask: torch.Tensor,
     vocab_size: int,
     type_lookup: torch.Tensor,
-    category_lookup: Optional[torch.Tensor] = None,
+    category_lookup: torch.Tensor | None = None,
     n_categories: int = 0,
 ) -> BlockSetHits:
     """Per-position "top-1 named some event in the target's time block".
@@ -670,7 +671,7 @@ class _RunningTaskMetrics:
         self.type_lookup = _build_type_lookup(vocab, device)
         self.category_lookup, self.n_categories = _build_category_lookup(vocab, device)
         self.overall = _RunningBucket()
-        self.by_type: Dict[str, _RunningBucket] = {}
+        self.by_type: dict[str, _RunningBucket] = {}
 
     def block_set_hits(
         self,
@@ -698,7 +699,7 @@ class _RunningTaskMetrics:
         self,
         logits: torch.Tensor,
         targets: torch.Tensor,
-        set_hits: Optional[BlockSetHits] = None,
+        set_hits: BlockSetHits | None = None,
     ) -> None:
         """Fold in one chunk's real-position ``(logits, targets)``.
 
@@ -721,7 +722,7 @@ class _RunningTaskMetrics:
                     else None,
                 )
 
-    def finalize(self) -> Tuple[TaskMetrics, Dict[str, TaskMetrics]]:
+    def finalize(self) -> tuple[TaskMetrics, dict[str, TaskMetrics]]:
         return self.overall.finalize(), {
             name: bucket.finalize() for name, bucket in self.by_type.items()
         }
@@ -740,12 +741,12 @@ class _PooledEnds:
     scorers only ever see the record up to an index time.
     """
 
-    subject_ids: List[torch.Tensor] = field(default_factory=list)
-    visit_ids: List[torch.Tensor] = field(default_factory=list)
-    concept_probs: List[torch.Tensor] = field(default_factory=list)
-    observability_probs: List[torch.Tensor] = field(default_factory=list)
-    concept_embeddings: List[torch.Tensor] = field(default_factory=list)
-    unknown_embedding: List[torch.Tensor] = field(default_factory=list)
+    subject_ids: list[torch.Tensor] = field(default_factory=list)
+    visit_ids: list[torch.Tensor] = field(default_factory=list)
+    concept_probs: list[torch.Tensor] = field(default_factory=list)
+    observability_probs: list[torch.Tensor] = field(default_factory=list)
+    concept_embeddings: list[torch.Tensor] = field(default_factory=list)
+    unknown_embedding: list[torch.Tensor] = field(default_factory=list)
 
     def append(
         self,
@@ -777,9 +778,9 @@ class _StreamingAccumulators:
         vocab: Vocabulary,
         *,
         device: str,
-        time_head: Optional[TimeToEventHead],
-        value_head: Optional[ValueQuantileHead],
-        signal_panel: Optional[SignalPanelResolver],
+        time_head: TimeToEventHead | None,
+        value_head: ValueQuantileHead | None,
+        signal_panel: SignalPanelResolver | None,
     ) -> None:
         self.task_stats = _RunningTaskMetrics(vocab, device=device)
         self.time_stats = (
@@ -798,11 +799,11 @@ class _StreamingAccumulators:
         fwd: ForwardWithFeatures,
         logits: torch.Tensor,
         *,
-        time_head: Optional[TimeToEventHead],
-        value_head: Optional[ValueQuantileHead],
-        target_embeddings: Optional[nn.Embedding],
+        time_head: TimeToEventHead | None,
+        value_head: ValueQuantileHead | None,
+        target_embeddings: nn.Embedding | None,
         supervision: ConceptSupervision,
-        restrict: Optional[torch.Tensor],
+        restrict: torch.Tensor | None,
     ) -> None:
         """Fold in one chunk; ``restrict=None`` means every real position."""
         real = chunk.real_mask if restrict is None else (chunk.real_mask & restrict)
@@ -850,7 +851,7 @@ def _build_sampler(
     num_lanes: int,
     chunk_size: int,
     max_context: int,
-) -> Union[PackedLaneSampler, PackedContextSampler]:
+) -> PackedLaneSampler | PackedContextSampler:
     """Dispatch on ``backbone``, matching :func:`odyssey.training.train.build_model`.
 
     A stateless backbone needs whole-patient context, not TBTT chunking
@@ -877,9 +878,9 @@ def run_streaming_inference(
     num_lanes: int = 8,
     chunk_size: int = 256,
     device: str = "cuda",
-    max_seq_len: Optional[int] = None,
+    max_seq_len: int | None = None,
     supervision: ConceptSupervision = "stay",
-    concepts: Optional[Sequence[AnyConceptDefinition]] = None,
+    concepts: Sequence[AnyConceptDefinition] | None = None,
     backbone: str = "hybrid",
     max_context: int = 4096,
     source: str = "mimic_iv",
@@ -1031,7 +1032,7 @@ def _finalize_inference_results(
     concept_labels: ConceptLabelDict,
     concept_mask: ConceptLabelDict,
     concepts: Sequence[AnyConceptDefinition],
-    tail_slice: Optional[InferenceResults] = None,
+    tail_slice: InferenceResults | None = None,
 ) -> InferenceResults:
 
     task_metrics, task_metrics_by_code_type = task_stats.finalize()
@@ -1102,14 +1103,14 @@ def _finalize_inference_results(
 
 
 def evaluate_run(
-    run_dir: Union[str, Path],
-    held_out_shard_dir: Union[str, Path],
+    run_dir: str | Path,
+    held_out_shard_dir: str | Path,
     *,
-    max_shards: Optional[int] = None,
+    max_shards: int | None = None,
     num_lanes: int = 8,
     chunk_size: int = 256,
-    device: Optional[str] = None,
-    checkpoint_path: Optional[Union[str, Path]] = None,
+    device: str | None = None,
+    checkpoint_path: str | Path | None = None,
 ) -> InferenceResults:
     """End-to-end: load a trained run, score it against a held-out split."""
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -1181,7 +1182,7 @@ def _nan_to_none(value: object) -> object:
     return value
 
 
-def results_to_dict(results: InferenceResults) -> Dict[str, object]:
+def results_to_dict(results: InferenceResults) -> dict[str, object]:
     """Strict-JSON view of :class:`InferenceResults` (NaN rendered as null)."""
     from dataclasses import asdict  # noqa: PLC0415
 
@@ -1244,7 +1245,7 @@ class _CliArgs:
     held_out_shard_dir: str
     output_json: Path
     checkpoint_path: Path
-    max_shards: Optional[int]
+    max_shards: int | None
     num_lanes: int
     chunk_size: int
     overwrite: bool

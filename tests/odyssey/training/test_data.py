@@ -3,7 +3,6 @@
 import random
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 import polars as pl
 import pytest
@@ -29,10 +28,10 @@ from odyssey.training.data import (
 T0 = datetime(2024, 1, 1, 0, 0)
 
 
-_EventRow = Tuple[int, str, Optional[datetime], Optional[float], Optional[int]]
+_EventRow = tuple[int, str, datetime | None, float | None, int | None]
 
 
-def _events(rows: List[_EventRow]) -> pl.DataFrame:
+def _events(rows: list[_EventRow]) -> pl.DataFrame:
     """rows: (subject_id, code, time, numeric_value_or_None, hadm_id_or_None)."""
     return pl.DataFrame(
         rows,
@@ -275,7 +274,7 @@ def test_build_vocabulary_respects_real_code_frequencies() -> None:
     # materializing the full column as a Python list (see its docstring on
     # why) -- this checks that path actually produces min_count-correct
     # frequency filtering, not just that it runs.
-    rows: List[_EventRow] = []
+    rows: list[_EventRow] = []
     for i in range(10):
         rows.append((i % 3, "DIAGNOSIS//frequent", T0, None, None))
     rows.append((0, "DIAGNOSIS//rare", T0, None, None))

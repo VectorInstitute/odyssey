@@ -13,7 +13,7 @@ import json
 import re
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import pytest
 
@@ -35,7 +35,7 @@ from odyssey.training.train import TrainingConfig
 
 
 def _config(**overrides: Any) -> TrainingConfig:
-    base: Dict[str, Any] = {
+    base: dict[str, Any] = {
         "train_shard_dir": "/train",
         "tuning_shard_dir": "/tuning",
         "output_dir": "/out",
@@ -54,7 +54,7 @@ def _config(**overrides: Any) -> TrainingConfig:
 
 def _loss_records(
     *, with_bottleneck_terms: bool = True, n_train: int = 6, n_val: int = 2
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     records = []
     for i in range(n_train):
         row = {
@@ -87,7 +87,7 @@ def _loss_records(
     return records
 
 
-def _by_type(n_predictions: int) -> Dict[str, Dict[str, Any]]:
+def _by_type(n_predictions: int) -> dict[str, dict[str, Any]]:
     """One code-type bucket at a chosen size, everything else tiny."""
     return {
         "lab": {
@@ -112,11 +112,11 @@ def _inference_results(
     cross_entropy: float = 1.9,
     n_predictions: int = 60_000,
     by_type_n_predictions: int = 60_000,
-    concept_metrics: Optional[List[Dict[str, Any]]] = None,
-    observability_metrics: Optional[List[Dict[str, Any]]] = None,
-    time_metrics: Optional[Dict[str, Any]] = None,
+    concept_metrics: list[dict[str, Any]] | None = None,
+    observability_metrics: list[dict[str, Any]] | None = None,
+    time_metrics: dict[str, Any] | None = None,
     n_patient_ends_scored: int = 40,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     return {
         "task_metrics": {
             "cross_entropy": cross_entropy,
@@ -134,7 +134,7 @@ def _inference_results(
     }
 
 
-def _concept_metric(name: str, auroc: float, prevalence: float = 0.3) -> Dict[str, Any]:
+def _concept_metric(name: str, auroc: float, prevalence: float = 0.3) -> dict[str, Any]:
     return {
         "name": name,
         "n_observed": 500,
@@ -148,7 +148,7 @@ def _concept_metric(name: str, auroc: float, prevalence: float = 0.3) -> Dict[st
 
 def _observability_metric(
     name: str, auroc: float = 0.9, observed_rate: float = 0.6
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     return {
         "name": name,
         "n_subjects": 500,
@@ -158,8 +158,8 @@ def _observability_metric(
     }
 
 
-def _time_metrics(*, with_after_bundle: bool = True) -> Dict[str, Any]:
-    out: Dict[str, Any] = {
+def _time_metrics(*, with_after_bundle: bool = True) -> dict[str, Any]:
+    out: dict[str, Any] = {
         "same_instant_accuracy": 0.93,
         "same_instant_rate": 0.88,
         "calibration": {
@@ -180,10 +180,10 @@ def _case(
     *,
     with_observability: bool = True,
     with_event_risk: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     times = [float(i) for i in range(n)]
     codes = [f"LAB//{220045 + i}//x" for i in range(n)]
-    case: Dict[str, Any] = {
+    case: dict[str, Any] = {
         "subject_id": subject_id,
         "times": times,
         "concept_names": ["tachycardia", "hypotension"],
@@ -204,7 +204,7 @@ def _case(
 
 
 def _write_run_dir(
-    tmp_path: Path, config: TrainingConfig, loss_records: List[Dict[str, Any]]
+    tmp_path: Path, config: TrainingConfig, loss_records: list[dict[str, Any]]
 ) -> Path:
     (tmp_path / "config.json").write_text(json.dumps(asdict(config)))
     with open(tmp_path / "loss_log.jsonl", "w") as f:
@@ -213,7 +213,7 @@ def _write_run_dir(
     return tmp_path
 
 
-def _extract_embedded_payload(html: str) -> Dict[str, Any]:
+def _extract_embedded_payload(html: str) -> dict[str, Any]:
     """Pull the actual JSON a browser would parse out of the rendered HTML."""
     match = re.search(
         r'<script id="dashboard-data" type="application/json">(.*?)</script>',
@@ -221,7 +221,7 @@ def _extract_embedded_payload(html: str) -> Dict[str, Any]:
         re.DOTALL,
     )
     assert match is not None, "dashboard-data script tag not found in rendered HTML"
-    payload: Dict[str, Any] = json.loads(match.group(1))
+    payload: dict[str, Any] = json.loads(match.group(1))
     return payload
 
 

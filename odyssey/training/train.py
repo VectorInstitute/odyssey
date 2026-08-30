@@ -47,18 +47,12 @@ import gc
 import json
 import logging
 import time
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import (
     Any,
-    Callable,
-    Dict,
-    Iterator,
-    Optional,
-    Sequence,
-    Tuple,
     TypeVar,
-    Union,
 )
 
 import polars as pl
@@ -118,7 +112,7 @@ logger = logging.getLogger(__name__)
 #: per row, no carried state). Both yield StreamingChunk, so the
 #: training/eval loop bodies below are backbone-agnostic; only sampler
 #: *construction* differs, in make_train_sampler/make_tuning_sampler.
-StreamingSampler = Union[PackedLaneSampler, PackedContextSampler]
+StreamingSampler = PackedLaneSampler | PackedContextSampler
 
 
 @dataclass
@@ -128,9 +122,9 @@ class TrainingConfig:
     train_shard_dir: str
     tuning_shard_dir: str
     output_dir: str
-    max_train_shards: Optional[int] = None
-    max_tuning_shards: Optional[int] = None
-    resume_from: Optional[str] = None
+    max_train_shards: int | None = None
+    max_tuning_shards: int | None = None
+    resume_from: str | None = None
 
     model_kind: str = "bottleneck"
     """``"bottleneck"`` (ConceptBottleneckSequenceModel, the interpretable
@@ -187,7 +181,7 @@ class TrainingConfig:
     concept_global_pairs: bool = False
     """Leakage control: input-independent (w+, w-) per known concept, so a
     concept slot carries only its probability (see ConceptBottleneck)."""
-    unknown_dim: Optional[int] = None
+    unknown_dim: int | None = None
     """Width of the unknown (residual) slot; None = embedding_dim."""
     mamba_state_size: int = 128
     mamba_headdim: int = 64
@@ -206,7 +200,7 @@ class TrainingConfig:
 
     vocab_min_count: int = 5
     vocab_max_size: int = 20_000
-    vocab_backoff: Optional[str] = "icd3"
+    vocab_backoff: str | None = "icd3"
     """Named vocabulary backoff (see odyssey.data.vocabulary.BACKOFFS).
     "icd3" rolls rare ICD diagnosis/procedure codes up to their
     3-character category, both when building the vocabulary and when
@@ -229,7 +223,7 @@ class TrainingConfig:
     odyssey.data.code_normalization."""
     quantile_n_bins: int = 5
     quantile_min_count: int = 100
-    max_seq_len: Optional[int] = None
+    max_seq_len: int | None = None
 
     # Streaming TBTT
     num_lanes: int = 8
@@ -260,7 +254,7 @@ class TrainingConfig:
     own predicted probability -- Koh et al.'s classical "train f on
     true c" step, adapted to CEM's embedding mixture)."""
 
-    init_from: Optional[str] = None
+    init_from: str | None = None
     """Load a checkpoint's model weights only (not optimizer/step/epoch
     state) before training starts, unlike resume_from which continues
     an interrupted run of the same config. Use with freeze_bottleneck
@@ -334,7 +328,7 @@ class TrainingConfig:
 
     event_hazard_weight: float = 1.0
 
-    auxiliary_event_names: Tuple[str, ...] = ()
+    auxiliary_event_names: tuple[str, ...] = ()
     """Extra events (from odyssey.data.alert_events.COUNTING_AUXILIARY_EVENTS_BY_NAME)
     trained by the SAME per-event hazard heads as event_hazards' curated
     events, but never scored as alerts (odyssey.inference.alerts iterates
@@ -387,7 +381,7 @@ class TrainingConfig:
     magnitude-controlled intervention test found the concept
     probabilities causally inert). 0.25 is the CEM default."""
 
-    early_stopping_patience: Optional[int] = None
+    early_stopping_patience: int | None = None
     """Stop once the combined validation loss (the same task + weighted
     concept/orthogonality/observability combination compute_streaming_loss
     trains against, evaluated on the tuning split) hasn't improved for
@@ -626,10 +620,10 @@ def build_model(
 def build_objective(
     config: TrainingConfig,
     vocab: Vocabulary,
-    train_events_binned: Optional[pl.DataFrame],
+    train_events_binned: pl.DataFrame | None,
     device: str,
     *,
-    code_counts: Optional[Dict[str, int]] = None,
+    code_counts: dict[str, int] | None = None,
 ) -> ForecastObjective:
     """Construct the :class:`ForecastObjective` a run trains and validates with.
 
@@ -681,16 +675,16 @@ def evaluate_streaming(
     masks: ConceptLabelDict,
     *,
     device: str,
-    max_chunks: Optional[int] = None,
+    max_chunks: int | None = None,
     supervision: ConceptSupervision = "stay",
-    objective: Optional[ForecastObjective] = None,
-    event_tables: Optional[EventTimeTables] = None,
-) -> Dict[str, float]:
+    objective: ForecastObjective | None = None,
+    event_tables: EventTimeTables | None = None,
+) -> dict[str, float]:
     """Average loss components over one (partial), gradient-free sampler pass."""
     model.eval()
     sampler = make_sampler()
     state = None
-    totals: Dict[str, float] = {}
+    totals: dict[str, float] = {}
     n = 0
     with torch.no_grad():
         for i, chunk in enumerate(sampler):
@@ -730,7 +724,7 @@ def _labels_to_device(labels: ConceptLabelDict, device: str) -> ConceptLabelDict
 
 
 def _combined_val_loss(
-    components: Dict[str, float],
+    components: dict[str, float],
     weights: ConceptBottleneckLossWeights,
     time_weight: float = 0.0,
     event_hazard_weight: float = 0.0,
@@ -844,8 +838,8 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
             f"concept_supervision must be 'visit' or 'stay', got "
             f"{config.concept_supervision!r}"
         )
-    train_event_tables: Optional[EventTimeTables] = None
-    tuning_event_tables: Optional[EventTimeTables] = None
+    train_event_tables: EventTimeTables | None = None
+    tuning_event_tables: EventTimeTables | None = None
     if config.event_hazards:
         logger.info("[data] computing alert-event onset/censoring times")
         alerts = hazard_events_for(config.task_set, config.auxiliary_event_names)
@@ -944,8 +938,8 @@ class PreparedCorpus:
     train_first_times: ConceptLabelDict
     tuning_labels: ConceptLabelDict
     tuning_masks: ConceptLabelDict
-    train_event_tables: Optional[EventTimeTables]
-    tuning_event_tables: Optional[EventTimeTables]
+    train_event_tables: EventTimeTables | None
+    tuning_event_tables: EventTimeTables | None
     tuning_events_binned: pl.DataFrame
     make_train_patients: Callable[[int], Iterator[PatientSequence]]
     """epoch -> the training patient stream for that epoch."""
@@ -1064,7 +1058,7 @@ def _train_streaming(config: TrainingConfig, output_dir: Path, device: str) -> P
     return _run_training(config, output_dir, device, corpus)
 
 
-def _batch_config_fields(cfg: TrainingConfig) -> Dict[str, object]:
+def _batch_config_fields(cfg: TrainingConfig) -> dict[str, object]:
     """Fields that determine what a resume's data stream actually replays.
 
     What ``PackedLaneSampler.next_chunk()``/``PackedContextSampler`` produce
@@ -1497,7 +1491,7 @@ def _run_training(  # noqa: PLR0912, PLR0915
     return output_dir
 
 
-def _load_config_overrides(config_json: Optional[str]) -> Dict[str, Any]:
+def _load_config_overrides(config_json: str | None) -> dict[str, Any]:
     """Parse ``--config-json``: inline JSON first, then a path to a JSON file.
 
     The module docstring has always promised both forms; only the path

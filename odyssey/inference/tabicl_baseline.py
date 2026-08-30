@@ -41,7 +41,7 @@ import logging
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -112,7 +112,7 @@ def check_inference_cost(
     *,
     context: str,
     offload_mode: str = "auto",
-    disk_offload_dir: Optional[str] = None,
+    disk_offload_dir: str | None = None,
 ) -> None:
     """Raise before fitting a TabICL configuration that cannot then be scored.
 
@@ -282,10 +282,10 @@ def _fit_one_tabicl(
     event_name: str,
     n_estimators: int,
     device: str | None,
-    cache: Optional[FitCache] = None,
+    cache: FitCache | None = None,
     offload_mode: str = "auto",
-    batch_size: Optional[int] = 8,
-    disk_offload_dir: Optional[str] = None,
+    batch_size: int | None = 8,
+    disk_offload_dir: str | None = None,
 ) -> dict[float, TabICLBaselineModel]:
     """Fit one TabICL context per horizon for a single event.
 
@@ -398,11 +398,11 @@ def fit_tabicl_baselines(
     feature_set: str = "strong",
     n_estimators: int = 8,
     device: str | None = None,
-    cache: Optional[FitCache] = None,
-    features: Optional[dict[str, np.ndarray]] = None,
+    cache: FitCache | None = None,
+    features: dict[str, np.ndarray] | None = None,
     offload_mode: str = "auto",
-    batch_size: Optional[int] = 8,
-    disk_offload_dir: Optional[str] = None,
+    batch_size: int | None = 8,
+    disk_offload_dir: str | None = None,
 ) -> dict[tuple[str, float], TabICLBaselineModel]:
     """One TabICLv2 context per (event, horizon), on the same features as the GBM.
 

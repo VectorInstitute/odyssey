@@ -12,7 +12,7 @@ interface, so swapping in the real backbone elsewhere is a one-line change
 this class only proves the surrounding pipeline is wired correctly.
 """
 
-from typing import List, Optional, Tuple, cast
+from typing import cast
 
 import torch
 from torch import nn
@@ -63,9 +63,9 @@ class TinyGRUBackbone(SequenceBackbone):
     def forward(
         self,
         batch: ClinicalSequenceBatch,
-        state: Optional[TimeAwareState] = None,
-        reset_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, TimeAwareState]:
+        state: TimeAwareState | None = None,
+        reset_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, TimeAwareState]:
         """Return ``(hidden_states, new_state)``; see the base class docstring.
 
         ``state.recurrent``, if given, must be a ``Tuple[torch.Tensor,
@@ -82,12 +82,12 @@ class TinyGRUBackbone(SequenceBackbone):
                 for _ in range(self.num_layers)
             ]
         else:
-            hidden = list(cast(Tuple[torch.Tensor, ...], state.recurrent))
+            hidden = list(cast(tuple[torch.Tensor, ...], state.recurrent))
 
         if reset_mask is None:
             reset_mask = embeds.new_zeros(batch_size, seq_len, dtype=torch.bool)
 
-        outputs: List[torch.Tensor] = []
+        outputs: list[torch.Tensor] = []
         for t in range(seq_len):
             reset_t = reset_mask[:, t].unsqueeze(-1)
             layer_input = embeds[:, t, :]

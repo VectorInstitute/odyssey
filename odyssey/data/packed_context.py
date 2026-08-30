@@ -56,8 +56,8 @@ starts, notably ``odyssey.inference.alerts``' landmark verifier (timestamps
 themselves stay in the original frame; nothing is rebased).
 """
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Dict, Iterator, List, Optional
 
 import torch
 
@@ -93,19 +93,19 @@ def _truncate_head(seq: PatientSequence, max_context: int) -> PatientSequence:
 class _RowBuilder:
     """One packed row's not-yet-padded tokens, built by appending whole patients."""
 
-    concept_ids: List[int] = field(default_factory=list)
-    type_ids: List[int] = field(default_factory=list)
-    time_stamps: List[float] = field(default_factory=list)
-    ages: List[float] = field(default_factory=list)
-    visit_orders: List[int] = field(default_factory=list)
-    visit_segments: List[int] = field(default_factory=list)
-    reset: List[bool] = field(default_factory=list)
-    subject_ids: List[int] = field(default_factory=list)
-    patient_end: List[bool] = field(default_factory=list)
-    visit_ids: List[int] = field(default_factory=list)
-    visit_end: List[bool] = field(default_factory=list)
-    values: List[float] = field(default_factory=list)
-    static: List[bool] = field(default_factory=list)
+    concept_ids: list[int] = field(default_factory=list)
+    type_ids: list[int] = field(default_factory=list)
+    time_stamps: list[float] = field(default_factory=list)
+    ages: list[float] = field(default_factory=list)
+    visit_orders: list[int] = field(default_factory=list)
+    visit_segments: list[int] = field(default_factory=list)
+    reset: list[bool] = field(default_factory=list)
+    subject_ids: list[int] = field(default_factory=list)
+    patient_end: list[bool] = field(default_factory=list)
+    visit_ids: list[int] = field(default_factory=list)
+    visit_end: list[bool] = field(default_factory=list)
+    values: list[float] = field(default_factory=list)
+    static: list[bool] = field(default_factory=list)
 
     def __len__(self) -> int:
         """Return the number of tokens packed into this row so far."""
@@ -176,19 +176,19 @@ class _RowBuilder:
 class _Row:
     """A padded, fixed-length packed row."""
 
-    concept_ids: List[int]
-    type_ids: List[int]
-    time_stamps: List[float]
-    ages: List[float]
-    visit_orders: List[int]
-    visit_segments: List[int]
-    reset: List[bool]
-    subject_ids: List[int]
-    patient_end: List[bool]
-    visit_ids: List[int]
-    visit_end: List[bool]
-    values: List[float]
-    static: List[bool]
+    concept_ids: list[int]
+    type_ids: list[int]
+    time_stamps: list[float]
+    ages: list[float]
+    visit_orders: list[int]
+    visit_segments: list[int]
+    reset: list[bool]
+    subject_ids: list[int]
+    patient_end: list[bool]
+    visit_ids: list[int]
+    visit_end: list[bool]
+    values: list[float]
+    static: list[bool]
     n_real: int
 
 
@@ -223,10 +223,10 @@ class PackedContextSampler:
         self._patients = patients
         self.batch_size = batch_size
         self.max_context = max_context
-        self._held: Optional[PatientSequence] = None
+        self._held: PatientSequence | None = None
         self._exhausted = False
-        self.truncated_subject_ids: List[int] = []
-        self.truncation_boundaries: Dict[int, float] = {}
+        self.truncated_subject_ids: list[int] = []
+        self.truncation_boundaries: dict[int, float] = {}
         """subject_id -> the truncation boundary, in that subject's own
         original time frame ("hours since this sequence's first event",
         the same convention :func:`~odyssey.data.alert_events.origin_hours`
@@ -236,7 +236,7 @@ class PackedContextSampler:
         needs to know which landmarks a truncated subject legitimately
         lost."""
 
-    def _next_patient(self) -> Optional[PatientSequence]:
+    def _next_patient(self) -> PatientSequence | None:
         if self._held is not None:
             patient = self._held
             self._held = None
@@ -256,7 +256,7 @@ class PackedContextSampler:
             patient = _truncate_head(patient, self.max_context)
         return patient
 
-    def next_chunk(self) -> Optional[StreamingChunk]:
+    def next_chunk(self) -> StreamingChunk | None:
         """Pack up to ``batch_size`` rows, each up to ``max_context`` tokens.
 
         Returns ``None`` once the patient queue is exhausted and no row
@@ -264,7 +264,7 @@ class PackedContextSampler:
         :meth:`~odyssey.data.streaming.PackedLaneSampler.next_chunk`'s
         convention.
         """
-        rows: List[_Row] = []
+        rows: list[_Row] = []
         any_real = False
         for _ in range(self.batch_size):
             row = _RowBuilder()

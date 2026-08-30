@@ -566,7 +566,7 @@ def _reference_buffered_repartition(
     )
     buffers: dict[tuple[str, int], list[pl.DataFrame]] = {}
     buffer_counts: dict[tuple[str, int], int] = {}
-    writers: dict[tuple[str, int], "pq.ParquetWriter"] = {}
+    writers: dict[tuple[str, int], pq.ParquetWriter] = {}
     paths: dict[tuple[str, int], Path] = {}
 
     def flush(key: tuple[str, int]) -> None:

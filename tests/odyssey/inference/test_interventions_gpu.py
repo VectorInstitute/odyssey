@@ -11,7 +11,6 @@ real held-out run) is invisible when everything is on CPU.
 
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 import pytest
 import torch
@@ -35,7 +34,7 @@ T0 = datetime(2024, 1, 1, 0, 0)
 
 def _write_shards(shard_dir: Path, n_subjects: int, n_events_per_subject: int) -> None:
     shard_dir.mkdir(parents=True, exist_ok=True)
-    rows: List[Tuple[int, str, datetime, Optional[float], Optional[int]]] = []
+    rows: list[tuple[int, str, datetime, float | None, int | None]] = []
     for subject_id in range(n_subjects):
         base = T0 + timedelta(days=subject_id)
         # Real hadm_id (see test_run_inference_gpu.py's own note): visit-

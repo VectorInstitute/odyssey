@@ -30,7 +30,7 @@ import logging
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -159,7 +159,7 @@ def _fit_one_ebm(
     n_jobs: int,
     max_rows: int,
     outer_bags: int,
-    cache: Optional[FitCache] = None,
+    cache: FitCache | None = None,
 ) -> dict[float, EBMBaselineModel]:
     """Fit one EBM per horizon for a single event, given a feature matrix.
 
@@ -259,8 +259,8 @@ def fit_ebm_baselines(
     n_jobs: int = 12,
     max_rows: int | None = None,
     outer_bags: int | None = None,
-    cache: Optional[FitCache] = None,
-    features: Optional[dict[str, np.ndarray]] = None,
+    cache: FitCache | None = None,
+    features: dict[str, np.ndarray] | None = None,
 ) -> dict[tuple[str, float], EBMBaselineModel]:
     """One ``ExplainableBoostingClassifier`` per (event, horizon).
 

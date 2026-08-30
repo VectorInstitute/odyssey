@@ -269,8 +269,17 @@ select = [
     "N", # pep8-naming
     "ERA", # eradicate
     "PL", # pylint
+    # pyupgrade, typing modernization only: builtin generics (dict/list/
+    # tuple over typing.Dict/...), X | None over Optional/Union, and the
+    # deprecated typing imports that go with them. requires-python is
+    # >= 3.12, so these are safe in runtime positions too.
+    "UP006", # non-pep585-annotation: use builtin generics
+    "UP007", # non-pep604-annotation-union: X | Y over Union[X, Y]
+    "UP035", # deprecated typing imports (typing.Dict, typing.List, ...)
+    "UP037", # remove quotes from type annotations that no longer need them
+    "UP045", # non-pep604-annotation-optional: X | None over Optional[X]
 ]
-fixable = ["A", "B", "COM", "C4", "RET", "SIM", "ICN", "Q", "RSE", "D", "E", "F", "I", "W", "N", "ERA", "PL"]
+fixable = ["A", "B", "COM", "C4", "RET", "SIM", "ICN", "Q", "RSE", "D", "E", "F", "I", "W", "N", "ERA", "PL", "UP"]
 ignore = [
     "B905", # `zip()` without an explicit `strict=` parameter
     "E501", # line too long

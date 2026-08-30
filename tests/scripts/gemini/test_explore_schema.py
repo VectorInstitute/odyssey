@@ -8,7 +8,7 @@ connection approach in ``tests/odyssey/data/gemini/test_db.py``.
 import importlib.util
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Optional
+from typing import Any
 
 import pytest
 
@@ -69,7 +69,7 @@ def test_build_schema_report_uses_suppressed_counts(
     mod = _load_module()
     monkeypatch.setattr(mod.config, "DATACUT", "some_cut")
 
-    def fake_query(sql: str, params: Optional[dict[str, Any]] = None) -> pd.DataFrame:
+    def fake_query(sql: str, params: dict[str, Any] | None = None) -> pd.DataFrame:
         if "pg_tables" in sql:
             return pd.DataFrame({"kind": ["table"], "name": ["admdad_subset"]})
         if "pg_attribute" in sql:

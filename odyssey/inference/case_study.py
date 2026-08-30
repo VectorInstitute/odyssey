@@ -28,9 +28,9 @@ together:
 import json
 import logging
 import random
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import polars as pl
 import torch
@@ -58,38 +58,38 @@ class PatientCaseTrace:
     """A full per-timestep model trace over one patient's tokenized stay."""
 
     subject_id: int
-    times: List[float]
+    times: list[float]
     """Hours since this patient's first event, one per position."""
 
-    input_codes: List[str]
-    predicted_top_k: List[List[Tuple[str, float]]]
+    input_codes: list[str]
+    predicted_top_k: list[list[tuple[str, float]]]
     """Per position, the model's top-k (code, probability) predictions
     for the *next* token -- empty for the last position (no next token)."""
 
-    true_next_code: List[Optional[str]]
+    true_next_code: list[str | None]
     """The actual next code, or None at the last position."""
 
-    true_next_rank: List[Optional[int]]
+    true_next_rank: list[int | None]
     """0-indexed rank of the true next code among the model's own
     predicted probabilities (0 = the model's top prediction was
     correct); None where there is no true next token."""
 
-    concept_probs: List[List[float]]
+    concept_probs: list[list[float]]
     """Per position, per known concept -- the bottleneck's running
     concept-activation probability at that point in the stay."""
 
-    observability_probs: List[List[float]]
-    concept_names: List[str]
-    concept_labels: List[float]
+    observability_probs: list[list[float]]
+    concept_names: list[str]
+    concept_labels: list[float]
     """This patient's final, whole-stay concept labels (1.0/0.0)."""
 
-    concept_observed: List[float]
+    concept_observed: list[float]
     """Whether each concept label is real (1.0) or never-observed (0.0)."""
 
-    event_risk_names: List[str] = field(default_factory=list)
+    event_risk_names: list[str] = field(default_factory=list)
     """Alert events with a hazard head in this model (empty otherwise)."""
 
-    event_risk_24h: List[List[float]] = field(default_factory=list)
+    event_risk_24h: list[list[float]] = field(default_factory=list)
     """Per position, per alert event: the head's P(event within 24h) --
     the alert curve a clinician would watch over the stay."""
 
@@ -100,8 +100,8 @@ def extract_patient_case(
     vocab: Vocabulary,
     concept_names: Sequence[str],
     *,
-    concept_labels: Optional[torch.Tensor] = None,
-    concept_mask: Optional[torch.Tensor] = None,
+    concept_labels: torch.Tensor | None = None,
+    concept_mask: torch.Tensor | None = None,
     device: str = "cuda",
     top_k: int = 5,
     chunk_size: int = 256,
@@ -120,13 +120,13 @@ def extract_patient_case(
         iter([seq]), num_lanes=1, chunk_size=chunk_size, reset_prob=0.0
     )
 
-    predicted_top_k: List[List[Tuple[str, float]]] = []
-    true_next_code: List[Optional[str]] = []
-    true_next_rank: List[Optional[int]] = []
-    concept_probs: List[List[float]] = []
-    observability_probs: List[List[float]] = []
+    predicted_top_k: list[list[tuple[str, float]]] = []
+    true_next_code: list[str | None] = []
+    true_next_rank: list[int | None] = []
+    concept_probs: list[list[float]] = []
+    observability_probs: list[list[float]] = []
     event_heads = getattr(model, "event_heads", None)
-    event_risk: List[List[float]] = []
+    event_risk: list[list[float]] = []
 
     state = None
     with torch.no_grad():
@@ -208,12 +208,12 @@ def extract_patient_case(
 
 def select_diverse_cases(
     events: pl.DataFrame,
-    concept_labels: Dict[int, torch.Tensor],
+    concept_labels: dict[int, torch.Tensor],
     *,
     n_cases: int = 15,
     min_events: int = 10,
     seed: int = 0,
-) -> List[int]:
+) -> list[int]:
     """Pick a deliberately varied set of held-out ``subject_id``\\ s.
 
     Stratifies by (sequence-length tertile) x (concepts triggered: 0 /
@@ -269,7 +269,7 @@ def select_diverse_cases(
             return 1
         return 2
 
-    strata: Dict[Tuple[int, int], List[int]] = {}
+    strata: dict[tuple[int, int], list[int]] = {}
     for sid in subject_ids:
         key = (_length_bucket(sid), _concept_bucket(sid))
         strata.setdefault(key, []).append(sid)
@@ -278,7 +278,7 @@ def select_diverse_cases(
     for bucket in strata.values():
         rng.shuffle(bucket)
 
-    selected: List[int] = []
+    selected: list[int] = []
     stratum_keys = sorted(strata.keys())
     i = 0
     while len(selected) < n_cases and any(strata[k] for k in stratum_keys):
@@ -291,14 +291,14 @@ def select_diverse_cases(
 
 
 def build_case_studies(
-    run_dir: Union[str, Path],
-    held_out_shard_dir: Union[str, Path],
+    run_dir: str | Path,
+    held_out_shard_dir: str | Path,
     *,
     n_cases: int = 15,
-    max_shards: Optional[int] = None,
-    device: Optional[str] = None,
-    checkpoint_path: Optional[Union[str, Path]] = None,
-) -> List[PatientCaseTrace]:
+    max_shards: int | None = None,
+    device: str | None = None,
+    checkpoint_path: str | Path | None = None,
+) -> list[PatientCaseTrace]:
     """End-to-end: load a trained run, pick diverse held-out cases, trace each.
 
     Mirrors :func:`~odyssey.inference.run_inference.evaluate_run`'s
@@ -350,7 +350,7 @@ def build_case_studies(
     del raw_events
 
     concept_names = [c.name for c in concepts]
-    traces: List[PatientCaseTrace] = []
+    traces: list[PatientCaseTrace] = []
     for subject_id in subject_ids:
         logger.info("[case_study] tracing subject %d", subject_id)
         subject_events = events_binned.filter(pl.col("subject_id") == subject_id)
@@ -379,7 +379,7 @@ class _CliArgs:
     output_json: Path
     checkpoint_path: Path
     n_cases: int
-    max_shards: Optional[int]
+    max_shards: int | None
 
 
 def _parse_args() -> _CliArgs:

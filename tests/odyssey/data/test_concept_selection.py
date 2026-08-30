@@ -2,7 +2,7 @@
 
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 import polars as pl
 import pytest
@@ -20,11 +20,11 @@ from odyssey.data.concepts import (
 )
 
 
-def _labels(rows: Dict[str, List[Any]]) -> pl.DataFrame:
+def _labels(rows: dict[str, list[Any]]) -> pl.DataFrame:
     return pl.DataFrame(rows)
 
 
-def _concepts(*names: str) -> List[AnyConceptDefinition]:
+def _concepts(*names: str) -> list[AnyConceptDefinition]:
     return [ConceptDefinition(name, [], f"{name} description") for name in names]
 
 

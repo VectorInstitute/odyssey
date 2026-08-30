@@ -12,9 +12,10 @@ expects for concept labels/masks.
 
 import random
 import re
+from collections.abc import Iterator, Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar, Union
+from typing import TypeVar
 
 import polars as pl
 import torch
@@ -43,7 +44,7 @@ _MEDS_EVENT_COLUMNS = ["subject_id", "time", "code", "numeric_value", "hadm_id"]
 
 
 def load_meds_shards(
-    shard_dir: Union[str, Path], *, max_shards: Optional[int] = None
+    shard_dir: str | Path, *, max_shards: int | None = None
 ) -> pl.DataFrame:
     """Load and concatenate MEDS parquet shards from one split directory.
 
@@ -100,7 +101,7 @@ def shard_sort_key(path: Path) -> int:
     return int(digits.group())
 
 
-def load_meds_shard(path: Union[str, Path]) -> pl.DataFrame:
+def load_meds_shard(path: str | Path) -> pl.DataFrame:
     """Load one MEDS shard with the column projection of :func:`load_meds_shards`."""
     return _load_meds_paths([Path(path)])
 
@@ -123,7 +124,7 @@ def _shuffle_buffered(
     plain, trivially-comparable ints instead of constructing real
     sequences.
     """
-    buffer: List[_T] = []
+    buffer: list[_T] = []
     for item in items:
         if len(buffer) < buffer_size:
             buffer.append(item)
@@ -139,8 +140,8 @@ def iter_patient_sequences(
     events: pl.DataFrame,
     vocab: Vocabulary,
     *,
-    max_seq_len: Optional[int] = None,
-    shuffle_seed: Optional[int] = None,
+    max_seq_len: int | None = None,
+    shuffle_seed: int | None = None,
     shuffle_buffer_size: int = 4096,
 ) -> Iterator[PatientSequence]:
     """Yield one :class:`PatientSequence` per subject in ``events``.
@@ -188,7 +189,7 @@ def iter_patient_sequences(
 
 def build_concept_label_dicts(
     events: pl.DataFrame, concepts: Sequence[AnyConceptDefinition]
-) -> Tuple[Dict[int, torch.Tensor], Dict[int, torch.Tensor]]:
+) -> tuple[dict[int, torch.Tensor], dict[int, torch.Tensor]]:
     """Run label_concepts and reshape its output to per-subject dicts.
 
     Returns ``(labels, masks)``, each ``subject_id -> (num_concepts,)``
@@ -202,8 +203,8 @@ def build_concept_label_dicts(
     mask_cols = labeled.select([f"{name}_observed" for name in names]).to_numpy()
     subject_ids = labeled["subject_id"].to_list()
 
-    labels: Dict[int, torch.Tensor] = {}
-    masks: Dict[int, torch.Tensor] = {}
+    labels: dict[int, torch.Tensor] = {}
+    masks: dict[int, torch.Tensor] = {}
     for i, subject_id in enumerate(subject_ids):
         labels[subject_id] = torch.tensor(label_cols[i], dtype=torch.float32)
         masks[subject_id] = torch.tensor(mask_cols[i], dtype=torch.float32)
@@ -212,7 +213,7 @@ def build_concept_label_dicts(
 
 def build_visit_concept_label_dicts(
     events: pl.DataFrame, concepts: Sequence[AnyConceptDefinition]
-) -> Tuple[Dict[Tuple[int, int], torch.Tensor], Dict[Tuple[int, int], torch.Tensor]]:
+) -> tuple[dict[tuple[int, int], torch.Tensor], dict[tuple[int, int], torch.Tensor]]:
     """Visit-scoped labels: ``(subject_id, visit_id) -> (num_concepts,)`` dicts.
 
     The visit-mode counterpart of :func:`build_concept_label_dicts`,
@@ -229,8 +230,8 @@ def build_visit_concept_label_dicts(
     subject_ids = labeled["subject_id"].to_list()
     visit_ids = labeled["hadm_id"].to_list()
 
-    labels: Dict[Tuple[int, int], torch.Tensor] = {}
-    masks: Dict[Tuple[int, int], torch.Tensor] = {}
+    labels: dict[tuple[int, int], torch.Tensor] = {}
+    masks: dict[tuple[int, int], torch.Tensor] = {}
     for i, (subject_id, visit_id) in enumerate(zip(subject_ids, visit_ids)):
         key = (int(subject_id), int(visit_id))
         labels[key] = torch.tensor(label_cols[i], dtype=torch.float32)
@@ -245,7 +246,7 @@ def build_visit_concept_label_dicts(
 NEVER_TRIGGERED = float("inf")
 
 
-def _first_event_hours(events: pl.DataFrame) -> Dict[int, datetime]:
+def _first_event_hours(events: pl.DataFrame) -> dict[int, datetime]:
     """Each subject's sequence time origin: its first non-birth, timed event.
 
     Must match :func:`~odyssey.data.sequences.build_patient_sequence`,
@@ -263,7 +264,7 @@ def _first_event_hours(events: pl.DataFrame) -> Dict[int, datetime]:
 
 def build_visit_concept_first_times(
     events: pl.DataFrame, concepts: Sequence[AnyConceptDefinition]
-) -> Dict[Tuple[int, int], torch.Tensor]:
+) -> dict[tuple[int, int], torch.Tensor]:
     """Per-visit first-trigger times, in hours since the subject's first event.
 
     Keyed ``(subject_id, visit_id) -> (num_concepts,)``, on the same time
@@ -281,7 +282,7 @@ def build_visit_concept_first_times(
     visit_ids = labeled["hadm_id"].to_list()
     first_cols = [labeled[f"{name}_first_time"].to_list() for name in names]
 
-    out: Dict[Tuple[int, int], torch.Tensor] = {}
+    out: dict[tuple[int, int], torch.Tensor] = {}
     for i, (subject_id, visit_id) in enumerate(zip(subject_ids, visit_ids)):
         origin = origins.get(subject_id)
         if origin is None:
@@ -298,7 +299,7 @@ def build_visit_concept_first_times(
 
 def build_concept_first_times(
     events: pl.DataFrame, concepts: Sequence[AnyConceptDefinition]
-) -> Dict[int, torch.Tensor]:
+) -> dict[int, torch.Tensor]:
     """Stay-scoped counterpart of :func:`build_visit_concept_first_times`."""
     labeled = label_concepts(events, list(concepts), include_first_time=True)
     origins = _first_event_hours(events)
@@ -306,7 +307,7 @@ def build_concept_first_times(
     subject_ids = labeled["subject_id"].to_list()
     first_cols = [labeled[f"{name}_first_time"].to_list() for name in names]
 
-    out: Dict[int, torch.Tensor] = {}
+    out: dict[int, torch.Tensor] = {}
     for i, subject_id in enumerate(subject_ids):
         origin = origins.get(subject_id)
         if origin is None:
@@ -335,7 +336,7 @@ def family_loss_weights(
     alpha: float,
     cap: float = 20.0,
     code_col: str = "code",
-    n_families: Optional[int] = None,
+    n_families: int | None = None,
 ) -> torch.Tensor:
     """Per-family loss weights ``(share of events) ** -alpha``, mean-1 normalized.
 
@@ -386,7 +387,7 @@ def build_vocabulary(
     *,
     min_count: int,
     max_size: int,
-    backoff: Optional[str] = None,
+    backoff: str | None = None,
 ) -> Vocabulary:
     """Build a :class:`Vocabulary` from the training split's real code frequencies.
 

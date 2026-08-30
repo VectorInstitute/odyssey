@@ -45,7 +45,6 @@ import gc
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
 
 import polars as pl
 
@@ -66,9 +65,9 @@ logger = logging.getLogger(__name__)
 
 
 def _rows_frame(
-    rows: Dict[str, List[IndexRow]],
-    scores: Dict[str, Dict[str, Dict[str, List[float]]]],
-    horizons: Tuple[float, ...],
+    rows: dict[str, list[IndexRow]],
+    scores: dict[str, dict[str, dict[str, list[float]]]],
+    horizons: tuple[float, ...],
 ) -> pl.DataFrame:
     """One row per (event, subject_id, visit_id, time_hours), plus score columns."""
     frames = []
@@ -168,8 +167,8 @@ def main() -> None:  # noqa: PLR0915
     ):
 
         def _sample(
-            keys: Set[Tuple[str, float, float, float]], n: int = 10
-        ) -> List[Tuple[str, float, float, float]]:
+            keys: set[tuple[str, float, float, float]], n: int = 10
+        ) -> list[tuple[str, float, float, float]]:
             return sorted(keys)[:n]
 
         raise RuntimeError(
@@ -250,7 +249,7 @@ def main() -> None:  # noqa: PLR0915
     strong_features = held.features["strong"]
     basic_features = held.features["basic"]
 
-    scores: Dict[str, Dict[str, Dict[str, List[float]]]] = {
+    scores: dict[str, dict[str, dict[str, list[float]]]] = {
         "tabicl": {},
         "ebm": {},
         "survivalpfn": {},

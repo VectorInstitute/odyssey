@@ -23,8 +23,8 @@ module deliberately stops at prevalence/balance, which can run today
 against nothing but the concept labels themselves.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import List, Sequence
 
 import polars as pl
 
@@ -63,7 +63,7 @@ def compute_prevalence_stats(
     *,
     min_support: int = 10,
     max_dominant_class: float = 0.95,
-) -> List[PrevalenceStats]:
+) -> list[PrevalenceStats]:
     """Compute :class:`PrevalenceStats` for each concept.
 
     Consumes :func:`odyssey.data.concepts.label_concepts`'s output.
@@ -102,6 +102,6 @@ def compute_prevalence_stats(
     return stats
 
 
-def filter_by_prevalence(stats: Sequence[PrevalenceStats]) -> List[str]:
+def filter_by_prevalence(stats: Sequence[PrevalenceStats]) -> list[str]:
     """Return the names of concepts that pass both prevalence/balance checks."""
     return [s.name for s in stats if s.passes]

@@ -16,7 +16,6 @@ environment.
 
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 import numpy as np
 import polars as pl
@@ -39,7 +38,7 @@ T0 = datetime(2024, 1, 1)
 
 def _events(n_subjects: int) -> pl.DataFrame:
     """Build the same planted-signal shape as test_tabicl_baseline.py's fixture."""
-    rows: List[Tuple[int, str, datetime, Optional[float], int]] = []
+    rows: list[tuple[int, str, datetime, float | None, int]] = []
     for sid in range(1, n_subjects + 1):
         hadm = 1000 + sid
         for h in range(24):
@@ -124,12 +123,12 @@ def test_load_ebm_classifier_raises_a_clear_error_when_not_installed() -> None:
 class _RecordingFakeClassifier:
     """Records what it was fit on; predict_proba returns a fixed 50/50 split."""
 
-    instances: List["_RecordingFakeClassifier"] = []
+    instances: list["_RecordingFakeClassifier"] = []
 
     def __init__(self, **kwargs: object) -> None:
         self.kwargs = kwargs
-        self.x_fit: Optional[np.ndarray] = None
-        self.y_fit: Optional[np.ndarray] = None
+        self.x_fit: np.ndarray | None = None
+        self.y_fit: np.ndarray | None = None
         self.classes_ = np.array([0, 1])
         _RecordingFakeClassifier.instances.append(self)
 

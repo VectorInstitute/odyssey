@@ -279,7 +279,7 @@ import threading
 import time
 from collections.abc import Iterable, Iterator
 from pathlib import Path
-from typing import Any, NamedTuple, Optional
+from typing import Any, NamedTuple
 
 import pandas as pd
 import polars as pl
@@ -788,13 +788,13 @@ class _CopyChunkSink:
     def __init__(
         self,
         chunk_rows: int,
-        out_queue: "queue.Queue[pl.DataFrame]",
+        out_queue: queue.Queue[pl.DataFrame],
         stop_requested: threading.Event,
     ) -> None:
         self._buffer = bytearray()
         self._chunk_rows = chunk_rows
         self._queue = out_queue
-        self._header: Optional[bytes] = None
+        self._header: bytes | None = None
         self._stop_requested = stop_requested
         self._pending_newlines = 0
         """Newlines currently sitting in ``self._buffer``, maintained
@@ -927,7 +927,7 @@ def _stream_table_copy(
         f"TO STDOUT WITH (FORMAT CSV, HEADER, NULL '\\N')"
     )
 
-    out_queue: "queue.Queue[Any]" = queue.Queue(maxsize=_STREAM_QUEUE_MAXSIZE)
+    out_queue: queue.Queue[Any] = queue.Queue(maxsize=_STREAM_QUEUE_MAXSIZE)
     errors: list[BaseException] = []
     stop_requested = threading.Event()
 
@@ -1200,7 +1200,7 @@ def _coerce_boolean_flag(chunk: pl.DataFrame, column: str, table: str) -> pl.Dat
 
 
 def fetch_admission_index() -> tuple[
-    dict[int, str], dict[int, Optional[pd.Timestamp]], int
+    dict[int, str], dict[int, pd.Timestamp | None], int
 ]:
     """One pass over ``admdad_subset``: ``genc_id -> (subject, admission time)``.
 
@@ -1230,7 +1230,7 @@ def fetch_admission_index() -> tuple[
         ``(subject_by_genc, admission_by_genc, n_dropped_null_subject)``.
     """
     subject_by_genc: dict[int, str] = {}
-    admission_by_genc: dict[int, Optional[pd.Timestamp]] = {}
+    admission_by_genc: dict[int, pd.Timestamp | None] = {}
     n_dropped_null_subject = 0
     report_progress = _log_table_progress("admdad_subset (admission index)")
     for chunk in _stream_table(
@@ -1408,7 +1408,7 @@ def _finalize_meds_batch(frame: pl.DataFrame) -> pd.DataFrame:
 
 def extract_admissions(
     subject_by_genc: dict[int, str],
-    admission_by_genc: dict[int, Optional[pd.Timestamp]],
+    admission_by_genc: dict[int, pd.Timestamp | None],
 ) -> Iterator[ExtractedBatch]:
     """Admission and discharge events from ``admdad_subset``.
 
@@ -1475,7 +1475,7 @@ DEATH_DISPOSITION_CODES = (7, 72, 73, 74)
 
 def extract_death(
     subject_by_genc: dict[int, str],
-    admission_by_genc: dict[int, Optional[pd.Timestamp]],
+    admission_by_genc: dict[int, pd.Timestamp | None],
     mortality_by_genc: dict[int, bool],
 ) -> Iterator[ExtractedBatch]:
     """Death events from ``derived_variables_subset.in_hospital_mortality_derived``.
@@ -1900,7 +1900,7 @@ def extract_vitals_unmapped(
 
 def extract_pharmacy(
     subject_by_genc: dict[int, str],
-    admission_by_genc: dict[int, Optional[pd.Timestamp]],
+    admission_by_genc: dict[int, pd.Timestamp | None],
 ) -> Iterator[ExtractedBatch]:
     """Medication start/end events from ``pharmacy_subset``.
 
@@ -1997,7 +1997,7 @@ def extract_diagnoses(subject_by_genc: dict[int, str]) -> Iterator[ExtractedBatc
     ------
     ExtractedBatch
     """
-    discharge_by_genc: dict[int, Optional[pd.Timestamp]] = {}
+    discharge_by_genc: dict[int, pd.Timestamp | None] = {}
     report_progress = _log_table_progress("admdad_subset (discharge index)")
     for chunk in _stream_table("admdad_subset", ["genc_id", "discharge_date_time"]):
         frame = _filter_valid_genc_id(chunk, "admdad_subset")
@@ -2085,7 +2085,7 @@ def extract_procedures(subject_by_genc: dict[int, str]) -> Iterator[ExtractedBat
 
 def extract_radiology(
     subject_by_genc: dict[int, str],
-    admission_by_genc: dict[int, Optional[pd.Timestamp]],
+    admission_by_genc: dict[int, pd.Timestamp | None],
 ) -> Iterator[ExtractedBatch]:
     """Imaging events from ``radiology_subset``.
 
@@ -2138,7 +2138,7 @@ def extract_radiology(
 
 def extract_providers(
     subject_by_genc: dict[int, str],
-    admission_by_genc: dict[int, Optional[pd.Timestamp]],
+    admission_by_genc: dict[int, pd.Timestamp | None],
 ) -> Iterator[ExtractedBatch]:
     """Extract provider (physician) events from ``physicians_subset``.
 
@@ -2206,7 +2206,7 @@ def extract_providers(
         yield ExtractedBatch(_finalize_meds_batch(meds), chunk.height)
 
 
-def fetch_discharge_index() -> dict[int, Optional[pd.Timestamp]]:
+def fetch_discharge_index() -> dict[int, pd.Timestamp | None]:
     """One pass over ``admdad_subset``: ``genc_id -> discharge time``.
 
     A second, discharge-only index alongside :func:`fetch_admission_index`'s
@@ -2226,7 +2226,7 @@ def fetch_discharge_index() -> dict[int, Optional[pd.Timestamp]]:
     dict[int, pandas.Timestamp | None]
         ``{genc_id: discharge_time}``.
     """
-    discharge_by_genc: dict[int, Optional[pd.Timestamp]] = {}
+    discharge_by_genc: dict[int, pd.Timestamp | None] = {}
     report_progress = _log_table_progress("admdad_subset (billing discharge index)")
     for chunk in _stream_table("admdad_subset", ["genc_id", "discharge_date_time"]):
         frame = _filter_valid_genc_id(chunk, "admdad_subset")
@@ -2251,7 +2251,7 @@ def fetch_discharge_index() -> dict[int, Optional[pd.Timestamp]]:
 
 def extract_er(
     subject_by_genc: dict[int, str],
-    admission_by_genc: dict[int, Optional[pd.Timestamp]],
+    admission_by_genc: dict[int, pd.Timestamp | None],
 ) -> Iterator[ExtractedBatch]:
     """ED registration/triage/leave events from ``er_subset``.
 
@@ -2331,7 +2331,7 @@ def extract_er(
 
 def extract_er_diagnoses(
     subject_by_genc: dict[int, str],
-    admission_by_genc: dict[int, Optional[pd.Timestamp]],
+    admission_by_genc: dict[int, pd.Timestamp | None],
 ) -> Iterator[ExtractedBatch]:
     """ED diagnosis events from ``erdiagnosis_subset``.
 
@@ -2379,7 +2379,7 @@ def extract_er_diagnoses(
 
 def extract_er_procedures(
     subject_by_genc: dict[int, str],
-    admission_by_genc: dict[int, Optional[pd.Timestamp]],
+    admission_by_genc: dict[int, pd.Timestamp | None],
 ) -> Iterator[ExtractedBatch]:
     """ED procedure events from ``erintervention_subset`` with a passing timestamp.
 
@@ -2450,7 +2450,7 @@ def extract_er_procedures(
 
 def extract_er_procedures_untimed(
     subject_by_genc: dict[int, str],
-    admission_by_genc: dict[int, Optional[pd.Timestamp]],
+    admission_by_genc: dict[int, pd.Timestamp | None],
 ) -> Iterator[ExtractedBatch]:
     """ED procedure events from ``erintervention_subset`` with no usable timestamp.
 
@@ -2521,7 +2521,7 @@ def extract_er_procedures_untimed(
 
 def extract_er_consults(
     subject_by_genc: dict[int, str],
-    admission_by_genc: dict[int, Optional[pd.Timestamp]],
+    admission_by_genc: dict[int, pd.Timestamp | None],
 ) -> Iterator[ExtractedBatch]:
     """ED consult-request events from ``erconsults_subset``.
 
@@ -2579,7 +2579,7 @@ def extract_er_consults(
 
 def extract_transfers(
     subject_by_genc: dict[int, str],
-    admission_by_genc: dict[int, Optional[pd.Timestamp]],
+    admission_by_genc: dict[int, pd.Timestamp | None],
 ) -> Iterator[ExtractedBatch]:
     """Institution-transfer events from ``lookup_transfer_subset``.
 
@@ -2631,7 +2631,7 @@ def extract_transfers(
 
 def extract_billing_cmg(
     subject_by_genc: dict[int, str],
-    discharge_by_genc: dict[int, Optional[pd.Timestamp]],
+    discharge_by_genc: dict[int, pd.Timestamp | None],
 ) -> Iterator[ExtractedBatch]:
     """Case Mix Group billing events from ``ipcmg_subset``.
 
@@ -2683,7 +2683,7 @@ def extract_billing_cmg(
 
 def extract_billing_hig(
     subject_by_genc: dict[int, str],
-    discharge_by_genc: dict[int, Optional[pd.Timestamp]],
+    discharge_by_genc: dict[int, pd.Timestamp | None],
 ) -> Iterator[ExtractedBatch]:
     """Health-based Inpatient Group billing events from ``iphig_subset``.
 
@@ -3501,7 +3501,7 @@ def _extract_one_table(
         )
 
 
-def run_extraction(output_dir: Optional[Path] = None) -> dict[str, Any]:
+def run_extraction(output_dir: Path | None = None) -> dict[str, Any]:
     """Run the full GEMINI -> MEDS extraction and write the suppressed summary.
 
     Resumable at table granularity: see the module docstring's

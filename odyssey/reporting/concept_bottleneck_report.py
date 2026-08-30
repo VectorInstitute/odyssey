@@ -32,7 +32,7 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from odyssey.models.concept_bottleneck import ConceptBottleneckLossWeights
 from odyssey.training.train import TrainingConfig, _combined_val_loss
@@ -68,7 +68,7 @@ def _lab_name(itemid: str) -> str:
     return _LAB_NAMES.get(itemid, f"item {itemid}")
 
 
-def _fmt_value(v: str) -> Optional[str]:
+def _fmt_value(v: str) -> str | None:
     if v == "UNK":
         return None
     if "::" in v:
@@ -187,7 +187,7 @@ def pretty_code(code: str) -> str:  # noqa: PLR0911, PLR0912
 # Approximate by design: only bins that coincide with the concept's own rule
 # threshold are marked (WBC quantile bins and composite criteria are not
 # representable this way), and a tick is display evidence, never a label.
-_EVIDENCE_BINS: List[Tuple[str, str, List[str]]] = [
+_EVIDENCE_BINS: list[tuple[str, str, list[str]]] = [
     ("LAB//220045//", "::HIGH", ["tachycardia"]),
     ("LAB//220045//", "::LOW", ["bradycardia"]),
     ("LAB//220179//", "::LOW", ["hypotension"]),
@@ -224,14 +224,14 @@ _MARKER_PREFIXES = {
 
 
 def _extract_evidence(
-    codes: List[str], times: List[float], concept_names: List[str]
-) -> Dict[str, List[float]]:
+    codes: list[str], times: list[float], concept_names: list[str]
+) -> dict[str, list[float]]:
     """Collect the times at which each concept's own evidence appears."""
     known = set(concept_names)
-    out: Dict[str, List[float]] = {}
+    out: dict[str, list[float]] = {}
     vaso = re.compile(f"(?i){_VASOPRESSOR_RE}")
     for code, when in zip(codes, times):
-        hits: List[str] = []
+        hits: list[str] = []
         for prefix, suffix, concepts in _EVIDENCE_BINS:
             if code.startswith(prefix) and code.endswith(suffix):
                 hits.extend(concepts)
@@ -244,7 +244,7 @@ def _extract_evidence(
     return {k: v[:: max(1, len(v) // 150)][:150] for k, v in out.items()}
 
 
-def _extract_markers(codes: List[str], times: List[float]) -> List[List[Any]]:
+def _extract_markers(codes: list[str], times: list[float]) -> list[list[Any]]:
     """Collect (time, label) care-transition markers for the time axis."""
     markers = []
     for code, when in zip(codes, times):
@@ -255,14 +255,14 @@ def _extract_markers(codes: List[str], times: List[float]) -> List[List[Any]]:
     return markers[:30]
 
 
-def _downsample_indices(n: int, target: int) -> List[int]:
+def _downsample_indices(n: int, target: int) -> list[int]:
     if n <= target:
         return list(range(n))
     step = n / target
     return sorted({int(i * step) for i in range(target)} | {n - 1})
 
 
-def _summarize_case(case: Dict[str, Any]) -> Dict[str, Any]:
+def _summarize_case(case: dict[str, Any]) -> dict[str, Any]:
     n = len(case["times"])
     times = case["times"]
     concept_names = case["concept_names"]
@@ -348,7 +348,7 @@ def _fmt_duration(seconds: float) -> str:
     return f"{hrs}h {mins:02d}m"
 
 
-def _smoothed_last(values: List[Any], k: int = 15) -> Optional[float]:
+def _smoothed_last(values: list[Any], k: int = 15) -> float | None:
     xs = [float(v) for v in values if v is not None]
     if not xs:
         return None
@@ -356,12 +356,12 @@ def _smoothed_last(values: List[Any], k: int = 15) -> Optional[float]:
 
 
 def build_findings(
-    loss_curves: Dict[str, Any],
-    inference: Dict[str, Any],
+    loss_curves: dict[str, Any],
+    inference: dict[str, Any],
     supervision: str,
-    interventions: Optional[List[Dict[str, Any]]] = None,
-    randint_prob: Optional[float] = None,
-) -> Dict[str, str]:
+    interventions: list[dict[str, Any]] | None = None,
+    randint_prob: float | None = None,
+) -> dict[str, str]:
     """Compute the per-section "Reading" notes from the run's own numbers.
 
     Auto-generated so every regeneration interprets its own data instead
@@ -526,11 +526,11 @@ def build_findings(
 
 
 def _finish_findings(
-    findings: Dict[str, str],
-    inference: Dict[str, Any],
-    interventions: Optional[List[Dict[str, Any]]],
-    randint_prob: Optional[float] = None,
-) -> Dict[str, str]:
+    findings: dict[str, str],
+    inference: dict[str, Any],
+    interventions: list[dict[str, Any]] | None,
+    randint_prob: float | None = None,
+) -> dict[str, str]:
     """Add the time-to-event and intervention readings, when the run has them."""
     tm = inference.get("time_metrics")
     if tm:
@@ -566,9 +566,9 @@ def _finish_findings(
     return findings
 
 
-def build_alert_finding(alerts: List[Dict[str, Any]]) -> Optional[str]:
+def build_alert_finding(alerts: list[dict[str, Any]]) -> str | None:
     """Auto-interpret the alert harness: hazard heads vs. the bespoke GBM."""
-    by_key: Dict[Tuple[str, float, str], Dict[str, Any]] = {
+    by_key: dict[tuple[str, float, str], dict[str, Any]] = {
         (r["event"], r["horizon_hours"], r["scorer"]): r for r in alerts
     }
     events = sorted({r["event"] for r in alerts})
@@ -601,8 +601,8 @@ def build_alert_finding(alerts: List[Dict[str, Any]]) -> Optional[str]:
             "(concept probability, next-event mass) are scored; those are not "
             "horizon forecasts and were never expected to compete."
         )
-    wins: List[str] = []
-    losses: List[str] = []
+    wins: list[str] = []
+    losses: list[str] = []
     for e in events:
         for h in horizons:
             hz = by_key.get((e, h, "hazard"))
@@ -640,9 +640,9 @@ def build_alert_finding(alerts: List[Dict[str, Any]]) -> Optional[str]:
 
 
 def build_intervention_finding(
-    interventions: Optional[List[Dict[str, Any]]],
-    randint_prob: Optional[float] = None,
-) -> Optional[str]:
+    interventions: list[dict[str, Any]] | None,
+    randint_prob: float | None = None,
+) -> str | None:
     """Auto-interpret the causal-intervention sweep, if this run has one.
 
     The claim a concept bottleneck makes is that concepts *mediate*
@@ -661,7 +661,7 @@ def build_intervention_finding(
         return None
     base = none["top1_accuracy"]
 
-    def delta(mode: str) -> Optional[float]:
+    def delta(mode: str) -> float | None:
         r = by_mode.get(mode)
         return None if r is None else r["top1_accuracy"] - base
 
@@ -785,19 +785,19 @@ class ReportInputs:
     """Everything read from disk before building the report payload."""
 
     config: TrainingConfig
-    loss_records: List[Dict[str, Any]]
-    inference_results: Dict[str, Any]
-    cases: List[Dict[str, Any]]
-    interventions: Optional[List[Dict[str, Any]]] = None
-    alerts: Optional[List[Dict[str, Any]]] = None
+    loss_records: list[dict[str, Any]]
+    inference_results: dict[str, Any]
+    cases: list[dict[str, Any]]
+    interventions: list[dict[str, Any]] | None = None
+    alerts: list[dict[str, Any]] | None = None
 
 
 def load_inputs(
     run_dir: Path,
     inference_results_path: Path,
     case_studies_path: Path,
-    interventions_path: Optional[Path] = None,
-    alerts_path: Optional[Path] = None,
+    interventions_path: Path | None = None,
+    alerts_path: Path | None = None,
 ) -> ReportInputs:
     """Read a run's config/loss log plus its inference/case-study output files."""
     config = TrainingConfig(**json.loads((run_dir / "config.json").read_text()))
@@ -819,7 +819,7 @@ def load_inputs(
     )
 
 
-def build_payload(inputs: ReportInputs) -> Dict[str, Any]:
+def build_payload(inputs: ReportInputs) -> dict[str, Any]:
     """Turn raw run artifacts into the compact JSON payload the template embeds."""
     config = inputs.config
     train_records = [r for r in inputs.loss_records if r["split"] == "train"]
@@ -1031,7 +1031,7 @@ def _strict_json(value: Any) -> Any:
     return value
 
 
-def render_html(payload: Dict[str, Any]) -> str:
+def render_html(payload: dict[str, Any]) -> str:
     """Splice ``payload`` into the report template as its embedded JSON data.
 
     Serialized with ``allow_nan=False`` after sanitizing, so a non-finite

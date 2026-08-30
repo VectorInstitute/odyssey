@@ -1,6 +1,6 @@
 """Tests for the packed, chunked, persistent-lane training sampler."""
 
-from typing import Iterator, List, Optional
+from collections.abc import Iterator
 
 import torch
 
@@ -10,7 +10,7 @@ from odyssey.data.vocabulary import PAD_ID
 
 
 def _seq(
-    subject_id: int, n: int, *, visit_orders: Optional[List[int]] = None
+    subject_id: int, n: int, *, visit_orders: list[int] | None = None
 ) -> PatientSequence:
     """Build a patient with ``n`` events, token ids ``subject_id * 1000 + i``."""
     if visit_orders is None:
@@ -26,7 +26,7 @@ def _seq(
     )
 
 
-def _patients(seqs: List[PatientSequence]) -> Iterator[PatientSequence]:
+def _patients(seqs: list[PatientSequence]) -> Iterator[PatientSequence]:
     return iter(seqs)
 
 
@@ -55,7 +55,7 @@ def test_every_event_is_a_target_exactly_once() -> None:
     patients = _patients([_seq(1, 12)])
     sampler = PackedLaneSampler(patients, num_lanes=1, chunk_size=4)
 
-    seen_targets: List[int] = []
+    seen_targets: list[int] = []
     for chunk in sampler:
         seen_targets.extend(
             t
@@ -446,7 +446,7 @@ def test_batch_and_targets_are_long_tensors() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _many_patients(n: int, events_each: int) -> List[PatientSequence]:
+def _many_patients(n: int, events_each: int) -> list[PatientSequence]:
     return [_seq(i, events_each) for i in range(n)]
 
 
@@ -494,7 +494,7 @@ def test_fast_forward_past_the_end_of_the_epoch_yields_nothing() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _seq_with_visits(subject_id: int, visit_ids: List[int]) -> PatientSequence:
+def _seq_with_visits(subject_id: int, visit_ids: list[int]) -> PatientSequence:
     n = len(visit_ids)
     last = {}
     for i, v in enumerate(visit_ids):

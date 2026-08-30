@@ -3,7 +3,6 @@
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
 
 import pytest
 
@@ -32,7 +31,7 @@ def test_load_returns_none_when_the_fingerprint_does_not_match(
 
 
 def test_load_returns_the_model_when_the_fingerprint_matches(tmp_path: Path) -> None:
-    fp: Dict[str, Optional[str]] = {"tabicl": "1.0.0"}
+    fp: dict[str, str | None] = {"tabicl": "1.0.0"}
     writer = FitCache(cache_dir=tmp_path, fingerprint=dict(fp))
     writer.save("tabicl/death/8h", "a-fitted-model")
 

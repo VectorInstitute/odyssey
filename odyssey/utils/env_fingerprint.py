@@ -29,7 +29,7 @@ import platform
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 import torch
 
@@ -44,7 +44,7 @@ FINGERPRINT_FILENAME = "env_fingerprint.json"
 CANARY_RTOL = 1e-3
 
 
-def _file_sha256(path: Union[str, Path], *, max_bytes: int = 1 << 30) -> Optional[str]:
+def _file_sha256(path: str | Path, *, max_bytes: int = 1 << 30) -> str | None:
     try:
         h = hashlib.sha256()
         with open(path, "rb") as f:
@@ -57,7 +57,7 @@ def _file_sha256(path: Union[str, Path], *, max_bytes: int = 1 << 30) -> Optiona
         return None
 
 
-def _mamba_ssm_info() -> Dict[str, Optional[str]]:
+def _mamba_ssm_info() -> dict[str, str | None]:
     try:
         import mamba_ssm  # noqa: PLC0415
 
@@ -77,8 +77,8 @@ def _mamba_ssm_info() -> Dict[str, Optional[str]]:
 
 
 def environment_fingerprint(
-    artifact_paths: Optional[Dict[str, Union[str, Path]]] = None,
-) -> Dict[str, Any]:
+    artifact_paths: dict[str, str | Path] | None = None,
+) -> dict[str, Any]:
     """Everything that determines model outputs, as one JSON-serializable dict."""
     try:
         commit = (
@@ -99,7 +99,7 @@ def environment_fingerprint(
             "name": torch.cuda.get_device_name(0),
             "capability": ".".join(map(str, torch.cuda.get_device_capability(0))),
         }
-    fp: Dict[str, Any] = {
+    fp: dict[str, Any] = {
         "git_commit": commit,
         "python": sys.version.split()[0],
         "platform": platform.platform(),
@@ -122,7 +122,7 @@ def environment_fingerprint(
 
 def numeric_canary(
     model: torch.nn.Module, vocab_size: int, *, device: str = "cpu"
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Summarize a fixed, seeded forward pass; identical env => identical values.
 
     Uses the model's ``forward_with_features`` on a small synthetic chunk
@@ -174,8 +174,8 @@ def numeric_canary(
 
 
 def check_canary(
-    stored: Dict[str, Any], fresh: Dict[str, Any], *, rtol: float = CANARY_RTOL
-) -> List[str]:
+    stored: dict[str, Any], fresh: dict[str, Any], *, rtol: float = CANARY_RTOL
+) -> list[str]:
     """Return human-readable mismatch descriptions (empty = reproducible)."""
     problems = []
     for key in ("mean", "std", "absmax"):
@@ -191,12 +191,12 @@ def check_canary(
 
 
 def write_run_provenance(
-    run_dir: Union[str, Path],
+    run_dir: str | Path,
     model: torch.nn.Module,
     vocab_size: int,
     *,
     device: str = "cpu",
-    checkpoint_name: Optional[str] = None,
+    checkpoint_name: str | None = None,
 ) -> None:
     """Record the environment fingerprint, and the canary for one checkpoint.
 
@@ -214,7 +214,7 @@ def write_run_provenance(
     if checkpoint_name is None:
         return
     canary_path = run_dir / CANARY_FILENAME
-    stored: Dict[str, Any] = {}
+    stored: dict[str, Any] = {}
     if canary_path.exists():
         stored = json.loads(canary_path.read_text())
         if "mean" in stored:  # legacy single-canary file (pre per-checkpoint)
@@ -224,13 +224,13 @@ def write_run_provenance(
 
 
 def verify_run_provenance(
-    run_dir: Union[str, Path],
+    run_dir: str | Path,
     model: torch.nn.Module,
     vocab_size: int,
     *,
     device: str = "cpu",
-    checkpoint_name: Optional[str] = None,
-) -> List[str]:
+    checkpoint_name: str | None = None,
+) -> list[str]:
     """Recompute the canary against a run dir's stored one; log and return mismatches.
 
     Silent (empty result) when the run predates provenance files.

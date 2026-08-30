@@ -2,7 +2,6 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional, Tuple
 
 import torch
 from torch import nn
@@ -31,10 +30,10 @@ class TimeAwareState:
 
 
 def resolve_prev_time_stamps(
-    state: Optional[TimeAwareState],
+    state: TimeAwareState | None,
     batch: ClinicalSequenceBatch,
-    reset_mask: Optional[torch.Tensor],
-) -> Optional[torch.Tensor]:
+    reset_mask: torch.Tensor | None,
+) -> torch.Tensor | None:
     """Return the ``prev_value`` to pass to the embeddings layer.
 
     ``None`` if there's no carried state at all (a lane's very first
@@ -90,9 +89,9 @@ class SequenceBackbone(nn.Module, ABC):
     def forward(
         self,
         batch: ClinicalSequenceBatch,
-        state: Optional[TimeAwareState] = None,
-        reset_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, TimeAwareState]:
+        state: TimeAwareState | None = None,
+        reset_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, TimeAwareState]:
         """Return ``(hidden_states, new_state)``.
 
         ``hidden_states`` has shape ``(batch, seq_len, hidden_size)``.

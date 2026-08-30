@@ -7,7 +7,7 @@ exercised by monkeypatching :mod:`odyssey.data.gemini.config` directly.
 """
 
 import io
-from typing import Any, Optional
+from typing import Any
 
 import pytest
 
@@ -105,7 +105,7 @@ def test_query_sets_search_path_and_returns_read_sql_result(
     captured: dict[str, Any] = {}
 
     def fake_read_sql(
-        sql: Any, con: Any, params: Optional[dict[str, Any]] = None
+        sql: Any, con: Any, params: dict[str, Any] | None = None
     ) -> pd.DataFrame:
         captured["sql"] = str(sql)
         captured["con"] = con
@@ -147,8 +147,8 @@ def test_stream_query_sets_search_path_and_requests_streaming(
     def fake_read_sql(
         sql: Any,
         con: Any,
-        params: Optional[dict[str, Any]] = None,
-        chunksize: Optional[int] = None,
+        params: dict[str, Any] | None = None,
+        chunksize: int | None = None,
     ) -> Any:
         captured["sql"] = str(sql)
         captured["con"] = con

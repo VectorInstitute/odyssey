@@ -14,8 +14,8 @@ SOFA renal component and the absolute-volume ``oliguria`` concept in
   weight-free anuria branch.
 """
 
+from collections.abc import Sequence
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Sequence, Tuple
 
 import polars as pl
 import pytest
@@ -46,7 +46,7 @@ ADMISSION_WEIGHT = "LAB//226512//kg"
 DIALYSIS_CATHETER = "PROCEDURE//START//224270"
 CRRT_FILTER_CHANGE = "PROCEDURE//START//225436"
 
-_Row = Tuple[int, str, Optional[float], datetime]
+_Row = tuple[int, str, float | None, datetime]
 
 
 def _events(rows: Sequence[_Row]) -> pl.DataFrame:
@@ -68,7 +68,7 @@ def _events(rows: Sequence[_Row]) -> pl.DataFrame:
     )
 
 
-def _aki(*names: str) -> List[AnyConceptDefinition]:
+def _aki(*names: str) -> list[AnyConceptDefinition]:
     """Return the named AKI concepts, as the mimic_iv expansion builds them."""
     return [c for c in concepts_for_source("mimic_iv") if c.name in names]
 
@@ -76,7 +76,7 @@ def _aki(*names: str) -> List[AnyConceptDefinition]:
 _ALL_STAGES = ("acute_kidney_injury", "aki_stage_2", "aki_stage_3")
 
 
-def _labels(rows: Sequence[_Row], *names: str) -> Dict[int, Dict[str, object]]:
+def _labels(rows: Sequence[_Row], *names: str) -> dict[int, dict[str, object]]:
     """Label ``rows`` with the named concepts, keyed by subject id."""
     labeled = label_concepts(
         _events(rows), _aki(*(names or _ALL_STAGES)), include_first_time=True
@@ -86,7 +86,7 @@ def _labels(rows: Sequence[_Row], *names: str) -> Dict[int, Dict[str, object]]:
 
 def _rates(
     rows: Sequence[_Row], *, window_hours: float, weight_normalized: bool = True
-) -> Dict[datetime, float]:
+) -> dict[datetime, float]:
     """``urine_output_rate`` for the single subject in ``rows``, time -> value."""
     frame = urine_output_rate(
         _events(rows),
@@ -209,7 +209,7 @@ def test_rrt_rule_is_the_only_occurrence_rule_and_only_on_stage_3() -> None:
 
 # 60 kg, a 6 h burst of 60 mL/h then a trickle of 6 mL/h: each window
 # length sees a different rate, so a window mix-up cannot pass silently.
-_BURST_THEN_TRICKLE: List[_Row] = (
+_BURST_THEN_TRICKLE: list[_Row] = (
     [(1, DAILY_WEIGHT, 60.0, T0)]
     + [(1, URINE, 60.0, T0 + k * H) for k in range(1, 7)]
     + [(1, URINE, 6.0, T0 + k * H) for k in range(7, 25)]
@@ -244,7 +244,7 @@ def test_urine_rate_excludes_windows_without_a_full_window_of_record() -> None:
 
 def test_urine_rate_sums_every_collection_route() -> None:
     """Foley plus void, resolved through the LOINC layer, not one itemid."""
-    rows: List[_Row] = [(1, DAILY_WEIGHT, 50.0, T0)] + [
+    rows: list[_Row] = [(1, DAILY_WEIGHT, 50.0, T0)] + [
         row
         for k in range(1, 7)
         for row in ((1, URINE, 20.0, T0 + k * H), (1, URINE_VOID, 5.0, T0 + k * H))
@@ -279,7 +279,7 @@ def test_only_the_weighted_form_needs_a_source_weight_config() -> None:
     the weighted form on such a source is a programming error and says
     so, the same way every other SOFA entry point does.
     """
-    rows: List[_Row] = [(1, "URINE_OUTPUT//mL", 10.0, T0 + k * H) for k in range(0, 30)]
+    rows: list[_Row] = [(1, "URINE_OUTPUT//mL", 10.0, T0 + k * H) for k in range(0, 30)]
     absolute = urine_output_rate(
         _events(rows),
         source="eicu",
@@ -306,7 +306,7 @@ def test_daily_weight_is_preferred_over_admission_weight_once_charted() -> None:
     the admission weight (a *later* reading must never be pulled
     backwards by the asof join), windows after it use the daily weight.
     """
-    urine: List[Tuple[int, str, Optional[float], datetime]] = [
+    urine: list[tuple[int, str, float | None, datetime]] = [
         (1, URINE, 30.0, T0 + k * H) for k in range(1, 13)
     ]
     both = [
@@ -337,7 +337,7 @@ def test_a_window_with_no_weight_at_all_is_dropped_not_defaulted() -> None:
     subjects, so this is the common case, and defaulting a weight would
     manufacture gold-standard labels out of nothing.
     """
-    rows: List[_Row] = [(1, URINE, 1.0, T0 + k * H) for k in range(1, 13)]
+    rows: list[_Row] = [(1, URINE, 1.0, T0 + k * H) for k in range(1, 13)]
     assert _rates(rows, window_hours=6.0) == {}
     # The same rows without normalization are perfectly assessable. The
     # window origin is the key's first *event* (here the first urine
@@ -352,7 +352,7 @@ def test_a_window_with_no_weight_at_all_is_dropped_not_defaulted() -> None:
 
 
 def test_a_non_positive_charted_weight_is_dropped_not_divided_by() -> None:
-    rows: List[_Row] = [(1, DAILY_WEIGHT, 0.0, T0)] + [
+    rows: list[_Row] = [(1, DAILY_WEIGHT, 0.0, T0)] + [
         (1, URINE, 1.0, T0 + k * H) for k in range(1, 13)
     ]
     assert _rates(rows, window_hours=6.0) == {}
@@ -360,7 +360,7 @@ def test_a_non_positive_charted_weight_is_dropped_not_divided_by() -> None:
 
 def test_urine_rate_is_empty_without_urine_readings() -> None:
     """No urine charted at all: no rows, whatever the weight coverage."""
-    rows: List[_Row] = [(1, DAILY_WEIGHT, 70.0, T0), (1, CREAT, 1.0, T0 + H)]
+    rows: list[_Row] = [(1, DAILY_WEIGHT, 70.0, T0), (1, CREAT, 1.0, T0 + H)]
     assert _rates(rows, window_hours=6.0) == {}
     assert _rates(rows, window_hours=12.0, weight_normalized=False) == {}
 
@@ -380,7 +380,7 @@ def test_unassessable_urine_rate_is_unobserved_not_a_negative() -> None:
         ],
         "test",
     )
-    rows: List[_Row] = [
+    rows: list[_Row] = [
         # subject 1: urine, no weight -- not assessable
         *[(1, URINE, 1.0, T0 + k * H) for k in range(1, 8)],
         # subject 2: urine and a weight -- assessable, and oliguric
@@ -407,7 +407,7 @@ def test_the_rate_threshold_is_strict_exactly_at_kdigos_number() -> None:
     >= 4.0 trigger: the direction spelled in the rule is the direction
     the criterion is written with.
     """
-    rows: List[_Row] = [
+    rows: list[_Row] = [
         (1, DAILY_WEIGHT, 50.0, T0),  # 25 mL/h / 50 kg = exactly 0.5
         *[(1, URINE, 25.0, T0 + k * H) for k in range(1, 8)],
         (2, DAILY_WEIGHT, 50.0, T0),  # 24 mL/h / 50 kg = 0.48
@@ -421,7 +421,7 @@ def test_the_rate_threshold_is_strict_exactly_at_kdigos_number() -> None:
 
 def test_stage_2_needs_twelve_hours_of_the_same_rate_stage_1_needs_six() -> None:
     """The stages differ only in window length at 0.5 mL/kg/h."""
-    rows: List[_Row] = [
+    rows: list[_Row] = [
         # subject 1: oliguric for 8 h only -- Stage 1's 6 h window fires,
         # Stage 2's 12 h window never has 12 h of oliguria to average over.
         (1, DAILY_WEIGHT, 100.0, T0),
@@ -440,7 +440,7 @@ def test_stage_2_needs_twelve_hours_of_the_same_rate_stage_1_needs_six() -> None
 
 
 def test_stage_3_rate_leg_is_below_point_three_over_twenty_four_hours() -> None:
-    rows: List[_Row] = [
+    rows: list[_Row] = [
         # subject 1: 0.2 mL/kg/h for a full day -- Stage 3 by rate
         (1, DAILY_WEIGHT, 100.0, T0),
         *[(1, URINE, 20.0, T0 + k * H) for k in range(1, 26)],
@@ -461,7 +461,7 @@ def test_anuria_stages_a_3_with_no_weight_reading_anywhere() -> None:
     This is the leg that keeps Stage 3's urine criterion assessable for
     the ~85% of subjects with no charted weight.
     """
-    rows: List[_Row] = [
+    rows: list[_Row] = [
         # subject 1: anuric, no weight charted at all
         *[(1, URINE, 0.0, T0 + k * H) for k in range(1, 14)],
         # subject 2: a trickle, not anuria; no weight, so the rate legs
@@ -479,7 +479,7 @@ def test_anuria_stages_a_3_with_no_weight_reading_anywhere() -> None:
 
 def test_anuria_needs_a_full_twelve_hours_of_record() -> None:
     """Six hours of no urine is not yet 12 h of anuria."""
-    rows: List[_Row] = [(1, URINE, 0.0, T0 + k * H) for k in range(1, 7)]
+    rows: list[_Row] = [(1, URINE, 0.0, T0 + k * H) for k in range(1, 7)]
     assert _labels(rows, "aki_stage_3")[1]["aki_stage_3"] == 0
 
 
@@ -490,7 +490,7 @@ def test_anuria_needs_a_full_twelve_hours_of_record() -> None:
 
 def test_all_three_legs_compose_as_an_or_across_a_mixed_cohort() -> None:
     """Creatinine-only, urine-only, RRT-only and combined, in one pass."""
-    rows: List[_Row] = [
+    rows: list[_Row] = [
         # 1: creatinine only, 1.0 -> 3.5 (3.5x): stages 1, 2 and 3
         (1, CREAT, 1.0, T0),
         (1, CREAT, 3.5, T0 + 48 * H),
@@ -541,7 +541,7 @@ def test_urine_legs_expand_only_where_the_weight_item_ids_are_known() -> None:
     for source in ("mimic_iv", "eicu", "gemini"):
         assert set(stages[source]) == set(_ALL_STAGES)
 
-    def _urine_rules(source: str, name: str) -> List[DerivedUrineRateRule]:
+    def _urine_rules(source: str, name: str) -> list[DerivedUrineRateRule]:
         concept = stages[source][name]
         assert isinstance(concept, ConceptDefinition)
         return [r for r in concept.rules if isinstance(r, DerivedUrineRateRule)]

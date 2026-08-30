@@ -19,7 +19,6 @@ identical (subject, visit, time) row set for the same ``landmark_hours``).
 """
 
 from collections.abc import Sequence
-from typing import Optional
 
 import numpy as np
 import polars as pl
@@ -73,7 +72,7 @@ def collect_embeddings(
     ve_post_blocks: list[np.ndarray] = []
 
     state = None
-    landmark_state: Optional[LandmarkState] = None
+    landmark_state: LandmarkState | None = None
     with torch.no_grad():
         for chunk in sampler:
             chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901

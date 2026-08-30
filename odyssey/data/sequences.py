@@ -8,7 +8,6 @@ then pads/collates many subjects into a
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
 
 import polars as pl
 import torch
@@ -31,21 +30,21 @@ class PatientSequence:
     """One subject's tokenized event sequence, ready for padding/batching."""
 
     subject_id: int
-    concept_ids: List[int]
-    type_ids: List[int]
-    time_stamps: List[float]
+    concept_ids: list[int]
+    type_ids: list[int]
+    time_stamps: list[float]
     """Hours since this sequence's first event (not since epoch) -- absolute
     values, not deltas; :class:`~odyssey.models.embeddings.TimeEmbeddingLayer`
     computes deltas internally."""
-    ages: List[float]
+    ages: list[float]
     """Age in years at each event; 0.0 for every event if no MEDS_BIRTH
     event was present to compute a real age from."""
-    visit_orders: List[int]
-    visit_segments: List[int]
+    visit_orders: list[int]
+    visit_segments: list[int]
     """0 = first event of a visit, 1 = middle, 2 = last (matches
     ClinicalEventEmbeddings' default visit_order_size=3)."""
 
-    visit_ids: List[int] = field(default_factory=list)
+    visit_ids: list[int] = field(default_factory=list)
     """Per-token raw visit identifier (``hadm_id``; eICU's unit-stay id
     plays the same role), or ``NO_VISIT`` for events without one. Keys
     visit-scoped concept labels
@@ -53,20 +52,20 @@ class PatientSequence:
     sequences built before this field existed (treated as all
     ``NO_VISIT``)."""
 
-    visit_ends: List[bool] = field(default_factory=list)
+    visit_ends: list[bool] = field(default_factory=list)
     """True at the last token of each *real* (``hadm_id``-bearing) visit
     -- the position where visit-scoped concept supervision applies. The
     last occurrence across the whole sequence, not per contiguous run,
     since a visit's events can be interleaved with solo events."""
 
-    static_mask: List[bool] = field(default_factory=list)
+    static_mask: list[bool] = field(default_factory=list)
     """True for the timeless facts placed at the sequence start (GENDER,
     RACE, ...). They are inputs only: the streaming sampler never makes
     them prediction targets (predicting race from sex is not forecasting).
     Empty on sequences built before this field existed (treated as all
     False)."""
 
-    values: List[float] = field(default_factory=list)
+    values: list[float] = field(default_factory=list)
     """Standardized numeric value per token (the ``numeric_z`` column of
     :func:`~odyssey.data.value_binning.add_value_tokens`), ``nan`` where
     the event carries none; empty on sequences built without that column
@@ -89,7 +88,7 @@ class PatientSequence:
         if total <= n:
             return self
 
-        def _tail(values: List[object]) -> List[object]:
+        def _tail(values: list[object]) -> list[object]:
             return values[-n:] if len(values) == total else []
 
         times = self.time_stamps[-n:]
@@ -124,7 +123,7 @@ class PatientSequence:
         if total <= n:
             return self
 
-        def _head(values: List[object]) -> List[object]:
+        def _head(values: list[object]) -> list[object]:
             return values[:n] if len(values) == total else []
 
         return PatientSequence(
@@ -143,8 +142,8 @@ class PatientSequence:
 
 
 def _assign_visits(
-    hadm_ids: List[Optional[int]], max_num_visits: int
-) -> Tuple[List[int], List[int]]:
+    hadm_ids: list[int | None], max_num_visits: int
+) -> tuple[list[int], list[int]]:
     """Derive (visit_order, visit_segment) from admission ids.
 
     Events sharing an ``hadm_id`` belong to the same visit. Events without
@@ -152,7 +151,7 @@ def _assign_visits(
     a v1 simplification; a real outpatient-visit grouping (e.g. by day)
     is a reasonable follow-up but not implemented here.
     """
-    keys: List[Tuple[str, object]] = []
+    keys: list[tuple[str, object]] = []
     solo_counter = 0
     for hadm_id in hadm_ids:
         if hadm_id is not None:
@@ -161,7 +160,7 @@ def _assign_visits(
             keys.append(("solo", solo_counter))
             solo_counter += 1
 
-    order_by_key: Dict[Tuple[str, object], int] = {}
+    order_by_key: dict[tuple[str, object], int] = {}
     visit_orders = []
     for key in keys:
         if key not in order_by_key:
@@ -194,7 +193,7 @@ def build_patient_sequence(
     events: pl.DataFrame,
     vocabulary: Vocabulary,
     *,
-    max_seq_len: Optional[int] = None,
+    max_seq_len: int | None = None,
     max_num_visits: int = 512,
 ) -> PatientSequence:
     """Build one subject's tokenized sequence from their raw MEDS events.
@@ -305,7 +304,7 @@ def build_patient_sequence(
     visit_orders, visit_segments = _assign_visits(hadm_ids, max_num_visits)
 
     visit_ids = [NO_VISIT if h is None else int(h) for h in hadm_ids]
-    last_pos: Dict[int, int] = {}
+    last_pos: dict[int, int] = {}
     for i, vid in enumerate(visit_ids):
         if vid != NO_VISIT:
             last_pos[vid] = i
@@ -334,7 +333,7 @@ def build_patient_sequence(
 
 
 def collate_patient_sequences(
-    sequences: List[PatientSequence], *, padding_idx: int = PAD_ID
+    sequences: list[PatientSequence], *, padding_idx: int = PAD_ID
 ) -> ClinicalSequenceBatch:
     """Right-pad a list of :class:`PatientSequence` into one batched tensor."""
     max_len = max((len(s) for s in sequences), default=0)

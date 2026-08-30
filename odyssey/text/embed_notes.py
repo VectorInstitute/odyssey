@@ -29,8 +29,9 @@ import argparse
 import json
 import logging
 import time
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -45,7 +46,7 @@ PCA_COL = "embedding_pca"
 
 def load_encoder(
     model_name: str, *, device: str, dtype: str = "bfloat16"
-) -> Tuple[Any, Any]:
+) -> tuple[Any, Any]:
     """Load tokenizer + base model (deferred ``transformers`` import)."""
     try:
         from transformers import AutoModel, AutoTokenizer  # noqa: PLC0415
@@ -63,7 +64,7 @@ def load_encoder(
     return tokenizer, model
 
 
-def _windows(ids: List[int], max_tokens: int) -> List[List[int]]:
+def _windows(ids: list[int], max_tokens: int) -> list[list[int]]:
     """Split a token id list into consecutive windows of at most ``max_tokens``."""
     if len(ids) <= max_tokens:
         return [ids]
@@ -107,14 +108,14 @@ def embed_texts(
         "input_ids"
     ]
     bos = getattr(tokenizer, "bos_token_id", None)
-    windows: List[Tuple[int, List[int]]] = []
+    windows: list[tuple[int, list[int]]] = []
     for i, ids in enumerate(encoded):
         for w in _windows(ids, max_tokens - (1 if bos is not None else 0)):
             windows.append((i, ([bos] if bos is not None else []) + w))
     # sort windows by length for efficient batching
     order = sorted(range(len(windows)), key=lambda k: len(windows[k][1]))
-    dim: Optional[int] = None
-    sums: List[Optional[np.ndarray]] = [None] * len(texts)
+    dim: int | None = None
+    sums: list[np.ndarray | None] = [None] * len(texts)
     weights = np.zeros(len(texts), dtype=np.float64)
     for start in range(0, len(order), batch_size):
         batch = [windows[k] for k in order[start : start + batch_size]]
@@ -143,7 +144,7 @@ def embed_texts(
 
 def fit_pca(
     vectors: np.ndarray, n_components: int, *, seed: int = 0
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """Return (mean, components) of a PCA fit on ``vectors`` (rows = notes)."""
     from sklearn.decomposition import PCA  # noqa: PLC0415
 
@@ -178,7 +179,7 @@ def embed_notes_table(
 ) -> np.ndarray:
     """Embed every row of ``notes`` (column ``text``) in chunks -> ``(N, dim)``."""
     texts = notes["text"].to_list()
-    parts: List[np.ndarray] = []
+    parts: list[np.ndarray] = []
     t0 = time.time()
     for start in range(0, len(texts), chunk_rows):
         parts.append(

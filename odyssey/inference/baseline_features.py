@@ -42,8 +42,8 @@ a row whose event onsets at exactly ``t`` is excluded as not-at-risk by
 """
 
 import re
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import polars as pl
@@ -76,12 +76,12 @@ Converter = Callable[[np.ndarray], np.ndarray]
 
 # (LOINC, unit tag from code_mapping.unit_for) -> conversion to the panel's
 # canonical unit. Only signals a source splits by unit need an entry.
-_UNIT_CONVERSIONS: Dict[Tuple[str, str], Converter] = {
+_UNIT_CONVERSIONS: dict[tuple[str, str], Converter] = {
     ("8310-5", "F"): lambda v: (v - 32.0) * 5.0 / 9.0,  # temperature -> Celsius
     ("1988-5", "mg/dL"): lambda v: v * 10.0,  # CRP -> mg/L
 }
 
-SIGNAL_STATS: Tuple[str, ...] = (
+SIGNAL_STATS: tuple[str, ...] = (
     "last",
     "hours_since_last",
     "n_24h",
@@ -97,7 +97,7 @@ SIGNAL_STATS: Tuple[str, ...] = (
 
 # Regexes over normalized medication / infusion codes (lowercased ingredient
 # in the code string; matched case-insensitively against the whole code).
-DRUG_CLASSES: Tuple[Tuple[str, str], ...] = (
+DRUG_CLASSES: tuple[tuple[str, str], ...] = (
     (
         "vasopressor",
         r"norepinephrine|levophed|epinephrine|vasopressin|phenylephrine"
@@ -139,12 +139,12 @@ DRUG_CLASSES: Tuple[Tuple[str, str], ...] = (
     ),
     ("blood_product", r"red blood cells|packed|platelet|plasma|ffp|cryoprecipitate"),
 )
-DRUG_STATS: Tuple[str, ...] = ("n_6h", "n_24h", "hours_since_last", "ever_visit")
+DRUG_STATS: tuple[str, ...] = ("n_6h", "n_24h", "hours_since_last", "ever_visit")
 
 _DRUG_FAMILIES = ("MEDICATION", "INFUSION_DRUG", "INFUSION_START", "INFUSION_END")
 
 # Families counted over windows and the visit (ids from odyssey.data.vocabulary).
-FAMILY_IDS: Tuple[int, ...] = (
+FAMILY_IDS: tuple[int, ...] = (
     DIAGNOSIS_TYPE,
     MEDICATION_TYPE,
     PROCEDURE_TYPE,
@@ -153,7 +153,7 @@ FAMILY_IDS: Tuple[int, ...] = (
     BILLING_TYPE,
     OTHER_TYPE,
 )
-FAMILY_LABELS: Tuple[str, ...] = (
+FAMILY_LABELS: tuple[str, ...] = (
     "diagnosis",
     "medication",
     "procedure",
@@ -162,9 +162,9 @@ FAMILY_LABELS: Tuple[str, ...] = (
     "billing",
     "other",
 )
-FAMILY_STATS: Tuple[str, ...] = ("n_6h", "n_24h", "n_visit")
+FAMILY_STATS: tuple[str, ...] = ("n_6h", "n_24h", "n_visit")
 
-CONTEXT_FEATURES: Tuple[str, ...] = (
+CONTEXT_FEATURES: tuple[str, ...] = (
     "hours_into_visit",
     "hours_since_origin",
     "age_years",
@@ -179,7 +179,7 @@ _FEMALE_RE = re.compile(r"^GENDER//(F|Female)$")
 _MALE_RE = re.compile(r"^GENDER//(M|Male)$")
 
 
-def feature_names() -> List[str]:
+def feature_names() -> list[str]:
     """Column names of the strong feature matrix, in order."""
     names = list(CONTEXT_FEATURES)
     for label, _ in SIGNAL_PANEL:
@@ -235,7 +235,7 @@ class _Series:
     cumsum: np.ndarray  # prefix sums of values (len + 1), for window means
 
 
-def _series(hours: np.ndarray, values: Optional[np.ndarray]) -> _Series:
+def _series(hours: np.ndarray, values: np.ndarray | None) -> _Series:
     order = np.argsort(hours, kind="stable")
     h = hours[order]
     v = values[order] if values is not None else np.zeros(0)
@@ -244,7 +244,7 @@ def _series(hours: np.ndarray, values: Optional[np.ndarray]) -> _Series:
 
 
 def _signal_features(
-    series: Optional[_Series],
+    series: _Series | None,
     now: np.ndarray,
     visit_start: np.ndarray,
     out: np.ndarray,
@@ -290,7 +290,7 @@ def _signal_features(
 
 
 def _occurrence_features(
-    series: Optional[_Series],
+    series: _Series | None,
     now: np.ndarray,
     visit_start: np.ndarray,
     out: np.ndarray,
@@ -323,35 +323,35 @@ class _Subject:
     hours: np.ndarray  # all timed events, sorted
     hadms: np.ndarray
     family_cum: np.ndarray  # (n+1, len(FAMILY_IDS)) prefix counts
-    signals: Dict[int, _Series]
-    drugs: Dict[int, _Series]
+    signals: dict[int, _Series]
+    drugs: dict[int, _Series]
     icu_admit_hours: np.ndarray
     icu_discharge_hours: np.ndarray
-    visit_starts: Dict[int, float]
-    birth_hours: Optional[float]  # relative to origin (negative)
-    female: Optional[bool]
+    visit_starts: dict[int, float]
+    birth_hours: float | None  # relative to origin (negative)
+    female: bool | None
 
 
 def _build_subject(
     hours: np.ndarray,
-    codes: List[str],
-    hadm_list: List[int],
+    codes: list[str],
+    hadm_list: list[int],
     values: np.ndarray,
     *,
-    signal_of: Dict[str, Tuple[int, Optional[Converter]]],
-    drugs_of: Dict[str, List[int]],
-    birth_hours: Optional[float],
-    female: Optional[bool],
+    signal_of: dict[str, tuple[int, Converter | None]],
+    drugs_of: dict[str, list[int]],
+    birth_hours: float | None,
+    female: bool | None,
 ) -> _Subject:
     """Sorted per-subject arrays: family prefix counts, signal and drug series."""
     family_index = {f: i for i, f in enumerate(FAMILY_IDS)}
     hadms = np.array(hadm_list)
     one_hot = np.zeros((len(codes), len(FAMILY_IDS)), dtype=np.int32)
-    sig_h: Dict[int, List[float]] = {}
-    sig_v: Dict[int, List[float]] = {}
-    drug_h: Dict[int, List[float]] = {}
-    icu_admit: List[float] = []
-    icu_disc: List[float] = []
+    sig_h: dict[int, list[float]] = {}
+    sig_v: dict[int, list[float]] = {}
+    drug_h: dict[int, list[float]] = {}
+    icu_admit: list[float] = []
+    icu_disc: list[float] = []
     for i, code in enumerate(codes):
         f_idx = family_index.get(code_type(code))
         if f_idx is not None:
@@ -370,7 +370,7 @@ def _build_subject(
             icu_admit.append(float(hours[i]))
         elif code.startswith("ICU_DISCHARGE//"):
             icu_disc.append(float(hours[i]))
-    visit_starts: Dict[int, float] = {}
+    visit_starts: dict[int, float] = {}
     for h, v in zip(hours, hadms):
         if v >= 0 and int(v) not in visit_starts:
             visit_starts[int(v)] = float(h)
@@ -411,7 +411,7 @@ class StrongFeatureBuilder:
         # prefix -> unit converter into the panel's canonical unit (only
         # unit-split signals have one); resolution itself is the shared
         # resolver's, so the model and this builder classify codes alike.
-        self._converter_of: Dict[str, Optional[Converter]] = {}
+        self._converter_of: dict[str, Converter | None] = {}
         for (_, loinc), prefixes in zip(SIGNAL_PANEL, self._resolver.prefixes):
             for prefix in prefixes:
                 unit = unit_for(prefix, source=source)
@@ -419,16 +419,16 @@ class StrongFeatureBuilder:
                     _UNIT_CONVERSIONS.get((loinc, unit)) if unit else None
                 )
         self._drug_res = [re.compile(rx, re.IGNORECASE) for _, rx in DRUG_CLASSES]
-        self._subjects: Dict[int, _Subject] = self._preprocess(events_binned)
+        self._subjects: dict[int, _Subject] = self._preprocess(events_binned)
 
     # -- preprocessing -----------------------------------------------------
 
     def _classify_codes(
         self, codes: Sequence[str]
-    ) -> Tuple[Dict[str, Tuple[int, Optional[Converter]]], Dict[str, List[int]]]:
+    ) -> tuple[dict[str, tuple[int, Converter | None]], dict[str, list[int]]]:
         """Distinct code -> (signal index, converter) and code -> drug classes."""
-        signal_of: Dict[str, Tuple[int, Optional[Converter]]] = {}
-        drugs_of: Dict[str, List[int]] = {}
+        signal_of: dict[str, tuple[int, Converter | None]] = {}
+        drugs_of: dict[str, list[int]] = {}
         for code in set(codes):
             base = code.rsplit("::", 1)[0] if "::" in code else code
             s_idx, prefix = self._resolver.resolve_with_prefix(code)
@@ -440,7 +440,7 @@ class StrongFeatureBuilder:
                     drugs_of[code] = hits
         return signal_of, drugs_of
 
-    def _preprocess(self, events: pl.DataFrame) -> Dict[int, _Subject]:
+    def _preprocess(self, events: pl.DataFrame) -> dict[int, _Subject]:
         origins = origin_hours(events)
         timed = (
             events.filter(pl.col("time").is_not_null())
@@ -454,7 +454,7 @@ class StrongFeatureBuilder:
         birth = timed.filter(pl.col("code") == BIRTH_CODE)
         birth_map = dict(zip(birth["subject_id"].to_list(), birth["_hours"].to_list()))
         gender = events.filter(pl.col("code").str.starts_with("GENDER//"))
-        female_map: Dict[int, bool] = {}
+        female_map: dict[int, bool] = {}
         for sid, code in zip(gender["subject_id"].to_list(), gender["code"].to_list()):
             if _FEMALE_RE.match(code):
                 female_map[int(sid)] = True
@@ -466,7 +466,7 @@ class StrongFeatureBuilder:
         if has_values:
             cols.append("numeric_value")
         signal_of, drugs_of = self._classify_codes(timed["code"].to_list())
-        subjects: Dict[int, _Subject] = {}
+        subjects: dict[int, _Subject] = {}
         for key, group in timed.select(cols).group_by(
             "subject_id", maintain_order=True
         ):

@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional
 
 
 #: Repository root (four levels up from this file:
@@ -75,7 +74,7 @@ def _env(name: str, default: str) -> str:
     return value.strip() if value is not None else default
 
 
-def _env_optional(name: str) -> Optional[str]:
+def _env_optional(name: str) -> str | None:
     """Return a stripped environment variable, or ``None`` if unset/blank.
 
     Parameters
@@ -118,7 +117,7 @@ DB_PASS = _env_optional("GEMINI_DB_PASS")
 #: connecting will raise a clear error.
 _explicit_url = _env_optional("GEMINI_DB_URL")
 if _explicit_url:
-    DB_URL: Optional[str] = _explicit_url
+    DB_URL: str | None = _explicit_url
 elif DB_USER and DB_PASS and DB_NAME:
     DB_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 else:

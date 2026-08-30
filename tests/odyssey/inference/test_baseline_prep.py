@@ -11,7 +11,6 @@ import gc
 import weakref
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import polars as pl
@@ -30,9 +29,9 @@ from odyssey.inference.baseline_prep import (
 T0 = datetime(2024, 1, 1)
 
 
-def _shard(subject_ids: List[int]) -> pl.DataFrame:
+def _shard(subject_ids: list[int]) -> pl.DataFrame:
     """Hourly heart-rate readings; even subjects deteriorate and get pressors."""
-    rows: List[Tuple[int, str, datetime, Optional[float], int]] = []
+    rows: list[tuple[int, str, datetime, float | None, int]] = []
     for sid in subject_ids:
         hadm = 1000 + sid
         for h in range(24):
@@ -65,7 +64,7 @@ def _shard(subject_ids: List[int]) -> pl.DataFrame:
     )
 
 
-def _fake_shards() -> Dict[Path, pl.DataFrame]:
+def _fake_shards() -> dict[Path, pl.DataFrame]:
     """Two shards, disjoint subjects (the MEDS invariant the module relies on)."""
     return {
         Path("shard_0"): _shard([1, 2, 3, 4, 5, 6]),
@@ -91,7 +90,7 @@ def _streamed(**kwargs: object) -> BaselineData:
     )
 
 
-def _key(r: object) -> Tuple[int, int, float]:
+def _key(r: object) -> tuple[int, int, float]:
     return (r.subject_id, r.visit_id, r.time_hours)  # type: ignore[attr-defined]
 
 
@@ -147,7 +146,7 @@ def test_shared_grid_features_are_aliased_not_copied() -> None:
 def test_at_most_one_shard_alive_at_a_time() -> None:
     """The streaming loop must release each shard's frame before the next load."""
     shards = _fake_shards()
-    alive: List[weakref.ref] = []
+    alive: list[weakref.ref] = []
     max_alive = 0
 
     def loader(path: Path) -> pl.DataFrame:
@@ -193,7 +192,7 @@ def test_unknown_feature_set_refuses() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _degraded_shard(subject_ids: List[int]) -> pl.DataFrame:
+def _degraded_shard(subject_ids: list[int]) -> pl.DataFrame:
     """Build a degraded stand-in for _shard's subjects.
 
     Same subjects/visits as _shard, but every heart-rate value flattened
@@ -201,7 +200,7 @@ def _degraded_shard(subject_ids: List[int]) -> pl.DataFrame:
     distinguishable in the resulting features without needing the real
     module here.
     """
-    rows: List[Tuple[int, str, datetime, Optional[float], int]] = []
+    rows: list[tuple[int, str, datetime, float | None, int]] = []
     for sid in subject_ids:
         hadm = 1000 + sid
         for h in range(24):

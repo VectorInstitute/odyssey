@@ -16,7 +16,6 @@ installed in this environment.
 
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 import numpy as np
 import polars as pl
@@ -44,7 +43,7 @@ T0 = datetime(2024, 1, 1)
 
 def _events(n_subjects: int) -> pl.DataFrame:
     """Build the same planted-signal shape as test_tabicl_baseline.py's fixture."""
-    rows: List[Tuple[int, str, datetime, Optional[float], int]] = []
+    rows: list[tuple[int, str, datetime, float | None, int]] = []
     for sid in range(1, n_subjects + 1):
         hadm = 1000 + sid
         for h in range(24):
@@ -156,13 +155,13 @@ class _FakeEstimator:
     cast at every call site instead of one shared list.
     """
 
-    instances: List["_FakeEstimator"] = []
+    instances: list["_FakeEstimator"] = []
 
     def __init__(self, device: object = None, **kwargs: object) -> None:
         self.device = device
-        self.X_fit: Optional[np.ndarray] = None
-        self.delta_fit: Optional[np.ndarray] = None
-        self.T_fit: Optional[np.ndarray] = None
+        self.X_fit: np.ndarray | None = None
+        self.delta_fit: np.ndarray | None = None
+        self.T_fit: np.ndarray | None = None
         _FakeEstimator.instances.append(self)
 
     # T matches survivalpfn's own fit(X, delta, T) signature.
@@ -210,7 +209,7 @@ class _BatchRecordingEstimator:
     """Records the size of every predict_event_distribution call."""
 
     def __init__(self) -> None:
-        self.call_sizes: List[int] = []
+        self.call_sizes: list[int] = []
 
     def predict_event_distribution(self, x: np.ndarray) -> _FakeDistribution:
         self.call_sizes.append(x.shape[0])

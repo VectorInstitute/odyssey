@@ -67,8 +67,6 @@ eval harness reads it after a pass completes and reports those subjects'
 metrics separately rather than pooling them into the headline number.
 """
 
-from typing import Optional, Tuple
-
 import torch
 import torch.nn.functional as F  # noqa: N812
 from torch import nn
@@ -200,7 +198,7 @@ def _rotate_half(x: torch.Tensor) -> torch.Tensor:
 
 def _rope_cos_sin(
     position_ids: torch.Tensor, head_dim: int, theta: float
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Return ``(cos, sin)``, each ``(batch, seq, head_dim)``."""
     inv_freq = 1.0 / (
         theta
@@ -341,9 +339,9 @@ class TransformerBackbone(SequenceBackbone):
     def forward(
         self,
         batch: ClinicalSequenceBatch,
-        state: Optional[TimeAwareState] = None,
-        reset_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, TimeAwareState]:
+        state: TimeAwareState | None = None,
+        reset_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, TimeAwareState]:
         """Return ``(hidden_states, new_state)``; see the base class docstring.
 
         ``state`` is always ignored (this backbone is stateless; see the

@@ -6,7 +6,7 @@ involved), that file tests the backbone's own use of what this sampler
 produces (segment isolation, no leakage) end to end.
 """
 
-from typing import Dict, Iterator, List, Optional
+from collections.abc import Iterator
 
 import pytest
 import torch
@@ -18,7 +18,7 @@ from odyssey.data.vocabulary import PAD_ID
 
 
 def _seq(
-    subject_id: int, n: int, *, visit_orders: Optional[List[int]] = None
+    subject_id: int, n: int, *, visit_orders: list[int] | None = None
 ) -> PatientSequence:
     """Build a patient with ``n`` events, token ids ``subject_id * 1000 + i``."""
     if visit_orders is None:
@@ -34,7 +34,7 @@ def _seq(
     )
 
 
-def _patients(seqs: List[PatientSequence]) -> Iterator[PatientSequence]:
+def _patients(seqs: list[PatientSequence]) -> Iterator[PatientSequence]:
     return iter(seqs)
 
 
@@ -303,7 +303,7 @@ def test_packing_round_trip_covers_every_position_exactly_once() -> None:
     patients = [_seq(i, n) for i, n in enumerate([3, 5, 2, 6, 4, 6, 1], start=1)]
     sampler = PackedContextSampler(_patients(patients), batch_size=2, max_context=6)
 
-    seen: Dict[int, List[int]] = {}
+    seen: dict[int, list[int]] = {}
     for chunk in sampler:
         subject_ids = chunk.subject_ids
         concept_ids = chunk.batch.concept_ids

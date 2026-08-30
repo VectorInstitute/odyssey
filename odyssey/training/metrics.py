@@ -28,8 +28,8 @@ well (1) while the concepts are decorative (3) -- neither failure mode
 is visible from the other two metric families alone.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn.functional as F  # noqa: N812
@@ -67,11 +67,11 @@ class TimeMetrics:
     same_instant_rate: float
     """Observed fraction of positions whose next event is at the same instant."""
 
-    calibration: Dict[str, Dict[str, float]]
+    calibration: dict[str, dict[str, float]]
     """Horizon label ("1h", "8h", "24h") -> {"predicted": mean P(within h),
     "observed": fraction of gaps <= h}."""
 
-    calibration_after_bundle: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    calibration_after_bundle: dict[str, dict[str, float]] = field(default_factory=dict)
     """Same horizons, restricted to positions whose bundle ends here (a
     positive gap): predicted P(within h | gap > 0) = (P(within h) -
     P(same instant)) / (1 - P(same instant)) vs the observed fraction.
@@ -101,14 +101,14 @@ class ValueMetrics:
 
     n_positions: int
 
-    coverage: Dict[str, float]
+    coverage: dict[str, float]
     """Quantile level (e.g. "0.1", "0.9") -> observed fraction of targets
     at or below that predicted quantile. Well-calibrated when close to
     the level itself."""
 
     median_absolute_error: float
 
-    by_signal: Dict[str, "ValueMetrics"] = field(default_factory=dict)
+    by_signal: dict[str, "ValueMetrics"] = field(default_factory=dict)
     """Same three metrics, restricted to positions whose target resolves
     to one curated panel signal (:data:`odyssey.data.signal_panel.SIGNAL_PANEL`),
     keyed by signal name -- "creatinine" especially, per the KDIGO
@@ -128,7 +128,7 @@ class TaskMetrics:
     n_predictions: int
     """How many non-ignored positions this was computed over."""
 
-    set_top1_accuracy: Optional[float] = None
+    set_top1_accuracy: float | None = None
     """Top-1 scored against the target's same-timestamp event block: a
     prediction counts if it names any event recorded at the same instant
     as the true next event. Exact-next scoring grades the model on the
@@ -139,11 +139,11 @@ class TaskMetrics:
     the ETL put it inside the block. None where the evaluation path
     cannot see block structure."""
 
-    n_set_predictions: Optional[int] = None
+    n_set_predictions: int | None = None
     """Positions the set-based metric covered (block membership is only
     visible within a chunk, so chunk-boundary positions are excluded)."""
 
-    category_set_top1_accuracy: Optional[float] = None
+    category_set_top1_accuracy: float | None = None
     """Set-based top-1 at ICD 3-character category level, for ICD-coded
     diagnosis/procedure targets: the top-1's category matches some
     same-family event in the target's block. Under the ``icd3``
@@ -153,7 +153,7 @@ class TaskMetrics:
     coming, independent of that split. None where no ICD-coded targets
     were scored."""
 
-    n_category_predictions: Optional[int] = None
+    n_category_predictions: int | None = None
     """ICD-coded positions the category-level metric covered."""
 
 
@@ -202,7 +202,7 @@ def compute_task_metrics_by_code_type(
     vocab: Vocabulary,
     *,
     ignore_index: int,
-) -> Dict[str, TaskMetrics]:
+) -> dict[str, TaskMetrics]:
     """:func:`compute_task_metrics`, broken down by the target token's code type.
 
     Diagnosis/medication/procedure/lab codes have wildly different
@@ -228,7 +228,7 @@ def compute_task_metrics_by_code_type(
         [code_type(vocab.decode(int(t))) for t in targets], dtype=torch.long
     )
 
-    out: Dict[str, TaskMetrics] = {}
+    out: dict[str, TaskMetrics] = {}
     for type_id, name in type_names.items():
         if type_id == 0:
             continue
@@ -255,17 +255,17 @@ class ConceptMetrics:
     prevalence: float
     """Fraction of observed subjects where the true label is 1."""
 
-    auroc: Optional[float]
+    auroc: float | None
     """None if degenerate (only one class present among observed subjects)."""
 
-    auprc: Optional[float]
-    brier_score: Optional[float]
-    accuracy_at_0_5: Optional[float]
+    auprc: float | None
+    brier_score: float | None
+    accuracy_at_0_5: float | None
 
 
 def _binary_metrics(
     probs: torch.Tensor, labels: torch.Tensor
-) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
+) -> tuple[float | None, float | None, float | None, float | None]:
     """Shared (auroc, auprc, brier, accuracy) computation for one binary column.
 
     Returns all-``None`` if there are no examples, or only one class is
@@ -288,7 +288,7 @@ def compute_concept_metrics(
     concept_labels: torch.Tensor,
     concept_mask: torch.Tensor,
     concept_names: Sequence[str],
-) -> List[ConceptMetrics]:
+) -> list[ConceptMetrics]:
     """Per-concept AUROC/AUPRC/Brier score/accuracy, restricted to observed subjects.
 
     ``concept_probs``/``concept_labels``/``concept_mask`` are all
@@ -326,15 +326,15 @@ class ObservabilityMetrics:
     name: str
     n_subjects: int
     observed_rate: float
-    auroc: Optional[float]
-    accuracy_at_0_5: Optional[float]
+    auroc: float | None
+    accuracy_at_0_5: float | None
 
 
 def compute_observability_metrics(
     observability_probs: torch.Tensor,
     observed_mask: torch.Tensor,
     concept_names: Sequence[str],
-) -> List[ObservabilityMetrics]:
+) -> list[ObservabilityMetrics]:
     """Per-concept accuracy of the observability head against real ``observed_mask``.
 
     Unlike :func:`compute_concept_metrics`, every subject has a real

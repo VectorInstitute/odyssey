@@ -8,7 +8,6 @@ import json
 import math
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Tuple
 
 import polars as pl
 import pytest
@@ -1008,7 +1007,7 @@ def _write_transformer_run(
     hidden_size: int = 16,
     event_hazards: bool = False,
     task_set: str = "v1",
-    auxiliary_event_names: Tuple[str, ...] = (),
+    auxiliary_event_names: tuple[str, ...] = (),
 ) -> Path:
     """Build a real (CPU-only) transformer BaselineSequenceModel run dir.
 

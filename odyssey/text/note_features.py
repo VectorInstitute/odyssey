@@ -30,7 +30,7 @@ the probe question is "is there signal", and a few dozen dense columns is
 what a GBM can use.
 """
 
-from typing import Dict, List, Optional, Sequence, Tuple
+from collections.abc import Sequence
 
 import numpy as np
 import polars as pl
@@ -43,14 +43,14 @@ from odyssey.text.embed_notes import PCA_COL
 # Sidecar name the embedder writes (sidecars/note_embeddings.parquet).
 NOTE_EMBEDDINGS = "note_embeddings"
 
-NOTE_COUNT_STATS: Tuple[str, ...] = (
+NOTE_COUNT_STATS: tuple[str, ...] = (
     "note_n_24h",
     "note_n_visit",
     "note_hours_since_last",
 )
 
 
-def note_feature_names(pca_dim: int) -> List[str]:
+def note_feature_names(pca_dim: int) -> list[str]:
     """Column names of :func:`note_features` for a ``pca_dim``-wide sidecar."""
     return (
         list(NOTE_COUNT_STATS)
@@ -128,7 +128,7 @@ class NoteFeatureBuilder:
             )
             .sort(["subject_id", "_hours"])
         )
-        self._by_subject: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+        self._by_subject: dict[int, tuple[np.ndarray, np.ndarray]] = {}
         for sid, group in joined.group_by("subject_id", maintain_order=True):
             hours = group["_hours"].to_numpy().astype(np.float64)
             vecs = np.asarray(group[PCA_COL].to_list(), dtype=np.float32)
@@ -187,9 +187,9 @@ def note_features_for_rows(
     visit_starts: Sequence[float],
     times: Sequence[float],
     *,
-    embeddings: Optional[pl.DataFrame] = None,
+    embeddings: pl.DataFrame | None = None,
     window_hours: float = 24.0 * 7,
-) -> Tuple[np.ndarray, List[str]]:
+) -> tuple[np.ndarray, list[str]]:
     """Build once and return ``(matrix, names)`` for the given rows."""
     table = embeddings if embeddings is not None else active_note_embeddings()
     builder = NoteFeatureBuilder(events, table, window_hours=window_hours)

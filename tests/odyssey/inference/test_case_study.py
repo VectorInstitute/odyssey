@@ -6,7 +6,6 @@ real-EHRHybridBackbone/CUDA end-to-end path is in test_case_study_gpu.py.
 
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 import polars as pl
 import pytest
@@ -28,10 +27,10 @@ from odyssey.training.train import TrainingConfig
 
 T0 = datetime(2024, 1, 1, 0, 0)
 
-_EventRow = Tuple[int, str, datetime, Optional[float], Optional[int]]
+_EventRow = tuple[int, str, datetime, float | None, int | None]
 
 
-def _events(rows: List[_EventRow]) -> pl.DataFrame:
+def _events(rows: list[_EventRow]) -> pl.DataFrame:
     return pl.DataFrame(
         rows,
         schema={
@@ -45,7 +44,7 @@ def _events(rows: List[_EventRow]) -> pl.DataFrame:
     )
 
 
-def _patient_events(subject_id: int, n_events: int) -> List[_EventRow]:
+def _patient_events(subject_id: int, n_events: int) -> list[_EventRow]:
     return [
         (subject_id, f"DIAGNOSIS//{i}", T0 + timedelta(hours=i), None, None)
         for i in range(n_events)
@@ -59,7 +58,7 @@ def test_select_diverse_cases_respects_min_events() -> None:
 
 
 def test_select_diverse_cases_returns_at_most_n_cases() -> None:
-    rows: List[_EventRow] = []
+    rows: list[_EventRow] = []
     for sid in range(30):
         rows += _patient_events(sid, 15)
     events = _events(rows)
@@ -69,7 +68,7 @@ def test_select_diverse_cases_returns_at_most_n_cases() -> None:
 
 
 def test_select_diverse_cases_spans_both_short_and_long_stays() -> None:
-    rows: List[_EventRow] = []
+    rows: list[_EventRow] = []
     for sid in range(10):
         rows += _patient_events(sid, 10)  # short
     for sid in range(10, 20):
@@ -83,7 +82,7 @@ def test_select_diverse_cases_spans_both_short_and_long_stays() -> None:
 
 
 def test_select_diverse_cases_spans_concept_triggered_and_not() -> None:
-    rows: List[_EventRow] = []
+    rows: list[_EventRow] = []
     for sid in range(20):
         rows += _patient_events(sid, 30)
     events = _events(rows)
@@ -101,7 +100,7 @@ def test_select_diverse_cases_spans_concept_triggered_and_not() -> None:
 
 
 def test_select_diverse_cases_is_deterministic_given_a_seed() -> None:
-    rows: List[_EventRow] = []
+    rows: list[_EventRow] = []
     for sid in range(20):
         rows += _patient_events(sid, 30)
     events = _events(rows)

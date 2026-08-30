@@ -40,7 +40,6 @@ volume / VM; the parquet is never committed.
 import argparse
 import logging
 from pathlib import Path
-from typing import List, Optional, Set
 
 import polars as pl
 
@@ -50,9 +49,9 @@ from odyssey.training.shard_stream import shard_paths
 logger = logging.getLogger("build_mimic_note_sidecar")
 
 
-def subjects_of(shard_dir: Path, max_shards: Optional[int]) -> Set[int]:
+def subjects_of(shard_dir: Path, max_shards: int | None) -> set[int]:
     """Distinct subject ids across the first ``max_shards`` of ``shard_dir``."""
-    ids: Set[int] = set()
+    ids: set[int] = set()
     for path in shard_paths(shard_dir, max_shards=max_shards):
         ids.update(
             pl.read_parquet(path, columns=["subject_id"])["subject_id"].to_list()
@@ -60,9 +59,9 @@ def subjects_of(shard_dir: Path, max_shards: Optional[int]) -> Set[int]:
     return ids
 
 
-def build_notes(note_root: Path, subjects: Optional[Set[int]]) -> pl.DataFrame:
+def build_notes(note_root: Path, subjects: set[int] | None) -> pl.DataFrame:
     """Read radiology + discharge notes, optionally restricted to ``subjects``."""
-    frames: List[pl.DataFrame] = []
+    frames: list[pl.DataFrame] = []
     for name in ("radiology", "discharge"):
         path = note_root / f"{name}.csv.gz"
         lf = pl.scan_csv(
@@ -123,7 +122,7 @@ def main() -> None:
     parser.add_argument("--output-name", default="notes")
     args = parser.parse_args()
 
-    subjects: Optional[Set[int]] = None
+    subjects: set[int] | None = None
     if args.shard_dir:
         subjects = set()
         for i, shard_dir in enumerate(args.shard_dir):

@@ -14,14 +14,12 @@ here: the model side reads per-code standardized values (``numeric_z``),
 which are already unit-free; the baseline side keeps its own converters.
 """
 
-from typing import Dict, List, Optional, Tuple
-
 from odyssey.data.code_mapping import prefixes_for_loinc
 
 
 # name -> LOINC. Names are for feature labels only; resolution to concrete
 # code prefixes goes through the per-source LOINC tables.
-SIGNAL_PANEL: Tuple[Tuple[str, str], ...] = (
+SIGNAL_PANEL: tuple[tuple[str, str], ...] = (
     ("heart_rate", "8867-4"),
     ("resp_rate", "9279-1"),
     ("spo2", "59408-5"),
@@ -93,19 +91,19 @@ class SignalPanelResolver:
     def __init__(self, source: str = "mimic_iv") -> None:
         """Build the prefix table for ``source``."""
         self.source = source
-        self.prefixes: List[List[str]] = [
+        self.prefixes: list[list[str]] = [
             sorted(prefixes_for_loinc(loinc, source=source))
             for _, loinc in SIGNAL_PANEL
         ]
-        self._cache: Dict[str, Tuple[int, Optional[str]]] = {}
+        self._cache: dict[str, tuple[int, str | None]] = {}
 
-    def resolve_with_prefix(self, code: str) -> Tuple[int, Optional[str]]:
+    def resolve_with_prefix(self, code: str) -> tuple[int, str | None]:
         """Return ``(signal index, matching prefix)``; ``(NO_SIGNAL, None)`` if none."""
         hit = self._cache.get(code)
         if hit is not None:
             return hit
         base = code.rsplit("::", 1)[0] if "::" in code else code
-        result: Tuple[int, Optional[str]] = (NO_SIGNAL, None)
+        result: tuple[int, str | None] = (NO_SIGNAL, None)
         for s_idx, entries in enumerate(self.prefixes):
             for prefix in entries:
                 if base.startswith(prefix):
