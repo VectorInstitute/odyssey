@@ -13,6 +13,7 @@ on the sequence time origin (the subject's first timed non-birth event),
 so they line up with chunk time stamps position for position.
 """
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -20,6 +21,9 @@ import polars as pl
 
 from odyssey.data.concepts import concepts_for_source, label_concepts_by_visit
 from odyssey.data.sequences import BIRTH_CODE
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -113,13 +117,36 @@ ALERT_TASK_SETS: dict[str, tuple[AlertEvent, ...]] = {
 ALERT_EVENTS: tuple[AlertEvent, ...] = ALERT_EVENTS_V1
 
 
-def alert_events_for(task_set: str = "v1") -> tuple[AlertEvent, ...]:
-    """Return the alert events a run with ``task_set`` trains heads for / scores."""
+def alert_events_for(
+    task_set: str = "v1", *, source: str | None = None
+) -> tuple[AlertEvent, ...]:
+    """Return the alert events a run with ``task_set`` trains heads for / scores.
+
+    With ``source``, concept-backed alerts whose concept does not resolve
+    for that source are dropped (sepsis3 on eICU): head construction, the
+    event-time computation, and scoring must all see the identical
+    source-resolved list, so pass the run's source wherever it is known.
+    Without ``source`` the unresolved list is returned unchanged (the
+    MIMIC-only scripts and pre-source callers).
+    """
     if task_set not in ALERT_TASK_SETS:
         raise ValueError(
             f"unknown task_set {task_set!r}; known: {sorted(ALERT_TASK_SETS)}"
         )
-    return ALERT_TASK_SETS[task_set]
+    events = ALERT_TASK_SETS[task_set]
+    if source is None:
+        return events
+    resolved = {c.name for c in concepts_for_source(source, task_set=task_set)}
+    kept = tuple(a for a in events if a.concept is None or a.concept in resolved)
+    for dropped in (a for a in events if a not in kept):
+        logger.warning(
+            "[alerts] source %r: dropping alert event %r -- its concept %r "
+            "does not resolve for this source",
+            source,
+            dropped.name,
+            dropped.concept,
+        )
+    return kept
 
 
 # Widened counting-hazard AUXILIARY events (2026-08-28): the GBM
@@ -182,7 +209,10 @@ COUNTING_AUXILIARY_EVENTS_BY_NAME: dict[str, AlertEvent] = {
 
 
 def hazard_events_for(
-    task_set: str, auxiliary_event_names: Sequence[str] = ()
+    task_set: str,
+    auxiliary_event_names: Sequence[str] = (),
+    *,
+    source: str | None = None,
 ) -> tuple[AlertEvent, ...]:
     """Return the full event list an ``EventHazardHeads`` trains.
 
@@ -200,7 +230,7 @@ def hazard_events_for(
     extra = tuple(
         COUNTING_AUXILIARY_EVENTS_BY_NAME[name] for name in auxiliary_event_names
     )
-    events = alert_events_for(task_set) + extra
+    events = alert_events_for(task_set, source=source) + extra
     names = [a.name for a in events]
     if len(names) != len(set(names)):
         # An auxiliary name listed twice, or colliding with a curated alert
