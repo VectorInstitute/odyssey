@@ -2,7 +2,7 @@
 
 import numpy as np
 import pytest
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import average_precision_score, roc_auc_score
 
 from odyssey.inference.uncertainty import (
     BootstrapAUROC,
@@ -11,6 +11,8 @@ from odyssey.inference.uncertainty import (
     _weighted_auroc,
     bootstrap_auroc,
     bootstrap_auroc_delta,
+    bootstrap_metric,
+    bootstrap_metric_delta,
 )
 
 
@@ -303,3 +305,31 @@ def test_bootstrap_auroc_result_is_frozen() -> None:
     assert isinstance(result, BootstrapAUROC)
     with pytest.raises(Exception):  # noqa: B017, PT011 -- dataclasses.FrozenInstanceError
         result.mean = 0.5  # type: ignore[misc]
+
+
+def test_generic_bootstrap_matches_fast_auroc_path_with_same_seed() -> None:
+    """bootstrap_metric with roc_auc_score must reproduce bootstrap_auroc.
+
+    Same seed => same subject draws => identical point estimate and CI up
+    to the fast path's tie-handling equivalence (verified exactly, since
+    _weighted_auroc is itself sklearn-verified).
+    """
+    y, p, subjects = _correlated_fixture()
+    fast = bootstrap_auroc(y, p, subjects, n_boot=200, seed=5)
+    slow = bootstrap_metric(y, p, subjects, roc_auc_score, n_boot=200, seed=5)
+    assert fast is not None and slow is not None
+    assert slow.point_estimate == pytest.approx(fast.point_estimate)
+    assert slow.ci_low == pytest.approx(fast.ci_low, abs=1e-9)
+    assert slow.ci_high == pytest.approx(fast.ci_high, abs=1e-9)
+    assert slow.n_boot_used == fast.n_boot_used
+
+
+def test_generic_delta_of_scorer_against_itself_is_zero() -> None:
+    y, p, subjects = _correlated_fixture()
+    d = bootstrap_metric_delta(
+        y, p, p, subjects, average_precision_score, n_boot=100, seed=0
+    )
+    assert d is not None
+    assert d.point_estimate == 0.0
+    assert d.ci_low == 0.0 and d.ci_high == 0.0
+    assert d.excludes_zero() is False
