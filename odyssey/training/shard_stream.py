@@ -27,9 +27,10 @@ check the two agree on synthetic shards.
 import logging
 import random
 from collections import Counter
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Union
+from typing import Any
 
 import polars as pl
 import torch
@@ -57,9 +58,7 @@ logger = logging.getLogger(__name__)
 Preparer = Callable[[pl.DataFrame], pl.DataFrame]
 
 
-def shard_paths(
-    shard_dir: Union[str, Path], max_shards: Optional[int] = None
-) -> List[Path]:
+def shard_paths(shard_dir: str | Path, max_shards: int | None = None) -> list[Path]:
     """Numerically ordered shard paths of a split (same rule as load_meds_shards)."""
     paths = sorted(Path(shard_dir).glob("*.parquet"), key=shard_sort_key)
     if max_shards is not None:
@@ -109,7 +108,7 @@ def fit_binner_streaming(
     """
     per_shard = max(sample_per_code // max(len(paths), 1), 200)
     counts: Counter[str] = Counter()
-    samples: List[pl.DataFrame] = []
+    samples: list[pl.DataFrame] = []
     for k, path in enumerate(paths):
         frame = prepare(load_meds_shard(path))
         if value_col not in frame.columns:
@@ -152,17 +151,17 @@ def fit_binner_streaming(
 class CorpusStats:
     """Everything training needs from the train split besides the token stream."""
 
-    code_counts: Dict[str, int]
+    code_counts: dict[str, int]
     n_subjects: int
     n_events: int
-    labels: Dict[Any, torch.Tensor] = field(default_factory=dict)
+    labels: dict[Any, torch.Tensor] = field(default_factory=dict)
     """Concept labels keyed by (subject, visit) or subject, like the trainer."""
-    masks: Dict[Any, torch.Tensor] = field(default_factory=dict)
-    first_times: Dict[Any, torch.Tensor] = field(default_factory=dict)
-    event_times: Dict[str, EventTimes] = field(default_factory=dict)
+    masks: dict[Any, torch.Tensor] = field(default_factory=dict)
+    first_times: dict[Any, torch.Tensor] = field(default_factory=dict)
+    event_times: dict[str, EventTimes] = field(default_factory=dict)
 
 
-def merge_event_times(into: Dict[str, EventTimes], part: Dict[str, EventTimes]) -> None:
+def merge_event_times(into: dict[str, EventTimes], part: dict[str, EventTimes]) -> None:
     """Merge one shard's per-event onset/censor times into a running accumulator.
 
     Subjects never span shards, so each shard contributes disjoint keys;
@@ -192,7 +191,7 @@ def build_corpus_stats(
     concepts: Sequence[AnyConceptDefinition],
     concept_supervision: str,
     with_first_times: bool,
-    alerts: Optional[Sequence[AlertEvent]],
+    alerts: Sequence[AlertEvent] | None,
     task_set: str = "v1",
     code_col: str = "code",
 ) -> CorpusStats:
@@ -205,8 +204,8 @@ def build_corpus_stats(
         counts.update(dict(binned.group_by(code_col).len().iter_rows()))
         stats.n_subjects += int(binned["subject_id"].n_unique())
         stats.n_events += binned.height
-        labels: Dict[Any, torch.Tensor]
-        masks: Dict[Any, torch.Tensor]
+        labels: dict[Any, torch.Tensor]
+        masks: dict[Any, torch.Tensor]
         if concept_supervision == "visit":
             labels, masks = build_visit_concept_label_dicts(raw, concepts)
             if with_first_times:
@@ -231,11 +230,11 @@ def build_corpus_stats(
 
 
 def family_loss_weights_from_counts(
-    code_counts: Dict[str, int],
+    code_counts: dict[str, int],
     *,
     alpha: float,
     cap: float = 20.0,
-    n_families: Optional[int] = None,
+    n_families: int | None = None,
 ) -> torch.Tensor:
     """Per-family loss weights from code counts (see ``family_loss_weights``)."""
     per_family: Counter[int] = Counter()
@@ -267,8 +266,8 @@ def iter_patients_streaming(
     vocab: Vocabulary,
     *,
     source: str,
-    max_seq_len: Optional[int] = None,
-    shuffle_seed: Optional[int] = None,
+    max_seq_len: int | None = None,
+    shuffle_seed: int | None = None,
 ) -> Iterator[PatientSequence]:
     """Yield patient sequences shard by shard; shards and subjects shuffled per seed."""
     order = list(paths)

@@ -21,7 +21,7 @@ bundle continues is itself a forecast, and one the set-valued next-event
 objective in :mod:`odyssey.models.sequence_model` needs.
 """
 
-from typing import List, Sequence, Tuple
+from collections.abc import Sequence
 
 import torch
 import torch.nn.functional as F  # noqa: N812
@@ -32,7 +32,7 @@ from torch import nn
 # gap; bin b in 1..len(edges) covers (edges[b-2], edges[b-1]] (with an
 # implicit 0 before the first edge); bin len(edges)+1 is open (anything
 # longer than the last edge). len(edges) + 2 bins in total.
-DEFAULT_TIME_BIN_EDGES_HOURS: Tuple[float, ...] = (
+DEFAULT_TIME_BIN_EDGES_HOURS: tuple[float, ...] = (
     1.0 / 60,  # 1 minute
     5.0 / 60,
     15.0 / 60,
@@ -74,7 +74,7 @@ class TimeToEventHead(nn.Module):
     ) -> None:
         """Initialize with ``len(edges) + 2`` bins (zero, per edge, open tail)."""
         super().__init__()
-        self.edges: List[float] = list(edges)
+        self.edges: list[float] = list(edges)
         self.num_bins = len(self.edges) + 2
         self.proj = nn.Linear(in_features, self.num_bins)
 
@@ -154,8 +154,8 @@ class EventHazardHeads(nn.Module):
         readout is the default and what every run before v8 used.
         """
         super().__init__()
-        self.event_names: List[str] = list(event_names)
-        self.edges: List[float] = list(edges)
+        self.event_names: list[str] = list(event_names)
+        self.edges: list[float] = list(edges)
         self.num_bins = len(self.edges) + 2
         self.hidden_size = int(hidden_size)
         out_features = len(self.event_names) * self.num_bins
@@ -246,7 +246,7 @@ def probability_within(
 
 def gap_survival_valid_mask(
     time_stamps: torch.Tensor, real_mask: torch.Tensor
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Per-position gap targets and validity for one streaming chunk.
 
     ``time_stamps`` are the chunk's input times ``(lanes, T)``; the gap
@@ -262,7 +262,7 @@ def gap_survival_valid_mask(
     return gap, valid
 
 
-__all__: List[str] = [
+__all__: list[str] = [
     "DEFAULT_TIME_BIN_EDGES_HOURS",
     "EventHazardHeads",
     "TimeToEventHead",

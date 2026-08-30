@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import Literal
 
 import polars as pl
 
@@ -57,7 +57,7 @@ class Finding:
     severity: Severity
     code: str
     message: str
-    path: Optional[str] = None
+    path: str | None = None
 
     def __str__(self) -> str:
         """One log-ready line: severity, code, message, offending path."""
@@ -65,17 +65,17 @@ class Finding:
         return f"{self.severity.upper()} {self.code}: {self.message}{where}"
 
 
-def _err(code: str, message: str, path: Optional[Path] = None) -> Finding:
+def _err(code: str, message: str, path: Path | None = None) -> Finding:
     return Finding("error", code, message, str(path) if path else None)
 
 
-def _warn(code: str, message: str, path: Optional[Path] = None) -> Finding:
+def _warn(code: str, message: str, path: Path | None = None) -> Finding:
     return Finding("warning", code, message, str(path) if path else None)
 
 
-def _check_shard_schema(shard: Path) -> List[Finding]:
+def _check_shard_schema(shard: Path) -> list[Finding]:
     """Schema-only checks for one shard file (no data read)."""
-    findings: List[Finding] = []
+    findings: list[Finding] = []
     try:
         schema = pl.read_parquet_schema(shard)
     except Exception as exc:  # noqa: BLE001 -- any unreadable shard is one finding
@@ -127,8 +127,8 @@ def _check_shard_schema(shard: Path) -> List[Finding]:
     return findings
 
 
-def _check_metadata(root: Path) -> List[Finding]:
-    findings: List[Finding] = []
+def _check_metadata(root: Path) -> list[Finding]:
+    findings: list[Finding] = []
     metadata = root / "metadata"
     if not metadata.is_dir():
         return [
@@ -190,13 +190,13 @@ def _check_metadata(root: Path) -> List[Finding]:
     return findings
 
 
-def _split_dirs(data_dir: Path) -> List[Path]:
+def _split_dirs(data_dir: Path) -> list[Path]:
     return sorted(p for p in data_dir.iterdir() if p.is_dir())
 
 
-def _deep_check_shard(shard: Path, seen_subjects: dict[int, str]) -> List[Finding]:
+def _deep_check_shard(shard: Path, seen_subjects: dict[int, str]) -> list[Finding]:
     """Full-scan checks for one shard: sortedness and subject disjointness."""
-    findings: List[Finding] = []
+    findings: list[Finding] = []
     frame = pl.read_parquet(shard, columns=["subject_id", "time"])
     if frame.height == 0:
         return findings
@@ -223,7 +223,7 @@ def _deep_check_shard(shard: Path, seen_subjects: dict[int, str]) -> List[Findin
     return findings
 
 
-def _deep_check_split_membership(data_dir: Path, root: Path) -> List[Finding]:
+def _deep_check_split_membership(data_dir: Path, root: Path) -> list[Finding]:
     """Split directories must agree exactly with subject_splits.parquet."""
     splits_path = root / "metadata" / "subject_splits.parquet"
     if not splits_path.is_file():
@@ -231,7 +231,7 @@ def _deep_check_split_membership(data_dir: Path, root: Path) -> List[Finding]:
     declared = pl.read_parquet(splits_path)
     if "subject_id" not in declared.columns or "split" not in declared.columns:
         return []  # already reported structurally
-    findings: List[Finding] = []
+    findings: list[Finding] = []
     for split_dir in _split_dirs(data_dir):
         declared_ids = set(
             declared.filter(pl.col("split") == split_dir.name)["subject_id"].to_list()
@@ -257,7 +257,7 @@ def _deep_check_split_membership(data_dir: Path, root: Path) -> List[Finding]:
     return findings
 
 
-def validate_meds_dataset(root: Path | str, *, deep: bool = False) -> List[Finding]:
+def validate_meds_dataset(root: Path | str, *, deep: bool = False) -> list[Finding]:
     """Validate one MEDS extraction output directory.
 
     Parameters
@@ -278,7 +278,7 @@ def validate_meds_dataset(root: Path | str, *, deep: bool = False) -> List[Findi
         are deviations that current consumers tolerate.
     """
     root = Path(root)
-    findings: List[Finding] = []
+    findings: list[Finding] = []
     data_dir = root / "data"
     if not data_dir.is_dir():
         return [_err("missing-data-dir", "data/ directory absent", data_dir)]
@@ -314,7 +314,7 @@ def validate_meds_dataset(root: Path | str, *, deep: bool = False) -> List[Findi
     return findings
 
 
-def raise_on_errors(findings: List[Finding]) -> None:
+def raise_on_errors(findings: list[Finding]) -> None:
     """Raise ``ValueError`` listing every error-level finding, if any."""
     errors = [f for f in findings if f.severity == "error"]
     if errors:

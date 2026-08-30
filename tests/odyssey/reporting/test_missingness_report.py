@@ -6,7 +6,6 @@ shaped records and (for AUPRC) synthetic row-dump parquet files.
 """
 
 from pathlib import Path
-from typing import Dict, List
 
 import polars as pl
 
@@ -23,7 +22,7 @@ from odyssey.reporting.missingness_report import (
 )
 
 
-def _calibration(pairs: List[tuple]) -> List[Dict[str, float]]:
+def _calibration(pairs: list[tuple]) -> list[dict[str, float]]:
     return [{"predicted": p, "observed": o, "n": n} for p, o, n in pairs]
 
 
@@ -212,7 +211,7 @@ def test_build_degradation_table_none_delta_when_no_matching_clean_row() -> None
             ece=0.1,
         )
     ]
-    clean: List[CellMetricRow] = []
+    clean: list[CellMetricRow] = []
     table = build_degradation_table(clean, {"lag_4h": degraded})
     assert table[0]["auroc_delta"] is None
     assert table[0]["auprc_delta"] is None

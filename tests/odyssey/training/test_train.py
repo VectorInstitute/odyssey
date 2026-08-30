@@ -7,7 +7,6 @@ see test_train_gpu.py.
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict
 
 import polars as pl
 import pytest
@@ -616,7 +615,7 @@ def test_train_dispatches_to_streaming_when_stream_shards_is_set(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """stream_shards=True must route to _train_streaming before touching any shards."""
-    seen: Dict[str, object] = {}
+    seen: dict[str, object] = {}
 
     def fake_train_streaming(
         config: TrainingConfig,

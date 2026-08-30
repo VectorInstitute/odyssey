@@ -23,8 +23,6 @@ vocabulary building. HISTORY tokens fall in the ``other`` code family, so
 diagnosis-family metrics are unaffected by their presence as targets.
 """
 
-from typing import Optional
-
 import polars as pl
 
 
@@ -119,7 +117,7 @@ def add_history_recap(
 
 
 def maybe_history_recap(
-    events: pl.DataFrame, *, enabled: bool, max_codes: Optional[int] = None
+    events: pl.DataFrame, *, enabled: bool, max_codes: int | None = None
 ) -> pl.DataFrame:
     """Apply :func:`add_history_recap` when ``enabled``, else pass through."""
     if not enabled:

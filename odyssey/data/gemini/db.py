@@ -11,8 +11,9 @@ against a fake connection.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from functools import lru_cache
-from typing import Any, Iterator, Optional, Protocol
+from typing import Any, Protocol
 
 import pandas as pd
 from sqlalchemy import Engine, create_engine, text
@@ -55,7 +56,7 @@ def get_engine() -> Engine:
     return create_engine(config.DB_URL)
 
 
-def query(sql: str, params: Optional[dict[str, Any]] = None) -> pd.DataFrame:
+def query(sql: str, params: dict[str, Any] | None = None) -> pd.DataFrame:
     """Run ``sql`` against the configured GEMINI data cut.
 
     The schema search path is set per-connection so unqualified table names
@@ -90,7 +91,7 @@ def query(sql: str, params: Optional[dict[str, Any]] = None) -> pd.DataFrame:
 
 
 def stream_query(
-    sql: str, params: Optional[dict[str, Any]] = None, *, chunksize: int = 500_000
+    sql: str, params: dict[str, Any] | None = None, *, chunksize: int = 500_000
 ) -> Iterator[pd.DataFrame]:
     """Stream ``sql`` from the configured GEMINI data cut via a server-side cursor.
 

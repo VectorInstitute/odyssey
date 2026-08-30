@@ -24,9 +24,10 @@ import queue
 import threading
 import time
 import weakref
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Callable, Iterator
+from typing import Any
 
 import pytest
 
@@ -361,7 +362,7 @@ def test_normalize_unit_series_collapses_the_cv_family() -> None:
 
 def test_copy_chunk_sink_chunks_and_flushes_the_remainder() -> None:
     mod = _load_module()
-    out_queue: "queue.Queue[pl.DataFrame]" = queue.Queue()
+    out_queue: queue.Queue[pl.DataFrame] = queue.Queue()
     sink = mod._CopyChunkSink(
         chunk_rows=2, out_queue=out_queue, stop_requested=threading.Event()
     )
@@ -389,7 +390,7 @@ def test_copy_chunk_sink_chunks_and_flushes_the_remainder() -> None:
 
 def test_copy_chunk_sink_distinguishes_null_marker_from_empty_string() -> None:
     mod = _load_module()
-    out_queue: "queue.Queue[pl.DataFrame]" = queue.Queue()
+    out_queue: queue.Queue[pl.DataFrame] = queue.Queue()
     sink = mod._CopyChunkSink(
         chunk_rows=10, out_queue=out_queue, stop_requested=threading.Event()
     )
@@ -412,7 +413,7 @@ def test_copy_chunk_sink_never_infers_a_dtype_even_within_one_chunk() -> None:
     chunk -- typed parsing is each extract_<table>'s own job downstream.
     """
     mod = _load_module()
-    out_queue: "queue.Queue[pl.DataFrame]" = queue.Queue()
+    out_queue: queue.Queue[pl.DataFrame] = queue.Queue()
     sink = mod._CopyChunkSink(
         chunk_rows=10, out_queue=out_queue, stop_requested=threading.Event()
     )
@@ -439,7 +440,7 @@ def test_copy_chunk_sink_never_infers_a_dtype_even_within_one_chunk() -> None:
 
 def test_copy_chunk_sink_write_raises_once_stop_is_requested() -> None:
     mod = _load_module()
-    out_queue: "queue.Queue[pl.DataFrame]" = queue.Queue()
+    out_queue: queue.Queue[pl.DataFrame] = queue.Queue()
     stop_requested = threading.Event()
     sink = mod._CopyChunkSink(
         chunk_rows=10, out_queue=out_queue, stop_requested=stop_requested
@@ -458,7 +459,7 @@ def test_copy_chunk_sink_flushes_on_byte_cap_before_chunk_rows_is_reached(
     # large region this module hasn't already bounded server-side.
     mod = _load_module()
     monkeypatch.setattr(mod, "_SINK_BUFFER_BYTE_CAP", 100)
-    out_queue: "queue.Queue[pl.DataFrame]" = queue.Queue()
+    out_queue: queue.Queue[pl.DataFrame] = queue.Queue()
     sink = mod._CopyChunkSink(
         chunk_rows=1_000_000, out_queue=out_queue, stop_requested=threading.Event()
     )
@@ -487,7 +488,7 @@ def test_copy_chunk_sink_handles_one_write_call_per_row() -> None:
     """
     mod = _load_module()
     chunk_rows = 200
-    out_queue: "queue.Queue[pl.DataFrame]" = queue.Queue()
+    out_queue: queue.Queue[pl.DataFrame] = queue.Queue()
     sink = mod._CopyChunkSink(
         chunk_rows=chunk_rows, out_queue=out_queue, stop_requested=threading.Event()
     )
@@ -516,7 +517,7 @@ def test_copy_chunk_sink_drain_does_not_scale_quadratically_with_chunk_size() ->
     mod = _load_module()
 
     def _feed(n_rows: int) -> float:
-        out_queue: "queue.Queue[pl.DataFrame]" = queue.Queue()
+        out_queue: queue.Queue[pl.DataFrame] = queue.Queue()
         sink = mod._CopyChunkSink(
             chunk_rows=n_rows, out_queue=out_queue, stop_requested=threading.Event()
         )

@@ -48,9 +48,9 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from collections.abc import Sequence
 from dataclasses import asdict
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from odyssey.data.degrade import all_cells, generate_cell, load_cell_metadata
 from odyssey.inference.alerts import (
@@ -80,11 +80,11 @@ def _write_cell_result(
     path: Path,
     *,
     cell: str,
-    metadata: Optional[Dict[str, object]],
+    metadata: dict[str, object] | None,
     run_dir: Path,
     held_out_shard_dir: Path,
-    results: List[AlertMetrics],
-    n_unscoreable: Optional[int] = None,
+    results: list[AlertMetrics],
+    n_unscoreable: int | None = None,
 ) -> None:
     """Write one cell's alerts.json, with the degrade.py cell metadata embedded.
 
@@ -114,10 +114,10 @@ def _generate_cells(
     degraded_root: Path,
     *,
     seed: int,
-    cells: Optional[Sequence[str]],
+    cells: Sequence[str] | None,
     source: str,
     overwrite: bool,
-) -> Dict[str, Path]:
+) -> dict[str, Path]:
     cell_specs = all_cells(seed)
     if cells:
         unknown = sorted(set(cells) - set(cell_specs))
@@ -129,7 +129,7 @@ def _generate_cells(
     shard_files = sorted(held_out_shard_dir.glob("*.parquet"), key=shard_sort_key)
     if not shard_files:
         raise FileNotFoundError(f"no .parquet shards found in {held_out_shard_dir}")
-    cell_dirs: Dict[str, Path] = {}
+    cell_dirs: dict[str, Path] = {}
     for name, cell in cell_specs.items():
         cell_dir = degraded_root / name
         already_done = cell_dir.is_dir() and (cell_dir / "metadata.json").is_file()
@@ -152,11 +152,11 @@ def run_sweep(
     held_out_shard_dir: Path,
     output_root: Path,
     *,
-    baseline_shard_dir: Optional[Path] = None,
+    baseline_shard_dir: Path | None = None,
     seed: int = 0,
-    cells: Optional[Sequence[str]] = None,
-    max_shards: Optional[int] = None,
-    max_baseline_shards: Optional[int] = None,
+    cells: Sequence[str] | None = None,
+    max_shards: int | None = None,
+    max_baseline_shards: int | None = None,
     landmark_hours: float = 4.0,
     num_lanes: int = 8,
     chunk_size: int = 256,
@@ -166,7 +166,7 @@ def run_sweep(
     stream_baseline: bool = False,
     source: str = "mimic_iv",
     overwrite: bool = False,
-) -> Tuple[Path, Path]:
+) -> tuple[Path, Path]:
     """Run the full sweep; returns (degradation_table.json, .md) paths."""
     output_root.mkdir(parents=True, exist_ok=True)
     results_dir = output_root / "results"
@@ -183,7 +183,7 @@ def run_sweep(
     clean_json = results_dir / "clean_alerts.json"
     clean_rows = results_dir / "clean_alerts_rows.parquet"
 
-    fitted: Dict[Tuple[str, float], BaselineModel] = {}
+    fitted: dict[tuple[str, float], BaselineModel] = {}
     # Resume: an existing clean result can only be reused when the clean
     # pass fits nothing (no --baseline-shard-dir). With a baseline dir the
     # clean pass is also what fits the frozen GBM every degraded cell
@@ -241,7 +241,7 @@ def run_sweep(
                 "GBM baseline. Check the held-out split has enough positives."
             )
 
-    per_cell_json: Dict[str, Path] = {CLEAN_CELL: clean_json}
+    per_cell_json: dict[str, Path] = {CLEAN_CELL: clean_json}
     for name, cell_dir in cell_dirs.items():
         cell_json = results_dir / f"{name}_alerts.json"
         cell_rows = results_dir / f"{name}_alerts_rows.parquet"
@@ -259,7 +259,7 @@ def run_sweep(
             cell_json, overwrite=overwrite, kind=f"missingness sweep {name} alerts"
         )
         logger.info("[sweep] scoring cell %s (GBM reused, not refit)", name)
-        unscoreable: Set[Tuple[int, int, float]] = set()
+        unscoreable: set[tuple[int, int, float]] = set()
         results = evaluate_alerts(
             run_dir,
             held_out_shard_dir,
@@ -298,8 +298,8 @@ def run_sweep(
 
 
 def aggregate(
-    results_dir: Path, per_cell_json: Dict[str, Path], output_root: Path
-) -> Tuple[Path, Path]:
+    results_dir: Path, per_cell_json: dict[str, Path], output_root: Path
+) -> tuple[Path, Path]:
     """Build the degradation table from already-written per-cell JSON files.
 
     Split out from :func:`run_sweep` so a sweep that already has all its
@@ -314,7 +314,7 @@ def aggregate(
         transform=None,
         rows_path=results_dir / "clean_alerts_rows.parquet",
     )
-    cells_metrics: Dict[str, List[CellMetricRow]] = {}
+    cells_metrics: dict[str, list[CellMetricRow]] = {}
     for name, path in per_cell_json.items():
         if name == CLEAN_CELL:
             continue
@@ -336,7 +336,7 @@ def aggregate(
     return json_path, md_path
 
 
-def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -378,7 +378,7 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv: Optional[Sequence[str]] = None) -> None:
+def main(argv: Sequence[str] | None = None) -> None:
     """CLI entry point: run the full sweep and write the degradation table."""
     ensure_joblib_temp_folder()
     args = _parse_args(argv)

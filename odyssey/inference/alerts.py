@@ -49,9 +49,10 @@ Everything patient-level stays in memory or under gitignored paths.
 import json
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol, Sequence, Set, Tuple, Union
+from typing import Any, Protocol
 
 import numpy as np
 import polars as pl
@@ -153,14 +154,14 @@ logger = logging.getLogger(__name__)
 #: protocol re-evaluation is a NEW registry row, never an edit.
 LANDMARK_PROTOCOL_VERSION = 4
 
-HORIZONS_HOURS: Tuple[float, ...] = (8.0, 24.0, 72.0)
+HORIZONS_HOURS: tuple[float, ...] = (8.0, 24.0, 72.0)
 
 # How index rows are chosen. "landmark": every ``landmark_hours`` bucket
 # within each visit (the alerts protocol). "visit_end": one row per visit at
 # its last event -- the discharge-anchored scheme the 30-day readmission
 # task uses (horizons in days, e.g. 168h / 720h).
-INDEX_MODES: Tuple[str, ...] = ("landmark", "visit_end")
-READMISSION_HORIZONS_HOURS: Tuple[float, ...] = (168.0, 720.0)
+INDEX_MODES: tuple[str, ...] = ("landmark", "visit_end")
+READMISSION_HORIZONS_HOURS: tuple[float, ...] = (168.0, 720.0)
 
 
 def _check_index_mode(index_mode: str) -> None:
@@ -180,7 +181,7 @@ class IndexRow:
     subject_id: int
     visit_id: int
     time_hours: float
-    scores: Dict[str, float] = field(default_factory=dict)
+    scores: dict[str, float] = field(default_factory=dict)
     """scorer name -> risk score for the event under evaluation."""
     is_tail: bool = False
     """True if this subject's history was truncated to fit max_context
@@ -190,9 +191,7 @@ class IndexRow:
     numbers -- see the module's tail-slice reporting."""
 
 
-def outcome_at_horizon(
-    row: IndexRow, times: EventTimes, horizon: float
-) -> Optional[int]:
+def outcome_at_horizon(row: IndexRow, times: EventTimes, horizon: float) -> int | None:
     """Return the horizon outcome for one index row.
 
     1 if the event occurs in ``(t, t+h]``, 0 if observation reaches
@@ -225,8 +224,8 @@ class LandmarkState:
     model weights (see :func:`collect_model_scores`).
     """
 
-    last_bucket_by_lane: List[Dict[int, int]]
-    subject_by_lane: List[int]
+    last_bucket_by_lane: list[dict[int, int]]
+    subject_by_lane: list[int]
 
 
 def _landmark_mask(
@@ -236,8 +235,8 @@ def _landmark_mask(
     landmark_hours: float,
     visit_start_hours: torch.Tensor,
     *,
-    state: Optional[LandmarkState] = None,
-) -> Tuple[torch.Tensor, LandmarkState]:
+    state: LandmarkState | None = None,
+) -> tuple[torch.Tensor, LandmarkState]:
     """First position of each (subject, visit, bucket) triple, across chunks.
 
     Matches :func:`_index_rows_from_events`' per-(subject, visit, bucket)
@@ -282,8 +281,8 @@ def _landmark_mask(
     bucket = torch.floor((time_hours - visit_start_hours) / landmark_hours)
 
     if state is None:
-        last_bucket_by_lane: List[Dict[int, int]] = [{} for _ in range(lanes)]
-        subject_by_lane: List[int] = [NO_SUBJECT] * lanes
+        last_bucket_by_lane: list[dict[int, int]] = [{} for _ in range(lanes)]
+        subject_by_lane: list[int] = [NO_SUBJECT] * lanes
     else:
         last_bucket_by_lane = state.last_bucket_by_lane
         subject_by_lane = list(state.subject_by_lane)
@@ -347,8 +346,8 @@ def _select_index_positions(
     vids: torch.Tensor,
     landmark_hours: float,
     starts: torch.Tensor,
-    landmark_state: Optional[LandmarkState],
-) -> Tuple[torch.Tensor, Optional[LandmarkState]]:
+    landmark_state: LandmarkState | None,
+) -> tuple[torch.Tensor, LandmarkState | None]:
     """Positions to score in this chunk, per :data:`INDEX_MODES`.
 
     ``visit_end``: the last position of each real (hadm-bearing) visit, as
@@ -372,7 +371,7 @@ def collect_model_scores(
     concept_names: Sequence[str],
     alerts: Sequence[AlertEvent],
     *,
-    visit_start: Dict[Tuple[int, int], float],
+    visit_start: dict[tuple[int, int], float],
     landmark_hours: float = 4.0,
     num_lanes: int = 8,
     chunk_size: int = 256,
@@ -380,9 +379,9 @@ def collect_model_scores(
     horizons: Sequence[float] = HORIZONS_HOURS,
     backbone: str = "hybrid",
     max_context: int = 4096,
-    truncation_boundaries_out: Optional[Dict[int, float]] = None,
+    truncation_boundaries_out: dict[int, float] | None = None,
     index_mode: str = "landmark",
-) -> Dict[str, List[IndexRow]]:
+) -> dict[str, list[IndexRow]]:
     """One streaming pass; per alert, index rows with model risk scores.
 
     ``index_mode="visit_end"`` selects each visit's last position instead
@@ -438,10 +437,10 @@ def collect_model_scores(
         if event_heads is not None
         else {}
     )
-    rows: Dict[str, List[IndexRow]] = {a.name: [] for a in alerts}
+    rows: dict[str, list[IndexRow]] = {a.name: [] for a in alerts}
     patients = iter_patient_sequences(events_binned, vocab)
     packed = backbone == "transformer"
-    sampler: Union[PackedLaneSampler, PackedContextSampler] = (
+    sampler: PackedLaneSampler | PackedContextSampler = (
         PackedContextSampler(patients, batch_size=num_lanes, max_context=max_context)
         if packed
         else PackedLaneSampler(
@@ -450,7 +449,7 @@ def collect_model_scores(
     )
 
     state = None
-    landmark_state: Optional[LandmarkState] = None
+    landmark_state: LandmarkState | None = None
     with torch.no_grad():
         for chunk in sampler:
             chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
@@ -530,7 +529,7 @@ def collect_model_scores(
                     if fwd.bottleneck is not None and alert.concept in concept_index
                     else None
                 )
-                within: Dict[str, List[float]] = {}
+                within: dict[str, list[float]] = {}
                 if (
                     hazards is not None
                     and event_heads is not None
@@ -564,25 +563,25 @@ class _LaneCarry:
     time: float
     logits: torch.Tensor
     features: torch.Tensor
-    concept_probs: Optional[torch.Tensor]
+    concept_probs: torch.Tensor | None
 
 
 def _scores_at(
     logits: torch.Tensor,
     features: torch.Tensor,
-    concept_probs: Optional[torch.Tensor],
+    concept_probs: torch.Tensor | None,
     *,
     alerts: Sequence[AlertEvent],
-    token_masks: Dict[str, torch.Tensor],
-    concept_index: Dict[str, int],
-    event_heads: Optional[Any],
-    head_index: Dict[str, int],
+    token_masks: dict[str, torch.Tensor],
+    concept_index: dict[str, int],
+    event_heads: Any | None,
+    head_index: dict[str, int],
     horizons: Sequence[float],
-) -> Dict[str, Dict[str, float]]:
+) -> dict[str, dict[str, float]]:
     """Per-alert score dict for one position (``logits``/``features`` are 1-D)."""
     probs = torch.softmax(logits, dim=-1)
     hazards = event_heads(features.unsqueeze(0)) if event_heads is not None else None
-    out: Dict[str, Dict[str, float]] = {}
+    out: dict[str, dict[str, float]] = {}
     for alert in alerts:
         scores = {"next_mass": float(probs[token_masks[alert.name]].sum())}
         if concept_probs is not None and alert.concept in concept_index:
@@ -611,8 +610,8 @@ def collect_model_scores_at_rows(  # noqa: PLR0912, PLR0915
     horizons: Sequence[float] = HORIZONS_HOURS,
     backbone: str = "hybrid",
     max_context: int = 4096,
-    truncation_boundaries_out: Optional[Dict[int, float]] = None,
-) -> Tuple[Dict[str, List[IndexRow]], List[Tuple[int, int, float]]]:
+    truncation_boundaries_out: dict[int, float] | None = None,
+) -> tuple[dict[str, list[IndexRow]], list[tuple[int, int, float]]]:
     """Score the model at GIVEN index rows (the missingness protocol's path).
 
     ``index_rows`` are (subject, visit, time) triples fixed by the CLEAN
@@ -640,8 +639,8 @@ def collect_model_scores_at_rows(  # noqa: PLR0912, PLR0915
         else {}
     )
     # targets per subject, ascending time (dedupe identical keys)
-    targets: Dict[int, List[Tuple[int, float]]] = {}
-    seen_keys: set[Tuple[int, int, float]] = set()
+    targets: dict[int, list[tuple[int, float]]] = {}
+    seen_keys: set[tuple[int, int, float]] = set()
     for r in index_rows:
         key = (r.subject_id, r.visit_id, r.time_hours)
         if key in seen_keys:
@@ -650,26 +649,26 @@ def collect_model_scores_at_rows(  # noqa: PLR0912, PLR0915
         targets.setdefault(r.subject_id, []).append((r.visit_id, r.time_hours))
     for target_list in targets.values():
         target_list.sort(key=lambda x: x[1])
-    pointer: Dict[int, int] = dict.fromkeys(targets, 0)
-    rows: Dict[str, List[IndexRow]] = {a.name: [] for a in alerts}
-    unscoreable: List[Tuple[int, int, float]] = []
+    pointer: dict[int, int] = dict.fromkeys(targets, 0)
+    rows: dict[str, list[IndexRow]] = {a.name: [] for a in alerts}
+    unscoreable: list[tuple[int, int, float]] = []
 
     patients = iter_patient_sequences(events_binned, vocab)
     packed = backbone == "transformer"
-    sampler: Union[PackedLaneSampler, PackedContextSampler] = (
+    sampler: PackedLaneSampler | PackedContextSampler = (
         PackedContextSampler(patients, batch_size=num_lanes, max_context=max_context)
         if packed
         else PackedLaneSampler(
             patients, num_lanes=num_lanes, chunk_size=chunk_size, reset_prob=0.0
         )
     )
-    carry: Dict[int, _LaneCarry] = {}
+    carry: dict[int, _LaneCarry] = {}
 
     def emit(
         sid: int,
         vid: int,
         t: float,
-        outputs: Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]],
+        outputs: tuple[torch.Tensor, torch.Tensor, torch.Tensor | None],
         *,
         is_tail: bool,
     ) -> None:
@@ -710,22 +709,20 @@ def collect_model_scores_at_rows(  # noqa: PLR0912, PLR0915
                 sids = sids_all[lane].tolist()
                 times = times_all[lane].tolist()
                 ends = ends_all[lane].tolist()
-                prev: Optional[Tuple[int, float, int]] = (
-                    None  # (sid, time, pos) in chunk
-                )
+                prev: tuple[int, float, int] | None = None  # (sid, time, pos) in chunk
                 for i, sid in enumerate(sids):
                     if sid == NO_SUBJECT:
                         break
                     t_i = float(times[i])
-                    lst: Optional[List[Tuple[int, float]]] = targets.get(sid)
+                    lst: list[tuple[int, float]] | None = targets.get(sid)
                     if lst is None:
                         prev = (sid, t_i, i)
                         continue
                     # previous visible token of THIS subject: in-chunk or carried
-                    prev_time: Optional[float] = None
-                    prev_out: Optional[
-                        Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]
-                    ] = None
+                    prev_time: float | None = None
+                    prev_out: (
+                        tuple[torch.Tensor, torch.Tensor, torch.Tensor | None] | None
+                    ) = None
                     if prev is not None and prev[0] == sid:
                         prev_time = prev[1]
                         prev_out = (
@@ -799,8 +796,8 @@ def collect_model_scores_at_rows(  # noqa: PLR0912, PLR0915
 
 
 def _export_truncation_boundaries(
-    sampler: Union[PackedLaneSampler, PackedContextSampler],
-    truncation_boundaries_out: Optional[Dict[int, float]],
+    sampler: PackedLaneSampler | PackedContextSampler,
+    truncation_boundaries_out: dict[int, float] | None,
 ) -> None:
     """Copy a finished sampler's truncation boundaries into the caller's dict."""
     if truncation_boundaries_out is not None and isinstance(
@@ -830,8 +827,8 @@ class _SubjectHistory:
     def __init__(
         self,
         hours: np.ndarray,
-        codes: List[str],
-        hadms: List[Optional[int]],
+        codes: list[str],
+        hadms: list[int | None],
         prefixes: Sequence[str],
     ) -> None:
         self.hours = hours
@@ -839,8 +836,8 @@ class _SubjectHistory:
         family_index = {f: i for i, f in enumerate(_FAMILY_IDS)}
         one_hot = np.zeros((len(codes), len(_FAMILY_IDS)), dtype=np.int32)
         # per curated prefix: hours and ordinal bins of matching events
-        prefix_hours: List[List[float]] = [[] for _ in prefixes]
-        prefix_bins: List[List[float]] = [[] for _ in prefixes]
+        prefix_hours: list[list[float]] = [[] for _ in prefixes]
+        prefix_bins: list[list[float]] = [[] for _ in prefixes]
         for i, code in enumerate(codes):
             f_idx = family_index.get(code_type(code))
             if f_idx is not None:
@@ -918,7 +915,7 @@ def baseline_features(
         zip(origins["subject_id"].to_list(), origins["_origin"].to_list())
     )
     needed = {row.subject_id for row in index_rows}
-    histories: Dict[int, _SubjectHistory] = {}
+    histories: dict[int, _SubjectHistory] = {}
     for key, frame in timed.select("subject_id", "_hours", "code", "hadm_id").group_by(
         "subject_id", maintain_order=True
     ):
@@ -935,7 +932,7 @@ def baseline_features(
 
     n_feat = 2 + len(prefixes) + len(_FAMILY_IDS)
     out = np.full((len(index_rows), n_feat), np.nan, dtype=np.float32)
-    visit_start_cache: Dict[Tuple[int, int], float] = {}
+    visit_start_cache: dict[tuple[int, int], float] = {}
     for r, row in enumerate(index_rows):
         history = histories.get(row.subject_id)
         if history is None:
@@ -960,7 +957,7 @@ def baseline_features(
 # "strong_text" = the strong panel plus note-embedding features from the
 # active note_embeddings sidecar (odyssey.text.note_features): the
 # text-modality probe (Track A item 7).
-BASELINE_FEATURE_SETS: Tuple[str, ...] = ("basic", "strong", "strong_text")
+BASELINE_FEATURE_SETS: tuple[str, ...] = ("basic", "strong", "strong_text")
 
 
 def strong_baseline_features(
@@ -1000,11 +997,11 @@ def strong_text_baseline_features(
 
 def features_for_events(
     events_binned: pl.DataFrame,
-    rows: Dict[str, List[IndexRow]],
+    rows: dict[str, list[IndexRow]],
     *,
     source: str = "mimic_iv",
     feature_set: str = "strong",
-) -> Dict[str, np.ndarray]:
+) -> dict[str, np.ndarray]:
     """Baseline features per event, computed once over the union of index rows.
 
     Index rows are the same landmarks for every event (only the outcome
@@ -1013,8 +1010,8 @@ def features_for_events(
     """
     if feature_set not in BASELINE_FEATURE_SETS:
         raise ValueError(f"unknown baseline feature set {feature_set!r}")
-    unique: Dict[Tuple[int, int, float], int] = {}
-    union: List[IndexRow] = []
+    unique: dict[tuple[int, int, float], int] = {}
+    union: list[IndexRow] = []
     for event_rows in rows.values():
         for r in event_rows:
             k = (r.subject_id, r.visit_id, r.time_hours)
@@ -1088,7 +1085,7 @@ class BaselineModel:
         fill_columns: np.ndarray,
         *,
         feature_set: str = "basic",
-        params: Optional[Dict[str, float]] = None,
+        params: dict[str, float] | None = None,
     ) -> None:
         self.clf = clf
         self.fill_columns = fill_columns
@@ -1110,7 +1107,7 @@ class BaselineModel:
 # Small, honest search for the bespoke GBM: learning rate x tree size x leaf
 # size, each run to 400 rounds with the best round picked on a subject-grouped
 # validation split, then refit on everything at that round count.
-GBM_GRID: Tuple[Dict[str, float], ...] = (
+GBM_GRID: tuple[dict[str, float], ...] = (
     {"learning_rate": 0.05, "max_leaf_nodes": 31, "min_samples_leaf": 20},
     {"learning_rate": 0.05, "max_leaf_nodes": 63, "min_samples_leaf": 100},
     {"learning_rate": 0.1, "max_leaf_nodes": 15, "min_samples_leaf": 20},
@@ -1151,7 +1148,7 @@ def _log_loss(y: np.ndarray, p: np.ndarray) -> float:
 
 def _tune_gbm(
     x: np.ndarray, y: np.ndarray, groups: np.ndarray, *, seed: int
-) -> Tuple[Dict[str, float], int]:
+) -> tuple[dict[str, float], int]:
     """Best (params, n_rounds) on a subject-grouped 10% validation split."""
     rng = np.random.default_rng(seed)
     if len(y) > GBM_TUNE_MAX_ROWS:
@@ -1176,7 +1173,7 @@ def _tune_gbm(
         x_val = np.array(x_val, copy=True)
         x_tr[:, fold_fill] = 0.0
         x_val[:, fold_fill] = np.nan_to_num(x_val[:, fold_fill], nan=0.0)
-    best: Tuple[float, Dict[str, float], int] = (np.inf, dict(GBM_GRID[0]), 200)
+    best: tuple[float, dict[str, float], int] = (np.inf, dict(GBM_GRID[0]), 200)
     for params in GBM_GRID:
         clf = HistGradientBoostingClassifier(
             random_state=seed, max_iter=GBM_MAX_ITER, early_stopping=False, **params
@@ -1201,7 +1198,7 @@ def _fit_baseline_grid(
     seed: int,
     tune: bool,
     event_name: str,
-) -> Dict[float, BaselineModel]:
+) -> dict[float, BaselineModel]:
     """Fit one GBM per horizon for a single event, given a pre-built feature matrix.
 
     ``x_all`` and ``rows`` are already aligned (row ``i`` of ``x_all`` is
@@ -1220,7 +1217,7 @@ def _fit_baseline_grid(
     """
     groups_all = np.array([r.subject_id for r in rows])
     rng = np.random.default_rng(seed)
-    out: Dict[float, BaselineModel] = {}
+    out: dict[float, BaselineModel] = {}
     for h in horizons:
         y = np.array(
             [outcome_at_horizon(r, times, h) for r in rows],
@@ -1263,15 +1260,15 @@ def _fit_baseline_grid(
 
 def fit_baselines(
     train_events_binned: pl.DataFrame,
-    train_rows: Dict[str, List[IndexRow]],
-    train_times: Dict[str, EventTimes],
+    train_rows: dict[str, list[IndexRow]],
+    train_times: dict[str, EventTimes],
     *,
     horizons: Sequence[float] = HORIZONS_HOURS,
     source: str = "mimic_iv",
     seed: int = 0,
     feature_set: str = "strong",
     tune: bool = True,
-) -> Dict[Tuple[str, float], BaselineModel]:
+) -> dict[tuple[str, float], BaselineModel]:
     """One gradient-boosted classifier per (event, horizon) on baseline features.
 
     ``train_events_binned`` is held whole in memory, so this scales to
@@ -1281,7 +1278,7 @@ def fit_baselines(
     :func:`_tune_gbm` per (event, horizon); otherwise a fixed 200-round
     default is fitted (fast path for tests and smoke runs).
     """
-    models: Dict[Tuple[str, float], BaselineModel] = {}
+    models: dict[tuple[str, float], BaselineModel] = {}
     features = features_for_events(
         train_events_binned, train_rows, source=source, feature_set=feature_set
     )
@@ -1306,7 +1303,7 @@ def fit_baselines(
 def fit_baselines_streaming(
     paths: Sequence[Path],
     prepare: Preparer,
-    binner: Optional[QuantileBinner],
+    binner: QuantileBinner | None,
     *,
     alerts: Sequence[AlertEvent],
     horizons: Sequence[float] = HORIZONS_HOURS,
@@ -1317,7 +1314,7 @@ def fit_baselines_streaming(
     tune: bool = True,
     task_set: str = "v1",
     index_mode: str = "landmark",
-) -> Dict[Tuple[str, float], BaselineModel]:
+) -> dict[tuple[str, float], BaselineModel]:
     """Fit the same models as :func:`fit_baselines`, but shard by shard.
 
     The full-scale baseline shard set (hundreds of shards, hundreds of
@@ -1335,9 +1332,9 @@ def fit_baselines_streaming(
     in-memory path. GBM fitting itself is unchanged, delegated to
     :func:`_fit_baseline_grid`.
     """
-    event_times: Dict[str, EventTimes] = {}
-    all_rows: List[IndexRow] = []
-    feature_chunks: List[np.ndarray] = []
+    event_times: dict[str, EventTimes] = {}
+    all_rows: list[IndexRow] = []
+    feature_chunks: list[np.ndarray] = []
     for path in paths:
         raw = prepare(load_meds_shard(path))
         binned = add_value_tokens(raw, binner, source=source)
@@ -1357,7 +1354,7 @@ def fit_baselines_streaming(
             feats = baseline_features(binned, shard_rows, source=source)
         all_rows.extend(shard_rows)
         feature_chunks.append(feats)
-    models: Dict[Tuple[str, float], BaselineModel] = {}
+    models: dict[tuple[str, float], BaselineModel] = {}
     if not all_rows:
         return models
     x_all = np.concatenate(feature_chunks, axis=0)
@@ -1395,20 +1392,20 @@ class AlertMetrics:
     n_at_risk: int
     n_positive: int
     n_censored: int
-    auroc: Optional[float]
-    brier: Optional[float] = None
+    auroc: float | None
+    brier: float | None = None
     """Only for scorers that output horizon probabilities (the baseline)."""
-    calibration: Optional[List[Dict[str, float]]] = None
+    calibration: list[dict[str, float]] | None = None
     """Decile bins of predicted probability: mean predicted vs observed."""
-    baseline_feature_set: Optional[str] = None
+    baseline_feature_set: str | None = None
     """For ``baseline_gbm`` rows: which feature set the GBM was given."""
-    baseline_n_features: Optional[int] = None
-    baseline_params: Optional[Dict[str, float]] = None
+    baseline_n_features: int | None = None
+    baseline_params: dict[str, float] | None = None
 
 
 def _calibration(
     pred: np.ndarray, y: np.ndarray, n_bins: int = 10
-) -> List[Dict[str, float]]:
+) -> list[dict[str, float]]:
     order = np.argsort(pred)
     bins = np.array_split(order, n_bins)
     return [
@@ -1475,17 +1472,17 @@ def _score_named_baseline(
 
 
 def score_alerts(
-    rows: Dict[str, List[IndexRow]],
-    times: Dict[str, EventTimes],
+    rows: dict[str, list[IndexRow]],
+    times: dict[str, EventTimes],
     *,
     horizons: Sequence[float] = HORIZONS_HOURS,
-    baselines: Optional[Dict[Tuple[str, float], BaselineModel]] = None,
-    baseline_features_by_event: Optional[Dict[str, np.ndarray]] = None,
+    baselines: dict[tuple[str, float], BaselineModel] | None = None,
+    baseline_features_by_event: dict[str, np.ndarray] | None = None,
     extra_baselines: dict[
         str, tuple[dict[tuple[str, float], _ScoredBaseline], dict[str, np.ndarray]]
     ]
     | None = None,
-) -> List[AlertMetrics]:
+) -> list[AlertMetrics]:
     """Score every (event, horizon, scorer) present in ``rows``.
 
     ``extra_baselines`` scores additional baseline families beyond the
@@ -1496,7 +1493,7 @@ def score_alerts(
     without this function needing to know it exists beyond this one
     generic hook.
     """
-    results: List[AlertMetrics] = []
+    results: list[AlertMetrics] = []
     for name, event_rows in rows.items():
         if not event_rows:
             continue
@@ -1576,14 +1573,14 @@ def score_alerts(
 
 
 def index_row_table(
-    rows: Dict[str, List[IndexRow]],
-    times: Dict[str, EventTimes],
+    rows: dict[str, list[IndexRow]],
+    times: dict[str, EventTimes],
     *,
     horizons: Sequence[float] = HORIZONS_HOURS,
-    baselines: Optional[Dict[Tuple[str, float], BaselineModel]] = None,
-    baseline_features_by_event: Optional[Dict[str, np.ndarray]] = None,
-    context_columns: Optional[Dict[str, np.ndarray]] = None,
-    context_names: Optional[Sequence[str]] = None,
+    baselines: dict[tuple[str, float], BaselineModel] | None = None,
+    baseline_features_by_event: dict[str, np.ndarray] | None = None,
+    context_columns: dict[str, np.ndarray] | None = None,
+    context_names: Sequence[str] | None = None,
     extra_baselines: dict[
         str, tuple[dict[tuple[str, float], _ScoredBaseline], dict[str, np.ndarray]]
     ]
@@ -1611,11 +1608,11 @@ def index_row_table(
     without this function needing any more baseline-specific logic than
     a name and a column prefix.
     """
-    frames: List[pl.DataFrame] = []
+    frames: list[pl.DataFrame] = []
     for name, event_rows in rows.items():
         if not event_rows:
             continue
-        data: Dict[str, List[Optional[float]]] = {
+        data: dict[str, list[float | None]] = {
             "subject_id": [float(r.subject_id) for r in event_rows],
             "visit_id": [float(r.visit_id) for r in event_rows],
             "time_hours": [r.time_hours for r in event_rows],
@@ -1662,7 +1659,7 @@ def _stamp_landmark_protocol_version(table: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def load_index_row_table(path: Union[str, Path]) -> pl.DataFrame:
+def load_index_row_table(path: str | Path) -> pl.DataFrame:
     """Read a dumped index-row table, always logging its protocol version.
 
     ``landmark_protocol_version`` absent entirely means the dump predates
@@ -1706,8 +1703,8 @@ def load_index_row_table(path: Union[str, Path]) -> pl.DataFrame:
 
 
 def _index_rows_from_dump(
-    dump_path: Union[str, Path], alerts: Sequence[AlertEvent]
-) -> List[IndexRow]:
+    dump_path: str | Path, alerts: Sequence[AlertEvent]
+) -> list[IndexRow]:
     """Return the distinct (subject, visit, time) rows of a dump for ``alerts``."""
     dump = load_index_row_table(dump_path)
     names = {a.name for a in alerts}
@@ -1724,12 +1721,12 @@ def _index_rows_from_dump(
 
 
 def verify_rows_match_dump(
-    rows: Dict[str, List[IndexRow]],
-    times: Dict[str, EventTimes],
-    dump_path: Union[str, Path],
+    rows: dict[str, list[IndexRow]],
+    times: dict[str, EventTimes],
+    dump_path: str | Path,
     *,
     horizons: Sequence[float] = HORIZONS_HOURS,
-    ignore_keys: Optional[Set[Tuple[int, int, float]]] = None,
+    ignore_keys: set[tuple[int, int, float]] | None = None,
 ) -> None:
     """Assert a freshly-reconstructed row set exactly matches a saved dump.
 
@@ -1845,7 +1842,7 @@ def verify_rows_match_dump(
 
 # Context columns dumped with the per-row table (names from
 # odyssey.inference.baseline_features.feature_names when the strong set is used).
-ROW_DUMP_CONTEXT: Tuple[str, ...] = (
+ROW_DUMP_CONTEXT: tuple[str, ...] = (
     "hours_into_visit",
     "hours_since_origin",
     "age_years",
@@ -1869,7 +1866,7 @@ ROW_DUMP_CONTEXT: Tuple[str, ...] = (
 # ---------------------------------------------------------------------------
 
 
-def _visit_starts(events: pl.DataFrame) -> Dict[Tuple[int, int], float]:
+def _visit_starts(events: pl.DataFrame) -> dict[tuple[int, int], float]:
     origins = origin_hours(events)
     starts = (
         events.filter(pl.col("time").is_not_null() & pl.col("hadm_id").is_not_null())
@@ -1889,9 +1886,9 @@ def _index_rows_from_events(
     *,
     landmark_hours: float,
     index_mode: str = "landmark",
-    origins: Optional[pl.DataFrame] = None,
-    visit_starts: Optional[Dict[Tuple[int, int], float]] = None,
-) -> Dict[str, List[IndexRow]]:
+    origins: pl.DataFrame | None = None,
+    visit_starts: dict[tuple[int, int], float] | None = None,
+) -> dict[str, list[IndexRow]]:
     """Index rows straight from events (no model), for baseline fitting.
 
     Landmark buckets by default; ``index_mode="visit_end"`` gives one row
@@ -1956,7 +1953,7 @@ def _index_rows_from_events(
     return {a.name: list(rows) for a in alerts}
 
 
-def _landmark_key_set(rows: Sequence[IndexRow]) -> set[Tuple[int, int, float]]:
+def _landmark_key_set(rows: Sequence[IndexRow]) -> set[tuple[int, int, float]]:
     """(subject, visit, time rounded to microseconds) for set comparison.
 
     Rounding guards against float noise between two independently
@@ -1969,7 +1966,7 @@ def _landmark_key_set(rows: Sequence[IndexRow]) -> set[Tuple[int, int, float]]:
 
 
 def _visible_after_truncation(
-    events_binned: pl.DataFrame, truncated: Set[int], max_context: int
+    events_binned: pl.DataFrame, truncated: set[int], max_context: int
 ) -> pl.DataFrame:
     """Return the rows a truncated subject's packed window actually kept.
 
@@ -2002,7 +1999,7 @@ def exposure_mask(
     binner: QuantileBinner,
     max_context: int,
     *,
-    code_allowlist: Optional[Sequence[str]] = None,
+    code_allowlist: Sequence[str] | None = None,
     code_col: str = "code",
     value_col: str = "numeric_value",
 ) -> np.ndarray:
@@ -2130,7 +2127,7 @@ def exposure_mask(
         return np.zeros(len(rows), dtype=bool)
     exposed_events = hours_since_origin(exposed_events, "time", origins)
     first_exposed = exposed_events.group_by("subject_id").agg(pl.col("time").min())
-    first_exposed_hours: Dict[int, float] = dict(
+    first_exposed_hours: dict[int, float] = dict(
         zip(first_exposed["subject_id"], first_exposed["time"])
     )
     return np.array(
@@ -2144,15 +2141,15 @@ def exposure_mask(
 
 
 def verify_packed_landmark_rows(
-    model_rows: Dict[str, List[IndexRow]],
+    model_rows: dict[str, list[IndexRow]],
     events_binned: pl.DataFrame,
     alerts: Sequence[AlertEvent],
     *,
     landmark_hours: float,
-    truncation_boundaries: Dict[int, float],
+    truncation_boundaries: dict[int, float],
     index_mode: str = "landmark",
-    max_context: Optional[int] = None,
-) -> List[str]:
+    max_context: int | None = None,
+) -> list[str]:
     """Compare collect_model_scores' index-row set against the model-free truth.
 
     ``max_context`` is the packed sampler's window (needed whenever
@@ -2267,7 +2264,7 @@ def verify_packed_landmark_rows(
         origins=origins,
         visit_starts=_visit_starts(events_binned),
     )
-    problems: List[str] = []
+    problems: list[str] = []
     for alert in alerts:
         got = _landmark_key_set(model_rows.get(alert.name, []))
         want = _landmark_key_set(expected.get(alert.name, []))
@@ -2292,7 +2289,7 @@ def verify_packed_landmark_rows(
 
 
 def _load_prepared_raw(
-    shard_dir: Union[str, Path], max_shards: Optional[int], config: object, source: str
+    shard_dir: str | Path, max_shards: int | None, config: object, source: str
 ) -> pl.DataFrame:
     """Load one MEDS split and apply the run's own normalize/history-recap prep.
 
@@ -2308,26 +2305,24 @@ def _load_prepared_raw(
 
 
 def _fit_and_score_gbm_baselines(
-    baseline_shard_dir: Optional[Union[str, Path]],
+    baseline_shard_dir: str | Path | None,
     *,
     stream_baseline: bool,
-    max_baseline_shards: Optional[int],
+    max_baseline_shards: int | None,
     config: object,
     source: str,
-    binner: Optional[QuantileBinner],
+    binner: QuantileBinner | None,
     alerts: Sequence[AlertEvent],
     horizons: Sequence[float],
     landmark_hours: float,
     baseline_feature_set: str,
     tune_baselines: bool,
     binned: pl.DataFrame,
-    rows: Dict[str, List[IndexRow]],
+    rows: dict[str, list[IndexRow]],
     task_set: str = "v1",
     index_mode: str = "landmark",
-    prefit_baselines: Optional[Dict[Tuple[str, float], BaselineModel]] = None,
-) -> Tuple[
-    Optional[Dict[Tuple[str, float], BaselineModel]], Optional[Dict[str, np.ndarray]]
-]:
+    prefit_baselines: dict[tuple[str, float], BaselineModel] | None = None,
+) -> tuple[dict[tuple[str, float], BaselineModel] | None, dict[str, np.ndarray] | None]:
     """Fit and score the GBM baselines for one alerts pass.
 
     Fits on ``baseline_shard_dir`` (always clean -- Principle 1, never
@@ -2408,15 +2403,15 @@ def _score_degraded_at_clean_rows(
     concept_names: Sequence[str],
     alerts: Sequence[AlertEvent],
     *,
-    verify_against_dump: Optional[Union[str, Path]],
+    verify_against_dump: str | Path | None,
     num_lanes: int,
     chunk_size: int,
     device: str,
     horizons: Sequence[float],
     backbone: str,
     max_context: int,
-    truncation_boundaries_out: Dict[int, float],
-) -> Tuple[Dict[str, List[IndexRow]], Set[Tuple[int, int, float]]]:
+    truncation_boundaries_out: dict[int, float],
+) -> tuple[dict[str, list[IndexRow]], set[tuple[int, int, float]]]:
     """Missingness protocol: score the CLEAN dump's rows on the degraded record.
 
     The degraded record's own landmark grid is never used (lab lag shifts
@@ -2462,30 +2457,30 @@ def _score_degraded_at_clean_rows(
 
 
 def evaluate_alerts(  # noqa: PLR0912, PLR0915
-    run_dir: Union[str, Path],
-    held_out_shard_dir: Union[str, Path],
+    run_dir: str | Path,
+    held_out_shard_dir: str | Path,
     *,
-    baseline_shard_dir: Optional[Union[str, Path]] = None,
-    prefit_baselines: Optional[Dict[Tuple[str, float], BaselineModel]] = None,
-    fitted_baselines_out: Optional[Dict[Tuple[str, float], BaselineModel]] = None,
-    degraded_shard_dir: Optional[Union[str, Path]] = None,
-    verify_against_dump: Optional[Union[str, Path]] = None,
-    max_shards: Optional[int] = None,
-    max_baseline_shards: Optional[int] = None,
-    alerts: Optional[Sequence[AlertEvent]] = None,
+    baseline_shard_dir: str | Path | None = None,
+    prefit_baselines: dict[tuple[str, float], BaselineModel] | None = None,
+    fitted_baselines_out: dict[tuple[str, float], BaselineModel] | None = None,
+    degraded_shard_dir: str | Path | None = None,
+    verify_against_dump: str | Path | None = None,
+    max_shards: int | None = None,
+    max_baseline_shards: int | None = None,
+    alerts: Sequence[AlertEvent] | None = None,
     horizons: Sequence[float] = HORIZONS_HOURS,
     landmark_hours: float = 4.0,
     num_lanes: int = 8,
     chunk_size: int = 256,
-    device: Optional[str] = None,
-    checkpoint_path: Optional[Union[str, Path]] = None,
+    device: str | None = None,
+    checkpoint_path: str | Path | None = None,
     baseline_feature_set: str = "strong",
     tune_baselines: bool = True,
     stream_baseline: bool = False,
-    dump_rows_path: Optional[Union[str, Path]] = None,
+    dump_rows_path: str | Path | None = None,
     index_mode: str = "landmark",
-    unscoreable_out: Optional[Set[Tuple[int, int, float]]] = None,
-) -> List[AlertMetrics]:
+    unscoreable_out: set[tuple[int, int, float]] | None = None,
+) -> list[AlertMetrics]:
     """End to end: model scores + optional GBM baselines, scored on held-out.
 
     ``dump_rows_path`` writes the per-index-row table of
@@ -2588,8 +2583,8 @@ def evaluate_alerts(  # noqa: PLR0912, PLR0915
         logger.info(
             "[alerts] collecting model scores at %.0fh landmarks", landmark_hours
         )
-    truncation_boundaries: Dict[int, float] = {}
-    unscoreable_keys: Set[Tuple[int, int, float]] = set()
+    truncation_boundaries: dict[int, float] = {}
+    unscoreable_keys: set[tuple[int, int, float]] = set()
     if degraded_shard_dir is not None:
         rows, unscoreable_keys = _score_degraded_at_clean_rows(
             model,
@@ -2677,7 +2672,7 @@ def evaluate_alerts(  # noqa: PLR0912, PLR0915
 
     if dump_rows_path is not None:
         context_cols = None
-        context_names: Optional[List[str]] = None
+        context_names: list[str] | None = None
         if features_by_event is not None and baseline_feature_set in (
             "strong",
             "strong_text",
@@ -2820,7 +2815,7 @@ def _main() -> None:
         horizons = READMISSION_HORIZONS_HOURS
     else:
         horizons = HORIZONS_HOURS
-    chosen_alerts: Optional[List[AlertEvent]] = None
+    chosen_alerts: list[AlertEvent] | None = None
     if args.alerts is not None:
         by_name = {a.name: a for ts in ALERT_TASK_SETS.values() for a in ts}
         unknown = [n for n in args.alerts if n not in by_name]

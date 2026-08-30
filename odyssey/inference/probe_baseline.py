@@ -43,7 +43,7 @@ more registry entry, not a redesign.
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Optional, cast
+from typing import cast
 
 import numpy as np
 import polars as pl
@@ -286,14 +286,14 @@ class ProbeCell:
     """One task's probe/GBM comparison, with subject-clustered bootstrap CIs."""
 
     task: str
-    horizon_hours: Optional[float]
+    horizon_hours: float | None
     n_at_risk: int
     n_positive: int
-    probe_pre_auroc: Optional[float] = None
-    probe_post_auroc: Optional[float] = None
-    gbm_auroc: Optional[float] = None
-    probe_post_ci: Optional[BootstrapAUROC] = None
-    gbm_ci: Optional[BootstrapAUROC] = None
+    probe_pre_auroc: float | None = None
+    probe_post_auroc: float | None = None
+    gbm_auroc: float | None = None
+    probe_post_ci: BootstrapAUROC | None = None
+    gbm_ci: BootstrapAUROC | None = None
 
 
 @dataclass
@@ -329,7 +329,7 @@ def run_probe_benchmark(
     num_lanes: int = 64,
     chunk_size: int = 512,
     horizons: Sequence[float] = HORIZONS_HOURS,
-    device: Optional[str] = None,
+    device: str | None = None,
     n_boot: int = 1000,
     seed: int = 0,
 ) -> ProbeBenchmarkResult:
@@ -557,7 +557,7 @@ def _rows_from_keys(keys: Sequence[Key]) -> list[IndexRow]:
 
 def _cell_labels(
     rows: list[IndexRow], times: EventTimes, horizon: float
-) -> Optional[tuple[np.ndarray, np.ndarray]]:
+) -> tuple[np.ndarray, np.ndarray] | None:
     """At-risk (non-censored) labels and the row mask they came from, or None."""
     outcomes = [outcome_at_horizon(r, times, horizon) for r in rows]
     mask = np.array([o is not None for o in outcomes])
@@ -577,7 +577,7 @@ def _bootstrap_ci(
     *,
     n_boot: int,
     seed: int,
-) -> Optional[BootstrapAUROC]:
+) -> BootstrapAUROC | None:
     """Subject-clustered bootstrap AUROC for a fitted ``_ScoredBaseline``-like model."""
     p = model.predict_proba(x)  # type: ignore[attr-defined]
     return bootstrap_auroc(y, p, subject_ids, n_boot=n_boot, seed=seed)

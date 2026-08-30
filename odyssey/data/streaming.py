@@ -61,8 +61,9 @@ target to begin with.
   events later in their stay could still change the true label.
 """
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Iterator, List, NamedTuple, Optional
+from typing import NamedTuple
 
 import torch
 
@@ -93,19 +94,19 @@ class StreamingChunk(NamedTuple):
 class _LaneBuffer:
     """One lane's not-yet-consumed tokens, with a per-token reset flag."""
 
-    concept_ids: List[int] = field(default_factory=list)
-    type_ids: List[int] = field(default_factory=list)
-    time_stamps: List[float] = field(default_factory=list)
-    ages: List[float] = field(default_factory=list)
-    visit_orders: List[int] = field(default_factory=list)
-    visit_segments: List[int] = field(default_factory=list)
-    reset: List[bool] = field(default_factory=list)
-    subject_ids: List[int] = field(default_factory=list)
-    patient_end: List[bool] = field(default_factory=list)
-    visit_ids: List[int] = field(default_factory=list)
-    visit_end: List[bool] = field(default_factory=list)
-    values: List[float] = field(default_factory=list)
-    static: List[bool] = field(default_factory=list)
+    concept_ids: list[int] = field(default_factory=list)
+    type_ids: list[int] = field(default_factory=list)
+    time_stamps: list[float] = field(default_factory=list)
+    ages: list[float] = field(default_factory=list)
+    visit_orders: list[int] = field(default_factory=list)
+    visit_segments: list[int] = field(default_factory=list)
+    reset: list[bool] = field(default_factory=list)
+    subject_ids: list[int] = field(default_factory=list)
+    patient_end: list[bool] = field(default_factory=list)
+    visit_ids: list[int] = field(default_factory=list)
+    visit_end: list[bool] = field(default_factory=list)
+    values: list[float] = field(default_factory=list)
+    static: list[bool] = field(default_factory=list)
 
     def __len__(self) -> int:
         """Return the number of unconsumed tokens in this lane."""
@@ -231,19 +232,19 @@ def _repad(window: "_Window", real_len: int) -> "_Window":
 class _Window:
     """A padded, fixed-length peek into a lane's buffer."""
 
-    concept_ids: List[int]
-    type_ids: List[int]
-    time_stamps: List[float]
-    ages: List[float]
-    visit_orders: List[int]
-    visit_segments: List[int]
-    reset: List[bool]
-    subject_ids: List[int]
-    patient_end: List[bool]
-    visit_ids: List[int]
-    visit_end: List[bool]
-    values: List[float]
-    static: List[bool]
+    concept_ids: list[int]
+    type_ids: list[int]
+    time_stamps: list[float]
+    ages: list[float]
+    visit_orders: list[int]
+    visit_segments: list[int]
+    reset: list[bool]
+    subject_ids: list[int]
+    patient_end: list[bool]
+    visit_ids: list[int]
+    visit_end: list[bool]
+    values: list[float]
+    static: list[bool]
     n_real: int
 
 
@@ -286,7 +287,7 @@ class PackedLaneSampler:
                 return
             lane.append_patient(seq, reset_prob=self.reset_prob, rng=self._rng)
 
-    def next_chunk(self) -> Optional[StreamingChunk]:
+    def next_chunk(self) -> StreamingChunk | None:
         """Advance every lane by up to ``chunk_size`` tokens.
 
         A lane advances by fewer than ``chunk_size`` tokens (the rest of

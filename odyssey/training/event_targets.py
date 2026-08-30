@@ -8,8 +8,8 @@ are not at risk and are masked out. Times are hours on the sequence time
 origin, exactly like chunk time stamps, so the gap is a plain subtraction.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Dict, List, Sequence, Tuple
 
 import torch
 
@@ -35,15 +35,15 @@ class EventTimeTables:
     """
 
     def __init__(
-        self, times: Dict[str, EventTimes], event_names: Sequence[str]
+        self, times: dict[str, EventTimes], event_names: Sequence[str]
     ) -> None:
         self.event_names = list(event_names)
         self.times = [times[name] for name in self.event_names]
 
-    def lookup(self, subject_id: int, visit_id: int) -> Tuple[List[float], List[float]]:
+    def lookup(self, subject_id: int, visit_id: int) -> tuple[list[float], list[float]]:
         """``(onsets, censors)`` per event for one key; ``inf`` when unknown."""
-        onsets: List[float] = []
-        censors: List[float] = []
+        onsets: list[float] = []
+        censors: list[float] = []
         for et in self.times:
             key = (subject_id, -1 if et.subject_scoped else visit_id)
             onsets.append(et.onset.get(key, float("inf")))

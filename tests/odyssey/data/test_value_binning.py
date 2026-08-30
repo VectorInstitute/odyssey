@@ -2,7 +2,6 @@
 
 import json
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 import polars as pl
 import pytest
@@ -32,7 +31,7 @@ from odyssey.data.value_binning import (
 )
 
 
-def _events(rows: List[Tuple[str, Optional[float]]]) -> pl.DataFrame:
+def _events(rows: list[tuple[str, float | None]]) -> pl.DataFrame:
     """rows: list of (code, numeric_value_or_None)."""
     return pl.DataFrame(
         rows, schema={"code": pl.Utf8, "numeric_value": pl.Float64}, orient="row"
@@ -159,7 +158,7 @@ _NO_FIXED_THRESHOLD = (
 )
 
 
-def _threshold_rules(concept: ConceptDefinition) -> List[Tuple[str, float, str]]:
+def _threshold_rules(concept: ConceptDefinition) -> list[tuple[str, float, str]]:
     """Yield every (code_prefix, threshold, direction) reachable from a concept.
 
     Only :class:`~odyssey.data.concepts.ConceptRule` and
@@ -187,7 +186,7 @@ def _threshold_rules(concept: ConceptDefinition) -> List[Tuple[str, float, str]]
     have no reason to share a bin edge with, say, ``tachycardia``'s
     HR > 100.
     """
-    out: List[Tuple[str, float, str]] = []
+    out: list[tuple[str, float, str]] = []
     for rule in concept.rules:
         if isinstance(rule, AnyOf):
             for sub_rule in rule.rules:
@@ -477,7 +476,7 @@ def test_clinical_ranges_skips_a_prefix_whose_unit_tag_is_not_curated(
             prefixes = prefixes | {"LAB//TEMP//KELVIN"}
         return prefixes
 
-    def fake_unit_for(prefix: str, *, source: str) -> Optional[str]:
+    def fake_unit_for(prefix: str, *, source: str) -> str | None:
         if prefix == "LAB//TEMP//KELVIN":
             return "K"
         return real_unit_for(prefix, source=source)
@@ -510,7 +509,7 @@ def test_gemini_creatinine_uses_si_clinical_range() -> None:
     assert fallback["LAB//3020564//"] == "CRITICAL"
 
 
-def _tail_events(values: List[float]) -> pl.DataFrame:
+def _tail_events(values: list[float]) -> pl.DataFrame:
     return pl.DataFrame({"code": ["LAB//X"] * len(values), "numeric_value": values})
 
 

@@ -6,8 +6,6 @@ directly (no model, no streaming) with a signal planted in a specific slot,
 and check the probes find it -- and report ~0 when a slot is pure noise.
 """
 
-from typing import Optional, Tuple
-
 import torch
 
 from odyssey.inference.leakage import (
@@ -36,7 +34,7 @@ def _synthetic_bank(
     n: int,
     *,
     seed: int,
-    leak_slot: Optional[int] = None,
+    leak_slot: int | None = None,
     leak_strength: float = 8.0,
 ) -> LeakageBank:
     """Build a bank with independent random probs/embeddings/labels.
@@ -79,8 +77,8 @@ def _synthetic_bank(
 
 
 def _three_splits(
-    *, leak_slot: Optional[int] = None
-) -> Tuple[LeakageBank, LeakageBank, LeakageBank]:
+    *, leak_slot: int | None = None
+) -> tuple[LeakageBank, LeakageBank, LeakageBank]:
     return (
         _synthetic_bank(3000, seed=0, leak_slot=leak_slot),
         _synthetic_bank(1000, seed=1, leak_slot=leak_slot),

@@ -5,7 +5,7 @@ sequence (token type, time since previous event, patient age, visit
 order/segment) into a single embedding consumed by any sequence backbone.
 """
 
-from typing import Optional, Sequence, Tuple
+from collections.abc import Sequence
 
 import torch
 from torch import nn
@@ -29,7 +29,7 @@ class TimeEmbeddingLayer(nn.Module):
         nn.init.xavier_uniform_(self.phi)
 
     def forward(
-        self, time_stamps: torch.Tensor, prev_value: Optional[torch.Tensor] = None
+        self, time_stamps: torch.Tensor, prev_value: torch.Tensor | None = None
     ) -> torch.Tensor:
         """Apply time embedding to the input time stamps.
 
@@ -85,7 +85,7 @@ def value_features(values: torch.Tensor) -> torch.Tensor:
 #: (``[-VALUE_Z_CLIP, VALUE_Z_CLIP]``, see ``odyssey.data.value_binning``)
 #: in under one period and the highest resolves changes an order of
 #: magnitude finer than the standardization scale itself.
-_FOURIER_FREQUENCIES: Tuple[float, ...] = tuple(2.0**k for k in range(8))
+_FOURIER_FREQUENCIES: tuple[float, ...] = tuple(2.0**k for k in range(8))
 #: Width of :func:`value_features_fourier`'s output: sin+cos per freq, plus ``has``.
 N_FOURIER_FEATURES = 2 * len(_FOURIER_FREQUENCIES) + 1
 
@@ -177,7 +177,7 @@ class ClinicalEventEmbeddings(nn.Module):
         # features: [z, z^2, has_value] (or the wider Fourier encoding);
         # z is already clipped by the binner.
         value_in = N_FOURIER_FEATURES if use_value_fourier else 3
-        self.value_proj: Optional[nn.Linear] = (
+        self.value_proj: nn.Linear | None = (
             nn.Linear(value_in, hidden_size) if use_values else None
         )
 
@@ -206,7 +206,7 @@ class ClinicalEventEmbeddings(nn.Module):
         self,
         input_ids: torch.Tensor,
         aux: AuxiliaryInputs,
-        prev_time_stamps: Optional[torch.Tensor] = None,
+        prev_time_stamps: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Fuse token identity with clinical sequence structure.
 
@@ -252,11 +252,11 @@ class CachedEHREmbeddings(nn.Module):
         """Initialize the cached EHR embeddings."""
         super().__init__()
         self.embeddings = ClinicalEventEmbeddings(*args, **kwargs)  # type: ignore[arg-type]
-        self._aux: Optional[AuxiliaryInputs] = None
-        self._prev_time_stamps: Optional[torch.Tensor] = None
+        self._aux: AuxiliaryInputs | None = None
+        self._prev_time_stamps: torch.Tensor | None = None
 
     def set_aux_inputs(
-        self, aux: AuxiliaryInputs, prev_time_stamps: Optional[torch.Tensor] = None
+        self, aux: AuxiliaryInputs, prev_time_stamps: torch.Tensor | None = None
     ) -> None:
         """Cache auxiliary clinical inputs before the backbone forward call."""
         self._aux = aux

@@ -10,7 +10,8 @@ learns anything meaningful on real data.
 """
 
 import contextlib
-from typing import Dict, Iterator, List, cast
+from collections.abc import Iterator
+from typing import cast
 
 import pytest
 import torch
@@ -202,7 +203,7 @@ def test_hybrid_backbone_mamba_branch_carries_state_matches_one_shot() -> None:
     full_len = 2 * SEQ_LEN
     full_batch = _make_batch(batch=2, seq_len=full_len, device="cuda")
 
-    captured: Dict[str, List[torch.Tensor]] = {}
+    captured: dict[str, list[torch.Tensor]] = {}
     block = cast(HybridBlock, backbone.layers[0])
     original_forward = block.forward
 
@@ -382,14 +383,14 @@ def test_hybrid_backbone_output_also_differs_when_attention_is_zeroed() -> None:
 
 
 @contextlib.contextmanager
-def _capturing_mamba_out(block: HybridBlock) -> Iterator[List[torch.Tensor]]:
+def _capturing_mamba_out(block: HybridBlock) -> Iterator[list[torch.Tensor]]:
     """Monkeypatch a HybridBlock to record its pre-merge Mamba output per call.
 
     Same technique as test_hybrid_backbone_mamba_branch_carries_state_
     matches_one_shot, factored out so a chunk-size sweep can reuse it
     without re-deriving the patch for every split.
     """
-    captured: List[torch.Tensor] = []
+    captured: list[torch.Tensor] = []
     original_forward = block.forward
 
     def _capture(hidden_states, residual, **kwargs):  # type: ignore[no-untyped-def]

@@ -18,8 +18,6 @@ that, and "truth" hurt more than "flip" purely because, before the event,
 the flipped label was the accurate one.
 """
 
-from typing import Optional, Tuple
-
 import torch
 
 from odyssey.data.streaming import StreamingChunk
@@ -31,11 +29,11 @@ def position_running_labels(
     chunk: StreamingChunk,
     concept_labels: ConceptLabelDict,
     concept_mask: ConceptLabelDict,
-    concept_first_times: Optional[ConceptLabelDict],
+    concept_first_times: ConceptLabelDict | None,
     *,
     supervision: ConceptSupervision,
     num_concepts: int,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Derive running ground-truth labels and observed-masks per chunk position.
 
     Returns ``(labels, observed)``, each ``(lanes, T, num_concepts)`` on
@@ -112,8 +110,8 @@ def randint_intervention(
     supervision: ConceptSupervision,
     num_concepts: int,
     prob: float,
-    generator: Optional[torch.Generator] = None,
-) -> Optional[BottleneckIntervention]:
+    generator: torch.Generator | None = None,
+) -> BottleneckIntervention | None:
     """Build one training step's RandInt intervention, or None if ``prob <= 0``.
 
     CEM's intervention-aware training (Espinosa Zarlenga et al., 2022,

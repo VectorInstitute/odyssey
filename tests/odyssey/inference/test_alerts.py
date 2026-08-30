@@ -2,7 +2,6 @@
 
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import polars as pl
@@ -65,7 +64,7 @@ def _events(n_subjects: int = 24) -> pl.DataFrame:
     Every other subject spikes at hour 12 and starts norepinephrine at
     hour 14; every fourth also gets an ICU admission at hour 6.
     """
-    rows: List[Tuple[int, str, datetime, Optional[float], int]] = []
+    rows: list[tuple[int, str, datetime, float | None, int]] = []
     for sid in range(1, n_subjects + 1):
         hadm = 1000 + sid
         for h in range(24):
@@ -511,7 +510,7 @@ def test_verify_packed_landmark_rows_passes_on_agreeing_rows() -> None:
     concepts = concepts_for_source("mimic_iv")
     model = _transformer_model(len(vocab), len(concepts))
 
-    truncation_boundaries: Dict[int, float] = {}
+    truncation_boundaries: dict[int, float] = {}
     model_rows = collect_model_scores(
         model,
         binned,
@@ -568,7 +567,7 @@ def test_verify_packed_landmark_rows_tail_aware_all_three_arms() -> None:
     same row set must each be caught, and a third (legitimate
     before-boundary shrinkage) must not be.
     """
-    rows_raw: List[Tuple[int, str, datetime, Optional[float], int]] = []
+    rows_raw: list[tuple[int, str, datetime, float | None, int]] = []
     for h in range(40):
         rows_raw.append((1, "LAB//220045//bpm", T0 + timedelta(hours=h), 80.0, 1001))
     for h in range(8):
@@ -589,7 +588,7 @@ def test_verify_packed_landmark_rows_tail_aware_all_three_arms() -> None:
     concepts = concepts_for_source("mimic_iv")
     model = _transformer_model(len(vocab), len(concepts))
 
-    truncation_boundaries: Dict[int, float] = {}
+    truncation_boundaries: dict[int, float] = {}
     model_rows = collect_model_scores(
         model,
         binned,
@@ -769,7 +768,7 @@ def test_exposure_mask_respects_truncation_a_dropped_extreme_value_does_not_expo
     Subject 2: the identical timeline, but never truncated (max_context
     covers it whole) -- the same spike must expose it.
     """
-    rows_raw: List[Tuple[int, str, datetime, Optional[float], int]] = []
+    rows_raw: list[tuple[int, str, datetime, float | None, int]] = []
     for h in range(20):
         val = 200.0 if h == 0 else 82.0
         rows_raw.append((1, "LAB//220045//bpm", T0 + timedelta(hours=h), val, 1001))
@@ -1220,7 +1219,7 @@ def test_index_row_table_has_scores_outcomes_and_gbm_columns() -> None:
 class _FakeClassifier:
     """Duck-typed classifier: only the ``classes_`` attribute matters here."""
 
-    def __init__(self, classes: List[int]) -> None:
+    def __init__(self, classes: list[int]) -> None:
         self.classes_ = np.array(classes)
 
 
@@ -1299,7 +1298,7 @@ def test_load_index_row_table_warns_on_mixed_versions(
 
 
 def _write_dump(
-    path: Path, rows: Dict[str, List[IndexRow]], times, horizons=(8.0,)
+    path: Path, rows: dict[str, list[IndexRow]], times, horizons=(8.0,)
 ) -> None:
     index_row_table(rows, times, horizons=horizons).write_parquet(path)
 
@@ -1504,7 +1503,7 @@ def _write_event_shards(
     shard_dir.mkdir(parents=True)
     sid = 0
     for k in range(n_shards):
-        rows: List[Tuple[int, str, datetime, Optional[float], int]] = []
+        rows: list[tuple[int, str, datetime, float | None, int]] = []
         for _ in range(subjects_per_shard):
             sid += 1
             hadm = 1000 + sid
@@ -1552,7 +1551,7 @@ def test_fit_baselines_streaming_event_times_match_in_memory(tmp_path: Path) -> 
     prepare = make_preparer(
         normalize_medications=False, history_recap=False, source="mimic_iv"
     )
-    streamed_times: Dict[str, EventTimes] = {}
+    streamed_times: dict[str, EventTimes] = {}
     for path in paths:
         raw = prepare(load_meds_shard(path))
         merge_event_times(
@@ -1786,7 +1785,7 @@ class _FakeBaselineModel:
         self.value = value
         self.feature_set = "fake"
         self.n_features = n_features
-        self.params: Dict[str, float] = {"fixed_value": value}
+        self.params: dict[str, float] = {"fixed_value": value}
 
     def predict_proba(self, x: np.ndarray) -> np.ndarray:
         return np.full(x.shape[0], self.value)
@@ -2044,7 +2043,7 @@ def test_main_allows_a_fresh_output_without_overwrite(
 
 def _readmission_events(n_subjects: int = 12) -> pl.DataFrame:
     """Two visits per subject; odd subjects are readmitted within 30 days."""
-    rows: List[Tuple[int, str, datetime, Optional[float], Optional[int]]] = []
+    rows: list[tuple[int, str, datetime, float | None, int | None]] = []
     for sid in range(1, n_subjects + 1):
         first, second = 2000 + sid, 3000 + sid
         for h in range(10):
@@ -2290,7 +2289,7 @@ def test_verify_packed_landmark_rows_agrees_on_real_mimic_data_landmark_mode() -
     alerts = alert_events_for("v2")
     model = _transformer_model(len(vocab), len(concepts))
 
-    truncation_boundaries: Dict[int, float] = {}
+    truncation_boundaries: dict[int, float] = {}
     model_rows = collect_model_scores(
         model,
         binned,
@@ -2326,7 +2325,7 @@ def test_verify_packed_landmark_rows_agrees_on_real_mimic_data_landmark_mode() -
 # ---------------------------------------------------------------------------
 
 
-def _rows_by_key(rows: List[IndexRow]) -> Dict[Tuple[int, int, float], IndexRow]:
+def _rows_by_key(rows: list[IndexRow]) -> dict[tuple[int, int, float], IndexRow]:
     return {(r.subject_id, r.visit_id, round(r.time_hours, 6)): r for r in rows}
 
 

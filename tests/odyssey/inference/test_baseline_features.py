@@ -1,7 +1,6 @@
 """Tests for the strong (best-effort) baseline feature builder."""
 
 from datetime import datetime, timedelta
-from typing import List, Optional, Tuple
 
 import numpy as np
 import polars as pl
@@ -25,7 +24,7 @@ T0 = datetime(2024, 1, 1)
 
 
 def _frame(
-    rows: List[Tuple[int, str, Optional[datetime], Optional[float], Optional[int]]],
+    rows: list[tuple[int, str, datetime | None, float | None, int | None]],
 ):
     return pl.DataFrame(
         rows,

@@ -7,7 +7,6 @@ registry entry). Neither failure path had ever been exercised.
 """
 
 from datetime import datetime, timedelta
-from typing import List, Optional, Tuple
 
 import polars as pl
 import pytest
@@ -27,11 +26,11 @@ from odyssey.data.alert_events import (
 
 T0 = datetime(2024, 1, 1)
 
-_EventRow = Tuple[int, str, datetime, Optional[float], int]
+_EventRow = tuple[int, str, datetime, float | None, int]
 
 
 def _events() -> pl.DataFrame:
-    rows: List[_EventRow] = [
+    rows: list[_EventRow] = [
         (1, "LAB//220045//bpm", T0, 80.0, 1001),
         (1, "LAB//220045//bpm", T0 + timedelta(hours=1), 80.0, 1001),
     ]
@@ -85,7 +84,7 @@ def test_next_visit_onsets_finds_the_genuine_next_admission_not_a_later_one() ->
     real discharge and the stray event. The correct onset for hadm_id 100
     is hadm_id 101's t=50h, not hadm_id 102's t=300h.
     """
-    rows: List[_EventRow] = [
+    rows: list[_EventRow] = [
         # hadm_id 100: real events end at t=10h...
         (1, "LAB//220045//bpm", T0, 80.0, 100),
         (1, "LAB//220045//bpm", T0 + timedelta(hours=10), 80.0, 100),
@@ -119,7 +118,7 @@ def test_next_visit_onsets_finds_the_genuine_next_admission_not_a_later_one() ->
 
 def test_visit_envelope_reports_first_and_last_event_hours_per_visit() -> None:
     """(subject, visit) -> (start, end) in hours-since-origin, two visits."""
-    rows: List[_EventRow] = [
+    rows: list[_EventRow] = [
         # subject 1, hadm 100: origin at t=0, spans 0h to 10h.
         (1, "LAB//220045//bpm", T0, 80.0, 100),
         (1, "LAB//220045//bpm", T0 + timedelta(hours=10), 80.0, 100),
@@ -153,7 +152,7 @@ def test_visit_envelope_reports_first_and_last_event_hours_per_visit() -> None:
 
 def test_visit_envelope_ignores_rows_with_no_hadm_id() -> None:
     """Static/subject-scoped rows (no hadm_id) must not create a phantom visit."""
-    rows: List[Tuple[int, str, datetime, Optional[float], Optional[int]]] = [
+    rows: list[tuple[int, str, datetime, float | None, int | None]] = [
         (1, "LAB//220045//bpm", T0, 80.0, 100),
         (1, "LAB//220045//bpm", T0 + timedelta(hours=10), 80.0, 100),
         (1, "GENDER//F", T0, None, None),
@@ -205,7 +204,7 @@ def test_code_regex_onset_matches_anywhere_in_the_code_case_insensitively() -> N
     (odyssey.inference.baseline_features): case-insensitive, substring
     search over the raw code, not a prefix.
     """
-    rows: List[_EventRow] = [
+    rows: list[_EventRow] = [
         (1, "LAB//220045//bpm", T0, 80.0, 1001),
         # mixed case, mid-string -- must still match a lowercase pattern
         (

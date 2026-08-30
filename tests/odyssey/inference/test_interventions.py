@@ -2,7 +2,6 @@
 
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Tuple
 
 import polars as pl
 import pytest
@@ -82,7 +81,7 @@ def _model(vocab_size: int) -> ConceptBottleneckSequenceModel:
     )
 
 
-def _labels_and_masks() -> Tuple[Dict[int, torch.Tensor], Dict[int, torch.Tensor]]:
+def _labels_and_masks() -> tuple[dict[int, torch.Tensor], dict[int, torch.Tensor]]:
     labels = {
         1: torch.tensor([1.0, 0.0, 1.0]),
         2: torch.tensor([0.0, 0.0, 0.0]),

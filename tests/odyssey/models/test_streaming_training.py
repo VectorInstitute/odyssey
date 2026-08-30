@@ -7,7 +7,7 @@ real EHRHybridBackbone behaves the same way; that needs
 ``tests/odyssey/models/backbones/test_hybrid_gpu.py`` on a CUDA host.
 """
 
-from typing import Dict, Iterator, List
+from collections.abc import Iterator
 
 import torch
 import torch.nn.functional as F  # noqa: N812
@@ -44,7 +44,7 @@ def _seq(subject_id: int, n: int) -> PatientSequence:
     )
 
 
-def _patients(seqs: List[PatientSequence]) -> Iterator[PatientSequence]:
+def _patients(seqs: list[PatientSequence]) -> Iterator[PatientSequence]:
     return iter(seqs)
 
 
@@ -67,7 +67,7 @@ def _make_model() -> ConceptBottleneckSequenceModel:
     )
 
 
-def _labels(subject_ids: List[int]) -> Dict[int, torch.Tensor]:
+def _labels(subject_ids: list[int]) -> dict[int, torch.Tensor]:
     return {sid: torch.randint(0, 2, (NUM_CONCEPTS,)).float() for sid in subject_ids}
 
 
@@ -337,7 +337,7 @@ def test_baseline_model_streaming_loss_and_training_loop() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _seq_visits(subject_id: int, visit_ids: List[int]) -> PatientSequence:
+def _seq_visits(subject_id: int, visit_ids: list[int]) -> PatientSequence:
     n = len(visit_ids)
     last = {}
     for i, v in enumerate(visit_ids):
@@ -349,7 +349,7 @@ def _seq_visits(subject_id: int, visit_ids: List[int]) -> PatientSequence:
     return seq
 
 
-def _visit_labels(keys: List[tuple]) -> Dict[tuple, torch.Tensor]:
+def _visit_labels(keys: list[tuple]) -> dict[tuple, torch.Tensor]:
     return {k: torch.randint(0, 2, (NUM_CONCEPTS,)).float() for k in keys}
 
 
@@ -426,7 +426,7 @@ def test_concept_pos_weight_scales_positive_term() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _first_times(subject_ids: List[int]) -> Dict[int, torch.Tensor]:
+def _first_times(subject_ids: list[int]) -> dict[int, torch.Tensor]:
     # every concept triggers at hour 0: running label == stay label
     return {sid: torch.zeros(NUM_CONCEPTS) for sid in subject_ids}
 

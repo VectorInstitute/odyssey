@@ -43,16 +43,10 @@ special case of it.
 
 import functools
 import warnings
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import (
     Any,
-    Callable,
-    Dict,
-    List,
-    Optional,
-    Sequence,
-    Set,
-    Tuple,
     TypeVar,
     cast,
 )
@@ -66,16 +60,16 @@ from odyssey.data.code_mapping import prefixes_for_loinc
 class SofaSourceConfig:
     """Source-specific, non-LOINC ingredients of the SOFA score."""
 
-    norepinephrine: Tuple[str, ...]
+    norepinephrine: tuple[str, ...]
     """Infusion code prefixes (START rows carry the rate, mcg/kg/min)."""
-    epinephrine: Tuple[str, ...]
-    dopamine: Tuple[str, ...]
-    dobutamine: Tuple[str, ...]
+    epinephrine: tuple[str, ...]
+    dopamine: tuple[str, ...]
+    dobutamine: tuple[str, ...]
     infusion_start_prefix: str
     infusion_end_prefix: str
-    ventilation_start: Tuple[str, ...]
-    ventilation_end: Tuple[str, ...]
-    daily_weight: Tuple[str, ...] = ()
+    ventilation_start: tuple[str, ...]
+    ventilation_end: tuple[str, ...]
+    daily_weight: tuple[str, ...] = ()
     """Code prefixes of the recurring charted body weight, in kg.
 
     Body weight is only needed by :func:`urine_output_rate` (KDIGO's
@@ -83,13 +77,13 @@ class SofaSourceConfig:
     weight fields empty: the rate criterion is then simply unassessable
     there, exactly as it is for a key with no weight charted.
     """
-    admission_weight: Tuple[str, ...] = ()
+    admission_weight: tuple[str, ...] = ()
     """Code prefixes of the once-per-stay admission weight, in kg (the
     fallback :func:`urine_output_rate` uses before any recurring weight
     has been charted)."""
 
 
-SOFA_SOURCE_CONFIG: Dict[str, SofaSourceConfig] = {
+SOFA_SOURCE_CONFIG: dict[str, SofaSourceConfig] = {
     "mimic_iv": SofaSourceConfig(
         norepinephrine=("221906",),
         epinephrine=("221289",),
@@ -120,7 +114,7 @@ _GCS_EYE, _GCS_VERBAL, _GCS_MOTOR = "9267-6", "9270-0", "9268-4"
 _CREATININE = "2160-0"
 _URINE = "9187-6"
 
-COMPONENTS: Tuple[str, ...] = (
+COMPONENTS: tuple[str, ...] = (
     "respiration",
     "coagulation",
     "liver",
@@ -167,8 +161,8 @@ def _starts_with_any(col: str, prefixes: Sequence[str]) -> pl.Expr:
     return expr
 
 
-def _loinc_prefixes(loincs: Sequence[str], source: str) -> List[str]:
-    out: List[str] = []
+def _loinc_prefixes(loincs: Sequence[str], source: str) -> list[str]:
+    out: list[str] = []
     for loinc in loincs:
         out.extend(sorted(prefixes_for_loinc(loinc, source=source)))
     return out
@@ -213,7 +207,7 @@ def _scored(
 
 
 def _band(
-    value: pl.Expr, bands: Sequence[Tuple[float, int]], *, ascending: bool
+    value: pl.Expr, bands: Sequence[tuple[float, int]], *, ascending: bool
 ) -> pl.Expr:
     """Piecewise score: ``bands`` as (threshold, score) from mildest to worst.
 
@@ -291,7 +285,7 @@ def component_observations(  # noqa: PLR0912, PLR0915
     function only turns raw readings into per-reading component scores.
     """
     cfg = SOFA_SOURCE_CONFIG[source]
-    parts: List[pl.DataFrame] = []
+    parts: list[pl.DataFrame] = []
 
     def num(loincs: Sequence[str]) -> pl.DataFrame:
         return _numeric(
@@ -360,7 +354,7 @@ def component_observations(  # noqa: PLR0912, PLR0915
         pl.col(code_col).str.strip_prefix(cfg.infusion_end_prefix).alias("_item"),
     )
 
-    def infusion_points(items: Tuple[str, ...]) -> pl.DataFrame:
+    def infusion_points(items: tuple[str, ...]) -> pl.DataFrame:
         starts = events.filter(
             pl.col(code_col).str.starts_with(cfg.infusion_start_prefix)
             & _starts_with_any(code_col, [cfg.infusion_start_prefix + i for i in items])
@@ -496,7 +490,7 @@ def assessable_keys(
     code_col: str = "code",
     value_col: str = "numeric_value",
     time_col: str = "time",
-) -> Set[object]:
+) -> set[object]:
     """Keys with at least one numeric reading of any SOFA ingredient.
 
     The "observed" mask for SOFA-derived concepts: a normal platelet count
@@ -819,7 +813,7 @@ def sofa_timeseries(
     code_col: str = "code",
     value_col: str = "numeric_value",
     time_col: str = "time",
-    grid_times: Optional[pl.DataFrame] = None,
+    grid_times: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """Return the running SOFA total per key at every component observation time.
 

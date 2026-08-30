@@ -43,9 +43,10 @@ import json
 import logging
 import math
 import time
+from collections.abc import Iterator, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Sequence, Tuple, Union, cast
+from typing import cast
 
 import polars as pl
 import torch
@@ -67,8 +68,8 @@ from odyssey.training.train import _move_chunk_to_device
 
 logger = logging.getLogger(__name__)
 
-HORIZONS: Dict[str, float] = {"1h": 1.0, "8h": 8.0, "24h": 24.0}
-DEFAULT_HEADS: Tuple[str, ...] = ("hazard", "hazard_mlp", "categorical", "lognormal3")
+HORIZONS: dict[str, float] = {"1h": 1.0, "8h": 8.0, "24h": 24.0}
+DEFAULT_HEADS: tuple[str, ...] = ("hazard", "hazard_mlp", "categorical", "lognormal3")
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +103,7 @@ class FeatureBank:
 
     @staticmethod
     def concat(
-        banks: Sequence["FeatureBank"], max_positions: Optional[int]
+        banks: Sequence["FeatureBank"], max_positions: int | None
     ) -> "FeatureBank":
         """Stack per-shard banks (same sample rate), capped at ``max_positions``."""
         if not banks:
@@ -129,7 +130,7 @@ def collect_feature_bank(
     num_lanes: int = 8,
     chunk_size: int = 256,
     device: str = "cpu",
-    max_positions: Optional[int] = None,
+    max_positions: int | None = None,
 ) -> FeatureBank:
     """One frozen streaming pass; bank head features and gap targets.
 
@@ -145,8 +146,8 @@ def collect_feature_bank(
     sampler = PackedLaneSampler(
         patients, num_lanes=num_lanes, chunk_size=chunk_size, reset_prob=0.0
     )
-    feats: List[torch.Tensor] = []
-    gaps_out: List[torch.Tensor] = []
+    feats: list[torch.Tensor] = []
+    gaps_out: list[torch.Tensor] = []
     seen = 0
     kept = 0
     state = None
@@ -199,7 +200,7 @@ def collect_feature_bank(
 # ---------------------------------------------------------------------------
 
 
-def _bin_left_edges(edges: Sequence[float]) -> Tuple[torch.Tensor, torch.Tensor]:
+def _bin_left_edges(edges: Sequence[float]) -> tuple[torch.Tensor, torch.Tensor]:
     """Return (left, right) hour edges of bins 1..len(edges)+1 (open bin: right=inf)."""
     e = torch.tensor(list(edges), dtype=torch.float64)
     left = torch.cat([torch.zeros(1, dtype=torch.float64), e])
@@ -297,7 +298,7 @@ class LogNormalMixtureProbe(ProbeHead):
 
     def _params(
         self, features: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         features = features.float()
         log_p_zero = F.logsigmoid(self.zero(features)).squeeze(-1)
         log_p_pos = F.logsigmoid(-self.zero(features)).squeeze(-1)
@@ -379,7 +380,7 @@ def make_head(name: str, in_features: int, edges: Sequence[float]) -> ProbeHead:
 class FitTrace:
     """Per-epoch tuning NLL and the epoch chosen by early stopping."""
 
-    tuning_nll: List[float] = field(default_factory=list)
+    tuning_nll: list[float] = field(default_factory=list)
     best_epoch: int = -1
     seconds: float = 0.0
 
@@ -449,13 +450,13 @@ class ProbeMetrics:
     n_positions: int
     bin_nll: float
     same_instant_accuracy: float
-    calibration: Dict[str, Dict[str, float]]
-    calibration_after_bundle: Dict[str, Dict[str, float]]
+    calibration: dict[str, dict[str, float]]
+    calibration_after_bundle: dict[str, dict[str, float]]
     n_positive: int
-    continuous_nll: Optional[float] = None
-    median_gap_abs_error_hours: Optional[float] = None
+    continuous_nll: float | None = None
+    median_gap_abs_error_hours: float | None = None
     parameters: int = 0
-    fit: Optional[FitTrace] = None
+    fit: FitTrace | None = None
 
 
 @torch.no_grad()
@@ -535,20 +536,20 @@ def score_head(
 def run_probe(
     model: SequenceModel,
     vocab: Vocabulary,
-    banks: Dict[str, FeatureBank],
+    banks: dict[str, FeatureBank],
     *,
     heads: Sequence[str] = DEFAULT_HEADS,
     edges: Sequence[float] = DEFAULT_TIME_BIN_EDGES_HOURS,
     device: str = "cpu",
     epochs: int = 20,
     seed: int = 0,
-) -> List[ProbeMetrics]:
+) -> list[ProbeMetrics]:
     """Fit every head on the train bank, early-stop on tuning, score held-out."""
     del model, vocab  # banks already carry the frozen features
     train = banks["train"].to(device)
     tuning = banks["tuning"].to(device)
     held = banks["held_out"].to(device)
-    results: List[ProbeMetrics] = []
+    results: list[ProbeMetrics] = []
     for name in heads:
         head = make_head(name, train.features.shape[1], edges).to(device)
         trace = fit_head(head, train, tuning, epochs=epochs, seed=seed)
@@ -578,15 +579,15 @@ def _bank_from_shards(
     vocab: Vocabulary,
     binner: object,
     config: object,
-    shard_dir: Union[str, Path],
+    shard_dir: str | Path,
     *,
-    max_shards: Optional[int],
+    max_shards: int | None,
     sample_rate: float,
     seed: int,
     num_lanes: int,
     chunk_size: int,
     device: str,
-    max_positions: Optional[int],
+    max_positions: int | None,
 ) -> FeatureBank:
     from odyssey.data.code_normalization import maybe_normalize  # noqa: PLC0415
     from odyssey.data.history_recap import maybe_history_recap  # noqa: PLC0415
@@ -598,7 +599,7 @@ def _bank_from_shards(
     # OOM-killed the first N2 attempt at ~45 GB RSS. Peak is now one shard's
     # frames plus the accumulated fp16 banks.
     source = getattr(config, "source", "mimic_iv")
-    banks: List[FeatureBank] = []
+    banks: list[FeatureBank] = []
     kept = 0
     for k, path in enumerate(shard_paths(shard_dir, max_shards=max_shards)):
         raw = load_meds_shard(path)

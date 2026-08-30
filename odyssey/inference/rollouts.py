@@ -34,8 +34,8 @@ comparable against its hazard heads, not as a validated risk estimate.
 import logging
 import math
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence
 
 import torch
 
@@ -58,11 +58,11 @@ HOURS_PER_YEAR = 24.0 * 365.25
 class RolloutSample:
     """One sampled continuation from an index position."""
 
-    codes: List[str]
-    times: List[float]
+    codes: list[str]
+    times: list[float]
     """Hours since the subject's first event, per sampled token."""
 
-    def events_within(self, index_time: float, horizon: float) -> List[str]:
+    def events_within(self, index_time: float, horizon: float) -> list[str]:
         """Codes sampled in ``(index_time, index_time + horizon]``.
 
         The lower bound is strict, matching
@@ -86,15 +86,15 @@ class RolloutSummary:
     subject_id: int
     index_time_hours: float
     n_samples: int
-    horizons: List[float]
-    event_probability: Dict[str, Dict[str, float]]
+    horizons: list[float]
+    event_probability: dict[str, dict[str, float]]
     """alert event -> horizon label -> fraction of samples containing it."""
-    family_counts: Dict[str, Dict[str, float]]
+    family_counts: dict[str, dict[str, float]]
     """horizon label -> code family -> mean number of sampled events."""
-    hazard_probability: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    hazard_probability: dict[str, dict[str, float]] = field(default_factory=dict)
     """The model's own closed-form ``P(event within h)`` at the index
     position, for the same events and horizons -- the consistency check."""
-    samples: List[RolloutSample] = field(default_factory=list)
+    samples: list[RolloutSample] = field(default_factory=list)
 
 
 def _sample_gap_hours(
@@ -141,7 +141,7 @@ def _sample_code(
     generator: torch.Generator,
     *,
     temperature: float,
-    top_k: Optional[int],
+    top_k: int | None,
 ) -> int:
     """Draw a next-token id (temperature, optional top-k; PAD excluded)."""
     scaled = logits / max(temperature, 1e-6)
@@ -171,7 +171,7 @@ class _RolloutState:
         self.visit_order = int(seq.visit_orders[position])
         self.visit_id = int(seq.visit_ids[position]) if seq.visit_ids else -1
 
-    def advance(self, code: str, gap_hours: float) -> Dict[str, object]:
+    def advance(self, code: str, gap_hours: float) -> dict[str, object]:
         """Advance the clock by ``gap_hours`` and absorb ``code``; return its aux."""
         self.time += gap_hours
         self.age += gap_hours / HOURS_PER_YEAR
@@ -180,7 +180,7 @@ class _RolloutState:
 
 
 def _step_batch(
-    code_id: int, aux: Dict[str, object], visit_order: int, visit_id: int, device: str
+    code_id: int, aux: dict[str, object], visit_order: int, visit_id: int, device: str
 ) -> ClinicalSequenceBatch:
     """One-token batch for the streaming forward."""
 
@@ -211,11 +211,11 @@ def rollout_from_position(
     n_samples: int = 32,
     max_steps: int = 256,
     temperature: float = 1.0,
-    top_k: Optional[int] = None,
+    top_k: int | None = None,
     seed: int = 0,
     device: str = "cpu",
     chunk_size: int = 256,
-) -> List[RolloutSample]:
+) -> list[RolloutSample]:
     """Sample ``n_samples`` continuations from ``position`` of ``seq``.
 
     Each sample stops at ``horizon_hours`` past the index position's time
@@ -236,8 +236,8 @@ def rollout_from_position(
         raise ValueError("rollouts need a model with a time-to-event head")
     prefix = seq.head(position + 1)
     state = None
-    logits_at_index: Optional[torch.Tensor] = None
-    features_at_index: Optional[torch.Tensor] = None
+    logits_at_index: torch.Tensor | None = None
+    features_at_index: torch.Tensor | None = None
     for chunk in PackedLaneSampler(
         iter([prefix]), num_lanes=1, chunk_size=chunk_size, reset_prob=0.0
     ):
@@ -254,14 +254,14 @@ def rollout_from_position(
         raise ValueError("empty prefix: nothing to roll out from")
 
     index_time = float(prefix.time_stamps[-1])
-    samples: List[RolloutSample] = []
+    samples: list[RolloutSample] = []
     for s in range(n_samples):
         generator = torch.Generator(device="cpu").manual_seed(seed * 100_003 + s)
         rs = _RolloutState(prefix, len(prefix) - 1)
         step_state = state
         logits, features = logits_at_index, features_at_index
-        codes: List[str] = []
-        times: List[float] = []
+        codes: list[str] = []
+        times: list[float] = []
         for _ in range(max_steps):
             gap = _sample_gap_hours(
                 time_head(features.unsqueeze(0))[0], time_head.edges, generator
@@ -301,8 +301,8 @@ def summarize_rollouts(
         )
         for a in alerts
     }
-    event_probability: Dict[str, Dict[str, float]] = {a.name: {} for a in alerts}
-    family_counts: Dict[str, Dict[str, float]] = {}
+    event_probability: dict[str, dict[str, float]] = {a.name: {} for a in alerts}
+    family_counts: dict[str, dict[str, float]] = {}
     for h in horizons:
         label = f"{h:g}h"
         within = [s.events_within(index_time_hours, h) for s in samples]
@@ -332,7 +332,7 @@ def hazard_probabilities_at(
     features: torch.Tensor,
     alerts: Sequence[AlertEvent],
     horizons: Sequence[float],
-) -> Dict[str, Dict[str, float]]:
+) -> dict[str, dict[str, float]]:
     """Return the model's closed-form ``P(event within h)`` at this position."""
     from odyssey.models.time_to_event import probability_within  # noqa: PLC0415
 
@@ -341,7 +341,7 @@ def hazard_probabilities_at(
         return {}
     index = {name: i for i, name in enumerate(heads.event_names)}
     hz = heads(features.unsqueeze(0))
-    out: Dict[str, Dict[str, float]] = {}
+    out: dict[str, dict[str, float]] = {}
     for alert in alerts:
         if alert.name not in index:
             continue

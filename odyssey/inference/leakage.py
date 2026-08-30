@@ -86,9 +86,10 @@ import argparse
 import json
 import logging
 import time
+from collections.abc import Iterator, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Sequence, Tuple, Union, cast
+from typing import cast
 
 import polars as pl
 import torch
@@ -153,7 +154,7 @@ class LeakageBank:
     concept_observed: torch.Tensor
     """``(N, num_concepts)`` bool: whether each concept's running label has
     ground truth at that position (see :mod:`odyssey.training.running_labels`)."""
-    concept_names: Tuple[str, ...]
+    concept_names: tuple[str, ...]
     n_positions_seen: int
     sample_rate: float
 
@@ -177,7 +178,7 @@ class LeakageBank:
 
     @staticmethod
     def concat(
-        banks: Sequence["LeakageBank"], max_positions: Optional[int]
+        banks: Sequence["LeakageBank"], max_positions: int | None
     ) -> "LeakageBank":
         """Stack per-shard banks (same concept names), capped at ``max_positions``."""
         if not banks:
@@ -218,7 +219,7 @@ def collect_leakage_bank(
     num_lanes: int = 8,
     chunk_size: int = 256,
     device: str = "cpu",
-    max_positions: Optional[int] = None,
+    max_positions: int | None = None,
 ) -> LeakageBank:
     """One frozen streaming pass; bank bottleneck outputs and their CTL/ICL targets.
 
@@ -249,7 +250,7 @@ def collect_leakage_bank(
         patients, num_lanes=num_lanes, chunk_size=chunk_size, reset_prob=0.0
     )
 
-    parts: Dict[str, List[torch.Tensor]] = {
+    parts: dict[str, list[torch.Tensor]] = {
         "probs": [],
         "embed": [],
         "unknown": [],
@@ -350,7 +351,7 @@ def collect_leakage_bank(
 class ProbeFitTrace:
     """Per-epoch tuning loss and the epoch early stopping picked."""
 
-    tuning_loss: List[float] = field(default_factory=list)
+    tuning_loss: list[float] = field(default_factory=list)
     best_epoch: int = -1
     seconds: float = 0.0
 
@@ -388,7 +389,7 @@ class _StandardizedLinearProbe(nn.Module):
         return out
 
 
-def _feature_stats(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+def _feature_stats(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """Per-feature (mean, std) from ``x``, std floored to avoid a divide by 0."""
     mean = x.mean(dim=0, keepdim=True)
     std = x.std(dim=0, keepdim=True).clamp_min(1e-6)
@@ -409,7 +410,7 @@ def _fit_categorical_probe(
     patience: int = 2,
     seed: int = 0,
     device: str = "cpu",
-) -> Tuple[_StandardizedLinearProbe, ProbeFitTrace]:
+) -> tuple[_StandardizedLinearProbe, ProbeFitTrace]:
     """Multinomial-logistic probe (CTL): Adam on train, early-stopped on tuning CE."""
     torch.manual_seed(seed)
     mean, std = _feature_stats(train_x.float())
@@ -449,7 +450,7 @@ def _fit_categorical_probe(
 @torch.no_grad()
 def _score_categorical_probe(
     head: _StandardizedLinearProbe, x: torch.Tensor, y: torch.Tensor
-) -> Tuple[float, float]:
+) -> tuple[float, float]:
     """Return (accuracy, mean cross-entropy) on ``(x, y)``."""
     head.eval()
     logits = head(x.float())
@@ -474,7 +475,7 @@ def _fit_masked_multilabel_probe(
     patience: int = 2,
     seed: int = 0,
     device: str = "cpu",
-) -> Tuple[_StandardizedLinearProbe, ProbeFitTrace]:
+) -> tuple[_StandardizedLinearProbe, ProbeFitTrace]:
     """Multi-output logistic probe (ICL): one linear head, ``out_dim`` targets.
 
     Each position/output pair weighted by ``observed`` so an unobserved
@@ -542,7 +543,7 @@ class ProbeScore:
     accuracy: float
     cross_entropy: float
     parameters: int
-    fit: Optional[ProbeFitTrace] = None
+    fit: ProbeFitTrace | None = None
 
 
 @dataclass
@@ -554,7 +555,7 @@ class CTLResult:
     """
 
     n_classes: int
-    class_names: Dict[int, str]
+    class_names: dict[int, str]
     probs_only: ProbeScore
     embeddings_only: ProbeScore
     unknown_only: ProbeScore
@@ -630,7 +631,7 @@ def compute_ctl(
     embedding_dim = train_bank.concept_embeddings.shape[-1]
     projection = _random_projection(num_concepts, num_concepts * embedding_dim, seed)
 
-    def flat(bank: LeakageBank) -> Dict[str, torch.Tensor]:
+    def flat(bank: LeakageBank) -> dict[str, torch.Tensor]:
         return {
             "probs_only": bank.concept_probs.float(),
             "embeddings_only": bank.concept_embeddings.float().reshape(
@@ -647,7 +648,7 @@ def compute_ctl(
     tune_y = tuning_bank.family_labels
     held_y = held_out_bank.family_labels
 
-    scores: Dict[str, ProbeScore] = {}
+    scores: dict[str, ProbeScore] = {}
     for name, x_train in train_x.items():
         head, trace = _fit_categorical_probe(
             x_train.shape[1],
@@ -718,11 +719,11 @@ class ICLPairScore:
     concept_i: str
     concept_j: str
     n: int
-    auroc_embedding: Optional[float]
-    auroc_probability: Optional[float]
-    icl_raw: Optional[float]
+    auroc_embedding: float | None
+    auroc_probability: float | None
+    icl_raw: float | None
     """``auroc_embedding - auroc_probability``; can be negative."""
-    icl: Optional[float]
+    icl: float | None
     """``icl_raw`` clipped at 0 -- the leakage reading."""
 
 
@@ -730,9 +731,9 @@ class ICLPairScore:
 class ICLResult:
     """Inter-concept leakage: the full ordered-pair matrix plus summary stats."""
 
-    pairs: List[ICLPairScore]
+    pairs: list[ICLPairScore]
     mean_off_diagonal_icl: float
-    top_pairs: List[ICLPairScore]
+    top_pairs: list[ICLPairScore]
     n_train: int
     n_tuning: int
     n_held_out: int
@@ -757,7 +758,7 @@ def compute_icl(
     """
     names = train_bank.concept_names
     num_concepts = len(names)
-    pairs: List[ICLPairScore] = []
+    pairs: list[ICLPairScore] = []
     for i, concept_i in enumerate(names):
         embed_head, _ = _fit_masked_multilabel_probe(
             train_bank.concept_embeddings.shape[-1],
@@ -848,15 +849,15 @@ def _leakage_bank_from_shards(
     vocab: Vocabulary,
     binner: object,
     config: object,
-    shard_dir: Union[str, Path],
+    shard_dir: str | Path,
     *,
-    max_shards: Optional[int],
+    max_shards: int | None,
     sample_rate: float,
     seed: int,
     num_lanes: int,
     chunk_size: int,
     device: str,
-    max_positions: Optional[int],
+    max_positions: int | None,
 ) -> LeakageBank:
     from odyssey.data.concepts import concepts_for_source  # noqa: PLC0415
     from odyssey.data.sidecars import activate_sidecars  # noqa: PLC0415
@@ -876,7 +877,7 @@ def _leakage_bank_from_shards(
     concepts = concepts_for_source(source, task_set=task_set)
     concept_names = [c.name for c in concepts]
 
-    banks: List[LeakageBank] = []
+    banks: list[LeakageBank] = []
     kept = 0
     for k, path in enumerate(shard_paths(shard_dir, max_shards=max_shards)):
         raw = load_meds_shard(path)

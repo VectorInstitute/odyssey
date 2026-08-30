@@ -27,15 +27,13 @@ Both models support two training regimes:
   Section 05.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
-    Dict,
     Literal,
     NamedTuple,
     Optional,
-    Sequence,
-    Tuple,
     Union,
 )
 
@@ -113,8 +111,8 @@ class ForecastObjective:
     """
 
     bundle_invariant: bool = False
-    family_weights: Optional[torch.Tensor] = None
-    token_types: Optional[torch.Tensor] = None
+    family_weights: torch.Tensor | None = None
+    token_types: torch.Tensor | None = None
     time_weight: float = 0.0
     event_hazard_weight: float = 0.0
     value_head_weight: float = 0.0
@@ -131,7 +129,7 @@ class ForwardWithFeatures(NamedTuple):
 
     logits: torch.Tensor
     features: torch.Tensor
-    bottleneck: Optional[ConceptBottleneckOutput]
+    bottleneck: ConceptBottleneckOutput | None
     state: TimeAwareState
 
 
@@ -142,7 +140,7 @@ def _bundle_log_likelihood(
     subject_ids: torch.Tensor,
     real: torch.Tensor,
     *,
-    token_types: Optional[torch.Tensor] = None,
+    token_types: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """``log sum_{v in remaining bundle members} p_i(v)`` per position, ``(L, T)``.
 
@@ -244,7 +242,7 @@ def _pool_patient_ends(values: torch.Tensor, patient_end: torch.Tensor) -> torch
 
 
 def _gather_by_subject(
-    subject_ids: torch.Tensor, labels: Dict[int, torch.Tensor]
+    subject_ids: torch.Tensor, labels: dict[int, torch.Tensor]
 ) -> torch.Tensor:
     """Stack ``labels[subject_id]`` for each id in ``subject_ids``, in order."""
     try:
@@ -259,7 +257,7 @@ def _gather_by_subject(
 def _gather_by_visit(
     subject_ids: torch.Tensor,
     visit_ids: torch.Tensor,
-    labels: Dict[Tuple[int, int], torch.Tensor],
+    labels: dict[tuple[int, int], torch.Tensor],
 ) -> torch.Tensor:
     """Stack ``labels[(subject_id, visit_id)]`` for each position, in order."""
     try:
@@ -279,7 +277,7 @@ def _gather_by_visit(
 
 ConceptSupervision = Literal["stay", "visit"]
 SequenceModel = Union["BaselineSequenceModel", "ConceptBottleneckSequenceModel"]
-ConceptLabelDict = Union[Dict[int, torch.Tensor], Dict[Tuple[int, int], torch.Tensor]]
+ConceptLabelDict = dict[int, torch.Tensor] | dict[tuple[int, int], torch.Tensor]
 
 
 class _SequenceModelBase(nn.Module):
@@ -303,7 +301,7 @@ class _SequenceModelBase(nn.Module):
         self,
         logits: torch.Tensor,
         batch: ClinicalSequenceBatch,
-        labels: Optional[torch.Tensor],
+        labels: torch.Tensor | None,
     ) -> torch.Tensor:
         """Cross-entropy loss for one full sequence per row, shifted by one.
 
@@ -401,7 +399,7 @@ class _SequenceModelBase(nn.Module):
 
     def _streaming_event_loss(
         self,
-        event_heads: Optional[EventHazardHeads],
+        event_heads: EventHazardHeads | None,
         features: torch.Tensor,
         event_targets: Optional["EventHazardTargets"],
     ) -> torch.Tensor:
@@ -419,10 +417,10 @@ class _SequenceModelBase(nn.Module):
 
     def _streaming_time_loss(
         self,
-        time_head: Optional[TimeToEventHead],
+        time_head: TimeToEventHead | None,
         features: torch.Tensor,
         chunk: StreamingChunk,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Hazard NLL for time-to-next-event, and the hazard logits (or None)."""
         if time_head is None:
             return features.sum() * 0.0, None
@@ -434,10 +432,10 @@ class _SequenceModelBase(nn.Module):
 
     def _streaming_value_loss(
         self,
-        value_head: Optional[ValueQuantileHead],
+        value_head: ValueQuantileHead | None,
         features: torch.Tensor,
         chunk: StreamingChunk,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Masked pinball loss for the value-quantile head, and its quantiles (or None).
 
         Conditions on the TARGET token's own embedding, looked up from
@@ -476,8 +474,8 @@ class BaselineSequenceModel(_SequenceModelBase):
         vocab_size: int,
         *,
         padding_idx: int = 0,
-        time_bin_edges: Optional[Sequence[float]] = None,
-        event_names: Optional[Sequence[str]] = None,
+        time_bin_edges: Sequence[float] | None = None,
+        event_names: Sequence[str] | None = None,
         event_head_hidden: int = 0,
         value_head: bool = False,
         value_head_hidden: int = 0,
@@ -495,12 +493,12 @@ class BaselineSequenceModel(_SequenceModelBase):
         super().__init__(backbone, padding_idx=padding_idx)
         self.lm_head = nn.Linear(backbone.hidden_size, vocab_size)
         head_in = backbone.hidden_size
-        self.time_head: Optional[TimeToEventHead] = (
+        self.time_head: TimeToEventHead | None = (
             TimeToEventHead(head_in, time_bin_edges)
             if time_bin_edges is not None
             else None
         )
-        self.event_heads: Optional[EventHazardHeads] = (
+        self.event_heads: EventHazardHeads | None = (
             EventHazardHeads(
                 head_in,
                 event_names,
@@ -510,7 +508,7 @@ class BaselineSequenceModel(_SequenceModelBase):
             if event_names
             else None
         )
-        self.value_head: Optional[ValueQuantileHead] = (
+        self.value_head: ValueQuantileHead | None = (
             ValueQuantileHead(
                 head_in,
                 backbone.hidden_size,
@@ -524,9 +522,9 @@ class BaselineSequenceModel(_SequenceModelBase):
     def forward_features(
         self,
         batch: ClinicalSequenceBatch,
-        state: Optional[TimeAwareState] = None,
-        reset_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, TimeAwareState]:
+        state: TimeAwareState | None = None,
+        reset_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, TimeAwareState]:
         """Return ``(next-token logits, hidden states, new backbone state)``."""
         hidden_states, new_state = self.backbone(
             batch, state=state, reset_mask=reset_mask
@@ -537,9 +535,9 @@ class BaselineSequenceModel(_SequenceModelBase):
     def forward(
         self,
         batch: ClinicalSequenceBatch,
-        state: Optional[TimeAwareState] = None,
-        reset_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, TimeAwareState]:
+        state: TimeAwareState | None = None,
+        reset_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, TimeAwareState]:
         """Return ``(next-token logits, new backbone state)``."""
         logits, _, new_state = self.forward_features(
             batch, state=state, reset_mask=reset_mask
@@ -549,8 +547,8 @@ class BaselineSequenceModel(_SequenceModelBase):
     def forward_with_features(
         self,
         batch: ClinicalSequenceBatch,
-        state: Optional[TimeAwareState] = None,
-        reset_mask: Optional[torch.Tensor] = None,
+        state: TimeAwareState | None = None,
+        reset_mask: torch.Tensor | None = None,
     ) -> ForwardWithFeatures:
         """Uniform forward (see :class:`ForwardWithFeatures`)."""
         logits, hidden, new_state = self.forward_features(
@@ -559,8 +557,8 @@ class BaselineSequenceModel(_SequenceModelBase):
         return ForwardWithFeatures(logits, hidden, None, new_state)
 
     def compute_loss(
-        self, batch: ClinicalSequenceBatch, labels: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        self, batch: ClinicalSequenceBatch, labels: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Compute next-token loss over one full sequence per row."""
         logits, _ = self(batch)
         loss = self._whole_sequence_next_token_loss(logits, batch, labels)
@@ -569,11 +567,11 @@ class BaselineSequenceModel(_SequenceModelBase):
     def compute_streaming_loss(
         self,
         chunk: StreamingChunk,
-        state: Optional[TimeAwareState] = None,
+        state: TimeAwareState | None = None,
         *,
-        objective: Optional[ForecastObjective] = None,
+        objective: ForecastObjective | None = None,
         event_targets: Optional["EventHazardTargets"] = None,
-    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], TimeAwareState]:
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor], TimeAwareState]:
         """Compute the forecasting loss over one packed, chunked training step."""
         objective = objective or ForecastObjective()
         logits, hidden, new_state = self.forward_features(
@@ -613,11 +611,11 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         *,
         padding_idx: int = 0,
         concept_dropout: float = 0.1,
-        time_bin_edges: Optional[Sequence[float]] = None,
-        event_names: Optional[Sequence[str]] = None,
+        time_bin_edges: Sequence[float] | None = None,
+        event_names: Sequence[str] | None = None,
         event_head_hidden: int = 0,
         concept_global_pairs: bool = False,
-        unknown_dim: Optional[int] = None,
+        unknown_dim: int | None = None,
         value_head: bool = False,
         value_head_hidden: int = 0,
         source: str = "mimic_iv",
@@ -644,12 +642,12 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         bottleneck_dim = self.bottleneck.output_dim
         self.lm_head = nn.Linear(bottleneck_dim, vocab_size)
         head_in = bottleneck_dim
-        self.time_head: Optional[TimeToEventHead] = (
+        self.time_head: TimeToEventHead | None = (
             TimeToEventHead(head_in, time_bin_edges)
             if time_bin_edges is not None
             else None
         )
-        self.event_heads: Optional[EventHazardHeads] = (
+        self.event_heads: EventHazardHeads | None = (
             EventHazardHeads(
                 head_in,
                 event_names,
@@ -659,7 +657,7 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
             if event_names
             else None
         )
-        self.value_head: Optional[ValueQuantileHead] = (
+        self.value_head: ValueQuantileHead | None = (
             ValueQuantileHead(
                 head_in,
                 backbone.hidden_size,
@@ -673,10 +671,10 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
     def forward(
         self,
         batch: ClinicalSequenceBatch,
-        state: Optional[TimeAwareState] = None,
-        reset_mask: Optional[torch.Tensor] = None,
-        intervention: Optional[BottleneckIntervention] = None,
-    ) -> Tuple[torch.Tensor, ConceptBottleneckOutput, TimeAwareState]:
+        state: TimeAwareState | None = None,
+        reset_mask: torch.Tensor | None = None,
+        intervention: BottleneckIntervention | None = None,
+    ) -> tuple[torch.Tensor, ConceptBottleneckOutput, TimeAwareState]:
         """Return ``(next-token logits, bottleneck output, new backbone state)``.
 
         ``intervention`` performs a do()-style edit inside the bottleneck
@@ -694,8 +692,8 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
     def forward_with_features(
         self,
         batch: ClinicalSequenceBatch,
-        state: Optional[TimeAwareState] = None,
-        reset_mask: Optional[torch.Tensor] = None,
+        state: TimeAwareState | None = None,
+        reset_mask: torch.Tensor | None = None,
     ) -> ForwardWithFeatures:
         """Uniform forward (see :class:`ForwardWithFeatures`)."""
         logits, out, new_state = self(batch, state=state, reset_mask=reset_mask)
@@ -705,10 +703,10 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         self,
         batch: ClinicalSequenceBatch,
         concept_labels: torch.Tensor,
-        concept_mask: Optional[torch.Tensor] = None,
-        loss_weights: Optional[ConceptBottleneckLossWeights] = None,
-        labels: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        concept_mask: torch.Tensor | None = None,
+        loss_weights: ConceptBottleneckLossWeights | None = None,
+        labels: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Compute next-token + concept + orthogonality loss.
 
         ``concept_labels``/``concept_mask`` are ``(batch, num_concepts)`` --
@@ -748,15 +746,15 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         self,
         chunk: StreamingChunk,
         concept_labels: ConceptLabelDict,
-        concept_mask: Optional[ConceptLabelDict] = None,
+        concept_mask: ConceptLabelDict | None = None,
         *,
-        state: Optional[TimeAwareState] = None,
-        loss_weights: Optional[ConceptBottleneckLossWeights] = None,
+        state: TimeAwareState | None = None,
+        loss_weights: ConceptBottleneckLossWeights | None = None,
         supervision: ConceptSupervision = "stay",
-        intervention: Optional[BottleneckIntervention] = None,
-        objective: Optional[ForecastObjective] = None,
+        intervention: BottleneckIntervention | None = None,
+        objective: ForecastObjective | None = None,
         event_targets: Optional["EventHazardTargets"] = None,
-    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], TimeAwareState]:
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor], TimeAwareState]:
         """Compute next-token + concept + orthogonality + observability loss.
 
         Two supervision modes, selecting both where the bottleneck is

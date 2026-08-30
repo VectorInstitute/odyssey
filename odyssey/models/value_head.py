@@ -32,7 +32,7 @@ estimate: a clinician needs "creatinine 2.4, 80% interval 1.9-3.1", not
 a bare number with no sense of how confident the model is.
 """
 
-from typing import List, Sequence, Tuple
+from collections.abc import Sequence
 
 import torch
 import torch.nn.functional as F  # noqa: N812
@@ -42,7 +42,7 @@ from torch import nn
 # Quantile levels this head predicts by default: 0.1 .. 0.9 in steps of
 # 0.1 (K=9), giving symmetric 80%/60%/40%/20% central intervals plus the
 # median, without predicting the (unstable, rarely load-bearing) tails.
-DEFAULT_QUANTILE_LEVELS: Tuple[float, ...] = (
+DEFAULT_QUANTILE_LEVELS: tuple[float, ...] = (
     0.1,
     0.2,
     0.3,
@@ -95,7 +95,7 @@ class ValueQuantileHead(nn.Module):
         magnitude, which is the whole mechanism under test.
         """
         super().__init__()
-        self.quantile_levels: List[float] = list(quantile_levels)
+        self.quantile_levels: list[float] = list(quantile_levels)
         self.num_quantiles = len(self.quantile_levels)
         in_dim = in_features + target_embedding_dim
         self.proj: nn.Module = (
@@ -138,7 +138,7 @@ def pinball_loss(
 
 def value_target_valid_mask(
     values: torch.Tensor, real_mask: torch.Tensor
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Per-position target standardized value and validity, one streaming chunk.
 
     Mirrors :func:`odyssey.models.time_to_event.gap_survival_valid_mask`'s
@@ -243,7 +243,7 @@ def median_absolute_error(
     return (median - target).abs().mean()
 
 
-__all__: List[str] = [
+__all__: list[str] = [
     "DEFAULT_QUANTILE_LEVELS",
     "ValueQuantileHead",
     "crps_from_quantiles",

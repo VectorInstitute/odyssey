@@ -13,8 +13,8 @@ on the sequence time origin (the subject's first timed non-birth event),
 so they line up with chunk time stamps position for position.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Dict, Optional, Sequence, Tuple
 
 import polars as pl
 
@@ -27,13 +27,13 @@ class AlertEvent:
     """One clinically meaningful event whose onset is forecast."""
 
     name: str
-    concept: Optional[str] = None
+    concept: str | None = None
     """Concept whose first-trigger time defines onset (visit-scoped)."""
 
-    code_prefix: Optional[str] = None
+    code_prefix: str | None = None
     """Code family whose first occurrence defines onset."""
 
-    code_regex: Optional[str] = None
+    code_regex: str | None = None
     """Regex over the raw ``code`` string (case-insensitive) whose first
     match defines onset -- for events that aren't a clean prefix (e.g. a
     drug class matched by ingredient name anywhere in the code), the way
@@ -47,7 +47,7 @@ class AlertEvent:
     """Onset and censoring are taken over the subject's whole record
     rather than the visit (death is not tied to a hadm_id)."""
 
-    token_regex: Optional[str] = None
+    token_regex: str | None = None
     """Regex over vocabulary tokens naming this event's own next-event
     tokens, for the next-event-mass score. Defaults to ``^code_prefix``."""
 
@@ -70,7 +70,7 @@ class AlertEvent:
             )
 
 
-ALERT_EVENTS_V1: Tuple[AlertEvent, ...] = (
+ALERT_EVENTS_V1: tuple[AlertEvent, ...] = (
     AlertEvent(
         "vasopressor_start",
         concept="on_vasopressors",
@@ -90,7 +90,7 @@ ALERT_EVENTS_V1: Tuple[AlertEvent, ...] = (
     AlertEvent("death", code_prefix="MEDS_DEATH", subject_scoped=True),
 )
 
-ALERT_EVENTS_V2: Tuple[AlertEvent, ...] = ALERT_EVENTS_V1 + (
+ALERT_EVENTS_V2: tuple[AlertEvent, ...] = ALERT_EVENTS_V1 + (
     # Sepsis-3 onset from the sepsis3 concept (suspected infection + SOFA
     # >= 2; see odyssey.data.concepts.Sepsis3Rule). MIMIC-IV only today.
     AlertEvent("sepsis3", concept="sepsis3"),
@@ -100,7 +100,7 @@ ALERT_EVENTS_V2: Tuple[AlertEvent, ...] = ALERT_EVENTS_V1 + (
     AlertEvent("readmission_30d", code_prefix="HOSPITAL_ADMISSION//", next_visit=True),
 )
 
-ALERT_TASK_SETS: Dict[str, Tuple[AlertEvent, ...]] = {
+ALERT_TASK_SETS: dict[str, tuple[AlertEvent, ...]] = {
     "v1": ALERT_EVENTS_V1,
     "v2": ALERT_EVENTS_V2,
     # v3 widens the CONCEPT set only (odyssey.data.concepts.TASK_SETS); its
@@ -110,10 +110,10 @@ ALERT_TASK_SETS: Dict[str, Tuple[AlertEvent, ...]] = {
 
 # The v1 set, kept as the module-level default every pre-task-set caller
 # reads (run configs without a task_set are v1 by definition).
-ALERT_EVENTS: Tuple[AlertEvent, ...] = ALERT_EVENTS_V1
+ALERT_EVENTS: tuple[AlertEvent, ...] = ALERT_EVENTS_V1
 
 
-def alert_events_for(task_set: str = "v1") -> Tuple[AlertEvent, ...]:
+def alert_events_for(task_set: str = "v1") -> tuple[AlertEvent, ...]:
     """Return the alert events a run with ``task_set`` trains heads for / scores."""
     if task_set not in ALERT_TASK_SETS:
         raise ValueError(
@@ -150,7 +150,7 @@ def alert_events_for(task_set: str = "v1") -> Tuple[AlertEvent, ...]:
 # counting probe found worst-recovered (R^2 < 0.1, plus vasopressor at
 # 0.15-0.33 as the clinically central one) rather than all 13 in
 # DRUG_CLASSES, to keep this a small, targeted experiment.
-COUNTING_AUXILIARY_EVENTS: Tuple[AlertEvent, ...] = (
+COUNTING_AUXILIARY_EVENTS: tuple[AlertEvent, ...] = (
     AlertEvent(
         "vasopressor",
         code_regex=(
@@ -176,14 +176,14 @@ COUNTING_AUXILIARY_EVENTS: Tuple[AlertEvent, ...] = (
     AlertEvent("bicarbonate", code_regex=r"sodium bicarbonate|bicarb"),
 )
 
-COUNTING_AUXILIARY_EVENTS_BY_NAME: Dict[str, AlertEvent] = {
+COUNTING_AUXILIARY_EVENTS_BY_NAME: dict[str, AlertEvent] = {
     a.name: a for a in COUNTING_AUXILIARY_EVENTS
 }
 
 
 def hazard_events_for(
     task_set: str, auxiliary_event_names: Sequence[str] = ()
-) -> Tuple[AlertEvent, ...]:
+) -> tuple[AlertEvent, ...]:
     """Return the full event list an ``EventHazardHeads`` trains.
 
     Single shared source for what was three independently-duplicated
@@ -233,7 +233,7 @@ def hazard_events_for(
 # structured labels this project doesn't have) -- LOS gets its own path in
 # odyssey.inference.probe_baseline (visit_envelope + a fixed early snapshot,
 # not a landmark sweep); the rest are left for when their inputs exist.
-PROBE_EVENTS: Tuple[AlertEvent, ...] = tuple(
+PROBE_EVENTS: tuple[AlertEvent, ...] = tuple(
     AlertEvent(name=c, concept=c)
     for c in (
         "anemia",
@@ -254,12 +254,12 @@ PROBE_EVENTS: Tuple[AlertEvent, ...] = tuple(
 class EventTimes:
     """Onset / censoring per key, all in hours on the sequence time origin."""
 
-    onset: Dict[Tuple[int, int], float]
+    onset: dict[tuple[int, int], float]
     """(subject_id, visit_id) -> onset hours; missing = never observed.
     For subject-scoped events the visit_id is ignored (all visits of the
     subject share the subject's onset)."""
 
-    censor: Dict[Tuple[int, int], float]
+    censor: dict[tuple[int, int], float]
     """(subject_id, visit_id) -> last observed time (end of follow-up)."""
 
     subject_scoped: bool
@@ -283,7 +283,7 @@ def hours_since_origin(
     )
 
 
-def visit_envelope(events: pl.DataFrame) -> Dict[Tuple[int, int], Tuple[float, float]]:
+def visit_envelope(events: pl.DataFrame) -> dict[tuple[int, int], tuple[float, float]]:
     """(subject_id, hadm_id) -> (hours of first event, hours of last event).
 
     Shared building block for tasks defined over a visit's TOTAL span
@@ -318,7 +318,7 @@ def visit_envelope(events: pl.DataFrame) -> Dict[Tuple[int, int], Tuple[float, f
 
 def _next_visit_onsets(
     timed: pl.DataFrame, code_prefix: str, origins: pl.DataFrame
-) -> Dict[Tuple[int, int], float]:
+) -> dict[tuple[int, int], float]:
     """(subject, visit) -> hours of the first ``code_prefix`` event of a LATER visit.
 
     "Later" is by admission order: the earliest ``code_prefix`` row of a
@@ -362,7 +362,7 @@ def event_times(
     events: pl.DataFrame,
     alert: AlertEvent,
     *,
-    concept_first_times: Optional[pl.DataFrame] = None,
+    concept_first_times: pl.DataFrame | None = None,
 ) -> EventTimes:
     """Onset and censoring times for ``alert`` over ``events``.
 
@@ -398,7 +398,7 @@ def event_times(
             for s, v, t in zip(last["subject_id"], last["hadm_id"], last["_last"])
         }
 
-    onset: Dict[Tuple[int, int], float] = {}
+    onset: dict[tuple[int, int], float] = {}
     if alert.concept is not None:
         if concept_first_times is None:
             raise ValueError(f"alert {alert.name!r} needs concept_first_times")
@@ -448,7 +448,7 @@ def all_event_times(
     source: str,
     *,
     task_set: str = "v1",
-) -> Dict[str, EventTimes]:
+) -> dict[str, EventTimes]:
     """Onset/censoring times for every alert, labeling concepts once."""
     concepts = concepts_for_source(source, task_set=task_set)
     needed = [c for c in concepts if any(a.concept == c.name for a in alerts)]

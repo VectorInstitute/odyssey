@@ -47,9 +47,9 @@ Two eICU-specific rules ride along, both keyed on ``source="eicu"``:
 import csv
 import io
 import re
+from collections.abc import Mapping
 from functools import lru_cache
 from importlib import resources
-from typing import Dict, List, Mapping, Optional
 
 import polars as pl
 
@@ -98,7 +98,7 @@ _INFUSION_UNIT_RE = re.compile(r"\s*\([^()]*\)\s*$")
 
 
 @lru_cache(maxsize=1)
-def load_eicu_hicl_ingredients() -> Dict[str, str]:
+def load_eicu_hicl_ingredients() -> dict[str, str]:
     """Load the shipped eICU HICL -> ingredient dictionary (see module docstring)."""
     text = (
         resources.files("odyssey.data.resources")
@@ -108,12 +108,12 @@ def load_eicu_hicl_ingredients() -> Dict[str, str]:
     return {row["hicl"]: row["ingredient"] for row in csv.DictReader(io.StringIO(text))}
 
 
-def hicl_ingredients_for_source(source: Optional[str]) -> Optional[HiclIngredients]:
+def hicl_ingredients_for_source(source: str | None) -> HiclIngredients | None:
     """Return the HICL dictionary for a data source: eICU has one, nothing else does."""
     return load_eicu_hicl_ingredients() if source == "eicu" else None
 
 
-def _normalize_infusion_code(parts: List[str]) -> str:
+def _normalize_infusion_code(parts: list[str]) -> str:
     """Strip the rate unit and normalize the infusion drug name.
 
     ``INFUSION_DRUG//Norepinephrine (mcg/min)`` becomes
@@ -126,7 +126,7 @@ def _normalize_infusion_code(parts: List[str]) -> str:
 
 
 def normalize_medication_code(
-    code: str, hicl_ingredients: Optional[HiclIngredients] = None
+    code: str, hicl_ingredients: HiclIngredients | None = None
 ) -> str:
     """Normalize one medication code; the single source of truth for the rule.
 
@@ -152,7 +152,7 @@ def normalize_medication_code(
     if parts[0] not in MEDICATION_FAMILIES or len(parts) < 2:
         return code
     segs = parts[1:]
-    trailing_id: Optional[str] = None
+    trailing_id: str | None = None
     # A trailing pure-ID segment is dropped only if a drug segment remains:
     # eICU spec v1's ``MEDICATION//STARTED//UNK`` has UNK *as* the drug, and
     # dropping it left a bare ``MEDICATION//started`` token.
@@ -178,7 +178,7 @@ def normalize_medication_codes(
     events: pl.DataFrame,
     *,
     code_col: str = "code",
-    hicl_ingredients: Optional[HiclIngredients] = None,
+    hicl_ingredients: HiclIngredients | None = None,
 ) -> pl.DataFrame:
     """Rewrite medication codes to ingredient level; pass everything else through.
 
@@ -210,7 +210,7 @@ def maybe_normalize(
     *,
     enabled: bool,
     code_col: str = "code",
-    source: Optional[str] = None,
+    source: str | None = None,
 ) -> pl.DataFrame:
     """Apply :func:`normalize_medication_codes` when ``enabled``, else pass through.
 
@@ -225,7 +225,7 @@ def maybe_normalize(
     )
 
 
-def icd_category_code(code: str) -> Optional[str]:
+def icd_category_code(code: str) -> str | None:
     """Return the 3-character-category backoff for an ICD-coded event, or None.
 
     ``DIAGNOSIS//ICD//10//I5023`` backs off to ``DIAGNOSIS//ICD//10//I50``,

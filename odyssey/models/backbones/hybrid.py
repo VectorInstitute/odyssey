@@ -76,7 +76,7 @@ training):
 """
 
 from functools import partial
-from typing import Any, Dict, Optional, Tuple, cast
+from typing import Any, cast
 
 import torch
 import torch.nn.functional as F  # noqa: N812
@@ -91,7 +91,7 @@ from odyssey.models.backbones.base import (
 from odyssey.models.embeddings import CachedEHREmbeddings
 
 
-MambaStateDict = Dict[int, Tuple[torch.Tensor, ...]]
+MambaStateDict = dict[int, tuple[torch.Tensor, ...]]
 
 
 def _make_mamba2_with_state_cls(mamba2_cls: Any) -> Any:
@@ -173,9 +173,9 @@ def _make_mamba2_with_state_cls(mamba2_cls: Any) -> Any:
         def forward(  # noqa: PLR0912, PLR0915
             self,
             u: torch.Tensor,
-            seqlen: Optional[int] = None,
-            seq_idx: Optional[torch.Tensor] = None,
-            cu_seqlens: Optional[torch.Tensor] = None,
+            seqlen: int | None = None,
+            seq_idx: torch.Tensor | None = None,
+            cu_seqlens: torch.Tensor | None = None,
             inference_params: Any = None,
         ) -> torch.Tensor:
             """Identical to upstream except for the ``initial_states=`` fix."""
@@ -435,11 +435,11 @@ class HybridBlock(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        residual: Optional[torch.Tensor],
+        residual: torch.Tensor | None,
         *,
         mamba_inference_params: Any = None,
         attn_inference_params: Any = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Return ``(block_output, new_residual)``."""
         new_residual = (
             hidden_states + residual if residual is not None else hidden_states
@@ -464,7 +464,7 @@ class EHRHybridBackbone(SequenceBackbone):
         mamba_headdim: int = 64,
         mamba_chunk_size: int = 256,
         attn_num_heads: int = 8,
-        attn_num_heads_kv: Optional[int] = None,
+        attn_num_heads_kv: int | None = None,
         norm_epsilon: float = 1e-5,
         **embedding_kwargs: object,
     ) -> None:
@@ -524,9 +524,9 @@ class EHRHybridBackbone(SequenceBackbone):
     def forward(
         self,
         batch: ClinicalSequenceBatch,
-        state: Optional[TimeAwareState] = None,
-        reset_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, TimeAwareState]:
+        state: TimeAwareState | None = None,
+        reset_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, TimeAwareState]:
         """Return ``(hidden_states, new_state)``; see the base class docstring.
 
         ``state.recurrent``, if given, must be a :class:`HybridState` (as
@@ -541,7 +541,7 @@ class EHRHybridBackbone(SequenceBackbone):
         """
         from mamba_ssm.utils.generation import InferenceParams  # noqa: PLC0415
 
-        typed_state: Optional[MambaStateDict] = (
+        typed_state: MambaStateDict | None = (
             None if state is None else cast(HybridState, state.recurrent).mamba_states
         )
 

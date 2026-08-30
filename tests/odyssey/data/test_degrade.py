@@ -9,7 +9,6 @@ removal (axis B), and the axis-C time shift's origin-preservation guarantee
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 import polars as pl
 
@@ -37,13 +36,13 @@ _SCHEMA = {
 }
 
 
-def _shard(rows: List[Tuple[int, str, datetime, Optional[float], int]]) -> pl.DataFrame:
+def _shard(rows: list[tuple[int, str, datetime, float | None, int]]) -> pl.DataFrame:
     return pl.DataFrame(rows, schema=_SCHEMA, orient="row")
 
 
 def _rich_subject(
     sid: int, hadm: int
-) -> List[Tuple[int, str, datetime, Optional[float], int]]:
+) -> list[tuple[int, str, datetime, float | None, int]]:
     """One subject with an anchor, vitals, real labs, and a medication."""
     return [
         (sid, "ICU_ADMISSION//MICU", T0, None, hadm),
@@ -60,8 +59,8 @@ def _rich_subject(
     ]
 
 
-def _rich_shard(subject_ids: List[int]) -> pl.DataFrame:
-    rows: List[Tuple[int, str, datetime, Optional[float], int]] = []
+def _rich_shard(subject_ids: list[int]) -> pl.DataFrame:
+    rows: list[tuple[int, str, datetime, float | None, int]] = []
     for sid in subject_ids:
         rows.extend(_rich_subject(sid, 1000 + sid))
     return _shard(rows)

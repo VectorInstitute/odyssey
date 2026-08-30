@@ -36,9 +36,10 @@ weren't.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any
 
 import polars as pl
 
@@ -66,8 +67,8 @@ _ROW_COLUMN_BY_SCORER = {
 
 
 def ece_from_calibration(
-    calibration: Optional[Sequence[Dict[str, float]]],
-) -> Optional[float]:
+    calibration: Sequence[dict[str, float]] | None,
+) -> float | None:
     """Weighted mean ``|predicted - observed|`` over score_alerts' own decile bins."""
     if not calibration:
         return None
@@ -80,8 +81,8 @@ def ece_from_calibration(
 
 
 def auprc_from_rows(
-    rows_path: Optional[Path], *, scorer: str, horizon_hours: float
-) -> Optional[float]:
+    rows_path: Path | None, *, scorer: str, horizon_hours: float
+) -> float | None:
     """AUPRC from a cell's per-row dump, or ``None`` if it can't be computed.
 
     See the module docstring: best-effort by design, not a raise -- a
@@ -113,14 +114,14 @@ class CellMetricRow:
     """One (cell, scorer, event, horizon)'s metrics, ready to compare against clean."""
 
     cell: str
-    transform: Optional[str]
+    transform: str | None
     scorer: str
     event: str
     horizon_hours: float
     n_at_risk: int
-    auroc: Optional[float]
-    auprc: Optional[float]
-    ece: Optional[float]
+    auroc: float | None
+    auprc: float | None
+    ece: float | None
     n_unscoreable: int = 0
     """Clean rows dropped because the degraded record had no visible token
     at/before the row's time (0 for the clean baseline and for any cell that
@@ -131,12 +132,12 @@ class CellMetricRow:
 
 def load_cell_metrics(
     cell: str,
-    metrics: Sequence[Dict[str, Any]],
+    metrics: Sequence[dict[str, Any]],
     *,
-    transform: Optional[str],
-    rows_path: Optional[Path],
+    transform: str | None,
+    rows_path: Path | None,
     n_unscoreable: int = 0,
-) -> List[CellMetricRow]:
+) -> list[CellMetricRow]:
     """Build one cell's CellMetricRow list from its parsed AlertMetrics records.
 
     ``metrics`` is the ``"metrics"`` list a ``{cell}_alerts.json`` written by
@@ -169,9 +170,7 @@ def load_cell_metrics(
     return out
 
 
-def _delta(
-    cell_value: Optional[float], clean_value: Optional[float]
-) -> Optional[float]:
+def _delta(cell_value: float | None, clean_value: float | None) -> float | None:
     if cell_value is None or clean_value is None:
         return None
     return cell_value - clean_value
@@ -179,7 +178,7 @@ def _delta(
 
 def build_degradation_table(
     clean: Sequence[CellMetricRow], cells: Mapping[str, Sequence[CellMetricRow]]
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """One row per (cell, scorer, event, horizon): metrics plus their delta from clean.
 
     The clean-baseline row is matched by (scorer, event, horizon) alone --
@@ -189,7 +188,7 @@ def build_degradation_table(
     rather than raising.
     """
     clean_by_key = {(r.scorer, r.event, r.horizon_hours): r for r in clean}
-    table: List[Dict[str, Any]] = []
+    table: list[dict[str, Any]] = []
     for cell_name, rows in cells.items():
         for r in rows:
             base = clean_by_key.get((r.scorer, r.event, r.horizon_hours))
@@ -221,17 +220,17 @@ def build_degradation_table(
     )
 
 
-def write_json(table: List[Dict[str, Any]], path: Path) -> None:
+def write_json(table: list[dict[str, Any]], path: Path) -> None:
     """Write the degradation table as indented JSON."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(table, indent=2))
 
 
-def _fmt(value: Optional[float]) -> str:
+def _fmt(value: float | None) -> str:
     return "-" if value is None else f"{value:.3f}"
 
 
-def render_markdown(table: List[Dict[str, Any]]) -> str:
+def render_markdown(table: list[dict[str, Any]]) -> str:
     """Render the degradation table as a markdown table."""
     lines = [
         "# Missingness stress protocol: degradation table",
@@ -283,7 +282,7 @@ def render_markdown(table: List[Dict[str, Any]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_markdown(table: List[Dict[str, Any]], path: Path) -> None:
+def write_markdown(table: list[dict[str, Any]], path: Path) -> None:
     """Render and write the degradation table as a markdown file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(render_markdown(table))

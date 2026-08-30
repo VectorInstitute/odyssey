@@ -14,7 +14,6 @@ import importlib.util
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 import polars as pl
 import pytest
@@ -39,8 +38,8 @@ _SCHEMA = {
 }
 
 
-def _shard(subject_ids: List[int]) -> pl.DataFrame:
-    rows: List[Tuple[int, str, datetime, Optional[float], int]] = []
+def _shard(subject_ids: list[int]) -> pl.DataFrame:
+    rows: list[tuple[int, str, datetime, float | None, int]] = []
     for sid in subject_ids:
         hadm = 1000 + sid
         rows.append((sid, "ICU_ADMISSION//MICU", T0, None, hadm))
@@ -127,9 +126,9 @@ def _fake_alerts_json(
     path: Path,
     *,
     cell: str,
-    transform: Optional[str],
+    transform: str | None,
     auroc: float,
-    n_unscoreable: Optional[int] = None,
+    n_unscoreable: int | None = None,
 ) -> None:
     payload = {
         "cell": cell,

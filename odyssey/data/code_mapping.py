@@ -35,14 +35,14 @@ it follows the same pattern: outputevents codes are
 ``SUBJECT_FLUID_OUTPUT//{itemid}//{unit}``, a separate prefix family.
 """
 
-from typing import Dict, FrozenSet, Iterable, Optional
+from collections.abc import Iterable
 
 
 # code_prefix -> LOINC code. Verified directly against MIT-LCP/mimic-code's
 # meas_chartevents_main.csv (chartevents: vitals, GCS components, FiO2) and
 # d_labitems_to_loinc.csv (labevents), plus outputevents_to_loinc.csv for
 # urine output -- see the module docstring.
-MIMIC_IV_TO_LOINC: Dict[str, str] = {
+MIMIC_IV_TO_LOINC: dict[str, str] = {
     # Vitals (icu/chartevents -> "LAB//{itemid}//{unit}")
     "LAB//220045//": "8867-4",  # Heart Rate
     "LAB//220210//": "9279-1",  # Respiratory Rate
@@ -139,7 +139,7 @@ MIMIC_IV_TO_LOINC: Dict[str, str] = {
 # and urine output from intakeOutput, both extracted since spec v2 (v1
 # extractions simply lack those codes). eICU temperature is Celsius (same
 # LOINC as MIMIC's two temperature itemids, unit-differentiated there).
-EICU_TO_LOINC: Dict[str, str] = {
+EICU_TO_LOINC: dict[str, str] = {
     # vitalPeriodic
     "VITALS//PERIODIC//HEARTRATE": "8867-4",  # Heart Rate
     "VITALS//PERIODIC//RESPIRATION": "9279-1",  # Respiratory Rate
@@ -222,7 +222,7 @@ EICU_TO_LOINC: Dict[str, str] = {
 # against the datacut's own lookup descriptions and row counts in
 # scripts/gemini/out/extract_dry.md (the "Lab/Vitals concept frequencies"
 # tables), not assumed from vocabulary files.
-GEMINI_TO_LOINC: Dict[str, str] = {
+GEMINI_TO_LOINC: dict[str, str] = {
     # -- Vitals (measurement_mapped_omop) --
     "VITALS//3027018//": "8867-4",  # Heart rate (55.5M rows)
     "VITALS//3024171//": "9279-1",  # Respiratory rate (50.3M)
@@ -252,7 +252,7 @@ GEMINI_TO_LOINC: Dict[str, str] = {
 }
 
 
-_SOURCE_TABLES: Dict[str, Dict[str, str]] = {
+_SOURCE_TABLES: dict[str, dict[str, str]] = {
     "mimic_iv": MIMIC_IV_TO_LOINC,
     "eicu": EICU_TO_LOINC,
     "gemini": GEMINI_TO_LOINC,
@@ -266,7 +266,7 @@ _SOURCE_TABLES: Dict[str, Dict[str, str]] = {
 # L90 and the extraction's `LAB//RESULT//50889//mg/L` code; eICU's code is
 # `LAB//CRP//mg/dL` -- a 10x difference). Canonical concept thresholds and
 # clinical bin ranges use these tags to pick the right per-unit numbers.
-_PREFIX_UNITS: Dict[str, Dict[str, str]] = {
+_PREFIX_UNITS: dict[str, dict[str, str]] = {
     "mimic_iv": {
         "LAB//223761//": "F",
         "LAB//223762//": "C",
@@ -289,7 +289,7 @@ _PREFIX_UNITS: Dict[str, Dict[str, str]] = {
 }
 
 
-def unit_for(code_prefix: str, *, source: str = "mimic_iv") -> Optional[str]:
+def unit_for(code_prefix: str, *, source: str = "mimic_iv") -> str | None:
     """Return the unit tag for ``code_prefix`` in ``source``, or ``None``.
 
     ``None`` means the prefix's unit is unambiguous for its LOINC across
@@ -298,7 +298,7 @@ def unit_for(code_prefix: str, *, source: str = "mimic_iv") -> Optional[str]:
     return _PREFIX_UNITS[source].get(code_prefix)
 
 
-def loinc_for(code_prefix: str, *, source: str = "mimic_iv") -> Optional[str]:
+def loinc_for(code_prefix: str, *, source: str = "mimic_iv") -> str | None:
     """Return the LOINC code for ``code_prefix`` in ``source``, or ``None``.
 
     ``source`` must be one of the registered sources (currently
@@ -309,7 +309,7 @@ def loinc_for(code_prefix: str, *, source: str = "mimic_iv") -> Optional[str]:
     return _SOURCE_TABLES[source].get(code_prefix)
 
 
-def prefixes_for_loinc(loinc_code: str, *, source: str = "mimic_iv") -> FrozenSet[str]:
+def prefixes_for_loinc(loinc_code: str, *, source: str = "mimic_iv") -> frozenset[str]:
     """Return every ``code_prefix`` in ``source`` mapped to ``loinc_code``.
 
     More than one prefix can map to the same LOINC code (e.g. Fahrenheit

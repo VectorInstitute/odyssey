@@ -13,7 +13,6 @@ test_score_alerts_extra_baselines_scores_alongside_the_gbm.
 """
 
 from datetime import datetime, timedelta
-from typing import Optional
 
 import numpy as np
 import polars as pl
@@ -46,7 +45,7 @@ from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
 
 
 T0 = datetime(2024, 1, 1)
-_EventRow = tuple[int, str, datetime, Optional[float], int]
+_EventRow = tuple[int, str, datetime, float | None, int]
 _KEY = tuple[int, int, float]
 
 

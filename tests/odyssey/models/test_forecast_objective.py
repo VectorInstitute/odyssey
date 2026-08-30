@@ -1,7 +1,6 @@
 """Tests for the bundle-invariant forecasting objective and the time head."""
 
 import math
-from typing import List
 
 import torch
 import torch.nn.functional as F  # noqa: N812
@@ -27,7 +26,7 @@ from odyssey.models.time_to_event import (
 VOCAB = 12
 
 
-def _seq(subject_id: int, codes: List[int], times: List[float]) -> PatientSequence:
+def _seq(subject_id: int, codes: list[int], times: list[float]) -> PatientSequence:
     n = len(codes)
     return PatientSequence(
         subject_id=subject_id,

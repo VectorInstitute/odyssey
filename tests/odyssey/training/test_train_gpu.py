@@ -13,7 +13,7 @@ loss logging), not that the model learns anything meaningful yet.
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import pytest
 import torch
@@ -45,7 +45,7 @@ def _write_shards(shard_dir: Path, n_subjects: int, n_events_per_subject: int) -
     concept labels are a real mix of triggered/not, not degenerate.
     """
     shard_dir.mkdir(parents=True, exist_ok=True)
-    rows: List[Tuple[int, str, datetime, Optional[float], Optional[int]]] = []
+    rows: list[tuple[int, str, datetime, float | None, int | None]] = []
     for subject_id in range(n_subjects):
         base = T0 + timedelta(days=subject_id)
         for i in range(n_events_per_subject):
@@ -94,7 +94,7 @@ def _tiny_config(
     Shared across every test in this file so each one only states the
     fields it actually varies.
     """
-    defaults: Dict[str, Any] = {
+    defaults: dict[str, Any] = {
         "train_shard_dir": str(train_dir),
         "tuning_shard_dir": str(tuning_dir),
         "output_dir": str(output_dir),
@@ -386,7 +386,7 @@ def test_train_stops_early_when_validation_loss_stops_improving(
     # plateauing within a short run.
     scripted_val_losses = iter([2.0, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5])
 
-    def _fake_evaluate_streaming(*_args: object, **_kwargs: object) -> Dict[str, float]:
+    def _fake_evaluate_streaming(*_args: object, **_kwargs: object) -> dict[str, float]:
         return {"task_loss": next(scripted_val_losses)}
 
     monkeypatch.setattr(train_module, "evaluate_streaming", _fake_evaluate_streaming)

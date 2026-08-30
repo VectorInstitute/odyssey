@@ -35,9 +35,9 @@ split -- goes through one shared, memory-bounded path:
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import polars as pl
@@ -71,9 +71,9 @@ class BaselineData:
     per-event values alias ONE array object per feature set.
     """
 
-    rows: Dict[str, List[IndexRow]] = field(default_factory=dict)
-    times: Dict[str, EventTimes] = field(default_factory=dict)
-    features: Dict[str, Dict[str, np.ndarray]] = field(default_factory=dict)
+    rows: dict[str, list[IndexRow]] = field(default_factory=dict)
+    times: dict[str, EventTimes] = field(default_factory=dict)
+    features: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)
 
 
 def _verify_matching_origins(
@@ -115,9 +115,9 @@ def _verify_matching_origins(
 def _resolve_feature_frame(
     shard_path: Path,
     binned: pl.DataFrame,
-    degraded_shard_dir: Optional[Path],
+    degraded_shard_dir: Path | None,
     prepare: Preparer,
-    binner: Optional[QuantileBinner],
+    binner: QuantileBinner | None,
     *,
     source: str,
     loader: ShardLoader,
@@ -140,14 +140,14 @@ def _resolve_feature_frame(
 def prepare_baseline_data(
     paths: Sequence[Path],
     prepare: Preparer,
-    binner: Optional[QuantileBinner],
+    binner: QuantileBinner | None,
     *,
     alerts: Sequence[AlertEvent],
     feature_sets: Sequence[str] = ("strong",),
     source: str = "mimic_iv",
     landmark_hours: float = 4.0,
     loader: ShardLoader = load_meds_shard,
-    degraded_shard_dir: Optional[Path] = None,
+    degraded_shard_dir: Path | None = None,
     task_set: str = "v1",
     index_mode: str = "landmark",
 ) -> BaselineData:
@@ -174,7 +174,7 @@ def prepare_baseline_data(
         if fs not in BASELINE_FEATURE_SETS:
             raise ValueError(f"unknown baseline feature set {fs!r}")
     data = BaselineData()
-    chunks: Dict[str, Dict[str, List[np.ndarray]]] = {fs: {} for fs in feature_sets}
+    chunks: dict[str, dict[str, list[np.ndarray]]] = {fs: {} for fs in feature_sets}
     degraded_dir = Path(degraded_shard_dir) if degraded_shard_dir is not None else None
     for raw_path in paths:
         shard_path = Path(raw_path)
@@ -244,8 +244,8 @@ def prepare_baseline_data(
 
 
 def _concat_dedup(
-    per_event_chunks: Dict[str, List[np.ndarray]],
-) -> Dict[str, np.ndarray]:
+    per_event_chunks: dict[str, list[np.ndarray]],
+) -> dict[str, np.ndarray]:
     """Concatenate per-event chunk lists, aliasing identical lists to one array.
 
     Events share the landmark grid, so their chunk lists are usually the
@@ -254,8 +254,8 @@ def _concat_dedup(
     object identity and concatenate once per distinct list instead; a
     per-event list that genuinely differs still gets its own concat.
     """
-    out: Dict[str, np.ndarray] = {}
-    by_identity: Dict[Tuple[int, ...], np.ndarray] = {}
+    out: dict[str, np.ndarray] = {}
+    by_identity: dict[tuple[int, ...], np.ndarray] = {}
     for event, chunk_list in per_event_chunks.items():
         if not chunk_list:
             continue

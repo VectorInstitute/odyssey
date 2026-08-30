@@ -20,9 +20,9 @@ is about to read (:func:`activate_sidecars`), and rules that need one ask
 """
 
 import logging
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, Iterator, List, Mapping, Optional, Union
 
 import polars as pl
 
@@ -37,11 +37,11 @@ MICROBIOLOGY = "microbiology"
 # stoptime, drug, route) -- mimic-code's suspicion-of-infection anchor.
 ANTIBIOTIC_ORDERS = "antibiotic_orders"
 
-_ACTIVE: Dict[str, pl.DataFrame] = {}
-_ACTIVE_ROOT: Optional[Path] = None
+_ACTIVE: dict[str, pl.DataFrame] = {}
+_ACTIVE_ROOT: Path | None = None
 
 
-def sidecar_root_for(shard_dir: Union[str, Path]) -> Path:
+def sidecar_root_for(shard_dir: str | Path) -> Path:
     """``<root>/sidecars`` for a split directory like ``<root>/data/train``.
 
     Also accepts the ``<root>/data`` directory or ``<root>`` itself (the
@@ -55,12 +55,12 @@ def sidecar_root_for(shard_dir: Union[str, Path]) -> Path:
     return p.parent.parent / SIDECAR_DIRNAME
 
 
-def discover_sidecars(shard_dir: Union[str, Path]) -> Dict[str, pl.DataFrame]:
+def discover_sidecars(shard_dir: str | Path) -> dict[str, pl.DataFrame]:
     """Load every ``*.parquet`` under the sidecar root for ``shard_dir``."""
     root = sidecar_root_for(shard_dir)
     if not root.is_dir():
         return {}
-    out: Dict[str, pl.DataFrame] = {}
+    out: dict[str, pl.DataFrame] = {}
     for path in sorted(root.glob("*.parquet")):
         out[path.stem] = pl.read_parquet(path)
         logger.info(
@@ -69,7 +69,7 @@ def discover_sidecars(shard_dir: Union[str, Path]) -> Dict[str, pl.DataFrame]:
     return out
 
 
-def activate_sidecars(shard_dir: Union[str, Path, None]) -> List[str]:
+def activate_sidecars(shard_dir: str | Path | None) -> list[str]:
     """Make the sidecars next to ``shard_dir`` the active set; return their names.
 
     ``None`` clears the active set. Activating the same root twice is a
@@ -87,12 +87,12 @@ def activate_sidecars(shard_dir: Union[str, Path, None]) -> List[str]:
     return sorted(_ACTIVE)
 
 
-def active_sidecar(name: str) -> Optional[pl.DataFrame]:
+def active_sidecar(name: str) -> pl.DataFrame | None:
     """Return the active sidecar ``name`` or ``None`` if not activated/present."""
     return _ACTIVE.get(name)
 
 
-def active_sidecar_names() -> List[str]:
+def active_sidecar_names() -> list[str]:
     """Names of the currently active sidecars."""
     return sorted(_ACTIVE)
 

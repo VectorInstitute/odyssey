@@ -19,7 +19,6 @@ nothing. An operator who has already set ``JOBLIB_TEMP_FOLDER`` keeps it.
 import logging
 import os
 from pathlib import Path
-from typing import Optional
 
 
 logger = logging.getLogger(__name__)
@@ -28,7 +27,7 @@ ENV_VAR = "JOBLIB_TEMP_FOLDER"
 DEFAULT_DIRNAME = "joblib_tmp"
 
 
-def ensure_joblib_temp_folder(preferred: Optional[Path] = None) -> Path:
+def ensure_joblib_temp_folder(preferred: Path | None = None) -> Path:
     """Point joblib's memmap scratch at real disk; return the folder in use.
 
     Respects an existing ``JOBLIB_TEMP_FOLDER`` (an operator's explicit

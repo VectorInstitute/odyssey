@@ -38,8 +38,8 @@ alerts pipeline, and does not change any existing reported number --
 landed as a tested, standalone unit first.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Optional, Sequence, Union
 
 import numpy as np
 from sklearn.metrics import roc_auc_score
@@ -55,16 +55,16 @@ class BootstrapAUROC:
 
     point_estimate: float
     """AUROC on the data exactly as observed, no resampling."""
-    mean: Optional[float]
+    mean: float | None
     """Mean AUROC across usable bootstrap resamples. None if every
     resample was skipped (see ``n_skipped``)."""
-    std: Optional[float]
+    std: float | None
     """Sample std (ddof=1) across usable resamples. None if fewer than 2
     resamples were usable -- a std from 0 or 1 points is not meaningful."""
-    ci_low: Optional[float]
+    ci_low: float | None
     """Lower percentile bound (``100 * alpha / 2``). None under the same
     condition as ``mean``."""
-    ci_high: Optional[float]
+    ci_high: float | None
     """Upper percentile bound (``100 * (1 - alpha / 2)``). None under the
     same condition as ``mean``."""
     n_boot_used: int
@@ -78,14 +78,14 @@ class BootstrapAUROC:
 
 
 def bootstrap_auroc(
-    y: Union[np.ndarray, Sequence[float]],
-    p: Union[np.ndarray, Sequence[float]],
-    subject_ids: Union[np.ndarray, Sequence[int]],
+    y: np.ndarray | Sequence[float],
+    p: np.ndarray | Sequence[float],
+    subject_ids: np.ndarray | Sequence[int],
     *,
     n_boot: int = 1000,
     seed: int = 0,
     alpha: float = 0.05,
-) -> Optional[BootstrapAUROC]:
+) -> BootstrapAUROC | None:
     """Subject-clustered bootstrap AUROC: point estimate, mean/std/CI, skip count.
 
     Returns None if the OBSERVED ``y`` is single-class -- AUROC is
@@ -201,14 +201,14 @@ class BootstrapAUROCDelta:
 
     point_estimate: float
     """``auroc_a - auroc_b`` on the data exactly as observed."""
-    mean: Optional[float]
-    std: Optional[float]
-    ci_low: Optional[float]
-    ci_high: Optional[float]
+    mean: float | None
+    std: float | None
+    ci_low: float | None
+    ci_high: float | None
     n_boot_used: int
     n_boot_skipped: int
 
-    def excludes_zero(self) -> Optional[bool]:
+    def excludes_zero(self) -> bool | None:
         """Whether the CI excludes 0 (a paired-significant difference).
 
         ``None`` when no interval exists (every resample skipped).
@@ -219,15 +219,15 @@ class BootstrapAUROCDelta:
 
 
 def bootstrap_auroc_delta(
-    y: Union[np.ndarray, Sequence[float]],
-    p_a: Union[np.ndarray, Sequence[float]],
-    p_b: Union[np.ndarray, Sequence[float]],
-    subject_ids: Union[np.ndarray, Sequence[int]],
+    y: np.ndarray | Sequence[float],
+    p_a: np.ndarray | Sequence[float],
+    p_b: np.ndarray | Sequence[float],
+    subject_ids: np.ndarray | Sequence[int],
     *,
     n_boot: int = 1000,
     seed: int = 0,
     alpha: float = 0.05,
-) -> Optional[BootstrapAUROCDelta]:
+) -> BootstrapAUROCDelta | None:
     """Paired, subject-clustered bootstrap of ``AUROC(p_a) - AUROC(p_b)``.
 
     ``y``, ``p_a``, ``p_b``, and ``subject_ids`` must describe the same
@@ -333,7 +333,7 @@ def _weighted_auroc(
     p_group_of_row: np.ndarray,
     n_rows: int,
     n_groups: int,
-) -> Optional[float]:
+) -> float | None:
     """AUROC of ``y``/``p`` restricted+duplicated to ``row_idx``.
 
     Uses a precomputed p-value sort rather than a fresh one. A bootstrap

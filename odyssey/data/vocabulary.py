@@ -14,8 +14,8 @@ Two separate, small vocabularies a patient sequence is built from:
 
 import json
 from collections import Counter
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Mapping, Optional, Union
 
 import polars as pl
 
@@ -31,7 +31,7 @@ _SPECIAL_TOKENS = [PAD_TOKEN, UNK_TOKEN]
 
 # Named backoff functions a Vocabulary can carry. Referenced by name (not by
 # function object) so the choice survives save()/load() round trips.
-BACKOFFS: Dict[str, Callable[[str], Optional[str]]] = {
+BACKOFFS: dict[str, Callable[[str], str | None]] = {
     "icd3": icd_category_code,
 }
 
@@ -50,7 +50,7 @@ class Vocabulary:
     """
 
     def __init__(
-        self, token_to_id: Dict[str, int], *, backoff: Optional[str] = None
+        self, token_to_id: dict[str, int], *, backoff: str | None = None
     ) -> None:
         """Initialize from an already-built token -> id mapping."""
         if backoff is not None and backoff not in BACKOFFS:
@@ -90,7 +90,7 @@ class Vocabulary:
         *,
         min_count: int = 5,
         max_size: int = 50_000,
-        backoff: Optional[str] = None,
+        backoff: str | None = None,
     ) -> "Vocabulary":
         """Build a vocabulary from already-aggregated ``code -> count`` pairs.
 
@@ -123,7 +123,7 @@ class Vocabulary:
     @classmethod
     def from_meds_codes_metadata(
         cls,
-        codes_parquet_path: Union[str, Path],
+        codes_parquet_path: str | Path,
         *,
         min_count: int = 5,
         max_size: int = 50_000,
@@ -160,14 +160,14 @@ class Vocabulary:
         """Return the vocabulary size, including special tokens."""
         return len(self.token_to_id)
 
-    def save(self, path: Union[str, Path]) -> None:
+    def save(self, path: str | Path) -> None:
         """Save as JSON: the token map plus the backoff name."""
         Path(path).write_text(
             json.dumps({"token_to_id": self.token_to_id, "backoff": self.backoff})
         )
 
     @classmethod
-    def load(cls, path: Union[str, Path]) -> "Vocabulary":
+    def load(cls, path: str | Path) -> "Vocabulary":
         """Load from JSON written by :meth:`save` (or the older bare-dict format)."""
         data = json.loads(Path(path).read_text())
         if "token_to_id" in data:
@@ -193,7 +193,7 @@ DEMOGRAPHIC_TYPE = 6
 BILLING_TYPE = 7
 OTHER_TYPE = 8
 
-_PREFIX_TO_TYPE: Dict[str, int] = {
+_PREFIX_TO_TYPE: dict[str, int] = {
     "DIAGNOSIS": DIAGNOSIS_TYPE,
     "MEDICATION": MEDICATION_TYPE,
     "INFUSION_START": MEDICATION_TYPE,
@@ -266,7 +266,7 @@ def code_type(code: str) -> int:
     return _PREFIX_TO_TYPE.get(prefix, OTHER_TYPE)
 
 
-def code_types(codes: List[str]) -> List[int]:
+def code_types(codes: list[str]) -> list[int]:
     """Vectorized convenience wrapper around :func:`code_type`."""
     return [code_type(c) for c in codes]
 
@@ -297,7 +297,7 @@ MEDICATION_FAMILY = "medications"
 ROW_FAMILIES = (LAB_FAMILY, VITAL_FAMILY, MEDICATION_FAMILY)
 
 
-def row_family(code: str, *, source: str) -> Optional[str]:
+def row_family(code: str, *, source: str) -> str | None:
     """Classify one MEDS code into a row family, or ``None`` if none applies.
 
     Reuses two existing, documented conventions rather than inventing a new
