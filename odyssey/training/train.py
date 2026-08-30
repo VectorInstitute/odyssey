@@ -228,7 +228,7 @@ class TrainingConfig:
     # Streaming TBTT
     num_lanes: int = 8
     chunk_size: int = 256
-    reset_prob: float = 0.1
+    reset_prob: float = 0.0
 
     # Optimization
     learning_rate: float = 3e-4
