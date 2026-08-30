@@ -51,7 +51,9 @@ def _events() -> pl.DataFrame:
 
 
 def _embeddings() -> pl.DataFrame:
-    # subject 1: notes at 5h (vec 1,0), 20h (vec 0,1); subject 2: none
+    # subject 1: notes charted at 5h (vec 1,0) and 20h (vec 0,1), each
+    # STORED (finalized) an hour later -- availability 6h / 21h; subject
+    # 2: none.
     return pl.DataFrame(
         {
             "note_id": ["a", "b"],
@@ -59,34 +61,51 @@ def _embeddings() -> pl.DataFrame:
             "hadm_id": [11, 11],
             "note_type": ["RR", "RR"],
             "charttime": [T0 + timedelta(hours=5), T0 + timedelta(hours=20)],
+            "storetime": [T0 + timedelta(hours=6), T0 + timedelta(hours=21)],
             "embedding": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             PCA_COL: [[1.0, 0.0], [0.0, 1.0]],
         }
     )
 
 
-def test_note_features_follow_the_strictly_before_rule_and_windows() -> None:
+def test_note_features_follow_availability_time_and_windows() -> None:
     events, emb = _events(), _embeddings()
     builder = NoteFeatureBuilder(events, emb, window_hours=48.0)
     assert builder.names == note_feature_names(2) and len(builder.names) == 3 + 4
-    feats = builder.features([1, 1, 1, 2], [0.0, 0.0, 0.0, 0.0], [4.0, 5.0, 24.0, 24.0])
+    feats = builder.features([1, 1, 1, 2], [0.0, 0.0, 0.0, 0.0], [4.0, 5.5, 24.0, 24.0])
     # t=4h: no notes yet -> counts 0, staleness NaN, vectors NaN
     assert feats[0, 0] == 0 and feats[0, 1] == 0 and np.isnan(feats[0, 2])
     assert np.isnan(feats[0, 3:]).all()
-    # t=5h: the 5h note is NOT visible (strictly before)
+    # t=5.5h: charted at 5h but only STORED at 6h -- not yet available
     assert feats[1, 0] == 0 and np.isnan(feats[1, 3:]).all()
-    # t=24h: both notes visible; mean = (0.5, 0.5); last = (0, 1); staleness 4h
+    # t=24h: both notes available; mean = (0.5, 0.5); last = (0, 1);
+    # staleness 3h (available 21h)
     assert feats[2, 0] == 2 and feats[2, 1] == 2  # both within 24h and the visit
-    assert feats[2, 2] == pytest.approx(4.0)
+    assert feats[2, 2] == pytest.approx(3.0)
     assert feats[2, 3:5].tolist() == pytest.approx([0.5, 0.5])
     assert feats[2, 5:7].tolist() == pytest.approx([0.0, 1.0])
     # subject 2 has no notes: all NaN
     assert np.isnan(feats[3]).all()
-    # a 10h window at t=24h sees only the 20h note
+    # a 10h window at t=24h sees only the second note (available 21h)
     narrow = NoteFeatureBuilder(events, emb, window_hours=10.0).features(
         [1], [0.0], [24.0]
     )
     assert narrow[0, 3:5].tolist() == pytest.approx([0.0, 1.0])
+    # a note available exactly AT t is visible ((t-w, t], protocol v4)
+    at_boundary = builder.features([1], [0.0], [6.0])
+    assert at_boundary[0, 0] == 1
+    assert at_boundary[0, 2] == pytest.approx(0.0)
+
+
+def test_builder_refuses_a_sidecar_without_storetime() -> None:
+    """A pre-fix sidecar (charttime only) must be refused, never trusted.
+
+    Falling back to charttime would silently reintroduce the note leak
+    (radiology text lags charttime by a median 2.25h on the real release,
+    discharge by ~20h).
+    """
+    with pytest.raises(RuntimeError, match="storetime"):
+        NoteFeatureBuilder(_events(), _embeddings().drop("storetime"))
 
 
 def test_strong_text_feature_set_appends_note_columns_through_the_harness() -> None:

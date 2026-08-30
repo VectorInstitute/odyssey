@@ -234,12 +234,21 @@ def _main() -> None:
     )
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
+    if "storetime" not in notes.columns:
+        raise SystemExit(
+            "notes sidecar has no 'storetime' column -- rebuilt sidecars "
+            "(scripts/build_mimic_note_sidecar.py, 2026-08-30+) carry it so "
+            "features can index notes by availability rather than charttime "
+            "(radiology text lags charttime by a median 2.25h on the real "
+            "release; discharge by ~20h). Rebuild the notes sidecar first."
+        )
     columns = {
         "note_id": notes["note_id"],
         "subject_id": notes["subject_id"],
         "hadm_id": notes["hadm_id"],
         "note_type": notes["note_type"],
         "charttime": notes["charttime"],
+        "storetime": notes["storetime"],
         EMBEDDING_COL: pl.Series(
             [row.astype(np.float16).tolist() for row in vectors],
             dtype=pl.List(pl.Float32),

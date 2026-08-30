@@ -12,6 +12,15 @@ Radiology reports carry in-visit ``charttime`` (the alert-time signal);
 discharge summaries are stamped at discharge (only the *next* visit or a
 readmission task can see them). Both are kept, typed by ``note_type``.
 
+``storetime`` -- when the note text actually ENTERED the record system
+(dictation/finalization) -- is carried alongside ``charttime`` since
+2026-08-30, and downstream feature code indexes notes by availability
+(``max(charttime, storetime)``), never by ``charttime`` alone. Measured
+on the real 2.2 release: radiology storetime lags charttime by a median
+2.25 h (22% of reports > 6 h, 6% > 24 h), discharge by a median ~20 h
+(41% > 24 h) -- so charttime-indexed text features claim availability the
+real system did not have, the classic MIMIC note leakage.
+
 Usage::
 
     uv run python scripts/build_mimic_note_sidecar.py \
@@ -24,8 +33,8 @@ restricts the sidecar to the subjects of the given shard selections (the
 probe scope: the subset runs' 30 train shards + the 4 held-out shards the
 v3 dumps cover); omit ``--shard-dir`` for every subject. Output:
 ``<meds-root>/sidecars/notes.parquet`` with ``note_id, subject_id, hadm_id,
-note_type, charttime, text``. Patient text stays on the local volume / VM;
-the parquet is never committed.
+note_type, charttime, storetime, text``. Patient text stays on the local
+volume / VM; the parquet is never committed.
 """
 
 import argparse
@@ -64,15 +73,27 @@ def build_notes(note_root: Path, subjects: Optional[Set[int]]) -> pl.DataFrame:
                 "hadm_id": pl.Int64,
                 "note_type": pl.Utf8,
                 "charttime": pl.Utf8,
+                "storetime": pl.Utf8,
                 "text": pl.Utf8,
             },
-        ).select("note_id", "subject_id", "hadm_id", "note_type", "charttime", "text")
+        ).select(
+            "note_id",
+            "subject_id",
+            "hadm_id",
+            "note_type",
+            "charttime",
+            "storetime",
+            "text",
+        )
         if subjects is not None:
             lf = lf.filter(pl.col("subject_id").is_in(sorted(subjects)))
         frame = lf.collect().with_columns(
             pl.col("charttime").str.strptime(
                 pl.Datetime("us"), "%Y-%m-%d %H:%M:%S", strict=False
-            )
+            ),
+            pl.col("storetime").str.strptime(
+                pl.Datetime("us"), "%Y-%m-%d %H:%M:%S", strict=False
+            ),
         )
         logger.info("[notes] %s: %d notes", name, frame.height)
         frames.append(frame)
