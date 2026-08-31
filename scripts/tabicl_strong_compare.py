@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-from odyssey.data.alert_events import ALERT_EVENTS
+from odyssey.data.alert_events import alert_events_for
 from odyssey.data.value_binning import QuantileBinner
 from odyssey.inference.baseline_prep import prepare_baseline_data
 from odyssey.inference.tabicl_baseline import fit_tabicl_baselines
@@ -33,7 +33,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("tabicl_full_compare")
 
 HORIZONS = (8.0, 24.0, 72.0)
-CORE_EVENTS = ("acute_kidney_injury", "death", "icu_admission", "vasopressor_start")
 
 
 def main() -> None:  # noqa: PLR0915
@@ -70,7 +69,24 @@ def main() -> None:  # noqa: PLR0915
         history_recap=getattr(config, "history_recap", False),
         source=source,
     )
-    alerts = [a for a in ALERT_EVENTS if a.name in CORE_EVENTS]
+    # The run's OWN task-set/source event list, not the v1 module default.
+    # R2 trains task_set v3, which adds sepsis3 on MIMIC (resolved away on
+    # eICU by source), and scoring TabICL on only the v1 four would leave the
+    # comparator table with a sepsis3 row the tabular baseline never saw.
+    # A v1 run still resolves to exactly the four core events, so this is a
+    # superset, not a behaviour change for anything already run.
+    # next_visit events (readmission_30d) are deliberately excluded: they are
+    # discharge-anchored at 168/720h under index_mode=visit_end, and this
+    # script builds a landmark grid at HORIZONS. They need their own pass.
+    task_set = getattr(config, "task_set", "v1")
+    alerts = [a for a in alert_events_for(task_set, source=source) if not a.next_visit]
+    logger.info(
+        "task_set=%s source=%s -> scoring %d event(s): %s",
+        task_set,
+        source,
+        len(alerts),
+        ", ".join(a.name for a in alerts),
+    )
     if args.only_event:
         alerts = [a for a in alerts if a.name == args.only_event]
 
