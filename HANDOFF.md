@@ -60,7 +60,10 @@ Consequences you must handle:
   `flip`, `flip_gated`, then crashed on the first calibrated mode, so
   `interventions_band15.json` and the per-subject dump were never written.
   **R9's interventions stage must be re-run** once VM2's GPU is free (its chain
-  carried on to attribution, which passed EXIT 0, and then alerts).
+  carried on to attribution, which passed EXIT 0, and then alerts). Checked
+  19:39 UTC: the run dir holds only `interventions.log`, no JSON and no
+  per-subject dump, so the append-only guard will NOT block the re-run and no
+  `--overwrite` is needed. Re-run with VM2 reset to >=414cc0d.
 - **Before launching R8's eval chain, make sure VM1 is reset to ≥414cc0d**, or it
   will fail in exactly the same place.
 - Both `supplemental_r2_vm1.sh` and `supplemental_r6_vm2.sh` score the calibrated
