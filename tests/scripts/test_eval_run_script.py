@@ -32,11 +32,15 @@ def _plan(tmp_path: Path, model_kind: str) -> str:
 
 def test_bottleneck_plan_runs_every_stage(tmp_path: Path) -> None:
     plan = _plan(tmp_path, "bottleneck")
-    for stage in ("eval", "interventions", "alerts", "cases", "report"):
+    for stage in ("eval", "interventions", "attribution", "alerts", "cases", "report"):
         assert f"=== STAGE {stage} EXIT 0 (dry) ===" in plan, stage
     # printf %q quotes each argument, so check flag and value as tokens
     tokens = plan.replace("'", "").split()
     assert "--uncertain-band" in tokens and "0.15" in tokens
+    # The Guide Labs comparison modes ride in the interventions stage.
+    assert "flip_gated" in tokens
+    assert "truth_calibrated" in tokens and "flip_calibrated" in tokens
+    assert "--calibrated-tau" in tokens
     assert "--max-baseline-shards" in tokens and "30" in tokens
     assert "--num-lanes" in tokens and "16" in tokens
     assert "--interventions" in tokens  # report gets the banded file
@@ -68,10 +72,10 @@ def test_overwrite_env_var_forwards_the_flag_to_every_stage(tmp_path: Path) -> N
         check=True,
     )
 
-    for stage in ("eval", "interventions", "alerts"):
+    for stage in ("eval", "interventions", "attribution", "alerts"):
         assert f"=== STAGE {stage} EXIT 0 (dry) ===" in out.stdout, stage
     tokens = out.stdout.replace("'", "").split()
-    assert tokens.count("--overwrite") == 3  # eval, interventions, alerts
+    assert tokens.count("--overwrite") == 4  # eval, interventions, attribution, alerts
 
 
 def test_baseline_plan_skips_bottleneck_only_stages(tmp_path: Path) -> None:

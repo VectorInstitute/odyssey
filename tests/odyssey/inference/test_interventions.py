@@ -94,6 +94,7 @@ def _labels_and_masks() -> tuple[dict[int, torch.Tensor], dict[int, torch.Tensor
 def _run(mode: str, seed: int = 0):
     vocab = _vocab()
     labels, masks = _labels_and_masks()
+    gammas = torch.full((NUM_CONCEPTS,), 0.25) if mode.endswith("_calibrated") else None
     return run_streaming_intervention(
         _model(len(vocab)),
         _events(),
@@ -106,6 +107,7 @@ def _run(mode: str, seed: int = 0):
         chunk_size=8,
         device="cpu",
         seed=seed,
+        calibration_gammas=gammas,
     )
 
 
@@ -545,3 +547,89 @@ def test_per_subject_outcomes_sum_to_the_aggregate() -> None:
     assert sum(n for _, n in per_subject.values()) == result.n_predictions
     total_hits = sum(h for h, _ in per_subject.values())
     assert total_hits / result.n_predictions == result.top1_accuracy
+
+
+# ---------------------------------------------------------------------------
+# Output-calibrated modes (W7)
+# ---------------------------------------------------------------------------
+
+
+def test_calibrated_mode_requires_gammas() -> None:
+    vocab = _vocab()
+    labels, masks = _labels_and_masks()
+    with pytest.raises(ValueError, match="needs calibration_gammas"):
+        run_streaming_intervention(
+            _model(len(vocab)),
+            _events(),
+            vocab,
+            labels,
+            masks,
+            mode="truth_calibrated",
+            supervision="stay",
+            num_lanes=2,
+            chunk_size=8,
+            device="cpu",
+        )
+
+
+def test_calibrated_modes_displace_by_at_most_gamma() -> None:
+    """A calibrated edit displaces by gamma_i, less only at the [0, 1] clip.
+
+    So the mean displacement can never exceed the largest gamma.
+    """
+    vocab = _vocab()
+    labels, masks = _labels_and_masks()
+    model = _model(len(vocab))
+    gammas = torch.tensor([0.05, 0.10, 0.20])
+    kwargs = {
+        "supervision": "stay",
+        "num_lanes": 2,
+        "chunk_size": 8,
+        "device": "cpu",
+        "seed": 0,
+        "calibration_gammas": gammas,
+        "calibrated_tau": 1.0,
+    }
+    baseline = run_streaming_intervention(
+        model, _events(), vocab, labels, masks, mode="none", **kwargs
+    )
+    for mode in ("truth_calibrated", "flip_calibrated"):
+        result = run_streaming_intervention(
+            model, _events(), vocab, labels, masks, mode=mode, **kwargs
+        )
+        assert result.n_intervened_positions == 3 * 20, mode
+        assert result.mean_abs_displacement is not None
+        assert 0.0 < result.mean_abs_displacement <= float(gammas.max()) + 1e-6
+        assert result.calibrated_tau == 1.0
+        # A calibrated mode never uses (or reports) the uncertain band.
+        assert result.uncertain_band is None
+        assert result.mean_task_loss != baseline.mean_task_loss, mode
+
+
+def test_calibrated_truth_and_flip_push_in_opposite_directions() -> None:
+    """With no clipping possible, the two modes' displacements agree.
+
+    Their scored logits still differ: they move the same entries in
+    opposite directions.
+    """
+    vocab = _vocab()
+    labels, masks = _labels_and_masks()
+    model = _model(len(vocab))
+    gammas = torch.full((NUM_CONCEPTS,), 0.01)  # tiny: clipping ~impossible
+    kwargs = {
+        "supervision": "stay",
+        "num_lanes": 2,
+        "chunk_size": 8,
+        "device": "cpu",
+        "seed": 0,
+        "calibration_gammas": gammas,
+    }
+    truth = run_streaming_intervention(
+        model, _events(), vocab, labels, masks, mode="truth_calibrated", **kwargs
+    )
+    flip = run_streaming_intervention(
+        model, _events(), vocab, labels, masks, mode="flip_calibrated", **kwargs
+    )
+    assert truth.mean_abs_displacement == pytest.approx(0.01, abs=1e-6)
+    assert flip.mean_abs_displacement == pytest.approx(0.01, abs=1e-6)
+    assert truth.mean_task_loss != flip.mean_task_loss

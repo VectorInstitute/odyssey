@@ -28,6 +28,20 @@ and comparing task metrics across modes:
   most of ``flip``'s damage relative to ``none``, the damage came from
   spurious promotion (a steering artifact), not from losing the true
   concept's contribution.
+- ``truth_calibrated`` / ``flip_calibrated`` -- the output-calibrated
+  protocol (Guide Labs, adapted): instead of a hard 0/1 value, displace
+  the model's own probability by a per-concept step ``gamma_i = tau /
+  peak_i`` toward the true (resp. flipped) pole, clipped to [0, 1],
+  where ``peak_i`` is concept ``i``'s largest per-token logit shift per
+  unit of mixing probability (see
+  :func:`~odyssey.inference.concept_attribution.calibrated_gammas`).
+  Every concept then applies the same largest achievable logit shift
+  ``tau``, so per-concept sensitivities are comparable regardless of
+  how large the head's weights happen to be for each concept -- the
+  targeted fix for band-population artifacts (rare concepts rarely
+  enter the |p - 0.5| band). The ``uncertain_band`` restriction is
+  deliberately NOT applied to these modes: calibration replaces the
+  band as the equalizer.
 - ``random`` -- feed coin-flip values on the same positions. Separates
   "any perturbation hurts" from "wrong information hurts": a gap
   between ``random`` and ``flip`` means the model reads the *direction*
@@ -51,7 +65,7 @@ every mode -- there is no ground truth to feed there.
 import json
 import logging
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 import polars as pl
@@ -65,6 +79,10 @@ from odyssey.data.sidecars import activate_sidecars
 from odyssey.data.streaming import NO_SUBJECT, PackedLaneSampler, StreamingChunk
 from odyssey.data.value_binning import add_value_tokens
 from odyssey.data.vocabulary import PAD_ID, Vocabulary
+from odyssey.inference.concept_attribution import (
+    calibrated_gammas,
+    mean_concept_directions,
+)
 from odyssey.inference.run_inference import (
     _CODE_TYPE_NAMES,
     _build_type_lookup,
@@ -99,10 +117,14 @@ INTERVENTION_MODES = (
     "truth",
     "flip",
     "flip_gated",
+    "truth_calibrated",
+    "flip_calibrated",
     "random",
     "zero_known",
     "zero_unknown",
 )
+
+CALIBRATED_MODES = ("truth_calibrated", "flip_calibrated")
 
 
 @dataclass(frozen=True)
@@ -130,6 +152,15 @@ class InterventionResult:
     the bottleneck. Truth and flip displace by ``1 - p`` and ``p``
     respectively, so comparing their accuracy deltas without this is
     comparing perturbations of different sizes."""
+
+    calibrated_tau: float | None = None
+    """For the *_calibrated modes: the shared peak logit shift every
+    concept's step was calibrated to."""
+
+    calibration_gamma: dict[str, float] | None = None
+    """For the *_calibrated modes: the per-concept mixing-probability
+    step ``tau / peak_i`` (attached with concept names by
+    :func:`evaluate_interventions`)."""
 
 
 def _chunk_intervention(
@@ -176,7 +207,7 @@ def _chunk_intervention(
     )
 
 
-def run_streaming_intervention(  # noqa: PLR0915 -- one linear scoring pass
+def run_streaming_intervention(  # noqa: PLR0912, PLR0915 -- one linear scoring pass
     model: ConceptBottleneckSequenceModel,
     events_binned: pl.DataFrame,
     vocab: Vocabulary,
@@ -193,6 +224,8 @@ def run_streaming_intervention(  # noqa: PLR0915 -- one linear scoring pass
     seed: int = 0,
     uncertain_band: float | None = None,
     per_subject_out: dict[int, list[int]] | None = None,
+    calibration_gammas: torch.Tensor | None = None,
+    calibrated_tau: float | None = None,
 ) -> InterventionResult:
     """Score next-event prediction under one intervention mode.
 
@@ -217,8 +250,13 @@ def run_streaming_intervention(  # noqa: PLR0915 -- one linear scoring pass
         raise ValueError(
             f"unknown intervention mode {mode!r}; known: {INTERVENTION_MODES}"
         )
+    if mode in CALIBRATED_MODES and calibration_gammas is None:
+        raise ValueError(
+            f"mode {mode!r} needs calibration_gammas (see "
+            "odyssey.inference.concept_attribution.calibrated_gammas)"
+        )
     if concept_first_times is None:
-        if mode in ("truth", "flip", "flip_gated"):
+        if mode in ("truth", "flip", "flip_gated", *CALIBRATED_MODES):
             logger.warning(
                 "[interventions] mode %r without concept_first_times: injecting "
                 "retrospective labels at every position (not running labels)",
@@ -251,19 +289,50 @@ def run_streaming_intervention(  # noqa: PLR0915 -- one linear scoring pass
     with torch.no_grad():
         for chunk in sampler:
             chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
-            intervention = _chunk_intervention(
-                chunk,
-                mode,
-                concept_labels,
-                concept_mask,
-                concept_first_times,
-                supervision=supervision,
-                num_concepts=num_concepts,
-                device=device,
-                rng=rng,
-                uncertain_band=uncertain_band,
+            intervention = (
+                None
+                if mode in CALIBRATED_MODES  # built below, from the model's own probs
+                else _chunk_intervention(
+                    chunk,
+                    mode,
+                    concept_labels,
+                    concept_mask,
+                    concept_first_times,
+                    supervision=supervision,
+                    num_concepts=num_concepts,
+                    device=device,
+                    rng=rng,
+                    uncertain_band=uncertain_band,
+                )
             )
-            if mode == "flip_gated":
+            if mode in CALIBRATED_MODES:
+                # The backbone runs once; the bottleneck runs twice on its
+                # hidden states -- first un-intervened to read the model's
+                # own probabilities (the calibrated step is RELATIVE to
+                # them), then with the calibrated absolute values. No
+                # uncertain band: calibration replaces it as the equalizer.
+                assert calibration_gammas is not None  # noqa: S101 -- checked above
+                hidden, state = model.backbone(
+                    chunk.batch, state=state, reset_mask=chunk.reset_mask
+                )
+                own_probs = model.bottleneck(hidden).concept_probs
+                labels, observed = position_running_labels(
+                    chunk,
+                    concept_labels,
+                    concept_mask,
+                    concept_first_times,
+                    supervision=supervision,
+                    num_concepts=num_concepts,
+                )
+                pole = labels if mode == "truth_calibrated" else 1.0 - labels
+                offsets = (2.0 * pole - 1.0) * calibration_gammas.to(pole.dtype)
+                values = (own_probs + offsets.to(device)).clamp(0.0, 1.0)
+                intervention = BottleneckIntervention(
+                    probs=values, probs_mask=observed.bool().to(device)
+                )
+                bottleneck_out = model.bottleneck(hidden, intervention=intervention)
+                logits = model.lm_head(bottleneck_out.bottleneck)
+            elif mode == "flip_gated":
                 # Two forwards from the SAME input state: the intervention
                 # edits only the post-backbone bottleneck mixing, so both
                 # calls produce identical hidden states and new_state; the
@@ -346,10 +415,11 @@ def run_streaming_intervention(  # noqa: PLR0915 -- one linear scoring pass
             if tid in _CODE_TYPE_NAMES
         },
         n_intervened_positions=n_intervened,
-        uncertain_band=uncertain_band,
+        uncertain_band=None if mode in CALIBRATED_MODES else uncertain_band,
         mean_abs_displacement=(
             displacement_sum / n_replaced_entries if n_replaced_entries else None
         ),
+        calibrated_tau=calibrated_tau if mode in CALIBRATED_MODES else None,
     )
 
 
@@ -366,6 +436,7 @@ def evaluate_interventions(
     seed: int = 0,
     uncertain_band: float | None = None,
     per_subject_out: dict[str, dict[int, list[int]]] | None = None,
+    calibrated_tau: float = 1.0,
 ) -> list[InterventionResult]:
     """End-to-end: load a trained run, score every intervention mode.
 
@@ -426,30 +497,55 @@ def evaluate_interventions(
         concept_first_times = build_concept_first_times(raw_events, concepts)
     del raw_events
 
+    calibration_gammas: torch.Tensor | None = None
+    gamma_by_name: dict[str, float] | None = None
+    if any(m in CALIBRATED_MODES for m in modes):
+        directions = mean_concept_directions(
+            model,
+            events_binned,
+            vocab,
+            num_lanes=num_lanes,
+            chunk_size=chunk_size,
+            device=device,
+        )
+        calibration_gammas = calibrated_gammas(model, directions, tau=calibrated_tau)
+        gamma_by_name = {
+            c.name: float(g)
+            for c, g in zip(concepts, calibration_gammas.tolist(), strict=True)
+        }
+        logger.info(
+            "[interventions] calibrated gammas (tau=%.3g): %s",
+            calibrated_tau,
+            {k: round(v, 4) for k, v in gamma_by_name.items()},
+        )
+
     results = []
     for mode in modes:
         logger.info("[interventions] scoring mode %r", mode)
         mode_subjects: dict[int, list[int]] | None = None
         if per_subject_out is not None:
             mode_subjects = per_subject_out.setdefault(mode, {})
-        results.append(
-            run_streaming_intervention(
-                model,
-                events_binned,
-                vocab,
-                concept_labels,
-                concept_mask,
-                mode=mode,
-                concept_first_times=concept_first_times,
-                supervision=supervision,
-                num_lanes=num_lanes,
-                chunk_size=chunk_size,
-                device=device,
-                seed=seed,
-                uncertain_band=uncertain_band,
-                per_subject_out=mode_subjects,
-            )
+        result = run_streaming_intervention(
+            model,
+            events_binned,
+            vocab,
+            concept_labels,
+            concept_mask,
+            mode=mode,
+            concept_first_times=concept_first_times,
+            supervision=supervision,
+            num_lanes=num_lanes,
+            chunk_size=chunk_size,
+            device=device,
+            seed=seed,
+            uncertain_band=uncertain_band,
+            per_subject_out=mode_subjects,
+            calibration_gammas=calibration_gammas,
+            calibrated_tau=calibrated_tau,
         )
+        if mode in CALIBRATED_MODES:
+            result = replace(result, calibration_gamma=gamma_by_name)
+        results.append(result)
         baseline = results[0]
         latest = results[-1]
         logger.info(
@@ -484,6 +580,17 @@ def _main() -> None:
             "Only inject truth/flip/random values where the model's own concept "
             "probability is within this distance of 0.5, so truth and flip "
             "displace it equally (a pure direction test)."
+        ),
+    )
+    parser.add_argument(
+        "--calibrated-tau",
+        type=float,
+        default=1.0,
+        help=(
+            "peak logit shift every concept's step is calibrated to in the "
+            "truth_calibrated/flip_calibrated modes (gamma_i = tau / peak_i "
+            "over the LM head weights); ignored unless a calibrated mode is "
+            "in --modes."
         ),
     )
     parser.add_argument("--num-lanes", type=int, default=8)
@@ -527,6 +634,7 @@ def _main() -> None:
         checkpoint_path=run_dir / (args.checkpoint or "checkpoint_best.pt"),
         uncertain_band=args.uncertain_band,
         per_subject_out=per_subject,
+        calibrated_tau=args.calibrated_tau,
     )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps([asdict(r) for r in results], indent=2))
