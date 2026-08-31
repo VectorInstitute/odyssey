@@ -35,9 +35,17 @@ claims: seed replicates or they are labeled hypotheses.
   10:42 UTC against `checkpoint_best.pt`. LANES=64, ALERT_SHARDS=37 (full
   held-out), BASELINE_SHARDS=292 (full train, STREAM_BASELINE=1 per the
   OOM lesson). Log `~/r2_eval_launch.log` on VM1.
-- **R6 eval chain** (VM2, same script/commit): launched 10:42 UTC.
-  ALERT_SHARDS=17, BASELINE_SHARDS=134 (both full-scale, streamed). Log
-  `~/r6_eval_launch.log` on VM2.
+- **R6 eval chain**: COMPLETE 15:07 UTC Aug 31, all five stages EXIT 0
+  (eval 16m, interventions 75m, alerts 173m, cases+report <1m). Outputs in
+  `~/runs/eicu_full_v10/` on VM2: inference_results.json,
+  interventions_band15.json, alerts.json + alerts_rows.parquet (B2's
+  gate), case_studies.json, report.html.
+- **R9 training** (VM2): LAUNCHED 15:08 UTC Aug 31 by odyssey-4a,
+  checkout 17d28fc (commit floor >=8161e19 verified). R6 config with
+  concept_global_pairs=true only, output `~/runs/eicu_full_L_v10`, log
+  `~/r9_train.log`. Eval chain (now incl. flip_gated/calibrated modes +
+  attribution stage) to launch on completion, then the R6 supplemental
+  Guide Labs + W3 band-sweep scoring.
 - GEMINI deferred (Amrit): MIMIC-IV + eICU full runs with thorough evals
   complete first.
 
