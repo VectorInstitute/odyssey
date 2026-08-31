@@ -314,9 +314,28 @@ without seed replicates.
    - `scripts/alerts_cis.py` over the v4 dumps (pure CPU, no GPU contention)
 2. **R8 training finishes** → update VM1 checkout (`git fetch origin` +
    `merge-base --is-ancestor` floor check + `git reset --hard origin/main`;
-   **fetch/reset only, NEVER `uv sync` on a VM**), then
-   `STREAM_BASELINE=1 LANES=64 setsid nohup scripts/eval_run.sh ~/runs/full_run_L_v10 ~/data/mimiciv_3.1_v1/data ... & disown`,
-   then the same four follow-ups with `supplemental_r2_vm1.sh`.
+   **fetch/reset only, NEVER `uv sync` on a VM**), then launch its chain
+   **with `ALERT_SHARDS=37`**:
+
+   ```
+   ALERT_SHARDS=37 STREAM_BASELINE=1 LANES=64 setsid nohup \
+     scripts/eval_run.sh ~/runs/full_run_L_v10 ~/data/mimiciv_3.1_v1/data \
+     > ~/r8_eval_launch.log 2>&1 & disown
+   ```
+
+   **Do not take the default 4.** MIMIC has 37 held-out shards and R2's chain
+   scored all of them (its intervention `n_predictions` equals its own full-eval
+   count). R8 exists to be compared against R2, so leaving `ALERT_SHARDS` at its
+   default would reproduce exactly the R9-vs-R6 coverage mismatch documented in
+   §1bb — a mistake I already made once today because the previous handoff listed
+   only `STREAM_BASELINE` and `LANES` and never mentioned `ALERT_SHARDS`.
+   Cost: ~5h rather than ~2h (R2's own chain took 22m eval + 102m interventions +
+   190m alerts). That is the price of a comparable arm; an incomparable R8 is
+   worth much less than a slow one.
+
+   Then `scripts/vm_oneoff/post_chain.sh` and `supplemental_r2_vm1.sh` (which
+   should likewise be run at matched coverage — it currently hardcodes
+   `--max-shards 4`).
 3. **Comparator table swaps** (see §4 — this is the biggest outstanding paper debt).
 4. **Figure 3 CIs**: copy `intervention_cis.json` into
    `research_journal/figure_data/vm1/full_run_v10/` and rerun
