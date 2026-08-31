@@ -127,6 +127,51 @@ way, still confirming the morning's +0.024 to +0.023 fix.
 
 ---
 
+## 1ba. D5 IS ANSWERABLE — R6's CIs landed 22:02 UTC. Read this before touching the abstract.
+
+All ten pairs SEPARATED (3,916 subjects, 2000 boots),
+`research_journal/figure_data/vm2/eicu_full_v10/intervention_cis.json`:
+
+| pair | delta (pts) | 95% CI |
+|---|---|---|
+| **truth − none** | **+0.162** | **[+0.084, +0.244]** |
+| truth − flip | +0.535 | [+0.398, +0.671] |
+| flip − none | −0.374 | [−0.440, −0.305] |
+| flip_gated − none | −0.438 | [−0.485, −0.393] |
+| random − none | −0.108 | [−0.137, −0.080] |
+| **truth_calibrated − none** | **−0.259** | **[−0.455, −0.045]** |
+| **truth_cal − flip_cal** | **−1.642** | **[−1.910, −1.336]** |
+| **flip_calibrated − none** | **+1.383** | **[+1.212, +1.541]** |
+| zero_known − none | −28.140 | [−28.546, −27.739] |
+| zero_unknown − none | +0.486 | [+0.377, +0.608] |
+
+**1. The question D5 was deferred for is answered: eICU truth−none DOES clear
+significance** (+0.162, CI excludes zero). That is exactly the outcome odyssey-6b
+predicted and Amrit froze the abstract for.
+
+**2. But the abstract claim SURVIVES, because of the word "both".** The claim is
+"a true override never reliably helps ... on **both** metrics". On eICU banded,
+truth significantly helps top-1 (+0.162) and **hurts loss** (+0.0234). On eICU
+calibrated it significantly *hurts* top-1 (−0.259) and hurts loss (+0.1887). So it
+never helps on both, under either protocol, and now with intervals. **"Reliably"
+was doing exactly the right work and is now backed rather than hedged.**
+
+**3. The protocol disagreement is now statistically established, and it is a
+better finding than the original.** On the same arm, the two protocols give
+*significantly opposite* answers: banded says truth beats flip by +0.535
+[+0.398, +0.671]; output-calibrated says flip beats truth by 1.642
+[1.336, 1.910], with the FALSE label significantly beating no-intervention at
++1.383. The band is manufacturing the correct sign on the flagship arm.
+
+**Recommendation for the D5 conversation (with odyssey-6b, per Amrit):** do not
+weaken the abstract. Consider strengthening it — the honest headline is now
+"the lever's apparent correctness on eICU is an artifact of the evaluation
+protocol", which serves the trust-audit thesis better than a hedge, and it is an
+audit-of-the-eval finding of exactly the kind Sec 5.5 is about. **MIMIC's CIs are
+still owed** (behind R8) and MIMIC is where the wrong-sign headline lives.
+
+---
+
 ## 1be. W3 BAND SWEEP: the displacement-asymmetry confound does NOT explain the lever
 
 This is the identifying test the plan and the main.tex appendix flagged as owed.
