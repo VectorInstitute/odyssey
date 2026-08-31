@@ -27,6 +27,13 @@ SSH: `gcloud compute ssh --zone <zone> <vm> --project agentic-ai-evaluation-boot
 My watchers die with my session — **re-arm your own**. Done/dead checks are in
 the table above. Three watchers were live: R8 training, R9 eval chain, B1.
 
+**Watcher trap, learned the hard way:** `tabicl_strong_compare.py` rewrites its
+`--output-json` after EVERY cell, so the file existing means "at least one cell
+done", not "finished". A watcher keyed on file existence fired on cell 1 of 15 and
+reported B1 complete when it had ~7 hours left. The real signal is the script's
+final `INFO wrote <path>` log line. Each cell costs ~30 minutes of scoring
+(measured 1,826s), matching the Aug 27 run, so 15 cells is ~7.5h.
+
 **The ultra host is billing.** Stop it (`gcloud compute instances stop
 odyssey-cbm-a100-ultra --zone us-central1-a`) once B1's JSON is pulled. Amrit
 approved the spin-up explicitly for B1 and nothing else.
