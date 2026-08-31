@@ -133,6 +133,49 @@ def test_probs_modes_move_the_logits_and_count_intervened_positions() -> None:
     assert flip.mean_task_loss != truth.mean_task_loss
 
 
+def test_flip_gated_reduces_to_none_when_nothing_is_observed() -> None:
+    """With no observed concepts the gate has nothing to gate.
+
+    This must hold EXACTLY, which also proves the mode's two forward
+    passes thread the backbone state correctly: both passes start from
+    the same input state, and the carried state matches the one the
+    single-forward modes produce.
+    """
+    vocab = _vocab()
+    labels, masks = _labels_and_masks()
+    masks = {sid: torch.zeros(NUM_CONCEPTS) for sid in masks}
+    model = _model(len(vocab))
+    kwargs = {
+        "supervision": "stay",
+        "num_lanes": 2,
+        "chunk_size": 8,
+        "device": "cpu",
+        "seed": 0,
+    }
+    baseline = run_streaming_intervention(
+        model, _events(), vocab, labels, masks, mode="none", **kwargs
+    )
+    gated = run_streaming_intervention(
+        model, _events(), vocab, labels, masks, mode="flip_gated", **kwargs
+    )
+    assert gated.n_intervened_positions == 0
+    assert gated.mean_task_loss == baseline.mean_task_loss
+    assert gated.top1_accuracy == baseline.top1_accuracy
+
+
+def test_flip_gated_intervenes_like_flip_but_scores_differently() -> None:
+    """The gated variant edits the same entries yet keeps only suppression."""
+    flip = _run("flip")
+    gated = _run("flip_gated")
+    baseline = _run("none")
+    assert gated.n_intervened_positions == flip.n_intervened_positions == 3 * 20
+    assert gated.mean_abs_displacement == flip.mean_abs_displacement
+    # An untrained model still moves under a hard 0/1 edit; the gate must
+    # produce a third, distinct scoring (it discards flip's promotions).
+    assert gated.mean_task_loss != baseline.mean_task_loss
+    assert gated.mean_task_loss != flip.mean_task_loss
+
+
 def test_zero_modes_change_task_loss() -> None:
     baseline = _run("none")
     assert _run("zero_known").mean_task_loss != baseline.mean_task_loss

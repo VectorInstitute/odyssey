@@ -35,7 +35,11 @@
 # Stages (each logs "=== STAGE <name> EXIT <code> <utc time> ==="):
 #   eval          full held-out standard evaluation -> inference_results.json
 #   interventions banded (equal-displacement) lever test plus zero_known / zero_unknown completeness probes on ALERT_SHARDS -> interventions_band15.json
-#                 (skipped for model_kind=baseline: no bottleneck)
+#                 (skipped for model_kind=baseline: no bottleneck); includes the
+#                 suppression-only flip_gated control (Guide Labs Fig 19 artifact check)
+#   attribution   exact Concept Contribution + Known Concept Alignment (Guide Labs
+#                 Eq 22 / T_k(c) adapted; no labels, no edits) on ALERT_SHARDS
+#                 -> attribution.json (skipped for baseline)
 #   alerts        hazard heads vs the strong tuned per-event GBM on ALERT_SHARDS -> alerts.json,
 #                 plus the per-index-row table alerts_rows.parquet (patient-level: stays in RUN_DIR)
 #   cases         case traces -> case_studies.json (skipped for baseline; an empty list is written)
@@ -76,7 +80,8 @@ echo "run=$RUN_DIR data=$DATA_ROOT model_kind=$MODEL_KIND lanes=$LANES chunk=$CH
 stage eval "$PYTHON" -m odyssey.inference.run_inference --run-dir "$RUN_DIR" --held-out-shard-dir "$DATA_ROOT/held_out" --output-json "$RUN_DIR/inference_results.json" --num-lanes "$LANES" --chunk-size "$CHUNK" --checkpoint "$CHECKPOINT" $OVERWRITE_FLAG
 
 if [ "$MODEL_KIND" = "bottleneck" ]; then
-  stage interventions "$PYTHON" -m odyssey.inference.interventions --run-dir "$RUN_DIR" --held-out-shard-dir "$DATA_ROOT/held_out" --output-json "$RUN_DIR/interventions_band15.json" --max-shards "$ALERT_SHARDS" --num-lanes "$LANES" --chunk-size "$CHUNK" --uncertain-band 0.15 --modes none truth flip random zero_known zero_unknown --checkpoint "$CHECKPOINT" $OVERWRITE_FLAG
+  stage interventions "$PYTHON" -m odyssey.inference.interventions --run-dir "$RUN_DIR" --held-out-shard-dir "$DATA_ROOT/held_out" --output-json "$RUN_DIR/interventions_band15.json" --max-shards "$ALERT_SHARDS" --num-lanes "$LANES" --chunk-size "$CHUNK" --uncertain-band 0.15 --modes none truth flip flip_gated random zero_known zero_unknown --checkpoint "$CHECKPOINT" $OVERWRITE_FLAG
+  stage attribution "$PYTHON" -m odyssey.inference.concept_attribution --run-dir "$RUN_DIR" --held-out-shard-dir "$DATA_ROOT/held_out" --output-json "$RUN_DIR/attribution.json" --max-shards "$ALERT_SHARDS" --num-lanes "$LANES" --chunk-size "$CHUNK" --checkpoint "$CHECKPOINT" $OVERWRITE_FLAG
 else
   echo "=== STAGE interventions SKIPPED (baseline model) ==="
 fi

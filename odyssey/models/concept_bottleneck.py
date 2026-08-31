@@ -260,6 +260,30 @@ class ConceptBottleneck(nn.Module):
         # this is a separate, supervised head rather than an input feature.
         self.observability_proj = nn.Linear(hidden_size, num_concepts)
 
+    def concept_pair_directions(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """Per-concept intervention direction ``w+ - w-``, shape (..., k, d).
+
+        Raising concept ``i``'s mixing probability by ``delta`` moves that
+        slot's mixed embedding by exactly ``delta * (w+ - w-)``, so through
+        the linear LM head this direction determines which token logits a
+        concept override moves (the Known Concept Alignment analysis,
+        :mod:`odyssey.inference.concept_attribution`). With ``global_pairs``
+        the direction is an input-independent parameter (exact); otherwise
+        it is recomputed from the hidden state via the same context
+        projection the forward pass uses. Call in eval mode: in train mode
+        the dropout draw here would differ from the forward pass's.
+        """
+        k, d = self.num_concepts, self.embedding_dim
+        batch_shape = hidden_states.shape[:-1]
+        if self.global_pairs:
+            diff = self.pair_embeddings[:, 0, :] - self.pair_embeddings[:, 1, :]
+            return diff.expand(*batch_shape, k, d)
+        x = self.dropout(hidden_states)
+        context = self.context_act(self.context_proj(x))
+        known_ctx = context[..., : k * 2 * d].view(*batch_shape, k, 2, d)
+        directions: torch.Tensor = known_ctx[..., 0, :] - known_ctx[..., 1, :]
+        return directions
+
     def forward(
         self,
         hidden_states: torch.Tensor,

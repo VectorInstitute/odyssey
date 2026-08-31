@@ -584,3 +584,50 @@ def test_truth_intervention_equals_own_probs_when_they_agree() -> None:
         hidden, intervention=BottleneckIntervention(probs=plain.concept_probs)
     )
     assert torch.allclose(plain.bottleneck, echoed.bottleneck)
+
+
+# ---------------------------------------------------------------------------
+# concept_pair_directions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("global_pairs", [False, True])
+def test_pair_directions_predict_the_interventions_embedding_shift(
+    global_pairs: bool,
+) -> None:
+    """w+ - w- must be exactly the per-unit-probability embedding shift.
+
+    Overriding concept i's mixing probability from b to a moves its mixed
+    embedding by (a - b) * (w+ - w-); the alignment analysis
+    (odyssey.inference.concept_attribution) rests on this identity, so it
+    is checked against the real forward pass rather than assumed.
+    """
+    torch.manual_seed(1)
+    bottleneck = ConceptBottleneck(
+        hidden_size=8, num_concepts=3, embedding_dim=4, global_pairs=global_pairs
+    )
+    bottleneck.eval()
+    hidden = torch.randn(2, 5, 8)
+    probs_a = torch.rand(2, 5, 3)
+    probs_b = torch.rand(2, 5, 3)
+    out_a = bottleneck(hidden, BottleneckIntervention(probs=probs_a))
+    out_b = bottleneck(hidden, BottleneckIntervention(probs=probs_b))
+    directions = bottleneck.concept_pair_directions(hidden)
+    assert directions.shape == (2, 5, 3, 4)
+    expected = (probs_a - probs_b).unsqueeze(-1) * directions
+    torch.testing.assert_close(
+        out_a.concept_embeddings - out_b.concept_embeddings, expected
+    )
+
+
+def test_pair_directions_are_input_independent_with_global_pairs() -> None:
+    torch.manual_seed(2)
+    bottleneck = ConceptBottleneck(
+        hidden_size=8, num_concepts=2, embedding_dim=4, global_pairs=True
+    )
+    bottleneck.eval()
+    d1 = bottleneck.concept_pair_directions(torch.randn(3, 8))
+    d2 = bottleneck.concept_pair_directions(torch.randn(3, 8))
+    torch.testing.assert_close(d1, d2)
+    expected = bottleneck.pair_embeddings[:, 0, :] - bottleneck.pair_embeddings[:, 1, :]
+    torch.testing.assert_close(d1[0], expected)

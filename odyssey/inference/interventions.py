@@ -18,6 +18,16 @@ and comparing task metrics across modes:
   bottleneck shows no movement.
 - ``flip`` -- feed ``1 - label`` on the same positions. The mirror
   image: reliance on the concept channel shows up as damage.
+- ``flip_gated`` -- the same ``1 - label`` edit, but its logit changes
+  pass through a suppression-only gate: ``logits = logits_none +
+  min(0, logits_flip - logits_none)``, so the flip may lower token
+  logits but never raise them. Guide Labs (arXiv:2608.07594, Fig. 19)
+  show naive negative steering *promotes* anti-aligned or unrelated
+  vocabulary rather than only suppressing the aligned direction; this
+  mode is the control for that artifact. If ``flip_gated`` recovers
+  most of ``flip``'s damage relative to ``none``, the damage came from
+  spurious promotion (a steering artifact), not from losing the true
+  concept's contribution.
 - ``random`` -- feed coin-flip values on the same positions. Separates
   "any perturbation hurts" from "wrong information hurts": a gap
   between ``random`` and ``flip`` means the model reads the *direction*
@@ -88,6 +98,7 @@ INTERVENTION_MODES = (
     "none",
     "truth",
     "flip",
+    "flip_gated",
     "random",
     "zero_known",
     "zero_unknown",
@@ -152,7 +163,7 @@ def _chunk_intervention(
     )
     if mode == "truth":
         values = labels
-    elif mode == "flip":
+    elif mode in ("flip", "flip_gated"):
         values = 1.0 - labels
     elif mode == "random":
         values = (torch.rand(labels.shape, generator=rng) < 0.5).float()
@@ -207,7 +218,7 @@ def run_streaming_intervention(  # noqa: PLR0915 -- one linear scoring pass
             f"unknown intervention mode {mode!r}; known: {INTERVENTION_MODES}"
         )
     if concept_first_times is None:
-        if mode in ("truth", "flip"):
+        if mode in ("truth", "flip", "flip_gated"):
             logger.warning(
                 "[interventions] mode %r without concept_first_times: injecting "
                 "retrospective labels at every position (not running labels)",
@@ -252,12 +263,29 @@ def run_streaming_intervention(  # noqa: PLR0915 -- one linear scoring pass
                 rng=rng,
                 uncertain_band=uncertain_band,
             )
-            logits, bottleneck_out, state = model(
-                chunk.batch,
-                state=state,
-                reset_mask=chunk.reset_mask,
-                intervention=intervention,
-            )
+            if mode == "flip_gated":
+                # Two forwards from the SAME input state: the intervention
+                # edits only the post-backbone bottleneck mixing, so both
+                # calls produce identical hidden states and new_state; the
+                # gate then keeps only the flip's suppressive logit changes.
+                state_in = state
+                base_logits, bottleneck_out, state = model(
+                    chunk.batch, state=state_in, reset_mask=chunk.reset_mask
+                )
+                flip_logits, _, _ = model(
+                    chunk.batch,
+                    state=state_in,
+                    reset_mask=chunk.reset_mask,
+                    intervention=intervention,
+                )
+                logits = base_logits + torch.clamp_max(flip_logits - base_logits, 0.0)
+            else:
+                logits, bottleneck_out, state = model(
+                    chunk.batch,
+                    state=state,
+                    reset_mask=chunk.reset_mask,
+                    intervention=intervention,
+                )
             real = chunk.real_mask
             if intervention is not None and intervention.probs is not None:
                 own = bottleneck_out.concept_probs
