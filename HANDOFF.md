@@ -168,6 +168,16 @@ TabICL (B1, in flight):
   bootstrap** to separate the cell, plus AUPRC and calibration columns. That needs
   `scripts/alerts_cis.py` over each arm's `alerts_rows.parquet`. Pure CPU.
 
+**The v4 claim check is already done** (full detail in the main.tex header). Every
+Sec 5.4 comparator claim was re-derived from the post-KDIGO v4 data before the
+swap, so this is a numbers edit and not a rewrite: the "win 2 of 12 cells" claim
+survives on the *same two cells* and becomes 2 of 15 (sepsis3 adds three, all GBM
+wins); "the gap widening in horizon" survives and is now uniform across all five
+events, AKI included, where at v3 AKI was the flat one; and eICU's "lose all 12"
+survives exactly. One caution recorded there: the older "AKI stays flat" reading,
+used as evidence that AKI is a different failure mode from the counting failures,
+no longer holds at v4 -- do not re-assert it from the old rows.
+
 **Use `scripts/make_comparator_tables.py` (new, tested) -- do not hand-transcribe.**
 It reads `alerts.json` (+ optional `--tabicl` and `--cis`) and emits the LaTeX row
 body. Hand transcription is what produced the `+0.024` error, so the tables are now
