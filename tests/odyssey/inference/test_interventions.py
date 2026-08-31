@@ -606,6 +606,79 @@ def test_calibrated_modes_displace_by_at_most_gamma() -> None:
         assert result.mean_task_loss != baseline.mean_task_loss, mode
 
 
+def test_calibrated_modes_accept_gammas_in_another_dtype() -> None:
+    """Gammas are cast to the running labels' dtype, not assumed to match.
+
+    The production gammas come from :func:`calibrated_gammas` over the LM
+    head, so their dtype follows the model's parameters and need not equal
+    the labels' float32. This pins the dtype half of that conversion; the
+    device half cannot be exercised without a second device, which is what
+    ``test_calibrated_modes_run_on_cuda`` below is for.
+    """
+    vocab = _vocab()
+    labels, masks = _labels_and_masks()
+    model = _model(len(vocab))
+    kwargs = {
+        "supervision": "stay",
+        "num_lanes": 2,
+        "chunk_size": 8,
+        "device": "cpu",
+        "seed": 0,
+        "calibrated_tau": 1.0,
+    }
+    for dtype in (torch.float64, torch.float16):
+        result = run_streaming_intervention(
+            model,
+            _events(),
+            vocab,
+            labels,
+            masks,
+            mode="truth_calibrated",
+            calibration_gammas=torch.full((NUM_CONCEPTS,), 0.25, dtype=dtype),
+            **kwargs,
+        )
+        assert result.mean_abs_displacement is not None
+        assert 0.0 < result.mean_abs_displacement <= 0.25 + 1e-3, dtype
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a GPU")
+def test_calibrated_modes_run_on_cuda() -> None:
+    """Regression: calibrated modes died on every GPU run until 2026-08-31.
+
+    ``calibration_gammas`` is built from the model's LM-head weights and so
+    lives on the model's device, while the running labels are assembled on
+    CPU. The offsets multiply cast dtype but not device, which raises
+    "Expected all tensors to be on the same device" -- but only where those
+    devices actually differ. The rest of this module is CPU-only, where
+    they never do, so the whole calibrated-mode suite passed while no
+    calibrated mode had ever completed a real run. This is gated rather
+    than skipped-by-omission because the VMs run this suite on a GPU, which
+    is where the bug was reachable.
+    """
+    vocab = _vocab()
+    labels, masks = _labels_and_masks()
+    model = _model(len(vocab)).cuda()
+    for mode in ("truth_calibrated", "flip_calibrated"):
+        result = run_streaming_intervention(
+            model,
+            _events(),
+            vocab,
+            labels,
+            masks,
+            mode=mode,
+            supervision="stay",
+            num_lanes=2,
+            chunk_size=8,
+            device="cuda",
+            seed=0,
+            # deliberately on the model's device, as calibrated_gammas returns it
+            calibration_gammas=torch.full((NUM_CONCEPTS,), 0.25).cuda(),
+            calibrated_tau=1.0,
+        )
+        assert result.mean_abs_displacement is not None
+        assert 0.0 < result.mean_abs_displacement <= 0.25 + 1e-6, mode
+
+
 def test_calibrated_truth_and_flip_push_in_opposite_directions() -> None:
     """With no clipping possible, the two modes' displacements agree.
 
