@@ -41,6 +41,27 @@ claims: seed replicates or they are labeled hypotheses.
 - GEMINI deferred (Amrit): MIMIC-IV + eICU full runs with thorough evals
   complete first.
 
+## NEXT CYCLE (post Sept 10, pre-registered 2026-08-31)
+
+Prognosis-conditioned generation (the "patient simulator" paper, Amrit +
+odyssey-4a discussion 2026-08-31). Motivation from this paper's lever
+result: current-state concepts cannot steer because they are rule-derived
+from the history the model already read (L2 teacher forcing confirmed:
+conditioning on a redundant signal is ignored), and CB-pLM's working lever
+is output-conditioning, not a learned causal response. The constructive
+successor: condition next-event generation on FUTURE concept outcomes
+(e.g. sepsis within 24h), which are uncertain given history and therefore
+informative; classifier-free-guidance-style label dropout so conditioned
+and unconditioned modes coexist; evaluate as a SIMULATOR, never a
+forecaster (conditioned-mode accuracy is leakage by construction and must
+never appear beside forecasting baselines). Eval design: (a) fidelity =
+replay our own concept rules on generated rollouts, do flagged rollouts
+exhibit the concept; (b) calibration = unconditioned rollout concept
+incidence vs real incidence; (c) semantics stated as conditional
+simulation, explicitly not do()-counterfactuals (the Foresight line this
+paper's Discussion draws). Builds on existing pieces: running labels,
+rollouts.py, global-pairs bottleneck (R8/R9), landmark protocol v4.
+
 ## REMAINING
 
 ### Code work items (block eval chains, not training)
