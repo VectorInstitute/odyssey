@@ -21,6 +21,7 @@ import numpy as np
 import polars as pl
 
 from odyssey.data.alert_events import alert_events_for
+from odyssey.data.sidecars import activate_sidecars
 from odyssey.data.value_binning import QuantileBinner
 from odyssey.inference.baseline_prep import prepare_baseline_data
 from odyssey.inference.tabicl_baseline import fit_tabicl_baselines
@@ -64,6 +65,15 @@ def main() -> None:  # noqa: PLR0915
     )
     binner = QuantileBinner.load(args.run_dir / "quantile_binner.json")
     source = getattr(config, "source", "mimic_iv")
+    # Same call, same place, as every other entry point (alerts.py,
+    # run_inference.py, concept_attribution.py). Without it the sepsis3
+    # concept has no microbiology sidecar and is unobserved EVERYWHERE, so
+    # its rows silently collapse to nothing and the event is skipped -- a
+    # 6h run that quietly drops the task it was extended to cover. The
+    # sidecar root resolves from the data root, so activating once off the
+    # held-out dir also covers the train shards.
+    names = activate_sidecars(args.held_out_shard_dir)
+    logger.info("active sidecars: %s", ", ".join(names) if names else "NONE")
     prepare = make_preparer(
         normalize_medications=getattr(config, "normalize_medications", False),
         history_recap=getattr(config, "history_recap", False),
