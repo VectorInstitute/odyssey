@@ -1,7 +1,7 @@
 # HANDOFF — odyssey ML4H paper push
 
 From session `odyssey-7d`, 2026-08-31 ~18:30 UTC. Successor to `odyssey-4a`.
-Repo `~/src/odyssey`, branch `main`, pushed clean at **6a50ecc**.
+Repo `~/src/odyssey`, branch `main`, pushed clean at **8aa24e5**.
 
 Target: ML4H 2026 Proceedings, deadline **Sept 10 AoE**. A CBM trust audit of an
 EHR foundation model on MIMIC-IV + eICU + GEMINI.
@@ -33,8 +33,48 @@ approved the spin-up explicitly for B1 and nothing else.
 
 ---
 
+## 1b. READ THIS FIRST — a bug found at 18:40 UTC changes the queue
+
+**Every calibrated intervention mode had never once completed on a GPU.**
+`calibration_gammas` is built from the model's LM-head weights so it lives on the
+model's device; the running labels are assembled on CPU; the offsets multiply cast
+dtype but **not** device. Every GPU run of `truth_calibrated`/`flip_calibrated`
+died with "Expected all tensors to be on the same device". The CPU-only test suite
+could not see it, so the calibrated-mode tests passed the whole time.
+
+Fixed in **414cc0d**, regression tests in **8aa24e5** (one CUDA-gated, which will
+run on the VMs; one dtype test that runs anywhere). **The CUDA test has not yet
+been executed on a GPU** — all three cards were busy — so run
+`pytest tests/odyssey/inference/test_interventions.py` on a VM once one frees.
+
+Consequences you must handle:
+
+- **R9's interventions stage EXIT 1** (18:38:54). It got through `none`, `truth`,
+  `flip`, `flip_gated`, then crashed on the first calibrated mode, so
+  `interventions_band15.json` and the per-subject dump were never written.
+  **R9's interventions stage must be re-run** once VM2's GPU is free (its chain
+  carried on to attribution, which passed EXIT 0, and then alerts).
+- **Before launching R8's eval chain, make sure VM1 is reset to ≥414cc0d**, or it
+  will fail in exactly the same place.
+- Both `supplemental_r2_vm1.sh` and `supplemental_r6_vm2.sh` score the calibrated
+  modes, so **both would have died too** — and they are the only source of
+  `intervention_cis.json`, which gates Figure 3's CIs and the frozen abstract
+  decision (§6). This was on the critical path and nobody had noticed.
+
+No published number changes: nothing had ever been produced by these modes.
+
+**One real result did survive R9's partial run**, from the log before the crash:
+`none` 0.5551, `truth` 0.5113 (−0.0438), `flip` 0.4985 (−0.0566). So truth−flip =
+**+0.0128, correctly signed** — the L-series sign correction reproduces at full
+scale on eICU, while every mode still sits well below `none`. That is exactly the
+subset-L1 pattern (sign fixed, capability cost) and it is the intervention half of
+the L-series question. Treat as provisional until the stage is re-run cleanly.
+
+---
+
 ## 2. Queue, in order
 
+0. **Re-run R9's interventions stage** (see §1b) once VM2's GPU frees.
 1. **R9 eval chain finishes** → then, on VM2, in this order:
    - `scripts/intervention_cis.py --per-subject ~/runs/eicu_full_L_v10/interventions_band15_per_subject.json --output-json ~/runs/eicu_full_L_v10/intervention_cis.json`
      **The eval chain does NOT do this.** The previous handoff said the chain
