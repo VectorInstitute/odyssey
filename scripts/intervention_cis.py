@@ -29,7 +29,18 @@ import numpy as np
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("intervention_cis")
 
-DEFAULT_PAIRS = (("truth", "flip"), ("truth", "none"), ("flip", "none"))
+DEFAULT_PAIRS = (
+    ("truth", "flip"),
+    ("truth", "none"),
+    ("flip", "none"),
+    ("flip_gated", "none"),
+    ("random", "none"),
+    ("zero_known", "none"),
+    ("zero_unknown", "none"),
+    ("truth_calibrated", "flip_calibrated"),
+    ("truth_calibrated", "none"),
+    ("flip_calibrated", "none"),
+)
 
 
 def paired_accuracy_delta(
