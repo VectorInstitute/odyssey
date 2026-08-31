@@ -117,6 +117,21 @@ suggesting much of an override's damage is logit-magnitude disruption.
 zero_known/zero_unknown were still running at handoff; get them from
 `interventions_band15.json`.
 
+**B1 has already confirmed the TabICL claim reversal on v4 rows, same-dump.** Its
+4th cell, `icu_admission@8h`: GBM 0.9743, **TabICL 0.9642, our hazard head 0.9353**.
+So TabICL beats our own model by +0.029 there and trails the tuned GBM by only
+0.010. This matters beyond the number: the Aug 27 evidence for the reversal came
+from a DIFFERENT dump than the paper's, which is why I refused to splice it in
+(see the TABICL block in the main.tex header). B1 is scoring against R2's own v4
+dump, so when it finishes there is no cross-dump caveat left and Sec 5.4's "TabICL
+loses 12 of 12 cells" can be rewritten from a single consistent source.
+
+**R9 completeness (2x2), partial at handoff:** `zero_known` top-1 0.4015, i.e.
+**72.3% of no-intervention retained**, against R6's 48.5%. So the global-pairs arm
+leans LESS on the named channel, not more — worth thinking about, since the
+ablation was meant to make concepts inject meaning. `zero_unknown` was still
+running; complete the 2x2 from `interventions_band15.json` before drawing on it.
+
 **The capability cost of global pairs is broad, not just forecasting** (registered
 in docs/experiments.md, R9 row). R9 vs R6 on eICU: set top-1 −1.46, top-5 −2.99,
 xent +0.126, **concept readout mean AUROC −0.023**, and hazard alerts worse on
