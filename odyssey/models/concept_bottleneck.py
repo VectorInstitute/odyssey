@@ -102,11 +102,16 @@ class BottleneckIntervention:
     """When set, ``probs`` only replaces the model's own probability where
     that probability lies within ``uncertain_band`` of 0.5. Feeding a
     hard 0/1 value displaces the model's own ``p`` by ``1 - p`` toward
-    one pole and by ``p`` toward the other, so "truth" and "flip"
-    perturb by different amounts wherever the model is confident;
-    restricting to the uncertain band makes the two displacements equal
-    and turns the truth-vs-flip comparison into a pure test of
-    direction."""
+    one pole and by ``p`` toward the other. For a single position
+    "truth" (injects the true label ``L``) and "flip" (injects ``1 -
+    L``) displace by complementary amounts -- ``|L - p|`` and
+    ``|1 - L - p|``, which sum to exactly 1 -- so they are equal only
+    where ``p`` is exactly 0.5. Restricting to the uncertain band
+    narrows the population toward that point, which shrinks but does
+    NOT remove the mean-displacement asymmetry between "truth" and
+    "flip"; it is a bias-narrowing device, not an equalizer. Report the
+    residual asymmetry alongside any truth-vs-flip comparison rather
+    than assuming it away (found in code+paper audit, 2026-08-31)."""
 
     zero_known: bool = False
     """Zero every known concept's mixed embedding (completeness probe:
