@@ -88,6 +88,14 @@ claims: seed replicates or they are labeled hypotheses.
 
 ### GEMINI (H200, in-environment, aggregate exports only)
 
+STARTED 2026-08-31 per Amrit (supersedes the "defer until MIMIC+eICU solid"
+note): Amrit operates the node (runs `scripts/gemini/run.sh <step>` only);
+the paper session (odyssey-6b at time of writing) owns the leg end-to-end
+(GitHub->GEMINI mirroring, step sequencing with Amrit, git copy-back of
+results, paper integration); code changes and G2 stay with the lead
+session. First action: mirror (gemini/main was at 9e83e5f, pre-Aug-30
+tooling; step-0 out/ diff verified empty 2026-08-31 ~12:20 UTC).
+
 | # | Item | Question | Gate |
 |---|------|----------|------|
 | G1 | full extraction + `meds_validation --deep` | clean full-scale GEMINI MEDS, subject-disjoint splits | scripts landed |
