@@ -270,8 +270,19 @@ Gates before every push: `ruff format`, `ruff check`, `mypy odyssey scripts`,
   requests, and running `scripts/gemini_concept_audit.py` when 6b pings that
   `codes_inventory.json` is back (currently 15/29 concepts resolve). Amrit asked
   for readmission on all three datasets — MIMIC and eICU are yours, GEMINI is
-  **not**; hand the runner to that lane. No concept/alert results exist there yet
-  anyway, so it is downstream of GEMINI having any alerts at all.
+  **not**; hand the runner to that lane.
+  **UPDATE 2026-08-31 ~20:00: readmission is no longer GEMINI-blocked.** odyssey-4a
+  landed per-source alert prefixes (36e1055) that remap `readmission_30d` to
+  GEMINI's bare `ADMISSION` token while keeping `next_visit` semantics, so the
+  event is scoreable there once a GEMINI bottleneck checkpoint exists (that commit
+  also adds the train-*-cbm steps). `scripts/vm_oneoff/readmission_alerts.sh` is
+  parameterised by run dir and data root and should work unchanged. Still 6b's and
+  Amrit's lane to run, not this one.
+  That commit touches `odyssey/data/alert_events.py`, which R8/R9 depend on. It is
+  a **verified no-op** for mimic_iv/eicu/source=None: I re-derived the event lists
+  across v1/v2/v3 after it landed and they are identical to before, and the full
+  suite passes at 1,316. So R8 and R9 stay comparable with R2/R6 and no
+  label-definition registry note is needed.
 - Open decisions owed to Amrit: **D2** (M-series in/out), **D3** (GEMINI scope),
   the **GEMINI REB reference** (BLOCKING-VERIFY in the IRB paragraph), and whether
   to add concept-probability calibration (ECE) to the eval.
