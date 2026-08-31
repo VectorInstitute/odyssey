@@ -4,7 +4,7 @@
 # nobody can log into the node directly, so this is what actually runs there.
 #
 # Usage (on the GEMINI node, from the repo root):
-#   scripts/gemini/run.sh [probe|schema|env-gpu|extract-dry|extract|finalize|export-codes|pipeline|train-smoke|train-smoke-2|train-full|train-rung2|eval-forecast <run-name>|train|eval|all]
+#   scripts/gemini/run.sh [probe|schema|env-gpu|extract-dry|extract|finalize|export-codes|pipeline|train-smoke|train-smoke-2|train-full|train-smoke-cbm|train-full-cbm|train-rung2|eval-forecast <run-name>|train|eval|all]
 #
 # Steps:
 #   probe        scripts/gemini/probe_env.sh -> scripts/gemini/out/env_probe.txt
@@ -88,6 +88,24 @@
 #                heartbeat is the real signal, especially whether steps/s
 #                holds up at 16x the smokes' consumption rate or the CPU feed
 #                becomes the bottleneck).
+#   train-smoke-cbm  G3 SMOKE: the concept-bottleneck path on 5 train
+#                shards. Run this BEFORE train-full-cbm -- concept labels,
+#                visit scoping and hazard targets are a new failure
+#                surface on GEMINI data, and a crash surfaces in minutes
+#                here rather than hours into the full run.
+#   train-full-cbm   G3: the full-scale concept-bottleneck run
+#                (~/runs/gemini_full_v10), mirroring R2/R6's recipe --
+#                model_kind=bottleneck, task_set v3 (15 of 29 concepts
+#                resolve on GEMINI, see scripts/gemini/out/
+#                concept_audit.json), concept_supervision=visit, hazard
+#                heads on with event_head_hidden=256, value_embeddings,
+#                num_lanes=64/chunk_size=512, reset_prob=0.0, 2 epochs.
+#                normalize_medications stays FALSE here: that normalizer
+#                targets MIMIC/eICU code shapes, and GEMINI's medication
+#                codes are already clean. This is the run every GEMINI
+#                trust-audit cell in the paper comes from; the baseline
+#                train-full/train-rung2 steps produce no readout,
+#                completeness or lever result at all.
 #   train-rung2  ladder rung 2 (G4, docs/experiment_plan.md): same geometry
 #                as train-full, one deliberate delta -- hidden_size 256->512,
 #                an estimated ~60M parameters (the real, measured count logs
@@ -805,6 +823,124 @@ JSON
         echo "$STEP complete. Checkpoints and loss_log.jsonl under $OUTPUT_DIR"
     }
 
+    run_train_cbm() {
+        # G3: the concept-bottleneck run the paper actually needs. Every
+        # other train step here is model_kind=baseline (forecasting only),
+        # which produces no readout, no completeness cell and no lever --
+        # none of the trust-audit results GEMINI is in the paper for.
+        #
+        # Mirrors R2/R6's recipe (full_run_v10 / eicu_full_v10 config.json)
+        # so the three datasets' cells are comparable: bottleneck over
+        # task_set v3, visit-scoped concept supervision, hazard heads with
+        # a 256-wide readout, value embeddings, 64 lanes x 512 chunk,
+        # reset_prob 0.0, 2 epochs. Two GEMINI-specific deltas, both
+        # forced by the data rather than chosen:
+        #   * task_set v3 resolves to 15 of the 29 concepts here (G2,
+        #     scripts/gemini/out/concept_audit.json) -- concepts_for_source
+        #     drops the rest automatically at load, and alert_events_for
+        #     drops sepsis3's alert with its concept.
+        #   * normalize_medications stays FALSE. The normalizer is built
+        #     for MIMIC's sig-line/NDC fragmentation (and eICU's HICL
+        #     dictionary); GEMINI's medication codes are already clean
+        #     3-part strings, so running it would reshape codes for no
+        #     gain. R2/R6 both set it true for their own sources.
+        local max_train_shards="$1"   # empty = every shard
+        local run_name="$2"
+
+        echo "=== $STEP ($run_name) ==="
+        echo "CONCEPT BOTTLENECK run (model_kind=bottleneck), source=gemini,"
+        echo "task_set=v3 -> 15 resolving concepts, hazard heads ON,"
+        echo "concept_supervision=visit, num_lanes=64/chunk_size=512 --"
+        echo "R2/R6 geometry, for cross-dataset comparability."
+        if [[ -n "$max_train_shards" ]]; then
+            echo "Smoke scale: max_train_shards=$max_train_shards. Run this"
+            echo "FIRST -- the bottleneck path (concept labels, hazard"
+            echo "targets, visit scoping) is a new failure surface on this"
+            echo "data, and a crash surfaces in minutes here instead of"
+            echo "hours into the full run."
+        else
+            echo "Full scale: every train shard."
+        fi
+        if [[ -z "${TMUX:-}" && -z "${STY:-}" ]]; then
+            echo "WARNING: this doesn't look like a tmux or screen session --" >&2
+            echo "if the SSH connection drops, training dies with it." >&2
+            echo "Run it detached instead, e.g.:" >&2
+            echo "  tmux new -s $run_name 'scripts/gemini/run.sh $STEP'" >&2
+            echo "  # or: nohup scripts/gemini/run.sh $STEP > $run_name.log 2>&1 &" >&2
+        fi
+
+        GPU_VENV="${GEMINI_GPU_VENV:-$HOME/.venvs/odyssey-gemini-gpu}"
+        if [[ ! -f "$GPU_VENV/bin/activate" ]]; then
+            echo "GPU venv not found at $GPU_VENV -- run 'scripts/gemini/run.sh env-gpu' first." >&2
+            exit 1
+        fi
+
+        MEDS_DIR="${GEMINI_MEDS_OUTPUT_DIR:-/mnt/nfs/project/subdural_hematoma_endotypes/gemini_meds_v1}"
+        TRAIN_SHARD_DIR="$MEDS_DIR/data/train"
+        TUNING_SHARD_DIR="$MEDS_DIR/data/tuning"
+        if [[ ! -d "$TRAIN_SHARD_DIR" || ! -d "$TUNING_SHARD_DIR" ]]; then
+            echo "Expected finalized MEDS data at $TRAIN_SHARD_DIR and" >&2
+            echo "$TUNING_SHARD_DIR -- run 'scripts/gemini/run.sh pipeline' first." >&2
+            exit 1
+        fi
+
+        OUTPUT_DIR="$HOME/runs/$run_name"
+        mkdir -p "$OUTPUT_DIR"
+        CONFIG_JSON="$OUTPUT_DIR/train_cbm_config.json"
+
+        # Shard count passed as argv, never interpolated into the source.
+        python3 - "$CONFIG_JSON" "$max_train_shards" <<'PY'
+import json
+import sys
+
+config_path, max_train_shards = sys.argv[1:3]
+overrides = {
+    "model_kind": "bottleneck",
+    "source": "gemini",
+    "stream_shards": True,
+    "task_set": "v3",
+    "concept_supervision": "visit",
+    "concept_pos_weight": True,
+    "value_embeddings": True,
+    "event_hazards": True,
+    "event_head_hidden": 256,
+    "time_to_event": True,
+    "bundle_invariant_loss": True,
+    "normalize_medications": False,
+    "num_lanes": 64,
+    "chunk_size": 512,
+    "reset_prob": 0.0,
+    "num_epochs": 2,
+    "max_tuning_shards": 10,
+    "checkpoint_every": 2000,
+}
+if max_train_shards:
+    overrides["max_train_shards"] = int(max_train_shards)
+with open(config_path, "w") as f:
+    json.dump(overrides, f, indent=2)
+PY
+
+        echo "Run dir: $OUTPUT_DIR"
+        echo "Config ($CONFIG_JSON):"
+        cat "$CONFIG_JSON"
+        echo "Watch the startup lines: the concept loader logs which"
+        echo "concepts drop for this source, and the hazard heads log"
+        echo "their event names -- both should match G2's audit."
+        echo "Once running, tail progress with:"
+        echo "  tail -f $OUTPUT_DIR/loss_log.jsonl"
+
+        source "$GPU_VENV/bin/activate"
+        python -m odyssey.training.train \
+            --train-shard-dir "$TRAIN_SHARD_DIR" \
+            --tuning-shard-dir "$TUNING_SHARD_DIR" \
+            --output-dir "$OUTPUT_DIR" \
+            --config-json "$CONFIG_JSON"
+        deactivate
+        source "$VENV/bin/activate"
+
+        echo "$STEP complete. Checkpoints and loss_log.jsonl under $OUTPUT_DIR"
+    }
+
     _prune_step_checkpoints() {
         # Deletes all but the KEEP most recent checkpoint_<N>.pt files under
         # DIR, by numeric global_step (not mtime -- a resumed run's mtimes
@@ -1223,13 +1359,15 @@ PY
         train-smoke) run_train_smoke 5 2 gemini_smoke_1 ;;
         train-smoke-2) run_train_smoke 30 "" gemini_smoke_2 ;;
         train-full) run_train_full ;;
+        train-smoke-cbm) run_train_cbm 5 gemini_smoke_cbm ;;
+        train-full-cbm) run_train_cbm "" gemini_full_v10 ;;
         train-rung2) run_train_rung2 ;;
         eval-forecast) run_eval_forecast "${2:-}" ;;
         train) run_pending_stub train ;;
         eval) run_pending_stub eval ;;
         all) run_probe; run_schema; run_extract_dry ;;
         *)
-            echo "unknown step: $STEP (expected probe, schema, env-gpu, extract-dry, extract, finalize, export-codes, pipeline, train-smoke, train-smoke-2, train-full, train-rung2, eval-forecast, train, eval, or all)" >&2
+            echo "unknown step: $STEP (expected probe, schema, env-gpu, extract-dry, extract, finalize, export-codes, pipeline, train-smoke, train-smoke-2, train-full, train-smoke-cbm, train-full-cbm, train-rung2, eval-forecast, train, eval, or all)" >&2
             exit 1
             ;;
     esac

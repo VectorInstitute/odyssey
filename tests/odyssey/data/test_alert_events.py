@@ -6,12 +6,16 @@ that names neither a concept nor a code_prefix at all (a malformed
 registry entry). Neither failure path had ever been exercised.
 """
 
+import json
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import polars as pl
 import pytest
 
+import odyssey.data.alert_events as alert_events_module
 from odyssey.data.alert_events import (
+    ALERT_EVENTS_V2,
     COUNTING_AUXILIARY_EVENTS,
     PROBE_EVENTS,
     AlertEvent,
@@ -280,3 +284,125 @@ def test_alert_events_are_source_resolved() -> None:
     assert {a.name for a in mimic} == {a.name for a in unfiltered}
     hazard = hazard_events_for("v3", source="eicu")
     assert {a.name for a in hazard} == names
+
+
+# ---------------------------------------------------------------------------
+# Per-source code-prefix overrides (GEMINI's bare structural tokens)
+# ---------------------------------------------------------------------------
+
+
+def test_gemini_remaps_prefix_alerts_to_its_own_vocabulary() -> None:
+    """GEMINI's structural tokens carry no "//" separator.
+
+    "ICU_ADMISSION//" matches zero GEMINI events, and there is no
+    HOSPITAL_ADMISSION// family at all.
+    """
+    events = {a.name: a for a in alert_events_for("v3", source="gemini")}
+    assert events["icu_admission"].code_prefix == "ICU_ADMISSION"
+    assert events["readmission_30d"].code_prefix == "ADMISSION"
+    # next_visit semantics must survive the remap: readmission is still
+    # "the admission AFTER this visit", not first-occurrence.
+    assert events["readmission_30d"].next_visit is True
+    # Concept-backed alerts are untouched by the prefix override path.
+    assert events["acute_kidney_injury"].concept == "acute_kidney_injury"
+    assert events["acute_kidney_injury"].code_prefix is None
+    # death is prefix-defined but needs no GEMINI override.
+    assert events["death"].code_prefix == "MEDS_DEATH"
+
+
+def test_source_overrides_do_not_leak_into_other_sources() -> None:
+    for source in ("mimic_iv", "eicu"):
+        events = {a.name: a for a in alert_events_for("v3", source=source)}
+        assert events["icu_admission"].code_prefix == "ICU_ADMISSION//", source
+        if "readmission_30d" in events:
+            assert events["readmission_30d"].code_prefix == "HOSPITAL_ADMISSION//"
+    # And the source-free call is unchanged.
+    plain = {a.name: a for a in alert_events_for("v3")}
+    assert plain["icu_admission"].code_prefix == "ICU_ADMISSION//"
+
+
+def test_gemini_drops_sepsis3_via_concept_resolution() -> None:
+    """sepsis3 drops via concept resolution, not the prefix path.
+
+    The prefix override must neither resurrect nor mask that.
+    """
+    names = {a.name for a in alert_events_for("v3", source="gemini")}
+    assert "sepsis3" not in names
+    assert {"icu_admission", "readmission_30d", "death", "vasopressor_start"} <= names
+
+
+def test_override_table_only_names_real_prefix_alerts() -> None:
+    """A typo'd event name in the override table would silently do nothing."""
+    known = {a.name for a in ALERT_EVENTS_V2}
+    for source, overrides in alert_events_module._SOURCE_CODE_PREFIXES.items():
+        for name in overrides:
+            assert name in known, f"{source}: {name} is not an alert event"
+            event = next(a for a in ALERT_EVENTS_V2 if a.name == name)
+            assert event.code_prefix is not None, (
+                f"{source}: {name} is concept-defined, not prefix-defined"
+            )
+
+
+def test_shared_prefixes_stay_separator_qualified_for_mimic_and_eicu() -> None:
+    """Regression lock, not a restatement of the override test.
+
+    The separators are load-bearing: eICU emits ICU_ADMISSION_WEIGHT /
+    ICU_ADMISSION_HEIGHT measurement codes at unit admission, and carries
+    real HOSPITAL_ADMISSION// tokens, so a globally relaxed prefix would
+    silently MISLABEL eICU rather than failing loudly the way GEMINI's
+    mismatch did. Any future per-source work must keep these exact.
+    """
+    for source in ("mimic_iv", "eicu"):
+        events = {a.name: a for a in alert_events_for("v3", source=source)}
+        assert events["icu_admission"].code_prefix == "ICU_ADMISSION//", source
+        assert events["icu_admission"].code_prefix.endswith("//"), source
+        if "readmission_30d" in events:
+            assert events["readmission_30d"].code_prefix == "HOSPITAL_ADMISSION//", (
+                source
+            )
+
+
+def test_a_none_override_drops_the_event_for_that_source_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The documented drop path, exercised (no source needs it yet).
+
+    Without this, a future `"event": None` entry would be the first
+    real use of an untested branch.
+    """
+    monkeypatch.setitem(
+        alert_events_module._SOURCE_CODE_PREFIXES, "gemini", {"icu_admission": None}
+    )
+    names = {a.name for a in alert_events_for("v3", source="gemini")}
+    assert "icu_admission" not in names
+    assert "death" in names  # untouched prefix alerts survive
+    # Other sources keep it.
+    assert "icu_admission" in {a.name for a in alert_events_for("v3", source="eicu")}
+
+
+def test_gemini_bare_prefixes_are_unambiguous_in_the_real_inventory() -> None:
+    """A bare prefix is still a PREFIX match.
+
+    "ICU_ADMISSION" must not also swallow an ICU_ADMISSION_WEIGHT-style
+    measurement code the way it would on eICU. Checked against the
+    committed full-scale code inventory.
+    """
+    inventory_path = (
+        Path(__file__).resolve().parents[3]
+        / "scripts"
+        / "gemini"
+        / "out"
+        / "codes_inventory.json"
+    )
+    if not inventory_path.is_file():
+        pytest.skip("GEMINI code inventory not present in this checkout")
+    codes = json.loads(inventory_path.read_text())
+    for event in alert_events_for("v3", source="gemini"):
+        if event.code_prefix is None:
+            continue
+        matches = [c for c in codes if c.startswith(event.code_prefix)]
+        assert matches == [event.code_prefix], (
+            f"{event.name}: prefix {event.code_prefix!r} matches {matches} "
+            "-- a prefix that catches more than its own token would "
+            "silently mislabel onsets"
+        )
