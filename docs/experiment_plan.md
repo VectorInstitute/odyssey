@@ -26,20 +26,20 @@ claims: seed replicates or they are labeled hypotheses.
 | eICU spec v2 (HICL drug rescue, bc7ac4c) | prerequisite for R6 |
 | GEMINI extraction tooling refreshed (scripts/gemini, Aug 30); 14M forecasting-only checkpoint from the old ladder | starting point for G1/G3; no concept/alert GEMINI results exist |
 | ML4H draft with both review passes applied; figures pipeline (make_figures.py); citation audit | swap-ready skeleton |
+| **R2** `full_run_v10` (VM1) full-scale MIMIC joint training: 40,750 steps, early-stopped, best_val_loss=2.0556, ~7.2h, zero errors, `clinical_edge_version: v2` stamped, checkpoint_final.pt written | flagship MIMIC training arm; eval chain in flight |
+| **R6** `eicu_full_v10` (VM2) full-scale eICU joint training: 35,500 steps, early-stopped, best_val_loss=2.0148, ~4.9h, zero errors, `clinical_edge_version: v2` stamped, checkpoint_final.pt written | flagship eICU training arm; eval chain in flight |
 
-## IN FLIGHT (2026-08-30 evening)
+## IN FLIGHT (2026-08-31 morning)
 
-- **R2** `full_run_v10` (VM1): launched 21:35 UTC, seed 0, reset_prob
-  0.0, task_set v3, streaming, binner stamped edge_version v2.
-- **R6** `eicu_full_v10` (VM2): launched 21:53 UTC after two
-  source-resolution fixes the launch itself surfaced (c797b43: the
-  sepsis3 sidecar gate now follows source resolution; 2a90066: the
-  sepsis3 ALERT EVENT now drops with its concept, threaded through head
-  construction, corpus stats, and scoring). VM2 disk cleared by pruning
-  35GB of intermediate checkpoints from superseded prior-gen runs
-  (best/final/epoch checkpoints kept; Amrit approved).
-- GEMINI deferred to tomorrow (Amrit): MIMIC-IV + eICU full runs with
-  thorough evals complete first.
+- **R2 eval chain** (VM1, `scripts/eval_run.sh`, commit cdbd4e7): launched
+  10:42 UTC against `checkpoint_best.pt`. LANES=64, ALERT_SHARDS=37 (full
+  held-out), BASELINE_SHARDS=292 (full train, STREAM_BASELINE=1 per the
+  OOM lesson). Log `~/r2_eval_launch.log` on VM1.
+- **R6 eval chain** (VM2, same script/commit): launched 10:42 UTC.
+  ALERT_SHARDS=17, BASELINE_SHARDS=134 (both full-scale, streamed). Log
+  `~/r6_eval_launch.log` on VM2.
+- GEMINI deferred (Amrit): MIMIC-IV + eICU full runs with thorough evals
+  complete first.
 
 ## REMAINING
 
@@ -58,10 +58,10 @@ claims: seed replicates or they are labeled hypotheses.
 
 | # | Run | Question | Gate |
 |---|-----|----------|------|
-| R1e | R1 validation eval | do the fixes reproduce known subset behavior (launch gate) | R1 training done |
+| R1e | R1 validation eval | do the fixes reproduce known subset behavior (audit-support, no longer gating -- R2 launched and finished before this ran; backfill once a GPU is free) | R1 training done |
 | A1 | counting-run v4 legs + probe pass (prior-gen, audit-support) | completes the v3-to-v4 delta appendix | peer's GBM done-ping |
 | A2 | `alerts_cis.py` over flagship v4 dumps | CIs on the delta appendix | RSS headroom |
-| R2 | `full_run_v10` seed 0 + full eval chain | flagship joint: readout trajectory (29 concepts), completeness cell, lever, alert cells vs all five baseline families | R1e |
+| R2 | `full_run_v10` seed 0 + full eval chain | flagship joint: readout trajectory (29 concepts), completeness cell, lever, alert cells vs all five baseline families | training done 05:22 UTC Aug 31 (40,750 steps, best_val_loss=2.0556); eval chain launched 10:42 UTC |
 | R2b/c | seeds 1, 2 | CIs for every cross-run claim; icu_admission variance watch | R2 sane |
 | R3 | independent stage A+B full scale, seed 0 | does the conventional asymmetry survive scale; completeness cell | R2 |
 | R3b/c | stage-B replicates | CI on independent-vs-joint cost | R3 |
@@ -73,8 +73,8 @@ claims: seed replicates or they are labeled hypotheses.
 
 | # | Run | Question | Gate |
 |---|-----|----------|------|
-| E0 | VM2 restart, git sync, eICU v2 re-extraction + deep validation | prerequisite | none |
-| R6 | `eicu_full_v10` seed 0 + eval chain | cross-dataset trust replication; joint-eICU metric disagreement retested post-fix | E0, R1e |
+| E0 | VM2 restart, git sync, eICU v2 re-extraction + deep validation | prerequisite | DONE (VM2 up, eicu_2.0_v2 in place, R6 trained against it) |
+| R6 | `eicu_full_v10` seed 0 + eval chain | cross-dataset trust replication; joint-eICU metric disagreement retested post-fix | training done 03:14 UTC Aug 31 (35,500 steps, best_val_loss=2.0148); eval chain launched 10:42 UTC |
 | R6b | seed replicate | eICU cross-run variance (never measured) | R6 |
 | R7 | eICU independent stage A+B full scale | the 2x2's anomaly cell at full scale | R6 |
 | B2 | eICU v4 baselines: GBM refit, TabICL/EBM/SurvivalPFN, MEDS-Tab (~15h tabularize, sorted-label doctrine) | eICU comparator table | R6 dumps |
