@@ -31,10 +31,19 @@ claims: seed replicates or they are labeled hypotheses.
 
 ## IN FLIGHT (2026-08-31 morning)
 
-- **R2 eval chain** (VM1, `scripts/eval_run.sh`, commit cdbd4e7): launched
-  10:42 UTC against `checkpoint_best.pt`. LANES=64, ALERT_SHARDS=37 (full
-  held-out), BASELINE_SHARDS=292 (full train, STREAM_BASELINE=1 per the
-  OOM lesson). Log `~/r2_eval_launch.log` on VM1.
+- **R2 eval chain**: COMPLETE 15:56 UTC Aug 31, all five stages EXIT 0
+  (eval 22m, interventions 102m, alerts 190m). Outputs in
+  `~/runs/full_run_v10/` on VM1 incl. alerts_rows.parquet (B1's gate).
+  Headlines: set top-1 81.60 (prior-gen 80.4), 29-concept readout mean
+  0.9307; interventions none 37.25 / truth -0.19 / flip -0.05 (wrong
+  sign survives on top-1; prior-gen loss-ordering corroboration did
+  NOT survive, substitution losses within 0.0013 nats); zero_known
+  retains 6.6%, zero_unknown 98.4% and improves loss. Paper MIMIC cells
+  swapped 2026-08-31 (see main.tex header log).
+- **R8 training** (VM1): LAUNCHED 15:58 UTC Aug 31 by odyssey-4a,
+  checkout b98ff7d. R2 config + concept_global_pairs=true, output
+  `~/runs/full_run_L_v10`, log `~/r8_train.log`. Eval chain + R2
+  supplemental scoring queued behind it.
 - **R6 eval chain**: COMPLETE 15:07 UTC Aug 31, all five stages EXIT 0
   (eval 16m, interventions 75m, alerts 173m, cases+report <1m). Outputs in
   `~/runs/eicu_full_v10/` on VM2: inference_results.json,
