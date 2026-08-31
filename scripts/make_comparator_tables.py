@@ -182,6 +182,21 @@ def build_rows(
             "NO CIs: bold is plain arg-max, which the caption's bold rule does "
             "not permit at submission. Run scripts/alerts_cis.py and pass --cis"
         )
+    # A PARTIAL supplementary file is more dangerous than a missing one: the
+    # column renders, most cells quietly show "--", and the table looks
+    # finished. tabicl_strong_compare.py in particular rewrites its output
+    # after every cell, so pointing at a still-running job yields exactly
+    # this. Warn on coverage, not just presence.
+    for label, supplied in (("TabICL", tabicl), ("CI", cis)):
+        if not supplied:
+            continue
+        missing = sorted(set(cells) - set(supplied))
+        if missing:
+            notes.append(
+                f"{label} data is PARTIAL: {len(supplied)} of {len(cells)} cells "
+                f"covered, missing {', '.join(missing)}. If the producing job is "
+                "still running, this table is premature"
+            )
     return rows, notes
 
 
