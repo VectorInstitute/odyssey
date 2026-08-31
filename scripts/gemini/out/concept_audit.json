@@ -1,0 +1,382 @@
+{
+  "n_inventory_codes": 16190,
+  "concept_resolution": {
+    "tachycardia": true,
+    "bradycardia": true,
+    "hypotension": true,
+    "hypertension": true,
+    "hypoxia": true,
+    "fever": true,
+    "hypothermia": true,
+    "elevated_lactate": true,
+    "sustained_tachypnea": true,
+    "acute_kidney_injury": true,
+    "aki_stage_2": true,
+    "aki_stage_3": true,
+    "sirs": true,
+    "qsofa": true,
+    "on_vasopressors": true,
+    "hypoxemic_respiratory_failure": false,
+    "oliguria": false,
+    "sepsis3": false,
+    "hyperkalemia": false,
+    "hypokalemia": false,
+    "hyponatremia": false,
+    "hypernatremia": false,
+    "hypoglycemia": false,
+    "hyperglycemia": false,
+    "anemia": false,
+    "thrombocytopenia": false,
+    "coagulopathy": false,
+    "metabolic_acidosis": false,
+    "shock": false
+  },
+  "n_concepts_mimic_v3": 29,
+  "n_concepts_resolving": 15,
+  "mapping": {
+    "LAB//3008037//": {
+      "loinc": "32693-4",
+      "n_codes": 2,
+      "token_count_bounds": [
+        1205000,
+        1205000
+      ],
+      "unit_variants": [
+        "UNK",
+        "mmol/l"
+      ],
+      "curated_bins": true
+    },
+    "LAB//3010813//": {
+      "loinc": "6690-2",
+      "n_codes": 5,
+      "token_count_bounds": [
+        15197000,
+        15197000
+      ],
+      "unit_variants": [
+        "/hpf",
+        "UNK",
+        "cells/ul",
+        "x10e6/l",
+        "x10e9/l"
+      ],
+      "curated_bins": false
+    },
+    "LAB//3018405//": {
+      "loinc": "32693-4",
+      "n_codes": 2,
+      "token_count_bounds": [
+        1250000,
+        1250000
+      ],
+      "unit_variants": [
+        "UNK",
+        "mmol/l"
+      ],
+      "curated_bins": true
+    },
+    "LAB//3020138//": {
+      "loinc": "32693-4",
+      "n_codes": 1,
+      "token_count_bounds": [
+        753000,
+        753000
+      ],
+      "unit_variants": [
+        "mmol/l"
+      ],
+      "curated_bins": true
+    },
+    "LAB//3020564//": {
+      "loinc": "2160-0",
+      "n_codes": 2,
+      "token_count_bounds": [
+        14511000,
+        14511000
+      ],
+      "unit_variants": [
+        "UNK",
+        "umol/l"
+      ],
+      "curated_bins": true
+    },
+    "VITALS//3004249//": {
+      "loinc": "8480-6",
+      "n_codes": 3,
+      "token_count_bounds": [
+        22278000,
+        22278000
+      ],
+      "unit_variants": [
+        "UNK",
+        "mm hg",
+        "mmhg"
+      ],
+      "curated_bins": true
+    },
+    "VITALS//3013502//": {
+      "loinc": "59408-5",
+      "n_codes": 3,
+      "token_count_bounds": [
+        59755000,
+        59755000
+      ],
+      "unit_variants": [
+        "%",
+        "UNK",
+        "percentage"
+      ],
+      "curated_bins": true
+    },
+    "VITALS//3020891//": {
+      "loinc": "8310-5",
+      "n_codes": 9,
+      "token_count_bounds": [
+        38637000,
+        38637000
+      ],
+      "unit_variants": [
+        "UNK",
+        "c",
+        "cel",
+        "celcius",
+        "celsius",
+        "deg c",
+        "degc",
+        "degrees c",
+        "fahrenheit"
+      ],
+      "curated_bins": true
+    },
+    "VITALS//3024171//": {
+      "loinc": "9279-1",
+      "n_codes": 6,
+      "token_count_bounds": [
+        49685000,
+        49685000
+      ],
+      "unit_variants": [
+        "UNK",
+        "bpm",
+        "br/min",
+        "breaths per minute",
+        "breaths/min",
+        "breaths/minute"
+      ],
+      "curated_bins": true
+    },
+    "VITALS//3027018//": {
+      "loinc": "8867-4",
+      "n_codes": 4,
+      "token_count_bounds": [
+        54762000,
+        54762000
+      ],
+      "unit_variants": [
+        "UNK",
+        "beats per minute",
+        "beats/min",
+        "bpm"
+      ],
+      "curated_bins": true
+    }
+  },
+  "unmatched_mapping_prefixes": [],
+  "binning_portability": {
+    "LAB": {
+      "n_codes": 1245,
+      "n_codes_curated": 7,
+      "token_count_bounds": [
+        588825000,
+        588825000
+      ],
+      "curated_token_count_bounds": [
+        17719000,
+        17719000
+      ],
+      "curated_fraction_bounds": [
+        0.030092132637031376,
+        0.030092132637031376
+      ]
+    },
+    "VITALS": {
+      "n_codes": 889,
+      "n_codes_curated": 25,
+      "token_count_bounds": [
+        404621000,
+        404621000
+      ],
+      "curated_token_count_bounds": [
+        225117000,
+        225117000
+      ],
+      "curated_fraction_bounds": [
+        0.5563650922715331,
+        0.5563650922715331
+      ]
+    }
+  },
+  "top_unmapped_value_codes": [
+    {
+      "code": "VITALS//36203185//UNK",
+      "count": "22253000"
+    },
+    {
+      "code": "LAB//3019550//mmol/l",
+      "count": "16804000"
+    },
+    {
+      "code": "LAB//3023103//mmol/l",
+      "count": "16762000"
+    },
+    {
+      "code": "LAB//3014576//mmol/l",
+      "count": "16663000"
+    },
+    {
+      "code": "LAB//3000963//g/l",
+      "count": "15127000"
+    },
+    {
+      "code": "LAB//3040151//mmol/l",
+      "count": "14012000"
+    },
+    {
+      "code": "LAB//3024731//fl",
+      "count": "13830000"
+    },
+    {
+      "code": "LAB//3007461//x10e9/l",
+      "count": "13719000"
+    },
+    {
+      "code": "LAB//3016293//mmol/l",
+      "count": "13145000"
+    },
+    {
+      "code": "LAB//3026361//x10e12/l",
+      "count": "13043000"
+    },
+    {
+      "code": "LAB//3003338//g/l",
+      "count": "12341000"
+    },
+    {
+      "code": "LAB//3002385//%",
+      "count": "11967000"
+    },
+    {
+      "code": "LAB//3009542//l/l",
+      "count": "11927000"
+    },
+    {
+      "code": "VITALS//3012888//UNK",
+      "count": "11678000"
+    },
+    {
+      "code": "LAB//3035941//pg",
+      "count": "11595000"
+    },
+    {
+      "code": "LAB//3045716//mmol/l",
+      "count": "11337000"
+    },
+    {
+      "code": "LAB//3001123//fl",
+      "count": "10082000"
+    },
+    {
+      "code": "VITALS//3012888//mmhg",
+      "count": "9435000"
+    },
+    {
+      "code": "LAB//3017732//x10e9/l",
+      "count": "9067000"
+    },
+    {
+      "code": "LAB//3019198//x10e9/l",
+      "count": "9009000"
+    },
+    {
+      "code": "LAB//3001604//x10e9/l",
+      "count": "8176000"
+    },
+    {
+      "code": "LAB//3013115//x10e9/l",
+      "count": "7842000"
+    },
+    {
+      "code": "LAB//3013826//mmol/l",
+      "count": "7829000"
+    },
+    {
+      "code": "LAB//3006315//x10e9/l",
+      "count": "7710000"
+    },
+    {
+      "code": "LAB//3024641//mmol/l",
+      "count": "7455000"
+    },
+    {
+      "code": "LAB//3012095//mmol/l",
+      "count": "6579000"
+    },
+    {
+      "code": "VITALS//3034263//UNK",
+      "count": "6316000"
+    },
+    {
+      "code": "LAB//3003458//mmol/l",
+      "count": "6217000"
+    },
+    {
+      "code": "LAB//3015377//mmol/l",
+      "count": "6160000"
+    },
+    {
+      "code": "LAB//3040168//x10e9/l",
+      "count": "6130000"
+    },
+    {
+      "code": "LAB//3051611//UNK",
+      "count": "6013000"
+    },
+    {
+      "code": "LAB//3052851//UNK",
+      "count": "5790000"
+    },
+    {
+      "code": "LAB//3028615//x10e9/l",
+      "count": "5671000"
+    },
+    {
+      "code": "LAB//3033575//x10e9/l",
+      "count": "5631000"
+    },
+    {
+      "code": "LAB//3013429//x10e9/l",
+      "count": "5623000"
+    },
+    {
+      "code": "LAB//3024561//g/l",
+      "count": "5459000"
+    },
+    {
+      "code": "VITALS//3014080//UNK",
+      "count": "5016000"
+    },
+    {
+      "code": "LAB//3013650//x10e9/l",
+      "count": "4882000"
+    },
+    {
+      "code": "LAB//3004327//x10e9/l",
+      "count": "4736000"
+    },
+    {
+      "code": "VITALS//3005629//UNK",
+      "count": "4454000"
+    }
+  ]
+}
