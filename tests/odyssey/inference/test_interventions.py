@@ -633,3 +633,67 @@ def test_calibrated_truth_and_flip_push_in_opposite_directions() -> None:
     assert truth.mean_abs_displacement == pytest.approx(0.01, abs=1e-6)
     assert flip.mean_abs_displacement == pytest.approx(0.01, abs=1e-6)
     assert truth.mean_task_loss != flip.mean_task_loss
+
+
+def test_per_concept_coverage_partitions_the_replacement_counts() -> None:
+    """W3 band coverage: per-concept counts must partition the totals.
+
+    With every subject fully observed and no band, every concept is
+    replaced at every input position; the per-concept mean displacements
+    must average (count-weighted) to the aggregate displacement.
+    """
+    truth = _run("truth")
+    assert truth.n_replaced_by_concept is not None
+    assert all(n == 3 * 20 for n in truth.n_replaced_by_concept.values())
+    assert len(truth.n_replaced_by_concept) == NUM_CONCEPTS
+    assert truth.mean_abs_displacement_by_concept is not None
+    total = sum(truth.n_replaced_by_concept.values())
+    weighted = (
+        sum(
+            truth.mean_abs_displacement_by_concept[c] * truth.n_replaced_by_concept[c]
+            for c in truth.n_replaced_by_concept
+        )
+        / total
+    )
+    # The aggregate accumulates in float32, the per-concept path in
+    # float64, so agreement is to float32 precision, not exact.
+    assert weighted == pytest.approx(truth.mean_abs_displacement, abs=1e-5)
+    # Default names when the caller passes none.
+    assert set(truth.n_replaced_by_concept) == {
+        f"concept_{i}" for i in range(NUM_CONCEPTS)
+    }
+    # Modes that replace nothing report None, not empty dicts.
+    baseline = _run("none")
+    assert baseline.n_replaced_by_concept is None
+    assert baseline.mean_abs_displacement_by_concept is None
+
+
+def test_per_concept_coverage_shrinks_under_a_band() -> None:
+    vocab = _vocab()
+    labels, masks = _labels_and_masks()
+    model = _model(len(vocab))
+    kwargs = {
+        "supervision": "stay",
+        "num_lanes": 2,
+        "chunk_size": 8,
+        "device": "cpu",
+        "seed": 0,
+    }
+    full = run_streaming_intervention(
+        model, _events(), vocab, labels, masks, mode="truth", **kwargs
+    )
+    banded = run_streaming_intervention(
+        model,
+        _events(),
+        vocab,
+        labels,
+        masks,
+        mode="truth",
+        uncertain_band=0.05,
+        **kwargs,
+    )
+    assert full.n_replaced_by_concept is not None
+    if banded.n_replaced_by_concept is None:
+        return  # nothing entered the band at all: a legal, smaller outcome
+    for name, n_banded in banded.n_replaced_by_concept.items():
+        assert n_banded <= full.n_replaced_by_concept[name]

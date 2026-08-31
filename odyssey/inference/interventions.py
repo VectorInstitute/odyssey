@@ -157,6 +157,17 @@ class InterventionResult:
     """For the *_calibrated modes: the shared peak logit shift every
     concept's step was calibrated to."""
 
+    n_replaced_by_concept: dict[str, int] | None = None
+    """Per-concept count of entries actually replaced (W3 band coverage:
+    under an uncertain band, a rare concept whose probability hugs its
+    base rate rarely enters the band at all -- this is the denominator
+    that makes per-concept sensitivity claims honest). None for modes
+    that replace nothing."""
+
+    mean_abs_displacement_by_concept: dict[str, float] | None = None
+    """Per-concept mean ``|injected - own|`` over that concept's replaced
+    entries (NaN for a concept with zero replacements)."""
+
     calibration_gamma: dict[str, float] | None = None
     """For the *_calibrated modes: the per-concept mixing-probability
     step ``tau / peak_i`` (attached with concept names by
@@ -226,6 +237,7 @@ def run_streaming_intervention(  # noqa: PLR0912, PLR0915 -- one linear scoring 
     per_subject_out: dict[int, list[int]] | None = None,
     calibration_gammas: torch.Tensor | None = None,
     calibrated_tau: float | None = None,
+    concept_names: Sequence[str] | None = None,
 ) -> InterventionResult:
     """Score next-event prediction under one intervention mode.
 
@@ -282,6 +294,8 @@ def run_streaming_intervention(  # noqa: PLR0912, PLR0915 -- one linear scoring 
     n_intervened = 0
     displacement_sum = 0.0
     n_replaced_entries = 0
+    per_concept_n = torch.zeros(num_concepts, dtype=torch.long)
+    per_concept_disp = torch.zeros(num_concepts, dtype=torch.float64)
     type_n: dict[int, int] = {}
     type_hits: dict[int, int] = {}
 
@@ -365,11 +379,12 @@ def run_streaming_intervention(  # noqa: PLR0912, PLR0915 -- one linear scoring 
                 applied = applied & input_real.unsqueeze(-1)
                 n_intervened += int(applied.any(dim=-1).sum().item())
                 n_replaced_entries += int(applied.sum().item())
-                displacement_sum += float(
-                    (intervention.probs.expand_as(own) - own)
-                    .abs()[applied]
-                    .sum()
-                    .item()
+                abs_diff = (intervention.probs.expand_as(own) - own).abs()
+                displacement_sum += float(abs_diff[applied].sum().item())
+                lead_dims = tuple(range(applied.dim() - 1))
+                per_concept_n += applied.sum(dim=lead_dims).long().cpu()
+                per_concept_disp += (
+                    (abs_diff * applied).sum(dim=lead_dims).double().cpu()
                 )
             if not real.any():
                 continue
@@ -399,6 +414,28 @@ def run_streaming_intervention(  # noqa: PLR0912, PLR0915 -- one linear scoring 
                     hits[sel].sum().item()
                 )
 
+    names = (
+        list(concept_names)
+        if concept_names is not None
+        else [f"concept_{i}" for i in range(num_concepts)]
+    )
+    if len(names) != num_concepts:
+        raise ValueError(f"{len(names)} concept names for {num_concepts} concepts")
+    by_concept_n: dict[str, int] | None = None
+    by_concept_disp: dict[str, float] | None = None
+    if n_replaced_entries:
+        by_concept_n = {
+            names[i]: int(per_concept_n[i].item()) for i in range(num_concepts)
+        }
+        by_concept_disp = {
+            names[i]: (
+                float(per_concept_disp[i].item() / per_concept_n[i].item())
+                if per_concept_n[i]
+                else float("nan")
+            )
+            for i in range(num_concepts)
+        }
+
     return InterventionResult(
         mode=mode,
         n_predictions=n,
@@ -420,6 +457,8 @@ def run_streaming_intervention(  # noqa: PLR0912, PLR0915 -- one linear scoring 
             displacement_sum / n_replaced_entries if n_replaced_entries else None
         ),
         calibrated_tau=calibrated_tau if mode in CALIBRATED_MODES else None,
+        n_replaced_by_concept=by_concept_n,
+        mean_abs_displacement_by_concept=by_concept_disp,
     )
 
 
@@ -542,6 +581,7 @@ def evaluate_interventions(
             per_subject_out=mode_subjects,
             calibration_gammas=calibration_gammas,
             calibrated_tau=calibrated_tau,
+            concept_names=[c.name for c in concepts],
         )
         if mode in CALIBRATED_MODES:
             result = replace(result, calibration_gamma=gamma_by_name)
