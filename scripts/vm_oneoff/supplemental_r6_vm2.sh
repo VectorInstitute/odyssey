@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Supplemental Guide Labs scoring on the R6 checkpoint (VM2). See the R2
-# twin for rationale. Needs the GPU free.
+# twin for rationale (including why random/zero_known/zero_unknown are
+# re-scored here: the R6 chain predates --dump-per-subject, and the body
+# figure's CI lookup needs random_minus_none). Needs the GPU free.
 set -euo pipefail
 cd ~/odyssey
 git merge-base --is-ancestor 8161e198eec100e50cefce7a7169fefb29773587 HEAD \
@@ -14,6 +16,7 @@ setsid nohup bash -c "
     --output-json $RUN/interventions_guidelabs.json \
     --max-shards 4 --num-lanes 64 --chunk-size 512 --uncertain-band 0.15 \
     --modes none truth flip flip_gated truth_calibrated flip_calibrated \
+    random zero_known zero_unknown \
     --calibrated-tau 1.0 --dump-per-subject > ~/r6_guidelabs.log 2>&1
   for BAND in 0.02 0.05 0.10 0.20; do
     TAG=\$(echo \$BAND | sed 's/0\\.//')

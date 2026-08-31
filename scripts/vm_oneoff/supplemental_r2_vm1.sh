@@ -6,6 +6,20 @@
 # policy respected (no --overwrite). Also runs the W3 band-width sweep
 # (0.02/0.05/0.10/0.20; band15 exists from the chain) with per-concept
 # coverage/displacement now reported per mode.
+#
+# The Guide Labs pass also re-runs random/zero_known/zero_unknown even
+# though the R2 chain already scored them: that chain predates
+# --dump-per-subject, so its per-subject counts do not exist, and
+# intervention_cis.py silently SKIPS any pair whose mode is absent from
+# the dump. Without them intervention_cis.json would carry no
+# random_minus_none, and make_figures.py's fig_lever indexes that key
+# unconditionally for the body figure's third bar (it would KeyError at
+# the last minute). zero_{known,unknown}_minus_none are included for the
+# same reason, so the completeness cells in tab:decomp can carry the
+# subject-clustered CIs the numbers policy requires. Costs ~3 extra
+# forward passes over 4 shards; the mode set is now a strict superset of
+# the chain's, so none/truth/flip must reproduce interventions_band15.json
+# (same band, same checkpoint) -- a free consistency check on the rerun.
 set -euo pipefail
 cd ~/odyssey
 git merge-base --is-ancestor 8161e198eec100e50cefce7a7169fefb29773587 HEAD \
@@ -19,6 +33,7 @@ setsid nohup bash -c "
     --output-json $RUN/interventions_guidelabs.json \
     --max-shards 4 --num-lanes 64 --chunk-size 512 --uncertain-band 0.15 \
     --modes none truth flip flip_gated truth_calibrated flip_calibrated \
+    random zero_known zero_unknown \
     --calibrated-tau 1.0 --dump-per-subject > ~/r2_guidelabs.log 2>&1
   for BAND in 0.02 0.05 0.10 0.20; do
     TAG=\$(echo \$BAND | sed 's/0\\.//')
