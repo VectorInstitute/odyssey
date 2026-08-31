@@ -314,7 +314,11 @@ def calibrated_gammas(
     known_weight = weight[:, : k * d].view(-1, k, d)  # (vocab, k, d)
     shifts = torch.einsum("vkd,kd->vk", known_weight, directions.to(known_weight))
     peaks = shifts.abs().amax(dim=0).clamp_min(1e-12)  # (k,)
-    return tau / peaks
+    # Annotated rather than returned directly: `float / Tensor` dispatches
+    # through Tensor.__rtruediv__, which some torch stub versions type as
+    # Any -- green locally, no-any-return under CI's stubs.
+    gammas: torch.Tensor = tau / peaks
+    return gammas
 
 
 def alignment_from_directions(
