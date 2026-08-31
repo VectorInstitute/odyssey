@@ -141,6 +141,43 @@ from one code version — not as a claim risk. MIMIC still to check.
 
 ---
 
+## 1bc. MAJOR, CIs PENDING: the two intervention protocols DISAGREE on the flagship arm
+
+From R6's supplemental (current code, same checkpoint/shards/band as the chain):
+
+| arm | protocol | truth Δ | flip Δ | truth − flip | sign |
+|---|---|---|---|---|---|
+| **R6 flagship** (context pairs) | banded | +0.16 | −0.37 | **+0.53** | correct |
+| **R6 flagship** | calibrated | −0.26 | **+1.38** | **−1.64** | **WRONG** |
+| R9 L-series (global pairs) | banded | −4.38 | −5.66 | +1.28 | correct |
+| R9 L-series | calibrated | −2.24 | −2.91 | +0.67 | correct |
+
+**On the flagship eICU arm, the lever's apparently correct sign is an artifact of
+the uncertain band.** Remove the band — which is exactly what Guide Labs'
+output-calibrated protocol does, equalising the peak logit shift per concept
+instead — and the sign inverts: injecting the FALSE label beats the true one by
+1.64 points, and `flip_calibrated` beats not intervening at all by 1.38 points.
+The L-series ablation is correctly signed under **both** protocols.
+
+Why this matters, three ways:
+1. It is direct support for Sec 5.3's structural cause. The context-dependent
+   (w+, w−) pair cannot inject meaning; the band was masking that on eICU.
+2. It is an audit-of-the-eval finding in its own right — the paper's own headline
+   protocol flattered the model on this arm — which is the paper's Sec 5.5 theme.
+3. **It changes the D5 calculus.** The frozen abstract question was whether eICU's
+   truth−none +0.19 might clear significance and break "the lever never reliably
+   helps". Under the better protocol truth does not help on eICU at all (−0.26),
+   so the abstract claim looks SAFER, not shakier — but the honest story is now
+   "two protocols disagree on this arm", which is more interesting than either.
+
+**CIs are pending** (`intervention_cis.py` runs at the end of the supplemental and
+will cover `truth_calibrated_minus_flip_calibrated` and
+`flip_calibrated_minus_none`). Do not put any of this in the paper until they
+land. R2/MIMIC is unmeasured — its supplemental needs VM1, and MIMIC is where the
+wrong-sign headline already lives, so it is the more important of the two.
+
+---
+
 ## 1c. NEW RESULTS from this session (register/verify, don't re-derive)
 
 **R9's intervention numbers — the L-series question is answered on eICU.** With
