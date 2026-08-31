@@ -109,10 +109,53 @@ def test_tabicl_column_is_added_when_supplied(tmp_path: Path) -> None:
     )
     tabicl = load_tabicl(tabicl_path)
     rows, notes = build_rows(cells, tabicl, {})
-    assert not any("TabICL" in n for n in notes)
+    # The column is present, so no ABSENT note. (A PARTIAL note IS expected
+    # here and is asserted separately: this fixture covers one of two cells.)
+    assert not any("ABSENT" in n for n in notes)
     death_row = next(r for r in rows if "Death" in r)
     # TabICL leads this cell, so it takes the bold
     assert "\\textbf{0.970}" in death_row
+
+
+def test_partial_tabicl_coverage_is_reported(tmp_path: Path) -> None:
+    """A partial supplementary file is worse than a missing one.
+
+    The column renders, uncovered cells quietly show "--", and the table
+    looks finished. tabicl_strong_compare.py rewrites its output after every
+    cell, so pointing at a still-running job produces exactly this.
+    """
+    cells, _ = load_alerts(_write(tmp_path, "a.json", _alerts_records()))
+    tabicl = load_tabicl(
+        _write(tmp_path, "t.json", {"death@8h": {"tabicl": {"point_estimate": 0.97}}})
+    )
+    _, notes = build_rows(cells, tabicl, {})
+    partial = [n for n in notes if "PARTIAL" in n]
+    assert len(partial) == 1
+    assert "1 of 2 cells" in partial[0]
+    assert "acute_kidney_injury@8h" in partial[0]
+
+
+def test_complete_tabicl_coverage_reports_no_partial_warning(tmp_path: Path) -> None:
+    cells, _ = load_alerts(_write(tmp_path, "a.json", _alerts_records()))
+    tabicl = load_tabicl(
+        _write(
+            tmp_path,
+            "t.json",
+            {
+                "death@8h": {"tabicl": {"point_estimate": 0.97}},
+                "acute_kidney_injury@8h": {"tabicl": {"point_estimate": 0.85}},
+            },
+        )
+    )
+    _, notes = build_rows(cells, tabicl, {})
+    assert not any("PARTIAL" in n for n in notes)
+
+
+def test_absent_tabicl_reports_absent_not_partial(tmp_path: Path) -> None:
+    cells, _ = load_alerts(_write(tmp_path, "a.json", _alerts_records()))
+    _, notes = build_rows(cells, {}, {})
+    assert any("ABSENT" in n for n in notes)
+    assert not any("PARTIAL" in n for n in notes)
 
 
 def test_mixed_landmark_protocols_are_refused(tmp_path: Path) -> None:
