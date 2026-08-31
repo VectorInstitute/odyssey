@@ -17,9 +17,9 @@ carries three do-not-submit / frozen markers), then `docs/experiment_plan.md`
 
 | What | Host | Started | Expect | Watch |
 |---|---|---|---|---|
-| **R8 training** (MIMIC L-series, `full_run_L_v10`) | `odyssey-cbm-a100` (VM1, us-central1-f) | 16:32 UTC | ~23:30–23:45 UTC | `~/r8_train.log`; done = `checkpoint_final.pt` |
-| **R9 eval chain** (`eicu_full_L_v10`) | `odyssey-eicu-a100` (VM2, us-central1-f) | 18:07:44 UTC | ~5–6h | `~/r9_eval_launch.log`; every stage must `EXIT 0` |
-| **B1 TabICL(strong, full capability)** | `odyssey-cbm-a100-ultra` (us-central1-a) | 18:32 UTC (3rd launch) | ~7.5h, so ~02:00 UTC | `~/b1_tabicl.log`; done = `~/runs/full_run_v10/tabicl_strong_v4.json` |
+| **R8 training** (MIMIC L-series, `full_run_L_v10`) | `odyssey-cbm-a100` (VM1, us-central1-f) | 16:32 UTC | ~23:30, maybe earlier | `~/r8_train.log`; done = `checkpoint_final.pt`. At 20:27 it was step 22,225, best_val 2.3235, early-stop 2/15 |
+| **R9 finish chain** (interventions re-run + report + CIs) | `odyssey-eicu-a100` (VM2, us-central1-f) | 20:09:35 UTC | ~45min, so ~20:55 | `~/r9_finish.log`; done = `R9 FINISH SEQUENCE DONE`. At 20:37, 7 of 9 modes done |
+| **B1 TabICL(strong, full capability)** | `odyssey-cbm-a100-ultra` (us-central1-a) | 18:32 UTC | ~7.5h, so ~02:00 UTC | `~/b1_tabicl.log`; done = final `INFO wrote <path>` line, NOT file existence. At 20:30, 3 of 15 cells |
 
 SSH: `gcloud compute ssh --zone <zone> <vm> --project agentic-ai-evaluation-bootcamp --tunnel-through-iap`
 (note the ultra host is **us-central1-a**, the other two are **us-central1-f**).
@@ -40,7 +40,7 @@ approved the spin-up explicitly for B1 and nothing else.
 
 ---
 
-## 1b. READ THIS FIRST — a bug found at 18:40 UTC changes the queue
+## 1b. READ THIS FIRST — the calibrated-mode bug (FIXED AND VERIFIED IN PRODUCTION)
 
 **Every calibrated intervention mode had never once completed on a GPU.**
 `calibration_gammas` is built from the model's LM-head weights so it lives on the
@@ -49,10 +49,16 @@ dtype but **not** device. Every GPU run of `truth_calibrated`/`flip_calibrated`
 died with "Expected all tensors to be on the same device". The CPU-only test suite
 could not see it, so the calibrated-mode tests passed the whole time.
 
-Fixed in **414cc0d**, regression tests in **8aa24e5** (one CUDA-gated, which will
-run on the VMs; one dtype test that runs anywhere). **The CUDA test has not yet
-been executed on a GPU** — all three cards were busy — so run
+Fixed in **414cc0d** (plus **b12a138**, a type annotation for CI's torch stubs),
+regression tests in **8aa24e5** (one CUDA-gated, which will run on the VMs; one
+dtype test that runs anywhere). **The CUDA test still has not been executed on a
+GPU** — all three cards have been busy — so run
 `pytest tests/odyssey/inference/test_interventions.py` on a VM once one frees.
+
+**VERIFIED IN PRODUCTION 20:31 UTC.** R9's re-run completed both calibrated modes
+with zero device errors, so this is closed, not merely believed fixed. It also
+reproduced `none`/`truth`/`flip`/`flip_gated` digit-for-digit against the crashed
+attempt, which is a clean determinism check on the re-run.
 
 Consequences you must handle:
 
@@ -82,10 +88,53 @@ the L-series question. Treat as provisional until the stage is re-run cleanly.
 
 ---
 
+## 1c. NEW RESULTS from this session (register/verify, don't re-derive)
+
+**R9's intervention numbers — the L-series question is answered on eICU.** With
+`concept_global_pairs=True`, the lever is CORRECTLY SIGNED under both protocols
+and against the random control, while every mode stays below no-intervention:
+
+| mode | top-1 | Δ vs none | loss |
+|---|---|---|---|
+| none | 0.5551 | — | 2.0828 |
+| truth | 0.5113 | −0.0438 | 2.3928 |
+| random | 0.4996 | −0.0555 | 2.4364 |
+| flip | 0.4985 | −0.0566 | 2.4176 |
+| flip_gated | 0.5450 | −0.0101 | 2.1788 |
+| truth_calibrated | 0.5327 | −0.0223 | 2.2172 |
+| flip_calibrated | 0.5260 | −0.0291 | 2.2232 |
+
+Reading: truth > random > flip is the ordering a working lever should give, and it
+holds on the banded protocol (+0.0128 truth−flip) AND on Guide Labs'
+output-calibrated protocol with no band at all (+0.0067, and truth also better on
+loss). That the sign survives a change of protocol is much stronger than the
+banded result alone — W7 built the calibrated protocol precisely because the band
+was suspected of doing the work. It isn't. Compare the flagship MIMIC arm (R2),
+where the same ordering is INVERTED with truth worst: that contrast is the paper's
+headline. Also note `flip_gated` costs only −0.0101 against flip's −0.0566, i.e.
+gating recovers most of flip's damage (the Guide Labs Fig 19 artifact check),
+suggesting much of an override's damage is logit-magnitude disruption.
+zero_known/zero_unknown were still running at handoff; get them from
+`interventions_band15.json`.
+
+**The capability cost of global pairs is broad, not just forecasting** (registered
+in docs/experiments.md, R9 row). R9 vs R6 on eICU: set top-1 −1.46, top-5 −2.99,
+xent +0.126, **concept readout mean AUROC −0.023**, and hazard alerts worse on
+**9 of 12 cells** (mean −0.016, worst on AKI and icu_admission; the three death
+cells are the only gains). Top-1 alone improves (+1.19) — the same metric
+disagreement this arm shows on interventions. R8 looks like it will repeat the
+pattern on MIMIC: best_val 2.3235 vs R2's 2.0556 as of 20:27.
+**This is a cross-run comparison with one seed per arm, so it is a labeled
+hypothesis under the stats policy, NOT a CI-backed claim.** Do not upgrade it
+without seed replicates.
+
+---
+
 ## 2. Queue, in order
 
-0. **Re-run R9's interventions stage** (see §1b) once VM2's GPU frees.
-1. **R9 eval chain finishes** → then, on VM2, in this order:
+1. **R9 finish chain completes (~20:55)** → pull `interventions_band15.json` and
+   `intervention_cis.json` into `research_journal/figure_data/vm2/eicu_full_L_v10/`
+   (aggregates only), register the zero_known/zero_unknown cells, then on VM2:
    - `scripts/intervention_cis.py --per-subject ~/runs/eicu_full_L_v10/interventions_band15_per_subject.json --output-json ~/runs/eicu_full_L_v10/intervention_cis.json`
      **The eval chain does NOT do this.** The previous handoff said the chain
      "auto-produces everything"; that is wrong for the CI step.
@@ -227,6 +276,13 @@ cell where TabICL still loses. B1 on v4 rows fixes all three at once.
 | `f79e8e3` | R9 registered |
 | `635888f` | `tabicl_strong_compare`: thread `task_set` into `prepare_baseline_data` |
 | `6a50ecc` | `tabicl_strong_compare`: call `activate_sidecars` |
+| `414cc0d` | **device fix**: calibrated intervention modes had never run on a GPU |
+| `8aa24e5` | CUDA-gated + dtype regression tests for the above |
+| `6984d39` | **new** `scripts/make_comparator_tables.py` + 12 tests: generate table bodies from run JSONs |
+| `3c0569c` | generator warns on PARTIAL inputs, not just absent ones |
+| `33e018a` | R9 registered incl. the measured capability cost of global pairs |
+| `d282e4f` | **new** `scripts/vm_oneoff/post_chain.sh`: the two steps `eval_run.sh` omits |
+| `4aa6662` | readmission unblocked on GEMINI; verified 36e1055 is a no-op for MIMIC/eICU |
 
 **B1 needs `ODYSSEY_TABICL_MEMORY_BUDGET_GB=120` in its environment.** The cost
 guard in `tabicl_baseline.py` defaults to a 16 GB budget and refuses the
@@ -249,7 +305,13 @@ zero, and the empty-rows guard silently skips the event. That would have been a
 any scoring script to a new event, check both.**
 
 Gates before every push: `ruff format`, `ruff check`, `mypy odyssey scripts`,
-`pytest`. All green at `6a50ecc` (1288 passed, 6 skipped).
+`pytest`. All green at `d282e4f` (1319 passed, 7 skipped).
+
+**Other sessions share this working tree.** odyssey-4a edited
+`odyssey/data/alert_events.py` in it while I was working, which showed up as an
+uncommitted modification that was not mine. Stage specific paths, never
+`git add -A`, or you will sweep up someone else's work in progress. Also never
+touch the pre-existing uncommitted `scripts/gemini/out/*.json`.
 
 ---
 
