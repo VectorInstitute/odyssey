@@ -49,12 +49,20 @@ claims: seed replicates or they are labeled hypotheses.
   `~/runs/eicu_full_v10/` on VM2: inference_results.json,
   interventions_band15.json, alerts.json + alerts_rows.parquet (B2's
   gate), case_studies.json, report.html.
-- **R9 training** (VM2): LAUNCHED 15:08 UTC Aug 31 by odyssey-4a,
-  checkout 17d28fc (commit floor >=8161e19 verified). R6 config with
-  concept_global_pairs=true only, output `~/runs/eicu_full_L_v10`, log
-  `~/r9_train.log`. Eval chain (now incl. flip_gated/calibrated modes +
-  attribution stage) to launch on completion, then the R6 supplemental
-  Guide Labs + W3 band-sweep scoring.
+- **R9 training** (VM2): COMPLETE 18:04:57 UTC Aug 31. 18,250 steps in
+  ~2.5h, early_stop=True (15/15 evals without improvement),
+  best_val_loss=2.2677, zero errors, checkpoint_final.pt written.
+  Against R6 this arm converges EARLIER and WORSE (18,250 vs 35,500
+  steps; 2.2677 vs 2.0148), so the global-pairs capability cost is
+  visible in the optimisation itself at full scale, larger than subset
+  L1 suggested. Registered in docs/experiments.md.
+- **R9 eval chain** (VM2): LAUNCHED 18:07:44 UTC Aug 31 by odyssey-7d,
+  checkout b99be32 (floor >=8161e19 verified, imports smoke-tested, no
+  uv sync). STREAM_BASELINE=1, LANES=64. Produces Guide Labs modes,
+  attribution, per-subject dumps. THEN, in order: scripts/
+  intervention_cis.py on interventions_band15_per_subject.json (NOT part
+  of the chain), scripts/vm_oneoff/readmission_alerts.sh, and
+  scripts/vm_oneoff/supplemental_r6_vm2.sh for the R6 checkpoint.
 - GEMINI deferred (Amrit): MIMIC-IV + eICU full runs with thorough evals
   complete first.
 
