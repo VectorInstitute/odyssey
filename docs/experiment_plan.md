@@ -72,6 +72,7 @@ claims: seed replicates or they are labeled hypotheses.
 | R3b/c | stage-B replicates | CI on independent-vs-joint cost | R3 |
 | R4 | intervention sweep over R2's intermediate checkpoints | "scale fixes the readout, not the lever" as a within-run claim | R2 + W3 |
 | R5 | M-series full scale (M1, M3; M2 optional) | gradient-dial hypothesis or its demotion | DECISION D2 |
+| R8 | L-series full scale, seed 0: `concept_global_pairs=True` (context-free per-concept embeddings replace the (w+,w-) pair) + full eval chain | Amrit-authorized 2026-08-31 following the Guide Labs (Steerling) comparison: subset L1 (a14c386, 30 shards) corrected the truth-flip sign (+0.28) at a capability cost, every mode still below none -- fixes the paper's [SUBSET-PLACEHOLDER] tag on this claim (Sec 5.3) and tests whether the sign correction survives AND becomes useful at full scale. No new code (existing `TrainingConfig.concept_global_pairs` flag, already load-bearing in run_inference's checkpoint auto-detect). ~4h training, same eval chain as R2. | VM1 free (after R2's eval chain finishes) |
 | B1 | MIMIC v4 baseline completion: MEDS-Tab v4 export+sweep, TabICL/EBM/SurvivalPFN rescores on R2 rows | the comparator table | R2 dumps |
 
 ### eICU (VM2: TERMINATED; restart + code sync + v2 re-extraction first)
@@ -82,6 +83,7 @@ claims: seed replicates or they are labeled hypotheses.
 | R6 | `eicu_full_v10` seed 0 + eval chain | cross-dataset trust replication; joint-eICU metric disagreement retested post-fix | training done 03:14 UTC Aug 31 (35,500 steps, best_val_loss=2.0148); eval chain launched 10:42 UTC |
 | R6b | seed replicate | eICU cross-run variance (never measured) | R6 |
 | R7 | eICU independent stage A+B full scale | the 2x2's anomaly cell at full scale | R6 |
+| R9 | L-series full scale, seed 0: `concept_global_pairs=True`, eICU counterpart to R8 | does the sign-correction + capability-cost tradeoff replicate cross-dataset | VM2 free (after R6's eval chain finishes) |
 | B2 | eICU v4 baselines: GBM refit, TabICL/EBM/SurvivalPFN, MEDS-Tab (~15h tabularize, sorted-label doctrine) | eICU comparator table | R6 dumps |
 
 ### GEMINI (H200, in-environment, aggregate exports only)
