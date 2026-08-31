@@ -127,6 +127,36 @@ way, still confirming the morning's +0.024 to +0.023 fix.
 
 ---
 
+## 1be. W3 BAND SWEEP: the displacement-asymmetry confound does NOT explain the lever
+
+This is the identifying test the plan and the main.tex appendix flagged as owed.
+The worry: `truth` injects L and `flip` injects 1−L, so per-position displacements
+are complementary and equal only at p=0.5. A narrower band forces p toward 0.5 and
+so shrinks the asymmetry. If the truth−flip separation is an artifact of that
+asymmetry, it should vanish as the band narrows. On R6 (flagship eICU, current
+code, partial sweep):
+
+| band | displacement truth / flip | asymmetry | truth−flip |
+|---|---|---|---|
+| 0.02 | 0.4997 / 0.5003 | **+0.0006** | **+0.154 pts** |
+| 0.05 | 0.4981 / 0.5019 | +0.0037 | +0.370 pts |
+| 0.15 | 0.4870 / 0.5130 | +0.0259 | +0.535 pts |
+
+**At band 0.02 the asymmetry is essentially eliminated — 43x smaller than at 0.15,
+0.0006 on a 0.5 baseline — and the separation is still positive at +0.154 pts.**
+So the confound does not explain the effect away. It does contribute: separation
+falls 3.5x as asymmetry falls 43x.
+
+**Caveat that must travel with this.** Narrowing the band also cuts coverage
+(99.98% → 91.4% → 64.4% of positions) and changes *which* positions are
+intervened, so band width varies two things at once. The clean statement is
+"separation survives at near-zero asymmetry", NOT "3.5x of the separation was
+asymmetry". Bands 0.10 and 0.20 were still running at handoff; MIMIC's sweep comes
+from `supplemental_r2_vm1.sh` and is the one that matters most, since the paper's
+wrong-sign headline is on MIMIC and there the separation is NEGATIVE.
+
+---
+
 ## 1bd. HOW MUCH THE SHARD SUBSET ACTUALLY MATTERS — measured, not guessed
 
 B1 scores GBM and TabICL on the *same* 4-shard subset, so its GBM against R2's
