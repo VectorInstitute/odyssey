@@ -104,9 +104,13 @@ whose re-run reproduced its own numbers digit-for-digit *within* one code versio
 **Affected:** every intervention cell swapped into the paper today — `tab:decomp`'s
 joint MIMIC and joint eICU rows, the Sec 5.3 prose quoting them, and Figure 3
 panel (a), which reads `interventions_band15.json`.
-**Not affected:** readout, completeness and alerts numbers (different code paths),
-R9's L-series numbers (its chain and re-run are both post-refactor), and the
-comparator tables.
+**Not affected — VERIFIED, not assumed:** `git log cdbd4e7..HEAD` over
+`alerts.py`, `run_inference.py`, `baseline_features.py` and `baseline_prep.py`
+returns **nothing**, so the comparator tables, the concept readout and the alert
+numbers are code-stable since the chains ran. The only concept/label-path commit
+is `36e1055` (GEMINI per-source prefixes), separately confirmed a no-op for
+mimic_iv/eicu. R9's L-series numbers are also unaffected (its chain and re-run are
+both post-refactor). The blast radius is interventions only.
 
 **Resolution, already in motion and cheap.** The supplemental scripts re-score each
 flagship checkpoint at current code with a superset of modes *and* dump per-subject
