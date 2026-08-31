@@ -567,6 +567,25 @@ touch the pre-existing uncommitted `scripts/gemini/out/*.json`.
   `codes_inventory.json` is back (currently 15/29 concepts resolve). Amrit asked
   for readmission on all three datasets — MIMIC and eICU are yours, GEMINI is
   **not**; hand the runner to that lane.
+  **CORRECTION 2026-08-31 22:45: readmission_30d is DEGENERATE ON eICU. Do not
+  re-run it there.** Measured, not inferred: the run produced 20,122
+  discharge-anchored index rows but only 69 non-null labels at 168h and 5 at
+  720h, with **ZERO positives**, so `alerts_readmission.json` is an empty list.
+  Cause: eICU's MEDS `subject_id` is `$patienthealthsystemstayid` (specs/eICU.yaml),
+  i.e. a subject IS one hospital stay, so a `next_visit` event — first
+  HOSPITAL_ADMISSION strictly after the visit's last event — has nothing to find.
+  It is degenerate for the same structural reason `icu_admission` is.
+  **My earlier note that eICU could support readmission was WRONG.** I based it on
+  158 of 979 held-out subjects having 2+ `HOSPITAL_ADMISSION//` tokens; those are
+  multiple admission records *within* one health-system stay (transfers), not
+  readmissions after discharge. A token count was a bad proxy for a label — check
+  the label columns, which is what settled it.
+  So Amrit's "readmission on all three datasets" is deliverable on **MIMIC**
+  (subject = patient; it was already measured back on 2026-08-25, where a frozen
+  probe beat the hazard head 0.586 vs 0.527 at 720h) and on **GEMINI** via 4a's
+  remap, but **not on eICU** without re-keying the extraction to `uniquepid`,
+  which would invalidate every eICU run.
+
   **UPDATE 2026-08-31 ~20:00: readmission is no longer GEMINI-blocked.** odyssey-4a
   landed per-source alert prefixes (36e1055) that remap `readmission_30d` to
   GEMINI's bare `ADMISSION` token while keeping `next_visit` semantics, so the
