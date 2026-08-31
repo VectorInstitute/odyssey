@@ -12,7 +12,7 @@ dependencies = [
     # MIMIC-IV -> MEDS extraction (hosp + icu modules; ED not yet covered upstream)
     "MIMIC_IV_MEDS",
     # Used directly (not just transitively via MIMIC_IV_MEDS) for concept labeling.
-    "polars>=1.30.0",
+    "polars>=1.44.1",
     # Model dev. Mac (local, CPU/MPS) installs plain torch, floating freely.
     # On the GCP A100 host, torch is pinned to an exact cu124 build and
     # mamba-ssm (below) to an exact version -- discovered the hard way that
@@ -106,7 +106,7 @@ gemini = [
     # dependencies above) since run.sh's minimal extract-node install is
     # `--no-deps` + this extra only, and skips the base dependency list
     # entirely.
-    "polars>=1.30.0",
+    "polars>=1.44.1",
 ]
 
 # TabICLv2 in-context-learning baseline (odyssey/inference/tabicl_baseline.py),
