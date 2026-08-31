@@ -160,6 +160,19 @@ alerts_cis + calibration (W6); registry row; append-only artifacts.
   note the IRB/REB reference must be confirmed either way (paper has a
   BLOCKING verify tag on the GEMINI ethics statement).
 - D4: strong_text stays out of this paper (sidecars need re-embed).
+- D5: abstract framing, DEFERRED BY AMRIT 2026-08-31 ("let CI land, then
+  discuss with odyssey-cf"; that lane is odyssey-6b this generation).
+  Blocked on `intervention_cis.json` for R2/R6 from the supplemental
+  scoring pass. Three coupled questions, to be settled in ONE pass, not
+  separately: (a) does the eval-audit sentence earn abstract space, or
+  should its surviving clause fold into the close; (b) the closing
+  "tested by intervention, not by readout accuracy" is NOT a novel
+  claim and Related Work concedes as much, so does it keep the last
+  line of the abstract; (c) if the paired CI on eICU truth$-$none
+  (+0.19 top-1) clears significance, "the lever never helps" needs a
+  decision, not a wording tweak. Full assessment and the caution that
+  the current close was a deliberate prior W-item choice are logged in
+  the paper/ml4h/main.tex header block. No abstract edits before then.
 
 Cut order if Sept 7 arrives with legs unfinished: G6, then R5, then
 R6b/R3c. The paper does not survive without R2 (+replicates), R3, R6,
