@@ -88,56 +88,42 @@ the L-series question. Treat as provisional until the stage is re-run cleanly.
 
 ---
 
-## 1bb. THE PAPER'S INTERVENTION NUMBERS ARE PRE-REFACTOR — RE-SWAP OWED
+## 1bb. CORRECTED: the chains used a DIFFERENT SHARD COUNT, not older code
 
-Found 20:51 UTC. **Both flagship eval chains ran at `cdbd4e7`**, confirmed from
-each chain's own logged `commit=` line, not just the registry. The W8-W10 refactor
-(`e7cbbe7`, 07:42) and W7 (`8161e19`, 07:56) landed after, and that refactor
-restructured the streaming intervention loop. **Current code does not reproduce
-the chain's numbers.** Re-scoring R6's own `checkpoint_best.pt`, same 4 shards,
-same band 0.15, same lanes/chunk, same data: `none` gives top-1 **0.5450** / loss
-**1.9562** where the chain recorded **0.54008** / **1.97496**.
+I first diagnosed this as the flagship intervention numbers being "pre-refactor"
+and unreproducible. **That was wrong and is retracted.** The code is not the
+difference; the chains were launched over a different number of held-out shards.
 
-That is code, not noise. These modes are deterministic, and the control is R9,
-whose re-run reproduced its own numbers digit-for-digit *within* one code version.
+Evidence: R6's alerts carry **4.15x the rows of R9's on every cell** (death 8h
+621,125 vs 149,152; AKI 8h 451,747 vs 108,908). Alerts and interventions both read
+`ALERT_SHARDS`, so no code refactor can explain that. And each chain is internally
+consistent — R2's and R6's intervention `n_predictions` **exactly equal their own
+full held-out eval counts** (87,058,459 and 86,897,282), while R9's chain and my
+R6 supplemental both report 20,708,344, which is 4 of eICU's 17 held-out shards.
+17/4 = 4.25 against the observed 4.15–4.20.
 
-**Affected:** every intervention cell swapped into the paper today — `tab:decomp`'s
-joint MIMIC and joint eICU rows, the Sec 5.3 prose quoting them, and Figure 3
-panel (a), which reads `interventions_band15.json`.
-**Not affected — VERIFIED, not assumed:** `git log cdbd4e7..HEAD` over
-`alerts.py`, `run_inference.py`, `baseline_features.py` and `baseline_prep.py`
-returns **nothing**, so the comparator tables, the concept readout and the alert
-numbers are code-stable since the chains ran. The only concept/label-path commit
-is `36e1055` (GEMINI per-source prefixes), separately confirmed a no-op for
-mimic_iv/eicu. R9's L-series numbers are also unaffected (its chain and re-run are
-both post-refactor). The blast radius is interventions only.
+**What this changes:**
 
-**Resolution, already in motion and cheap.** The supplemental scripts re-score each
-flagship checkpoint at current code with a superset of modes *and* dump per-subject
-counts, so one run gives the point estimates and their paired CIs together. Take
-the eICU cells from `eicu_full_v10/interventions_guidelabs.json` (running since
-20:41) and the MIMIC cells from `full_run_v10`'s twin when VM1 frees, then re-swap
-both rows from those. **Do not mix**: a CI from the supplemental next to a point
-estimate from the chain is exactly the cross-provenance error the TabICL block
-refuses.
+1. **The paper's flagship intervention numbers are on the FULL held-out set —
+   they are the better estimates, not stale ones.** Do NOT replace them with
+   supplemental numbers scored on 4 shards. That would trade full-data estimates
+   for quarter-data ones. The re-swap I earlier called "owed" is NOT owed.
+2. **But the supplemental CIs do not match their point estimates' data.** To pair
+   them honestly the supplemental interventions must re-run WITHOUT
+   `--max-shards` (~4x compute) so estimate and interval share a row set.
+   **That is a GPU-budget decision for Amrit** — flag it, don't quietly pick one.
+3. **R9-vs-R6 comparisons span different held-out subsets** (4 shards vs 17).
+   That includes the "capability cost of global pairs" registered in
+   docs/experiments.md. AUROC and top-1 still estimate the same population
+   quantities, so it is not invalid, but it is unpaired and noisier than it
+   looks. **Launch any future arm with the same `ALERT_SHARDS` as the arm it will
+   be compared against** — R9 was launched by me at the default 4 while R2/R6 had
+   been launched over the full split, and nothing warned about the mismatch.
 
-**Severity, now measured (R6's first three modes): the refactor moved the ABSOLUTE
-level and left the DELTAS alone** — and every claim in this paper is about deltas.
-
-| | chain (in the paper) | current code |
-|---|---|---|
-| none top-1 / loss | 0.54008 / 1.97496 | 0.5450 / 1.9562 |
-| truth Δtop-1 / Δloss | +0.19 pts / +0.0235 | +0.16 pts / +0.0235 |
-| flip Δtop-1 / Δloss | −0.38 pts / +0.0269 | −0.37 pts / +0.0267 |
-| truth − flip | +0.57 pts | +0.53 pts |
-
-All three eICU claims hold under current code: truth helps on top-1, truth hurts
-on loss (the metric disagreement), truth beats flip on loss. The truth loss delta
-is +0.0235 either way, i.e. **+0.023** — which independently re-confirms this
-morning's `tab:decomp` correction from +0.024.
-
-So treat the re-swap as a **consistency refresh**, so point estimates and CIs come
-from one code version — not as a claim risk. MIMIC still to check.
+The delta-stability observation still holds and is now better explained: deltas
+were stable across the two runs because they are ratios within each row set, while
+the absolute level moved with the sample. truth's loss delta is +0.0235 either
+way, still confirming the morning's +0.024 to +0.023 fix.
 
 ---
 
