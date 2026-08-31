@@ -18,7 +18,7 @@ carries three do-not-submit / frozen markers), then `docs/experiment_plan.md`
 | What | Host | Started | Expect | Watch |
 |---|---|---|---|---|
 | **R8 training** (MIMIC L-series, `full_run_L_v10`) | `odyssey-cbm-a100` (VM1, us-central1-f) | 16:32 UTC | ~23:30, maybe earlier | `~/r8_train.log`; done = `checkpoint_final.pt`. At 20:27 it was step 22,225, best_val 2.3235, early-stop 2/15 |
-| **R9 finish chain** (interventions re-run + report + CIs) | `odyssey-eicu-a100` (VM2, us-central1-f) | 20:09:35 UTC | ~45min, so ~20:55 | `~/r9_finish.log`; done = `R9 FINISH SEQUENCE DONE`. At 20:37, 7 of 9 modes done |
+| **R6 supplemental** (Guide Labs modes, W3 band sweep, per-subject, CIs) | `odyssey-eicu-a100` (VM2, us-central1-f) | 20:41:36 UTC | hours (9 modes + a 4-band sweep + attribution) | `~/r6_guidelabs.log`; done = `GUIDELABS_DONE`. **Produces R6's `intervention_cis.json`, the eICU CI that D5 waits on** |
 | **B1 TabICL(strong, full capability)** | `odyssey-cbm-a100-ultra` (us-central1-a) | 18:32 UTC | ~7.5h, so ~02:00 UTC | `~/b1_tabicl.log`; done = final `INFO wrote <path>` line, NOT file existence. At 20:30, 3 of 15 cells |
 
 SSH: `gcloud compute ssh --zone <zone> <vm> --project agentic-ai-evaluation-bootcamp --tunnel-through-iap`
@@ -126,11 +126,35 @@ from a DIFFERENT dump than the paper's, which is why I refused to splice it in
 dump, so when it finishes there is no cross-dump caveat left and Sec 5.4's "TabICL
 loses 12 of 12 cells" can be rewritten from a single consistent source.
 
-**R9 completeness (2x2), partial at handoff:** `zero_known` top-1 0.4015, i.e.
-**72.3% of no-intervention retained**, against R6's 48.5%. So the global-pairs arm
-leans LESS on the named channel, not more — worth thinking about, since the
-ablation was meant to make concepts inject meaning. `zero_unknown` was still
-running; complete the 2x2 from `interventions_band15.json` before drawing on it.
+**R9's finish chain COMPLETED 20:41 UTC, all three stages EXIT 0**, producing the
+**first paired intervention CIs in this project** (`intervention_cis.json`, 2000
+boots, 3,916 subjects). Aggregates are already local in
+`research_journal/figure_data/vm2/eicu_full_L_v10/`. **All ten pairs SEPARATE:**
+
+| pair | delta (pts) | 95% CI |
+|---|---|---|
+| truth − flip | **+1.279** | [+0.863, +1.672] |
+| truth_calibrated − flip_calibrated | **+0.677** | [+0.293, +1.041] |
+| truth − none | −4.379 | [−4.604, −4.172] |
+| flip − none | −5.658 | [−5.932, −5.361] |
+| flip_gated − none | −1.010 | [−1.117, −0.904] |
+| random − none | −5.549 | [−5.686, −5.415] |
+| zero_known − none | −15.353 | [−15.683, −15.017] |
+| zero_unknown − none | −26.077 | [−26.556, −25.566] |
+
+So the sign correction is significant under the banded protocol AND under the
+output-calibrated one that removes the band entirely — the band was not doing the
+work, which is exactly what W7 was built to test — while every mode stays
+significantly below none.
+
+**COMPLETENESS REVERSAL, the finding most worth a second pair of eyes.** The 2x2
+is now complete: zero_known retains 72.3% (R6: 48.5%), zero_unknown retains 53.0%
+(R6: 100.7%). In the global-pairs arm the **unnamed residual is MORE load-bearing
+than the named channel**, the opposite of the flagship pattern, which is awkward
+for an ablation whose purpose was to make concepts carry meaning. Natural reading:
+it fixes the lever partly by making the model depend on named concepts less
+overall. **One seed, cross-run — a hypothesis, not a finding.** Needs R8 and
+replicates. Do not let this into the paper as a claim without them.
 
 **The capability cost of global pairs is broad, not just forecasting** (registered
 in docs/experiments.md, R9 row). R9 vs R6 on eICU: set top-1 −1.46, top-5 −2.99,
