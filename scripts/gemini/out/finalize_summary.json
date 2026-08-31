@@ -6,7 +6,5 @@
     "tuning": "112000",
     "held_out": "112000"
   },
-  "warnings": 1119,
-  "transcribed": true,
-  "source": "live run 2026-08-22, summary printed to stdout pre-d0d7dea"
+  "warnings": 1119
 }
