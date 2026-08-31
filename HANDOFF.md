@@ -117,9 +117,23 @@ both rows from those. **Do not mix**: a CI from the supplemental next to a point
 estimate from the chain is exactly the cross-provenance error the TabICL block
 refuses.
 
-**Early read:** truth−none is +0.16 pts under current code against the chain's
-+0.19, so the sign and the eICU metric-disagreement story look stable — a numbers
-refresh, not a claim reversal. Confirm against the finished file.
+**Severity, now measured (R6's first three modes): the refactor moved the ABSOLUTE
+level and left the DELTAS alone** — and every claim in this paper is about deltas.
+
+| | chain (in the paper) | current code |
+|---|---|---|
+| none top-1 / loss | 0.54008 / 1.97496 | 0.5450 / 1.9562 |
+| truth Δtop-1 / Δloss | +0.19 pts / +0.0235 | +0.16 pts / +0.0235 |
+| flip Δtop-1 / Δloss | −0.38 pts / +0.0269 | −0.37 pts / +0.0267 |
+| truth − flip | +0.57 pts | +0.53 pts |
+
+All three eICU claims hold under current code: truth helps on top-1, truth hurts
+on loss (the metric disagreement), truth beats flip on loss. The truth loss delta
+is +0.0235 either way, i.e. **+0.023** — which independently re-confirms this
+morning's `tab:decomp` correction from +0.024.
+
+So treat the re-swap as a **consistency refresh**, so point estimates and CIs come
+from one code version — not as a claim risk. MIMIC still to check.
 
 ---
 
