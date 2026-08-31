@@ -161,6 +161,23 @@ TabICL (B1, in flight):
   bootstrap** to separate the cell, plus AUPRC and calibration columns. That needs
   `scripts/alerts_cis.py` over each arm's `alerts_rows.parquet`. Pure CPU.
 
+**Use `scripts/make_comparator_tables.py` (new, tested) -- do not hand-transcribe.**
+It reads `alerts.json` (+ optional `--tabicl` and `--cis`) and emits the LaTeX row
+body. Hand transcription is what produced the `+0.024` error, so the tables are now
+a build product. Missing inputs become `% WARNING` comments inside the generated
+`.tex` rather than a silently short table, and bold is withheld entirely when CIs
+are present but the paired delta does not separate. Verified on both arms today:
+MIMIC 15 cells / 5 events (sepsis3 included), eICU 12 cells / 4 events.
+
+**GAP -- the v4 alerts contain only hazard and GBM.** Both `alerts.json` files
+carry scorers `hazard`, `baseline_gbm`, `concept`, `next_mass` and **no EBM, no
+TabICL, no SurvivalPFN, no MEDS-Tab**. B1's registry scope says "TabICL/EBM/
+SurvivalPFN rescores on R2 rows" but **only TabICL is running**. So a table swap
+done today would silently DROP the EBM column the paper currently shows. EBM and
+SurvivalPFN need `scripts/rescore_extra_baselines.py` against each arm's
+`alerts_rows.parquet` before either table is complete. Do that before swapping,
+or the swap trades one stale table for one missing a baseline.
+
 **Do not splice the Aug 27 TabICL numbers in** (`docs/tabicl_strong_feature_comparison.md`).
 Three reasons, all in the main.tex header: its GBM came from a different dump than
 the paper's (identical rows, but the refits disagree — death 8h 0.953 vs 0.949, so
