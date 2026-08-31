@@ -169,7 +169,13 @@ a build product. Missing inputs become `% WARNING` comments inside the generated
 are present but the paired delta does not separate. Verified on both arms today:
 MIMIC 15 cells / 5 events (sepsis3 included), eICU 12 cells / 4 events.
 
-**GAP -- the v4 alerts contain only hazard and GBM.** Both `alerts.json` files
+**RESOLVED by Amrit 2026-08-31: "skip ebm and survivalpfn, ship
+hazard/gbm/tabicl".** The v4 tables get three scorer columns. EBM comes out of
+tab:mimic; SurvivalPFN was already omitted by its own caption. Coupled consequence
+for the D5 pass: "five tuned baseline families" appears in four places including
+the abstract, and only GBM and TabICL now appear in a v4 table. Details below.
+
+**Context -- the v4 alerts contain only hazard and GBM.** Both `alerts.json` files
 carry scorers `hazard`, `baseline_gbm`, `concept`, `next_mass` and **no EBM, no
 TabICL, no SurvivalPFN, no MEDS-Tab**. B1's registry scope says "TabICL/EBM/
 SurvivalPFN rescores on R2 rows" but **only TabICL is running**. So a table swap
