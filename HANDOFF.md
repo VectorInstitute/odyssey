@@ -127,6 +127,31 @@ way, still confirming the morning's +0.024 to +0.023 fix.
 
 ---
 
+## 1bd. HOW MUCH THE SHARD SUBSET ACTUALLY MATTERS — measured, not guessed
+
+B1 scores GBM and TabICL on the *same* 4-shard subset, so its GBM against R2's
+full-held-out GBM measures the subset effect directly. Over the six cells done at
+handoff (each ~11.5% of the full held-out rows):
+
+**|GBM_subset − GBM_full| ranges 0.0002 to 0.0077, mean ≈ 0.004.**
+
+That is the error bar on putting a 4-shard TabICL column beside full-held-out
+hazard/GBM columns. Consequences for the comparator table, cell by cell:
+
+- **Robust to it:** TabICL beats our hazard head on all three ICU cells by +0.029,
+  +0.054, +0.085 — an order of magnitude above the subset effect, and the margin
+  grows with horizon. Our hazard beats TabICL on vasopressor 8h (−0.035) and 24h
+  (−0.018), also well clear.
+- **NOT resolvable:** vasopressor 72h, where TabICL leads by only +0.0043, i.e.
+  smaller than the subset effect itself. Do not call that cell either way.
+
+So the TabICL column is usable beside the full-held-out columns provided the table
+says the column is scored on a 4-shard subset and that cells inside ~0.008 are not
+separable. Better, if the GPU budget allows: rerun B1 with
+`--max-held-out-shards` matching the chains and the question disappears.
+
+---
+
 ## 1bc. MAJOR, CIs PENDING: the two intervention protocols DISAGREE on the flagship arm
 
 From R6's supplemental (current code, same checkpoint/shards/band as the chain):
