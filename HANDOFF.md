@@ -88,6 +88,41 @@ the L-series question. Treat as provisional until the stage is re-run cleanly.
 
 ---
 
+## 1bb. THE PAPER'S INTERVENTION NUMBERS ARE PRE-REFACTOR — RE-SWAP OWED
+
+Found 20:51 UTC. **Both flagship eval chains ran at `cdbd4e7`**, confirmed from
+each chain's own logged `commit=` line, not just the registry. The W8-W10 refactor
+(`e7cbbe7`, 07:42) and W7 (`8161e19`, 07:56) landed after, and that refactor
+restructured the streaming intervention loop. **Current code does not reproduce
+the chain's numbers.** Re-scoring R6's own `checkpoint_best.pt`, same 4 shards,
+same band 0.15, same lanes/chunk, same data: `none` gives top-1 **0.5450** / loss
+**1.9562** where the chain recorded **0.54008** / **1.97496**.
+
+That is code, not noise. These modes are deterministic, and the control is R9,
+whose re-run reproduced its own numbers digit-for-digit *within* one code version.
+
+**Affected:** every intervention cell swapped into the paper today — `tab:decomp`'s
+joint MIMIC and joint eICU rows, the Sec 5.3 prose quoting them, and Figure 3
+panel (a), which reads `interventions_band15.json`.
+**Not affected:** readout, completeness and alerts numbers (different code paths),
+R9's L-series numbers (its chain and re-run are both post-refactor), and the
+comparator tables.
+
+**Resolution, already in motion and cheap.** The supplemental scripts re-score each
+flagship checkpoint at current code with a superset of modes *and* dump per-subject
+counts, so one run gives the point estimates and their paired CIs together. Take
+the eICU cells from `eicu_full_v10/interventions_guidelabs.json` (running since
+20:41) and the MIMIC cells from `full_run_v10`'s twin when VM1 frees, then re-swap
+both rows from those. **Do not mix**: a CI from the supplemental next to a point
+estimate from the chain is exactly the cross-provenance error the TabICL block
+refuses.
+
+**Early read:** truth−none is +0.16 pts under current code against the chain's
++0.19, so the sign and the eICU metric-disagreement story look stable — a numbers
+refresh, not a claim reversal. Confirm against the finished file.
+
+---
+
 ## 1c. NEW RESULTS from this session (register/verify, don't re-derive)
 
 **R9's intervention numbers — the L-series question is answered on eICU.** With
