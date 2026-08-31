@@ -220,7 +220,7 @@ cell where TabICL still loses. B1 on v4 rows fixes all three at once.
 | `9a6afcf` | supplemental scripts score `random`/`zero_*`; `fig_lever` no longer crashes on a missing CI pair |
 | `a67642b` | D5: abstract frozen (see §6) |
 | `35d1de5` | MEDS-Tab deletion recorded, results preserved first |
-| `d77c08d` | `mis-scaled` → `the wrong scale` (typos hook false positive; `docs/experiment_plan.md` is not in the hook's exclude list) |
+| `d77c08d` | reworded a scale-related compound word that the typos hook flags as a typo (`docs/experiment_plan.md` is not in the hook's exclude list) |
 | `66247f6` | B1 extended: TabICL must be strong-panel full capability, needs ultra host |
 | `656062b` | `tabicl_strong_compare.py` scores the run's own task-set events (adds sepsis3; v1 runs unchanged; `next_visit` events explicitly excluded) |
 | `b99be32` | **new** `scripts/vm_oneoff/readmission_alerts.sh` |
