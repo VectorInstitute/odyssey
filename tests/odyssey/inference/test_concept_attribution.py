@@ -12,6 +12,8 @@ from odyssey.data.streaming import PackedLaneSampler
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.concept_attribution import (
     alignment_from_directions,
+    calibrated_gammas,
+    mean_concept_directions,
     run_streaming_attribution,
 )
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
@@ -207,3 +209,68 @@ def test_main_refuses_to_overwrite_an_existing_output_before_evaluating(
 
     with pytest.raises(SystemExit, match="refusing to overwrite"):
         attribution_module._main()
+
+
+# ---------------------------------------------------------------------------
+# W11 concept-unknown correlation, and the W7 calibration helpers
+# ---------------------------------------------------------------------------
+
+
+def test_concept_unknown_correlation_is_a_valid_mean_of_abs_correlations() -> None:
+    result = _run()
+    assert set(result.per_concept_unknown_correlation) == set(CONCEPT_NAMES)
+    for v in result.per_concept_unknown_correlation.values():
+        assert 0.0 <= v <= 1.0
+    # Every concept pairs with the same number of unknown coordinates, so
+    # the overall mean is the mean of the per-concept means.
+    expected = sum(result.per_concept_unknown_correlation.values()) / NUM_CONCEPTS
+    assert result.mean_abs_concept_unknown_correlation == pytest.approx(
+        expected, abs=1e-9
+    )
+
+
+def test_mean_directions_and_gammas_are_exact_for_global_pairs() -> None:
+    vocab = _vocab()
+    model = _model(len(vocab), global_pairs=True)
+    directions = mean_concept_directions(
+        model, _events(), vocab, num_lanes=2, chunk_size=8, device="cpu"
+    )
+    expected = (
+        model.bottleneck.pair_embeddings[:, 0, :]
+        - model.bottleneck.pair_embeddings[:, 1, :]
+    ).detach()
+    torch.testing.assert_close(directions, expected.double(), check_dtype=False)
+
+    gammas = calibrated_gammas(model, directions, tau=2.0)
+    assert gammas.shape == (NUM_CONCEPTS,)
+    d = model.bottleneck.embedding_dim
+    # Manual peak for concept 0: largest |per-token logit shift|.
+    shifts = model.lm_head.weight[:, 0:d].detach().double() @ directions[0]
+    assert float(gammas[0]) == pytest.approx(2.0 / float(shifts.abs().max()))
+    # Equal-peak property: gamma_i * peak_i == tau for every concept.
+    for i in range(NUM_CONCEPTS):
+        s = (
+            model.lm_head.weight[:, i * d : (i + 1) * d].detach().double()
+            @ directions[i]
+        )
+        assert float(gammas[i]) * float(s.abs().max()) == pytest.approx(2.0)
+
+
+def test_calibrated_gammas_rejects_a_nonpositive_tau() -> None:
+    vocab = _vocab()
+    model = _model(len(vocab), global_pairs=True)
+    with pytest.raises(ValueError, match="tau must be positive"):
+        calibrated_gammas(
+            model, torch.zeros(NUM_CONCEPTS, 4, dtype=torch.float64), tau=0.0
+        )
+
+
+def test_mean_directions_for_context_pairs_are_finite_and_shaped() -> None:
+    vocab = _vocab()
+    model = _model(len(vocab))
+    directions = mean_concept_directions(
+        model, _events(), vocab, num_lanes=2, chunk_size=8, device="cpu"
+    )
+    assert directions.shape == (NUM_CONCEPTS, model.bottleneck.embedding_dim)
+    assert torch.isfinite(directions).all()
+    assert not torch.all(directions == 0)

@@ -95,8 +95,20 @@ class AttributionResult:
 
     alignment: list[ConceptAlignment] = field(default_factory=list)
 
+    mean_abs_concept_unknown_correlation: float = float("nan")
+    """W11, Guide Labs' concept-independence measure adapted: mean over
+    (concept, unknown dimension) pairs of the absolute Pearson
+    correlation between the concept's own probability and that unknown
+    embedding coordinate, over held-out real positions. A cheap, citable
+    second measure beside the capacity-controlled linear probes (which
+    stay primary): 0 = the residual channel carries no linear trace of
+    the known concepts."""
 
-def run_streaming_attribution(
+    per_concept_unknown_correlation: dict[str, float] = field(default_factory=dict)
+    """Mean absolute correlation with the unknown coordinates, per concept."""
+
+
+def run_streaming_attribution(  # noqa: PLR0915 -- one linear scoring pass
     model: ConceptBottleneckSequenceModel,
     events_binned: pl.DataFrame,
     vocab: Vocabulary,
@@ -130,12 +142,20 @@ def run_streaming_attribution(
     )
     weight = model.lm_head.weight  # (vocab, k*d + unknown_dim)
 
+    u = model.bottleneck.unknown_dim
     n = 0
     contribution_sum = 0.0
     share_sum = torch.zeros(k, dtype=torch.float64)
     unknown_share_sum = 0.0
     direction_sum = torch.zeros(k, d, dtype=torch.float64)
     n_direction = 0
+    # Running moments for the concept-prob / unknown-coordinate Pearson
+    # correlations (W11): E[c], E[c^2], E[u], E[u^2], E[c u].
+    c_sum = torch.zeros(k, dtype=torch.float64)
+    c_sq_sum = torch.zeros(k, dtype=torch.float64)
+    u_sum = torch.zeros(u, dtype=torch.float64)
+    u_sq_sum = torch.zeros(u, dtype=torch.float64)
+    cu_sum = torch.zeros(k, u, dtype=torch.float64)
 
     state = None
     with torch.no_grad():
@@ -170,6 +190,14 @@ def run_streaming_attribution(
             direction_sum += directions[real].sum(0).double().cpu()
             n_direction += int(preds.shape[0])
 
+            c = out.concept_probs[real].double().cpu()  # (N, k)
+            u_emb = out.unknown_embedding[real].double().cpu()  # (N, u)
+            c_sum += c.sum(0)
+            c_sq_sum += (c**2).sum(0)
+            u_sum += u_emb.sum(0)
+            u_sq_sum += (u_emb**2).sum(0)
+            cu_sum += c.T @ u_emb
+
     if model.bottleneck.global_pairs:
         diff = (
             model.bottleneck.pair_embeddings[:, 0, :]
@@ -184,6 +212,21 @@ def run_streaming_attribution(
     alignment = alignment_from_directions(
         model, mean_direction, vocab, concept_names, top_k=top_k
     )
+
+    if n > 1:
+        c_var = (c_sq_sum / n - (c_sum / n) ** 2).clamp_min(0.0)  # (k,)
+        u_var = (u_sq_sum / n - (u_sum / n) ** 2).clamp_min(0.0)  # (u,)
+        cov = cu_sum / n - torch.outer(c_sum / n, u_sum / n)  # (k, u)
+        denom = torch.sqrt(torch.outer(c_var, u_var)).clamp_min(1e-12)
+        corr = (cov / denom).clamp(-1.0, 1.0).abs()
+        per_concept_corr = {
+            name: float(corr[i].mean().item()) for i, name in enumerate(concept_names)
+        }
+        mean_corr = float(corr.mean().item())
+    else:
+        per_concept_corr = dict.fromkeys(concept_names, float("nan"))
+        mean_corr = float("nan")
+
     return AttributionResult(
         n_predictions=n,
         mean_concept_contribution=contribution_sum / n if n else float("nan"),
@@ -194,7 +237,84 @@ def run_streaming_attribution(
         unknown_share=unknown_share_sum / n if n else float("nan"),
         direction_source=direction_source,
         alignment=alignment,
+        mean_abs_concept_unknown_correlation=mean_corr,
+        per_concept_unknown_correlation=per_concept_corr,
     )
+
+
+def mean_concept_directions(
+    model: ConceptBottleneckSequenceModel,
+    events_binned: pl.DataFrame,
+    vocab: Vocabulary,
+    *,
+    num_lanes: int = 8,
+    chunk_size: int = 256,
+    device: str = "cuda",
+    max_seq_len: int | None = None,
+) -> torch.Tensor:
+    """(k, d) per-concept override directions for calibration, float64 CPU.
+
+    Exact (the parameter difference) for a global-pairs bottleneck, with
+    no data pass at all; otherwise the mean of the per-position
+    ``w+ - w-`` over real positions of the given stream -- the lean
+    input the output-calibrated intervention protocol (W7,
+    :mod:`odyssey.inference.interventions`) needs, without the full
+    attribution accounting.
+    """
+    model.eval()
+    if model.bottleneck.global_pairs:
+        diff = (
+            model.bottleneck.pair_embeddings[:, 0, :]
+            - model.bottleneck.pair_embeddings[:, 1, :]
+        )
+        return diff.detach().double().cpu()
+    k, d = model.bottleneck.num_concepts, model.bottleneck.embedding_dim
+    patients = iter_patient_sequences(events_binned, vocab, max_seq_len=max_seq_len)
+    sampler = PackedLaneSampler(
+        patients, num_lanes=num_lanes, chunk_size=chunk_size, reset_prob=0.0
+    )
+    direction_sum = torch.zeros(k, d, dtype=torch.float64)
+    n = 0
+    state = None
+    with torch.no_grad():
+        for chunk in sampler:
+            chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
+            hidden, state = model.backbone(
+                chunk.batch, state=state, reset_mask=chunk.reset_mask
+            )
+            real = chunk.real_mask
+            if not real.any():
+                continue
+            directions = model.bottleneck.concept_pair_directions(hidden)
+            direction_sum += directions[real].sum(0).double().cpu()
+            n += int(real.sum().item())
+    return direction_sum / max(n, 1)
+
+
+def calibrated_gammas(
+    model: ConceptBottleneckSequenceModel,
+    directions: torch.Tensor,
+    *,
+    tau: float,
+) -> torch.Tensor:
+    """(k,) mixing-probability step sizes with equal peak logit shift.
+
+    Guide Labs' output calibration (``gamma = tau / peak(e_c)``) adapted:
+    ``peak_i = max_y |W_i (w+ - w-)_i[y]|`` is concept ``i``'s largest
+    per-token logit shift per unit of mixing probability, so displacing
+    the probability by ``gamma_i = tau / peak_i`` gives every concept the
+    same largest achievable logit shift ``tau``, decoupling intervention
+    strength from how big the head's weights happen to be per concept.
+    """
+    if tau <= 0:
+        raise ValueError("tau must be positive")
+    k = model.bottleneck.num_concepts
+    d = model.bottleneck.embedding_dim
+    weight = model.lm_head.weight.detach().double().cpu()
+    known_weight = weight[:, : k * d].view(-1, k, d)  # (vocab, k, d)
+    shifts = torch.einsum("vkd,kd->vk", known_weight, directions.to(known_weight))
+    peaks = shifts.abs().amax(dim=0).clamp_min(1e-12)  # (k,)
+    return tau / peaks
 
 
 def alignment_from_directions(
@@ -362,6 +482,8 @@ __all__ = [
     "AttributionResult",
     "ConceptAlignment",
     "alignment_from_directions",
+    "calibrated_gammas",
     "evaluate_attribution",
+    "mean_concept_directions",
     "run_streaming_attribution",
 ]
