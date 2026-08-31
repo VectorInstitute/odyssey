@@ -1,0 +1,144 @@
+"""Tests for the comparator-table generator."""
+
+import json
+from pathlib import Path
+
+import pytest
+
+from scripts.make_comparator_tables import (
+    _bold_targets,
+    build_rows,
+    load_alerts,
+    load_tabicl,
+)
+
+
+def _alerts_records(protocol: int = 4) -> list[dict]:
+    """Two events x one horizon, hazard and GBM, GBM ahead on AKI only."""
+    out = []
+    for event, hazard, gbm in (
+        ("acute_kidney_injury", 0.80, 0.90),
+        ("death", 0.96, 0.94),
+    ):
+        for scorer, auroc in (("hazard", hazard), ("baseline_gbm", gbm)):
+            out.append(
+                {
+                    "event": event,
+                    "horizon_hours": 8.0,
+                    "scorer": scorer,
+                    "auroc": auroc,
+                    "n_at_risk": 1000,
+                    "n_positive": 50,
+                    "landmark_protocol_version": protocol,
+                }
+            )
+    return out
+
+
+def _write(tmp_path: Path, name: str, payload) -> Path:
+    path = tmp_path / name
+    path.write_text(json.dumps(payload))
+    return path
+
+
+def test_load_alerts_keys_cells_and_collects_protocol(tmp_path: Path) -> None:
+    cells, protocols = load_alerts(_write(tmp_path, "a.json", _alerts_records()))
+    assert set(cells) == {"acute_kidney_injury@8h", "death@8h"}
+    assert protocols == {4}
+    assert cells["death@8h"]["scores"]["hazard"] == 0.96
+    assert cells["death@8h"]["n"] == 1000
+
+
+def test_scorers_outside_hazard_and_gbm_are_ignored(tmp_path: Path) -> None:
+    """alerts.json also carries `concept` and `next_mass` proxy scorers."""
+    records = _alerts_records() + [
+        {
+            "event": "death",
+            "horizon_hours": 8.0,
+            "scorer": "next_mass",
+            "auroc": 0.99,
+            "n_at_risk": 1000,
+            "n_positive": 50,
+            "landmark_protocol_version": 4,
+        }
+    ]
+    cells, _ = load_alerts(_write(tmp_path, "a.json", records))
+    assert set(cells["death@8h"]["scores"]) == {"hazard", "baseline_gbm"}
+
+
+def test_bold_goes_to_the_max_without_cis() -> None:
+    assert _bold_targets({"hazard": 0.9, "baseline_gbm": 0.8}, None) == {"hazard"}
+
+
+def test_bold_is_withheld_when_the_paired_delta_does_not_separate() -> None:
+    """The captions promise bold means a separated cell, not a bigger number."""
+    ci_cell = {
+        "paired_deltas": {
+            "hazard_minus_baseline_gbm": {"auroc": {"point": 0.002, "separated": False}}
+        }
+    }
+    assert _bold_targets({"hazard": 0.9, "baseline_gbm": 0.898}, ci_cell) == set()
+
+
+def test_bold_survives_a_separated_delta() -> None:
+    ci_cell = {
+        "paired_deltas": {
+            "hazard_minus_baseline_gbm": {"auroc": {"point": 0.1, "separated": True}}
+        }
+    }
+    assert _bold_targets({"hazard": 0.9, "baseline_gbm": 0.8}, ci_cell) == {"hazard"}
+
+
+def test_rows_warn_about_missing_columns(tmp_path: Path) -> None:
+    cells, _ = load_alerts(_write(tmp_path, "a.json", _alerts_records()))
+    rows, notes = build_rows(cells, {}, {})
+    assert any("TabICL" in n for n in notes)
+    assert any("NO CIs" in n for n in notes)
+    assert any("AKI" in r for r in rows)
+    assert any("Death" in r for r in rows)
+    # sepsis3 is absent from this arm and must simply not appear
+    assert not any("Sepsis-3" in r for r in rows)
+
+
+def test_tabicl_column_is_added_when_supplied(tmp_path: Path) -> None:
+    cells, _ = load_alerts(_write(tmp_path, "a.json", _alerts_records()))
+    tabicl_path = _write(
+        tmp_path,
+        "t.json",
+        {"death@8h": {"tabicl": {"point_estimate": 0.97}}},
+    )
+    tabicl = load_tabicl(tabicl_path)
+    rows, notes = build_rows(cells, tabicl, {})
+    assert not any("TabICL" in n for n in notes)
+    death_row = next(r for r in rows if "Death" in r)
+    # TabICL leads this cell, so it takes the bold
+    assert "\\textbf{0.970}" in death_row
+
+
+def test_mixed_landmark_protocols_are_refused(tmp_path: Path) -> None:
+    """v4 and v1-v3 cells are not comparable and must never share a table."""
+    records = _alerts_records(protocol=4) + _alerts_records(protocol=3)
+    _, protocols = load_alerts(_write(tmp_path, "a.json", records))
+    assert protocols == {3, 4}
+
+
+def test_cells_with_no_auroc_render_as_placeholder(tmp_path: Path) -> None:
+    records = _alerts_records()
+    for rec in records:
+        if rec["event"] == "death" and rec["scorer"] == "hazard":
+            rec["auroc"] = None
+    cells, _ = load_alerts(_write(tmp_path, "a.json", records))
+    rows, _ = build_rows(cells, {}, {})
+    death_row = next(r for r in rows if "Death" in r)
+    assert "--" in death_row
+
+
+@pytest.mark.parametrize("horizon", [8.0, 24.0, 72.0])
+def test_horizon_labels_have_no_trailing_zeros(tmp_path: Path, horizon: float) -> None:
+    records = _alerts_records()
+    for rec in records:
+        rec["horizon_hours"] = horizon
+    cells, _ = load_alerts(_write(tmp_path, "a.json", records))
+    rows, _ = build_rows(cells, {}, {})
+    assert any(f"{horizon:g}h" in r for r in rows)
+    assert not any(".0h" in r for r in rows)
