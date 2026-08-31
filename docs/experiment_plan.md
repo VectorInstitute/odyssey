@@ -1,177 +1,113 @@
-# Experiment plan (living document)
+# Experiment plan: the ML4H paper (nothing else)
 
-Owner: lead session. Updated whenever the queue or a gate changes; sessions
-execute against this, the registry records what actually happened. Every run
-listed here states the question it answers -- compute with no question
-attached does not launch.
+Owner: lead session. Rewritten 2026-08-30 per Amrit: paper experiments
+only, complete vs remaining. Registry (docs/experiments.md) records what
+actually happened; this file is the queue.
 
-## Principles
+Paper contract (Amrit, 2026-08-30): results on MIMIC-IV, eICU, and
+GEMINI; full scale only, no subset numbers anywhere; core is the CBM
+trust audit (readout / completeness / lever / audit-of-the-eval) plus a
+strong-model comparison against many baselines. Everything under
+landmark protocol v4, task_set v3, bin-edge v2, fixed labels,
+reset_prob 0.0 (R1 alone pins 0.1 as the cross-generation bridge).
+Within-run claims: paired subject-clustered bootstraps. Cross-run
+claims: seed replicates or they are labeled hypotheses.
 
-1. **No new v1-protocol numbers.** Everything scientific lands under
-   `LANDMARK_PROTOCOL_VERSION=2`. The only sanctioned v1 run remaining is the
-   v9 clean-v1 pass (its question is the protocol delta + contamination
-   sizing, which requires v1).
-2. **One GPU job per card; RSS arithmetic before concurrent CPU jobs** (the
-   Aug 22 OOM lesson: alerts-class jobs ~33GB, tabularize ~17GB, on 83GB
-   boxes).
-3. **The critical path is the lead's GEMINI code/concept/event mapping** --
-   it blocks every alert-side and concept-side GEMINI result (paper R5). It
-   is CPU/laptop work and runs in parallel with everything below.
-4. **H200 and A100s never wait on each other.** GEMINI runs the
-   forecasting-side ladder (needs no concepts) while the A100s run the wave.
-5. **Standardized eval:** every ladder rung and checkpoint gets the same
-   `eval-forecast` protocol (same held-out shards, same lanes) so points are
-   comparable; alert evals follow wave conventions exactly.
-6. **Decision gates before expensive rungs** (listed per item below).
+## COMPLETE (what the paper can already stand on)
 
-## H200 / GEMINI queue (forecasting side; operator-mediated)
+| Item | Paper use |
+|------|-----------|
+| Label + protocol + tokenization fixes, audited (sepsis3 evidence anchor, shock pooling, composite masks, GCS stamp, KDIGO completion 3d7ecbb, landmark v4, bin-edge v2 stamped on binner, note storetime, subject-disjointness deep scan) | Sec 5.5 audit findings; the reason for the retrains |
+| Statistics tooling: fast subject-clustered AUROC bootstrap, generic AUPRC path, paired deltas, `scripts/alerts_cis.py`, `scripts/intervention_cis.py`, `--dump-per-subject` | every CI and bold in the tables |
+| Prior-generation full-scale runs harvested (e20 MIMIC joint, e21 eICU joint) incl. the per-mode top-1 + loss decomposition and 2x2 completeness cells | [PRIOR-GEN] placeholders; tab:decomp joint rows; the joint-eICU metric-disagreement finding |
+| Prior-generation independent arms (e25/e26) harvested | tab:decomp independent rows, SUBSET-tagged, to be replaced by R3/R7 |
+| v4 re-eval, flagship prior-gen dumps: landmark + readmission legs (EXIT 0) | v3-to-v4 per-cell delta appendix (a paper commitment) |
+| R1 `subset_run_v10_taskset_v3` training (binner stamped v2, reset_prob pinned 0.1) | gate only, not paper content; final steps as of Aug 30 ~21:15 UTC |
+| eICU spec v2 (HICL drug rescue, bc7ac4c) | prerequisite for R6 |
+| GEMINI extraction tooling refreshed (scripts/gemini, Aug 30); 14M forecasting-only checkpoint from the old ladder | starting point for G1/G3; no concept/alert GEMINI results exist |
+| ML4H draft with both review passes applied; figures pipeline (make_figures.py); citation audit | swap-ready skeleton |
 
-| # | Run | Question | Est. | Gate |
-|---|-----|----------|------|------|
-| G1 | `eval-forecast gemini_smoke_2` | First GEMINI held-out numbers; anchors the data-scaling curve | ~30m | mirror landed |
-| G2 | `train-full` (14M, 64x512, 2 epochs) | First real GEMINI checkpoint; 3rd data-scaling point; measures whether CPU feed holds at 16x smoke throughput | ~2-3h | none |
-| G3 | `eval-forecast gemini_full_14m_v1` | Held-out at full data; data-scaling figure point | ~30m | G2 done |
-| G4 | Ladder rung 2 (~60M: hidden 512, spec from lead) | Model-scale vs data-scale disentangled (Track A item 9) | ~4-8h | G2 throughput report; feed parallelization first if steps/s collapsed |
-| G5 | Ladder rung 3 (~150M) | Upper rung of the curve | ~8-16h | G4 shows a real gain over 14M |
-| G6 | GEMINI alert/concept subset run | First GEMINI concepts + alert heads | -- | lead's code_mapping lands; spec to follow |
+## IN FLIGHT (2026-08-30 evening)
 
-## VM2 / eICU queue (wave leg; serialized after the OOM lesson)
+- **R2** `full_run_v10` (VM1): launched 21:35 UTC, seed 0, reset_prob
+  0.0, task_set v3, streaming, binner stamped edge_version v2.
+- **R6** `eicu_full_v10` (VM2): launched 21:53 UTC after two
+  source-resolution fixes the launch itself surfaced (c797b43: the
+  sepsis3 sidecar gate now follows source resolution; 2a90066: the
+  sepsis3 ALERT EVENT now drops with its concept, threaded through head
+  construction, corpus stats, and scoring). VM2 disk cleared by pruning
+  35GB of intermediate checkpoints from superseded prior-gen runs
+  (best/final/epoch checkpoints kept; Amrit approved).
+- GEMINI deferred to tomorrow (Amrit): MIMIC-IV + eICU full runs with
+  thorough evals complete first.
+
+## REMAINING
+
+### Code work items (block eval chains, not training)
+
+| # | Item | Source |
+|---|------|--------|
+| W1 | Concept overrides scored on hazard-direction sign agreement at the input-counterfactual positions (one-variable contrast) | reviewer M5 |
+| W2 | Rule-replay bound (concept recomputed from tokens visible at scoring time), per concept | reviewer m8 |
+| W3 | Per-concept band coverage / truth-flip deltas / band-width sensitivity (0.10/0.15/0.20) / CI on the base-rate correlation | reviewer M6 |
+| W4 | Decomposition harvest script (per-mode top-1 + loss, retained percents) for every new arm | reviewer N1-N5 |
+| W5 | Per-concept assessable fraction beside readout AUROC | reviewer m9 |
+| W6 | Calibration column through alerts_cis (AUPRC already there) | paper Sec 4 |
+
+### MIMIC-IV (VM1, ~4h/full run at reset_prob 0.0)
 
 | # | Run | Question | Gate |
 |---|-----|----------|------|
-| E1 | v8 v2 dump regen (running) | v8's corrected row set + clean hazard/GBM v2 scores | -- |
-| E2 | v9 clean-v1 alerts (pinned worktree 85dde80^) | **Was the recency effect ever real?** + sizes ABI contamination + v1-vs-v2 protocol delta | E1 done |
-| E3 | v9 inference/interventions/case regen (current main) | Clean replacements for every contaminated v9 artifact | E2 done |
-| E4 | MEDS-Tab shared-grid xgboost stage (12 tasks, n_trials=200/seed 0) | Field-standard baseline row of the comparator table | ROOT-CAUSED Aug 23: MEDS-Tab's join_asof silently corrupts window boundaries when label_df is unsorted (polars precondition, no validation); build_shared_landmark_label_df lacked the sort + OR-aggregation export_task_labels got. Existing shared .npz matrices are wrong on disk. Path: fix builder (branch+review) -> re-tabularize ~15h against corrected grid (RSS-gated: launch only after >=1 v3 alerts leg frees its ~33GB) -> rerun all 3 gates vs sorted standalone reference -> sweep. Grid is model-free ground truth, v3-compatible by construction -- no separate v3 label export step; E4/E7 collapse into this path. Doctrine: ANY label_df handed to MEDS-Tab must be sorted; runtime guard added to the slicer path. |
-| E5 | v2 rescores: TabICL / EBM / SurvivalPFN against E1+v9-v2 rows | The eICU v2 comparator table | E1 done (CPU, can interleave when GPU busy) |
-| E6 | Transformer-control subset run (eICU 30 shards, matched budget) | Backbone priced (Track A item 5); born under v2 | GPU free after E3 |
-| E7 | MEDS-Tab v2 label export + rerun | MEDS-Tab's v2 row | E4 done + v2 rows exist |
+| R1e | R1 validation eval | do the fixes reproduce known subset behavior (launch gate) | R1 training done |
+| A1 | counting-run v4 legs + probe pass (prior-gen, audit-support) | completes the v3-to-v4 delta appendix | peer's GBM done-ping |
+| A2 | `alerts_cis.py` over flagship v4 dumps | CIs on the delta appendix | RSS headroom |
+| R2 | `full_run_v10` seed 0 + full eval chain | flagship joint: readout trajectory (29 concepts), completeness cell, lever, alert cells vs all five baseline families | R1e |
+| R2b/c | seeds 1, 2 | CIs for every cross-run claim; icu_admission variance watch | R2 sane |
+| R3 | independent stage A+B full scale, seed 0 | does the conventional asymmetry survive scale; completeness cell | R2 |
+| R3b/c | stage-B replicates | CI on independent-vs-joint cost | R3 |
+| R4 | intervention sweep over R2's intermediate checkpoints | "scale fixes the readout, not the lever" as a within-run claim | R2 + W3 |
+| R5 | M-series full scale (M1, M3; M2 optional) | gradient-dial hypothesis or its demotion | DECISION D2 |
+| B1 | MIMIC v4 baseline completion: MEDS-Tab v4 export+sweep, TabICL/EBM/SurvivalPFN rescores on R2 rows | the comparator table | R2 dumps |
 
-## VM1 / MIMIC queue (post-epoch-2, in order, on lead's go)
+### eICU (VM2: TERMINATED; restart + code sync + v2 re-extraction first)
 
 | # | Run | Question | Gate |
 |---|-----|----------|------|
-| M1 | Epoch-2 final eval chain (auto) | Does epoch 2 hold at final eval; checkpoint-selection read | running |
-| M2 | Wave MIMIC leg: full_run_v8 v2 dump + rescores | MIMIC v2 comparator table; measures MIMIC's own v1 inflation (do NOT assume eICU's ~19-23%) | M1 done |
-| M3 | v9-MIMIC + full-run case-study regen (fixed trace code) | Restores qualitative traces for reports | M2 done (short) |
-| M4 | L2-L4 six-mode intervention reruns | Completes the lever figure across the L-series (Track B opener) | M3 done (short) |
-| M5 | GPU coverage measure (test_hybrid_gpu with --cov, once) | Closes the CUDA-gated coverage blind spot | DONE Aug 23 (9c1c75a, VM1): 12/12 pass, hybrid.py 89% (151 stmts, 17 missed); misses are the incremental-decode step() branch, the varlen batch=1 conv path, and the mamba-ssm import guard -- none called anywhere in odyssey/ outside hybrid.py, so this is full coverage of the live paths |
-| M6 | v9-MIMIC seed replicate | Recency non-replication: real or convergence variance? (also waits on E2/E3 -- the eICU side of that comparison must be clean first) | last |
+| E0 | VM2 restart, git sync, eICU v2 re-extraction + deep validation | prerequisite | none |
+| R6 | `eicu_full_v10` seed 0 + eval chain | cross-dataset trust replication; joint-eICU metric disagreement retested post-fix | E0, R1e |
+| R6b | seed replicate | eICU cross-run variance (never measured) | R6 |
+| R7 | eICU independent stage A+B full scale | the 2x2's anomaly cell at full scale | R6 |
+| B2 | eICU v4 baselines: GBM refit, TabICL/EBM/SurvivalPFN, MEDS-Tab (~15h tabularize, sorted-label doctrine) | eICU comparator table | R6 dumps |
 
-## Eval-only / CPU work (post-wave)
+### GEMINI (H200, in-environment, aggregate exports only)
 
-- **Missingness stress protocol** (Track A item 6): all families on identical
-  degraded records, v2 dumps. Design doc first; runs mostly CPU. Gate: wave
-  tables closed.
-- **eICU subject-to-hospital sidecar** (Track C item 17): built locally from
-  raw tables on /Volumes/clinical-data; site-holdout eval machinery
-  developed on eICU, then inherited by GEMINI. Gate: none (parallel).
-- **Registry/README/paper updates**: v2 tables + cleaned recency claims land
-  together when the wave closes; paper R2/R3/R4 sections become writable.
+| # | Item | Question | Gate |
+|---|------|----------|------|
+| G1 | full extraction + `meds_validation --deep` | clean full-scale GEMINI MEDS, subject-disjoint splits | scripts landed |
+| G2 | concept resolution audit: which of the 29 resolve (reported as a portability RESULT, paper Sec 3); per-unit ranges (SI creatinine); **binning portability: fraction of GEMINI lab tokens in curated shared-threshold bins vs source-fit quantile bins** (reviewer E4; curated bins are the semantically portable subset) | the GEMINI concept count + the transfer denominator | code_mapping (lead, CPU) |
+| G3 | `gemini_full_v10` joint training + eval chain | GEMINI-native readout / completeness / lever cells | G1 + G2 |
+| G4 | GEMINI baselines: tuned GBM + MEDS-Tab minimum; TabICL/EBM if the feature path ports | strong-model story on the generalization dataset | G3 dumps |
+| G5 | MIMIC-trained R2 zero-shot on GEMINI rows through the shared LOINC token space; **readout reported separately on the curated-bin subset** (E4: separates "concepts do not port" from "quantile edges do not port") | the generalization headline | G1 + G2 + R2 |
+| G6 | site-holdout within GEMINI | within-network external validity | STRETCH, D3 |
 
-## Lead's own critical-path work (parallel to all of the above)
+### Standard eval chain (every trained arm)
 
-1. GEMINI code_mapping table (OMOP -> LOINC + unit tags incl. SI variants)
-   + per-unit clinical ranges (the umol/L creatinine trap) + gemini alert
-   event definitions -> unlocks G6 and paper R5.
-2. Ladder rung specs (G4/G5) -- SPECIFIED (Aug 23, sized from train-full's
-   measured behavior):
+Held-out inference; concept readout + CI + assessable fraction (W5) +
+rule-replay bound (W2), intermediate checkpoints for flagships;
+completeness all modes, top-1 AND loss (W4); interventions with W3 dumps
++ per-subject + intervention_cis; hazard-sign concept overrides (W1)
+beside the input-counterfactual suite; alerts v4 vs baselines with
+alerts_cis + calibration (W6); registry row; append-only artifacts.
 
-   **Evidence base:** gemini_full_14m_v1 runs ~1.8-1.9 steps/s deep into
-   epoch 1 at 64x512 (feed-bound; smoke runs showed ~3GB VRAM / ~20% util
-   at 14M, so GPU compute is nowhere near the H200's ceiling). Val task
-   loss still improving well into epoch 2 (2.137 @ step 27.2k -> 1.555 @
-   71.2k), i.e. 14M is not saturated on 894 shards -- the curve argument
-   needs bigger rungs, and the data supports them.
+### Decisions owed to Amrit
 
-   **G4 (rung 2, ~60M):** same config as gemini_full_14m_v1 EXCEPT the
-   width/depth bump (target ~4x params; hidden 256->512 first, extra
-   layers only if the printed param count lands far from ~60M -- the
-   launch report must state the actual count printed at init). Same data,
-   same 64x512 geometry, same 2-epoch budget, same seed, same
-   eval-forecast protocol on the same held-out shards. Because the run is
-   feed-bound at 14M, wall-clock should grow far less than 4x; the launch
-   report must state measured steps/s in the first 2k steps -- if it
-   collapses below ~1 step/s, stop and report (feed parallelization
-   becomes the prerequisite, per the G4 gate).
+- D1: confirm reset_prob 0.0 for the whole paper generation (recommended).
+- D2: M-series (R5) in or out (~12-18 GPU-h).
+- D3: GEMINI scope if time forces a cut: G5-only transfer is the floor;
+  note the IRB/REB reference must be confirmed either way (paper has a
+  BLOCKING verify tag on the GEMINI ethics statement).
+- D4: strong_text stays out of this paper (sidecars need re-embed).
 
-   **G5 (rung 3, ~150M):** only after G4's eval-forecast shows a real
-   gain over 14M (gate unchanged). Same recipe, next width/depth step
-   (~hidden 768 or 512 + deeper); same everything else. If G4's gain is
-   marginal, G5's budget goes to the GEMINI alert/concept subset run (G6)
-   instead -- curve-with-plateau is still a publishable curve.
-
-   **Both rungs:** checkpoint_every 2000 + prune to best/final (the
-   MIMIC best-vs-final lesson); eval-forecast immediately after each run
-   under the standard protocol; registry row per rung with the stamp
-   ritual once alert-side evals exist.
-3. Wave table assembly + protocol-delta write-up as legs complete.
-
-## Active defects (affect gates above)
-
-- **Interleaved-visit landmark duplication** (found Aug 23 by
-  `verify_packed_landmark_rows` after the float64 fix c147b9f cleared the
-  precision classes): same-timestamp event bundles spanning two hadm_ids with
-  alternating token order make the adjacency-based `_landmark_mask` emit a
-  landmark per visit-boundary *crossing* instead of per (subject, visit,
-  bucket) -- ~0.35% phantom extras on the eICU repro, and the likely cause of
-  the surviving truncated-subject classes. Fix owner: e6. Approved design:
-  per-lane `{visit_id: last_bucket_emitted}` state cleared at subject
-  boundaries, persisted across chunks; acceptance = all verifier classes zero
-  on the real repro + literal interleaved-pattern regression test.
-  **CLOSED (Aug 23): v3 merged as dbfd447** -- interleaved-visit fix +
-  unconditional both-backbone verification + sequences.py time-derivation
-  alignment. Known residual: ~2 invented / ~22 dropped verifier warnings on
-  transformer/packed runs only (float64 (a-b)+b truncation-rebase
-  round-trip, ~1e-13); true-time-threading follow-up tracked P2, gated
-  before any paper-grade transformer dump; no version bump when it lands.
-  Regen queue is ACTIVE: E1 (6e, after current legs finish), M2 (e6, under
-  v3 from the start), E5 rerun + E4/E7 v3 labels after E1.
-  Earlier note for the record: lane path exposed -- -- collect_model_scores builds rows
-  through one unconditional code path for both backbones (e6, confirmed by
-  reading), so every v2 dump carries duplicate landmarks (measured 1.4% on the transformer repro subset; 5.2% on the full eICU v9 64x512 dump -- population-dependent). **Ruling: the
-  fix bumps LANDMARK_PROTOCOL_VERSION to 3** (same doctrine as v1->v2), and
-  the lane path gains a production row-set assertion against the group-by
-  ground truth. Regen queue once v3 merges: E1 dumps + rescores, E5 mechanical
-  rerun, E4/E7 label export before the sweep (tabularization salvage
-  unaffected), M2 born under v3 (never run as v2). v1 legs stay as-is: the
-  bug is symmetric across v1/v2, so E2's protocol-delta attribution survives.
-  Interim E5 rows are marked "v2, pre-interleaving-fix" in the registry.
-
-## Master sequence (consolidated Aug 23; nothing ships half-baked)
-
-Phase 1 -- **close the wave** (in flight, days): v3 dumps both datasets ->
-E5/M2 rescores -> re-tab -> gates -> E4 sweep -> wave tables + protocol
-delta write-up -> R3/R4 writable. Includes M3 (case studies), M4 (L-series
-six-mode completion), M5 (GPU coverage), M6 (seed replicate) on VM1's tail.
-
-Phase 2 -- **GEMINI depth** (overlaps 1, H200 + lead CPU): G4 60M rung ->
-G5 gate decision; G6 concepts+alerts on the 18-table dataset (lead's
-mapping is ready; wiring after export-codes lands) -> frozen cross-system
-transfer + temporal-cutoff + 30-site hospital-holdout (R5, the title
-gate). eICU subject-to-hospital sidecar built in parallel (CPU, feeds the
-same holdout machinery).
-
-Phase 3 -- **stress + tasks** (after wave tables close): missingness
-protocol runs (designed, docs/missingness_protocol.md); task-suite
-expansion decision executed (Sepsis-3 vs 30-day readmission -- pick on
-clinical-impact grounds, spec then run); transformer-control v3 alerts
-rerun (paper-grade gate: true-time-threading P2 fix first).
-
-Phase 4 -- **interpretability push** (Track B, once modeling clears):
-next lever design from the M-series frontier; distributional time head
-probe (item 13); GEMINI concept-transfer readout (R7's strongest
-potential claim, falls out of G6). Causal framing stays honest either way.
-
-Phase 5 -- **paper assembly**: entry-19 related-work consolidation; v3
-tables into R2-R7; title decision (waits on R5); TRIPOD+AI checklist;
-Amrit rewrites for voice. Deployment/translator work (MEDS-to-FHIR) stays
-explicitly post-paper.
-
-## Standing gates recap
-
-- Nothing launches without a row here or an explicit lead go.
-- Contaminated v9 numbers stay quarantined until E2/E3 replace them.
-- Framing-gate experiments (temporal cutoff, hospital-holdout, frozen
-  cross-system transfer) get their own specs once G6 exists -- they are the
-  paper's R5 and get designed deliberately, not squeezed in.
+Cut order if Sept 7 arrives with legs unfinished: G6, then R5, then
+R6b/R3c. The paper does not survive without R2 (+replicates), R3, R6,
+and G2+G5.
