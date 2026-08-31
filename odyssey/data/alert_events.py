@@ -15,7 +15,7 @@ so they line up with chunk time stamps position for position.
 
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import polars as pl
 
@@ -117,17 +117,46 @@ ALERT_TASK_SETS: dict[str, tuple[AlertEvent, ...]] = {
 ALERT_EVENTS: tuple[AlertEvent, ...] = ALERT_EVENTS_V1
 
 
+# Per-source code_prefix overrides, applied ONLY to the named source: a
+# code_prefix is a literal match against that source's own MEDS codes, so
+# an event defined for MIMIC-IV's vocabulary can match NOTHING elsewhere,
+# producing a fully censored hazard head that trains and scores without
+# error but carries no signal. GEMINI emits its structural events as bare
+# tokens with no "//" separator (verified against the full-scale
+# extraction's own inventory, scripts/gemini/out/codes_inventory.json:
+# "ICU_ADMISSION" ~533k occurrences, "ADMISSION", "DISCHARGE",
+# "MEDS_DEATH"; no HOSPITAL_ADMISSION// family exists there at all).
+#
+# The separators in the shared definitions above are LOAD-BEARING for the
+# other sources and must never be relaxed globally: eICU emits
+# ICU_ADMISSION_WEIGHT / ICU_ADMISSION_HEIGHT measurement codes that a
+# bare "ICU_ADMISSION" would silently mislabel as admissions, and eICU
+# does carry real HOSPITAL_ADMISSION// tokens. Hence a per-source table
+# rather than a loosened prefix. A prefix of None drops the event for
+# that source.
+_SOURCE_CODE_PREFIXES: dict[str, dict[str, str | None]] = {
+    "gemini": {
+        "icu_admission": "ICU_ADMISSION",
+        "readmission_30d": "ADMISSION",
+    },
+}
+
+
 def alert_events_for(
     task_set: str = "v1", *, source: str | None = None
 ) -> tuple[AlertEvent, ...]:
     """Return the alert events a run with ``task_set`` trains heads for / scores.
 
     With ``source``, concept-backed alerts whose concept does not resolve
-    for that source are dropped (sepsis3 on eICU): head construction, the
-    event-time computation, and scoring must all see the identical
-    source-resolved list, so pass the run's source wherever it is known.
-    Without ``source`` the unresolved list is returned unchanged (the
-    MIMIC-only scripts and pre-source callers).
+    for that source are dropped (sepsis3 on eICU), and code-prefix alerts
+    are remapped to that source's own vocabulary where it needs one
+    (:data:`_SOURCE_CODE_PREFIXES`; GEMINI's bare structural tokens):
+    head construction, the event-time computation, and scoring must all
+    see the identical source-resolved list, so pass the run's source
+    wherever it is known. Without ``source`` the unresolved list is
+    returned unchanged (the MIMIC-only scripts and pre-source callers).
+    A source with no override entry is returned exactly as before, so
+    this is a no-op for MIMIC-IV and eICU.
     """
     if task_set not in ALERT_TASK_SETS:
         raise ValueError(
@@ -146,7 +175,33 @@ def alert_events_for(
             dropped.name,
             dropped.concept,
         )
-    return kept
+
+    overrides = _SOURCE_CODE_PREFIXES.get(source, {})
+    if not overrides:
+        return kept
+    remapped: list[AlertEvent] = []
+    for event in kept:
+        if event.code_prefix is None or event.name not in overrides:
+            remapped.append(event)
+            continue
+        prefix = overrides[event.name]
+        if prefix is None:
+            logger.warning(
+                "[alerts] source %r: dropping alert event %r -- no equivalent "
+                "code family in this source's vocabulary",
+                source,
+                event.name,
+            )
+            continue
+        logger.info(
+            "[alerts] source %r: alert %r code_prefix %r -> %r",
+            source,
+            event.name,
+            event.code_prefix,
+            prefix,
+        )
+        remapped.append(replace(event, code_prefix=prefix))
+    return tuple(remapped)
 
 
 # Widened counting-hazard AUXILIARY events (2026-08-28): the GBM
