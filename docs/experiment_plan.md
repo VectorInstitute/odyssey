@@ -168,6 +168,15 @@ alerts_cis + calibration (W6); registry row; append-only artifacts.
   note the IRB/REB reference must be confirmed either way (paper has a
   BLOCKING verify tag on the GEMINI ethics statement).
 - D4: strong_text stays out of this paper (sidecars need re-embed).
+- D6: **anonymized code repo URL, BLOCKING AT SUBMISSION.** The Data and
+  Code Availability paragraph now points at
+  `https://anonymous.4open.science/r/odyssey-ml4h2026`, which is a
+  PLACEHOLDER. Someone must create the anonymized mirror and paste the real
+  issued URL before submitting. It must NOT resolve to
+  github.com/VectorInstitute/odyssey during review -- the org name
+  deanonymizes, and ML4H requires "no identifying information present in
+  the submitted manuscript" for both tracks. Swap to the public URL only in
+  the camera-ready.
 - D5: abstract framing, DEFERRED BY AMRIT 2026-08-31 ("let CI land, then
   discuss with odyssey-cf"; that lane is odyssey-6b this generation).
   Blocked on `intervention_cis.json` for R2/R6 from the supplemental
