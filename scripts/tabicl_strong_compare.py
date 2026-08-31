@@ -100,6 +100,7 @@ def main() -> None:  # noqa: PLR0915
         feature_sets=("strong",),
         source=source,
         landmark_hours=args.landmark_hours,
+        task_set=task_set,
     )
     logger.info("train prep done in %.0fs", time.time() - t0)
     for name, rows in train.rows.items():
@@ -115,6 +116,7 @@ def main() -> None:  # noqa: PLR0915
         feature_sets=("strong",),
         source=source,
         landmark_hours=args.landmark_hours,
+        task_set=task_set,
     )
     logger.info("held-out prep done in %.0fs", time.time() - t0)
 
