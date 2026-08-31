@@ -339,7 +339,15 @@ def run_streaming_intervention(  # noqa: PLR0912, PLR0915 -- one linear scoring 
                     num_concepts=num_concepts,
                 )
                 pole = labels if mode == "truth_calibrated" else 1.0 - labels
-                offsets = (2.0 * pole - 1.0) * calibration_gammas.to(pole.dtype)
+                # calibration_gammas is derived from the model's own LM-head
+                # weights, so it lives on the model's device, while `pole`
+                # comes from the running labels on CPU. Match BOTH device and
+                # dtype: `.to(dtype)` alone silently worked in CPU-only tests
+                # (where the two already agree) and raised a device mismatch
+                # on every GPU run, so no calibrated mode had ever completed.
+                offsets = (2.0 * pole - 1.0) * calibration_gammas.to(
+                    device=pole.device, dtype=pole.dtype
+                )
                 values = (own_probs + offsets.to(device)).clamp(0.0, 1.0)
                 intervention = BottleneckIntervention(
                     probs=values, probs_mask=observed.bool().to(device)
