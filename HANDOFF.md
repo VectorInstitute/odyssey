@@ -66,7 +66,7 @@ the architecture.
 ### What still needs YOU
 
 1. **D5 abstract decision** — unchanged, still owed, now with eICU CIs in hand
-   (§1ba). MIMIC's CIs arrive when R8's chain finishes.
+   (§1b-a). MIMIC's CIs arrive when R8's chain finishes.
 2. **The "five baseline families" claim** after EBM/SurvivalPFN came out of the
    v4 tables. Coupled to D5.
 3. **D6: the anonymised repo URL is a placeholder** and must be created before
