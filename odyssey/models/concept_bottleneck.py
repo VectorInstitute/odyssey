@@ -667,6 +667,22 @@ class DecomposedBottleneckOutput(NamedTuple):
     """(..., hidden_size) the backbone state ``h``, kept because the
     reconstruction target is defined against it."""
 
+    unknown_embedding_detached: torch.Tensor
+    """``u_hat`` recomputed from a detached head input, for Equations
+    (12) and (14) ONLY.
+
+    Steerling states of the two auxiliary losses that "gradients are
+    detached so that only the unknown head is updated". Using
+    :attr:`unknown_embedding` for them instead backpropagates the
+    reconstruction and independence terms through the unknown head and
+    into the backbone, which is not what the paper specifies. This
+    carries the same values, computed from the same dropout mask, but
+    with the path to the backbone cut: gradients still reach the unknown
+    projection and the unknown embeddings, which are the unknown head.
+
+    The LM loss still flows through :attr:`unknown_embedding` into the
+    backbone, as it should; only the auxiliary terms are confined."""
+
 
 class DecomposedConceptBottleneck(nn.Module):
     """Decompose the hidden state into known + unknown concepts + residual.
@@ -839,7 +855,7 @@ class DecomposedConceptBottleneck(nn.Module):
         """
         return {
             "reconstruction_loss": reconstruction_loss(
-                output.unknown_embedding,
+                output.unknown_embedding_detached,
                 output.hidden,
                 self.known_embeddings,
                 concept_labels,
@@ -847,7 +863,7 @@ class DecomposedConceptBottleneck(nn.Module):
             ),
             "independence_loss": independence_loss(
                 output.known_part,
-                output.unknown_embedding,
+                output.unknown_embedding_detached,
                 None
                 if concept_mask is None
                 else _broadcast_over_positions(concept_mask, output.hidden)
@@ -878,7 +894,13 @@ class DecomposedConceptBottleneck(nn.Module):
         unknown_probs = torch.sigmoid(unknown_logits)
 
         own_known = self.known_contribution(concept_probs)
-        unknown_part = unknown_probs @ self.unknown_embeddings()
+        unknown_embeddings = self.unknown_embeddings()
+        unknown_part = unknown_probs @ unknown_embeddings
+        # Same x, same dropout mask, but detached: the auxiliary losses must
+        # update the unknown head without pushing on the backbone.
+        unknown_part_detached = (
+            torch.sigmoid(self.unknown_proj(x.detach())) @ unknown_embeddings
+        )
         # eps from the model's OWN parts, before any edit. Recomputing it
         # after an override would cancel the override exactly.
         residual = hidden_states - own_known - unknown_part
@@ -922,6 +944,7 @@ class DecomposedConceptBottleneck(nn.Module):
             concept_probs=concept_probs,
             concept_embeddings=mix_probs,
             unknown_embedding=unknown_part,
+            unknown_embedding_detached=unknown_part_detached,
             bottleneck=used_known + used_unknown + used_residual,
             observability_logits=observability_logits,
             observability_probs=torch.sigmoid(observability_logits),

@@ -561,3 +561,64 @@ def test_position_labels_key_on_the_visit_when_supervision_is_visit() -> None:
     assert torch.equal(values[0, 0], torch.ones(K))
     assert torch.equal(values[0, 1], torch.zeros(K))
     assert torch.equal(values[0, 2], torch.ones(K))
+
+
+def test_auxiliary_losses_do_not_reach_the_backbone() -> None:
+    """Steerling Eq (15): "only the unknown head is updated" by Lrec/Lindep.
+
+    Using the live u_hat for the auxiliary terms backpropagates them
+    through the unknown head into the backbone. That is what forced
+    lambda_rec down to 1/256 to keep training stable, and at that weight
+    the unknown head never learns its target and the residual absorbs the
+    prediction.
+    """
+    torch.manual_seed(0)
+    cb = DecomposedConceptBottleneck(hidden_size=32, num_concepts=4, unknown_ratio=3)
+    cb.train()
+    hidden = torch.randn(2, 5, 32, requires_grad=True)
+    labels = torch.randint(0, 2, (2, 4)).float()
+
+    aux = cb.auxiliary_losses(cb(hidden), labels)
+    (aux["reconstruction_loss"] + aux["independence_loss"]).backward()
+
+    assert hidden.grad is None or float(hidden.grad.abs().sum()) == 0.0
+
+
+def test_auxiliary_losses_still_train_the_unknown_head_only() -> None:
+    """Cutting the path must not also stop the losses doing their job."""
+    torch.manual_seed(0)
+    cb = DecomposedConceptBottleneck(hidden_size=32, num_concepts=4, unknown_ratio=3)
+    cb.train()
+    labels = torch.randint(0, 2, (2, 4)).float()
+
+    aux = cb.auxiliary_losses(cb(torch.randn(2, 5, 32)), labels)
+    (aux["reconstruction_loss"] + aux["independence_loss"]).backward()
+
+    assert cb.unknown_proj.weight.grad is not None
+    assert float(cb.unknown_proj.weight.grad.abs().sum()) > 0.0
+    known_grad = cb.known_proj.weight.grad
+    assert known_grad is None or float(known_grad.abs().sum()) == 0.0
+
+
+def test_lm_path_still_reaches_the_backbone_through_the_unknown_part() -> None:
+    """Only the AUXILIARY losses are confined; the task loss is not.
+
+    The bottleneck is what the heads see, so the task gradient must still
+    flow through u_hat into the backbone. Detaching the unknown head
+    outright would silently sever that too.
+    """
+    torch.manual_seed(0)
+    cb = DecomposedConceptBottleneck(hidden_size=32, num_concepts=4, unknown_ratio=3)
+    cb.train()
+    hidden = torch.randn(2, 5, 32, requires_grad=True)
+    cb(hidden).bottleneck.sum().backward()
+    assert hidden.grad is not None and float(hidden.grad.abs().sum()) > 0.0
+
+
+def test_detached_unknown_part_matches_the_live_one_numerically() -> None:
+    """Same values, same dropout mask -- only the gradient path differs."""
+    torch.manual_seed(0)
+    cb = DecomposedConceptBottleneck(hidden_size=32, num_concepts=4, unknown_ratio=3)
+    cb.eval()  # dropout off, so the two paths must agree exactly
+    out = cb(torch.randn(2, 5, 32))
+    assert torch.allclose(out.unknown_embedding, out.unknown_embedding_detached)
