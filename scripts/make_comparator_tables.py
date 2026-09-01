@@ -58,6 +58,8 @@ GBM = "baseline_gbm"
 # tabicl_strong_compare.py names the chain's GBM "gbm"; alerts.json calls the
 # same scorer "baseline_gbm".
 _MATCHED_NAMES = {"hazard": HAZARD, "gbm": GBM, "tabicl": "tabicl"}
+# Every spelling a paired-delta key might use for a scorer, for the bold rule.
+_ALIASES: dict[str, tuple[str, ...]] = {GBM: (GBM, "gbm"), HAZARD: (HAZARD,)}
 
 
 def _fmt(value: float | None) -> str:
@@ -158,25 +160,40 @@ def _bold_targets(
 ) -> set[str]:
     """Which scorers to bold in this row.
 
-    Without CIs, the plain arg-max. With them, bold only when the paired
-    delta against the runner-up actually excludes zero -- the captions
-    promise bold means a separated cell, not merely a larger number, and a
-    0.002 lead inside a CI that spans 0.03 is not a win.
+    Without CIs, the plain arg-max. With them, bold only when the leader's
+    paired delta against the runner-up actually excludes zero -- the
+    captions promise bold means a separated cell, not merely a larger
+    number, and a 0.002 lead inside a CI that spans 0.03 is not a win.
+
+    The delta is looked up under both scorer vocabularies and in both
+    directions: alerts.json calls the boosted baseline ``baseline_gbm``
+    while tabicl_strong_compare.py calls the same scorer ``gbm``, and
+    alerts_cis.py keys a pair by whichever scorer was passed first. A
+    lookup that assumed one spelling would not find the delta and would
+    silently fall back to arg-max, which is precisely the bold the
+    captions forbid.
     """
     present = {k: v for k, v in scores.items() if v is not None}
     if not present:
         return set()
     best = max(present, key=lambda k: present[k])
-    if ci_cell is None:
+    if ci_cell is None or len(present) < 2:
         return {best}
+    runner = max((k for k in present if k != best), key=lambda k: present[k])
     deltas = ci_cell.get("paired_deltas", {})
-    for name, delta in deltas.items():
-        if delta is None or not name.endswith(f"_minus_{GBM}"):
-            continue
-        auroc = delta.get("auroc")
-        if auroc is not None and not auroc.get("separated", False):
-            return set()
-    return {best}
+    for a, b in ((best, runner), (runner, best)):
+        for a_name in _ALIASES.get(a, (a,)):
+            for b_name in _ALIASES.get(b, (b,)):
+                delta = deltas.get(f"{a_name}_minus_{b_name}")
+                if delta is None:
+                    continue
+                auroc = delta.get("auroc")
+                if auroc is None:
+                    continue
+                return {best} if auroc.get("separated", False) else set()
+    # No paired delta for this pair: the CI file does not cover it, so the
+    # promise behind bold cannot be checked and must not be implied.
+    return set()
 
 
 def build_rows(
