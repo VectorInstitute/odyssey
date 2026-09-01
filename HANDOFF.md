@@ -127,7 +127,7 @@ way, still confirming the morning's +0.024 to +0.023 fix.
 
 ---
 
-## 1ba. D5 IS ANSWERABLE — R6's CIs landed 22:02 UTC. Read this before touching the abstract.
+## 1b-a. D5 IS ANSWERABLE — R6's CIs landed 22:02 UTC. Read this before touching the abstract.
 
 All ten pairs SEPARATED (3,916 subjects, 2000 boots),
 `research_journal/figure_data/vm2/eicu_full_v10/intervention_cis.json`:
