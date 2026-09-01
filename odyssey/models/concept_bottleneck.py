@@ -812,7 +812,11 @@ class DecomposedConceptBottleneck(nn.Module):
 
     def known_contribution(self, probs: torch.Tensor) -> torch.Tensor:
         """``k_hat`` for given activations: Equation (7)'s known half."""
-        return probs @ self.known_embeddings
+        # Annotated rather than returned directly: matmul against a Parameter
+        # is typed as Any by some torch stub versions -- green locally,
+        # no-any-return under CI's stubs.
+        known: torch.Tensor = probs @ self.known_embeddings
+        return known
 
     needs_calibration_directions = False
     """Output calibration needs no data pass here: a unit of ``k_i`` adds
