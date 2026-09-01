@@ -130,6 +130,16 @@ def tabicl_columns(
         predict_s[horizon] = time.time() - t0
         del model
         gc.collect()
+        # Scoring now happens after ALL horizons are predicted, so without
+        # this the log goes silent for the better part of two hours and a
+        # healthy run is indistinguishable from a hung one.
+        logger.info(
+            "%s@%gh predicted %d rows in %.0fs",
+            event,
+            horizon,
+            len(proba),
+            predict_s[horizon],
+        )
         keys = keys.with_columns(
             pl.Series(f"tabicl@{horizon:g}h", [float(v) for v in proba])
         )
