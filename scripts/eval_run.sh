@@ -94,9 +94,15 @@ if [ "$BOTTLENECK_KIND" = "decomposed" ]; then
   # per-token logit shift is K_i projected through the head, no estimation
   # pass needed. Only the attribution stage is genuinely undefined, since
   # it slices the head into per-concept blocks this design does not have.
-  INTERVENTION_MODES="none truth flip flip_gated truth_calibrated flip_calibrated random zero_known zero_unknown"
+  # zero_residual is decomposed-only and is the reason this arm exists: the
+  # h = k + u + eps split is algebraically exact by construction, so the open
+  # question is whether the residual is where the predictive capacity went.
+  # Without it the chain measures every channel except the one under test.
+  # It is inert on the mixture bottleneck, so it stays out of the else branch
+  # rather than costing a pass to produce a meaningless row.
+  INTERVENTION_MODES="none truth flip flip_gated truth_calibrated flip_calibrated random zero_known zero_unknown zero_residual"
   CALIBRATED_ARGS="--calibrated-tau 1.0"
-  echo "=== NOTE: bottleneck_kind=decomposed; keeping the output-calibrated modes and skipping only the attribution stage (that one needs per-concept LM-head blocks) ==="
+  echo "=== NOTE: bottleneck_kind=decomposed; adding zero_residual, keeping the output-calibrated modes, skipping only the attribution stage (that one needs per-concept LM-head blocks) ==="
 else
   INTERVENTION_MODES="none truth flip flip_gated truth_calibrated flip_calibrated random zero_known zero_unknown"
   CALIBRATED_ARGS="--calibrated-tau 1.0"

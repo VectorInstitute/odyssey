@@ -52,6 +52,15 @@ and comparing task metrics across modes:
   channel and the unsupervised one. A bottleneck whose entire task
   performance survives ``zero_known`` is interpretable-in-name-only --
   the concepts would be a decorative side channel.
+- ``zero_residual`` -- zero the residual term of a decomposed
+  bottleneck, leaving the named and unknown parts. Only the decomposed
+  bottleneck has a residual; on the mixture bottleneck this mode is
+  inert. It is the direct test for residual domination: the
+  decomposition is algebraically exact by construction, so the question
+  is whether the residual is where the predictive capacity actually
+  went. Read it against ``zero_known``: a model that shrugs off losing
+  its named channel but collapses without its residual has routed the
+  task around the concepts.
 
 Intervened values are applied per position as *running* labels: the
 visit- (or stay-) scoped label, but true only from the concept's
@@ -122,6 +131,7 @@ INTERVENTION_MODES = (
     "random",
     "zero_known",
     "zero_unknown",
+    "zero_residual",
 )
 
 CALIBRATED_MODES = ("truth_calibrated", "flip_calibrated")
@@ -194,6 +204,8 @@ def _chunk_intervention(
         return BottleneckIntervention(zero_known=True)
     if mode == "zero_unknown":
         return BottleneckIntervention(zero_unknown=True)
+    if mode == "zero_residual":
+        return BottleneckIntervention(zero_residual=True)
 
     labels, observed = position_running_labels(
         chunk,

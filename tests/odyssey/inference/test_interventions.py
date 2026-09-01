@@ -312,6 +312,38 @@ def test_run_streaming_intervention_rejects_an_unknown_mode() -> None:
         )
 
 
+def test_zero_residual_is_exposed_and_maps_to_the_residual_flag() -> None:
+    """The residual mode must be reachable from the CLI, not just the model.
+
+    BottleneckIntervention grew ``zero_residual`` with the decomposed
+    bottleneck, but INTERVENTION_MODES was not extended, so the mode the
+    decomposition exists to measure -- whether the residual is where the
+    predictive capacity actually went -- could not be requested from
+    ``python -m odyssey.inference.interventions`` at all.
+    """
+    assert "zero_residual" in INTERVENTION_MODES
+    vocab = _vocab()
+    labels, masks = _labels_and_masks()
+    seqs = iter_patient_sequences(_events(), vocab)
+    sampler = PackedLaneSampler(seqs, num_lanes=1, chunk_size=8, reset_prob=0.0)
+    chunk = next(iter(sampler))
+    built = _chunk_intervention(
+        chunk,
+        "zero_residual",
+        labels,
+        masks,
+        {},
+        supervision="stay",
+        num_concepts=NUM_CONCEPTS,
+        device="cpu",
+        rng=torch.Generator(),
+    )
+    assert built is not None
+    assert built.zero_residual is True
+    # The zero_* modes are structural: they must not also inject values.
+    assert built.zero_known is False and built.zero_unknown is False
+
+
 def test_chunk_intervention_rejects_an_unknown_mode_directly() -> None:
     """The inner per-chunk builder's own guard, a second line of defense.
 
