@@ -45,11 +45,13 @@ from odyssey.data.streaming import StreamingChunk
 from odyssey.data.types import ClinicalSequenceBatch
 from odyssey.models.backbones.base import SequenceBackbone, TimeAwareState
 from odyssey.models.concept_bottleneck import (
+    AdditiveConceptBottleneck,
     BottleneckIntervention,
     ConceptBottleneck,
     ConceptBottleneckLossWeights,
     ConceptBottleneckOutput,
     combined_loss,
+    fold_in_bottleneck_orthogonality,
 )
 from odyssey.models.time_to_event import (
     EventHazardHeads,
@@ -616,6 +618,7 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         event_head_hidden: int = 0,
         concept_global_pairs: bool = False,
         unknown_dim: int | None = None,
+        bottleneck_kind: str = "mixture",
         value_head: bool = False,
         value_head_hidden: int = 0,
         source: str = "mimic_iv",
@@ -631,14 +634,32 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         and :mod:`odyssey.models.value_head`.
         """
         super().__init__(backbone, padding_idx=padding_idx)
-        self.bottleneck = ConceptBottleneck(
-            hidden_size=backbone.hidden_size,
-            num_concepts=num_concepts,
-            embedding_dim=embedding_dim,
-            concept_dropout=concept_dropout,
-            global_pairs=concept_global_pairs,
-            unknown_dim=unknown_dim,
-        )
+        if bottleneck_kind not in ("mixture", "additive"):
+            raise ValueError(
+                f"bottleneck_kind must be 'mixture' or 'additive', got "
+                f"{bottleneck_kind!r}"
+            )
+        self.bottleneck_kind = bottleneck_kind
+        self.bottleneck: ConceptBottleneck | AdditiveConceptBottleneck
+        if bottleneck_kind == "additive":
+            # embedding_dim/global_pairs/unknown_dim have no meaning here:
+            # concepts add a fixed direction to the backbone stream rather
+            # than mixing per-concept embeddings, and there is no unknown
+            # slot (the stream itself is the residual).
+            self.bottleneck = AdditiveConceptBottleneck(
+                hidden_size=backbone.hidden_size,
+                num_concepts=num_concepts,
+                concept_dropout=concept_dropout,
+            )
+        else:
+            self.bottleneck = ConceptBottleneck(
+                hidden_size=backbone.hidden_size,
+                num_concepts=num_concepts,
+                embedding_dim=embedding_dim,
+                concept_dropout=concept_dropout,
+                global_pairs=concept_global_pairs,
+                unknown_dim=unknown_dim,
+            )
         bottleneck_dim = self.bottleneck.output_dim
         self.lm_head = nn.Linear(bottleneck_dim, vocab_size)
         head_in = bottleneck_dim
@@ -731,7 +752,7 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
             bottleneck_out.observability_logits, batch.concept_ids, self.padding_idx
         )
 
-        return combined_loss(
+        total, components = combined_loss(
             next_token_loss,
             pooled_concept_logits,
             concept_labels,
@@ -740,6 +761,9 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
             observability_logits=pooled_observability_logits,
             concept_mask=concept_mask,
             weights=loss_weights,
+        )
+        return fold_in_bottleneck_orthogonality(
+            self.bottleneck, total, components, loss_weights
         )
 
     def compute_streaming_loss(
@@ -864,6 +888,9 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
             observability_logits=pooled_observability_logits,
             concept_mask=mask_batch,
             weights=loss_weights,
+        )
+        total, components = fold_in_bottleneck_orthogonality(
+            self.bottleneck, total, components, loss_weights
         )
         # combined_loss reports the forecast term it was handed as
         # "task_loss"; split time back out so logs show both.

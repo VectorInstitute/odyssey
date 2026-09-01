@@ -51,6 +51,7 @@ from odyssey.data.streaming import PackedLaneSampler
 from odyssey.data.value_binning import add_value_tokens
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.run_inference import load_run, refuse_existing_output
+from odyssey.models.concept_bottleneck import ConceptBottleneck
 from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
 from odyssey.training.data import iter_patient_sequences, load_meds_shards
 from odyssey.training.train import _move_chunk_to_device
@@ -108,6 +109,28 @@ class AttributionResult:
     """Mean absolute correlation with the unknown coordinates, per concept."""
 
 
+def _require_mixture_bottleneck(model: object) -> ConceptBottleneck:
+    """Return the model's mixture bottleneck, or say why this analysis cannot run.
+
+    Every routine in this module decomposes the LM head over per-concept
+    embedding blocks and a trailing unknown slot, which only
+    :class:`ConceptBottleneck` has. An additive bottleneck adds directions to
+    the backbone stream, so there are no blocks to slice and the
+    decomposition is undefined rather than merely different. Slicing a
+    stream into imaginary blocks would yield confident, meaningless
+    attributions, so refuse with an explanation instead.
+    """
+    bottleneck = getattr(model, "bottleneck", None)
+    if not isinstance(bottleneck, ConceptBottleneck):
+        raise TypeError(
+            "concept attribution requires the mixture bottleneck "
+            f"(ConceptBottleneck); got {type(bottleneck).__name__}. The exact "
+            "per-concept logit decomposition slices the LM head into "
+            "per-concept blocks, which an additive bottleneck does not have."
+        )
+    return bottleneck
+
+
 def run_streaming_attribution(  # noqa: PLR0915 -- one linear scoring pass
     model: ConceptBottleneckSequenceModel,
     events_binned: pl.DataFrame,
@@ -130,8 +153,9 @@ def run_streaming_attribution(  # noqa: PLR0915 -- one linear scoring pass
     accumulated for the alignment summary.
     """
     model.eval()
-    k = model.bottleneck.num_concepts
-    d = model.bottleneck.embedding_dim
+    bottleneck = _require_mixture_bottleneck(model)
+    k = bottleneck.num_concepts
+    d = bottleneck.embedding_dim
     if len(concept_names) != k:
         raise ValueError(
             f"{len(concept_names)} concept names for {k} bottleneck concepts"
@@ -142,7 +166,7 @@ def run_streaming_attribution(  # noqa: PLR0915 -- one linear scoring pass
     )
     weight = model.lm_head.weight  # (vocab, k*d + unknown_dim)
 
-    u = model.bottleneck.unknown_dim
+    u = bottleneck.unknown_dim
     n = 0
     contribution_sum = 0.0
     share_sum = torch.zeros(k, dtype=torch.float64)
@@ -164,7 +188,7 @@ def run_streaming_attribution(  # noqa: PLR0915 -- one linear scoring pass
             hidden, state = model.backbone(
                 chunk.batch, state=state, reset_mask=chunk.reset_mask
             )
-            out = model.bottleneck(hidden)
+            out = bottleneck(hidden)
             logits = model.lm_head(out.bottleneck)
             real = chunk.real_mask
             if not real.any():
@@ -186,7 +210,7 @@ def run_streaming_attribution(  # noqa: PLR0915 -- one linear scoring pass
             share_sum += (known_terms / total.unsqueeze(-1)).sum(0).double().cpu()
             unknown_share_sum += float((unknown_term / total).sum().item())
 
-            directions = model.bottleneck.concept_pair_directions(hidden)
+            directions = bottleneck.concept_pair_directions(hidden)
             direction_sum += directions[real].sum(0).double().cpu()
             n_direction += int(preds.shape[0])
 
@@ -198,11 +222,8 @@ def run_streaming_attribution(  # noqa: PLR0915 -- one linear scoring pass
             u_sq_sum += (u_emb**2).sum(0)
             cu_sum += c.T @ u_emb
 
-    if model.bottleneck.global_pairs:
-        diff = (
-            model.bottleneck.pair_embeddings[:, 0, :]
-            - model.bottleneck.pair_embeddings[:, 1, :]
-        )
+    if bottleneck.global_pairs:
+        diff = bottleneck.pair_embeddings[:, 0, :] - bottleneck.pair_embeddings[:, 1, :]
         mean_direction = diff.detach().double().cpu()
         direction_source = "global_pairs"
     else:
@@ -262,13 +283,11 @@ def mean_concept_directions(
     attribution accounting.
     """
     model.eval()
-    if model.bottleneck.global_pairs:
-        diff = (
-            model.bottleneck.pair_embeddings[:, 0, :]
-            - model.bottleneck.pair_embeddings[:, 1, :]
-        )
+    bottleneck = _require_mixture_bottleneck(model)
+    if bottleneck.global_pairs:
+        diff = bottleneck.pair_embeddings[:, 0, :] - bottleneck.pair_embeddings[:, 1, :]
         return diff.detach().double().cpu()
-    k, d = model.bottleneck.num_concepts, model.bottleneck.embedding_dim
+    k, d = bottleneck.num_concepts, bottleneck.embedding_dim
     patients = iter_patient_sequences(events_binned, vocab, max_seq_len=max_seq_len)
     sampler = PackedLaneSampler(
         patients, num_lanes=num_lanes, chunk_size=chunk_size, reset_prob=0.0
@@ -285,7 +304,7 @@ def mean_concept_directions(
             real = chunk.real_mask
             if not real.any():
                 continue
-            directions = model.bottleneck.concept_pair_directions(hidden)
+            directions = bottleneck.concept_pair_directions(hidden)
             direction_sum += directions[real].sum(0).double().cpu()
             n += int(real.sum().item())
     return direction_sum / max(n, 1)
@@ -306,10 +325,11 @@ def calibrated_gammas(
     same largest achievable logit shift ``tau``, decoupling intervention
     strength from how big the head's weights happen to be per concept.
     """
+    bottleneck = _require_mixture_bottleneck(model)
     if tau <= 0:
         raise ValueError("tau must be positive")
-    k = model.bottleneck.num_concepts
-    d = model.bottleneck.embedding_dim
+    k = bottleneck.num_concepts
+    d = bottleneck.embedding_dim
     weight = model.lm_head.weight.detach().double().cpu()
     known_weight = weight[:, : k * d].view(-1, k, d)  # (vocab, k, d)
     shifts = torch.einsum("vkd,kd->vk", known_weight, directions.to(known_weight))
@@ -330,8 +350,9 @@ def alignment_from_directions(
     top_k: int = 20,
 ) -> list[ConceptAlignment]:
     """TopK token logit shifts per concept from (k, d) override directions."""
-    k = model.bottleneck.num_concepts
-    d = model.bottleneck.embedding_dim
+    bottleneck = _require_mixture_bottleneck(model)
+    k = bottleneck.num_concepts
+    d = bottleneck.embedding_dim
     weight = model.lm_head.weight.detach().double().cpu()  # (vocab, k*d + u)
     known_weight = weight[:, : k * d].view(-1, k, d)  # (vocab, k, d)
     shifts = torch.einsum("vkd,kd->vk", known_weight, directions.to(known_weight))

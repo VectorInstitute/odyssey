@@ -179,6 +179,10 @@ class TrainingConfig:
     microbiology sidecar next to the data for sepsis3 (see
     :mod:`odyssey.data.sidecars`)."""
     concept_global_pairs: bool = False
+    bottleneck_kind: str = "mixture"
+    """'mixture' (CEM-style per-concept embedding pairs) or 'additive'
+    (concepts add a global direction to an untouched backbone stream).
+    'additive' ignores embedding_dim/unknown_dim/concept_global_pairs."""
     """Leakage control: input-independent (w+, w-) per known concept, so a
     concept slot carries only its probability (see ConceptBottleneck)."""
     unknown_dim: int | None = None
@@ -619,6 +623,7 @@ def build_model(
         event_head_hidden=event_head_hidden,
         concept_global_pairs=bool(getattr(config, "concept_global_pairs", False)),
         unknown_dim=_checked_unknown_dim(config),
+        bottleneck_kind=str(getattr(config, "bottleneck_kind", "mixture")),
         value_head=bool(getattr(config, "value_head", False)),
         value_head_hidden=int(getattr(config, "value_head_hidden", 0) or 0),
         source=getattr(config, "source", "mimic_iv"),
