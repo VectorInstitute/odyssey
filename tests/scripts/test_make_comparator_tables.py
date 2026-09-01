@@ -11,6 +11,7 @@ from scripts.make_comparator_tables import (
     _bold_targets,
     build_rows,
     load_alerts,
+    load_matched,
     load_tabicl,
 )
 
@@ -240,3 +241,53 @@ def test_tabicl_column_widens_the_preamble_and_header(tmp_path: Path) -> None:
     text = out.read_text()
     assert "\\begin{tabular}{llrrrr}" in text
     assert "TabICL" in text
+
+
+def _matched(**scorers: float) -> dict:
+    """One matched cell in tabicl_strong_compare.py's output shape."""
+    cell: dict = {"n": 1000, "n_positive": 50}
+    for name, value in scorers.items():
+        cell[name] = {"point_estimate": value}
+    return {"death@8h": cell}
+
+
+def test_matched_files_merge_into_one_set_of_columns(tmp_path: Path) -> None:
+    a = _write(tmp_path, "a.json", _matched(hazard=0.968, gbm=0.955))
+    b = _write(tmp_path, "b.json", _matched(gbm=0.955, tabicl=0.958))
+    cells = load_matched([a, b])
+    assert cells["death@8h"]["scores"] == {
+        "hazard": 0.968,
+        "baseline_gbm": 0.955,
+        "tabicl": 0.958,
+    }
+
+
+def test_merge_is_refused_when_the_shared_gbm_disagrees(tmp_path: Path) -> None:
+    """The GBM is the same model on the same rows, so it cannot differ.
+
+    When it does, the two passes saw different row sets and the merged
+    table would put columns from different samples in one row. That is
+    exactly the splice the matched pass exists to prevent, so it must
+    fail rather than render.
+    """
+    a = _write(tmp_path, "a.json", _matched(hazard=0.968, gbm=0.955))
+    b = _write(tmp_path, "b.json", _matched(gbm=0.944, tabicl=0.958))
+    with pytest.raises(SystemExit, match="row sets differ"):
+        load_matched([a, b])
+
+
+def test_merge_is_refused_when_the_row_counts_disagree(tmp_path: Path) -> None:
+    a = _write(tmp_path, "a.json", _matched(hazard=0.968, gbm=0.955))
+    payload = _matched(gbm=0.955, tabicl=0.958)
+    payload["death@8h"]["n"] = 999
+    b = _write(tmp_path, "b.json", payload)
+    with pytest.raises(SystemExit, match="not the same row set"):
+        load_matched([a, b])
+
+
+def test_a_single_matched_file_needs_no_agreement_check(tmp_path: Path) -> None:
+    """--skip-tabicl output alone is a valid two-column table."""
+    a = _write(tmp_path, "a.json", _matched(hazard=0.968, gbm=0.955))
+    cells = load_matched([a])
+    rows, _ = build_rows(cells, {}, {})
+    assert any("Death" in r for r in rows)
