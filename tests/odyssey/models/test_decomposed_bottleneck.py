@@ -444,14 +444,18 @@ def test_streaming_teacher_labels_fall_back_to_zero_where_absent() -> None:
     """
     model = _decomposed_model(vocab=64)
     chunk = _streaming_chunk()
-    teacher = model._streaming_teacher(chunk, {1: torch.ones(K)}, "stay", 1.0, 0.0)
-    assert teacher is not None
-    assert teacher.concept_labels.shape == (1, 3, K)
-    assert torch.equal(teacher.concept_labels[0, 0], torch.ones(K))
-    assert torch.equal(teacher.concept_labels[0, 1], torch.zeros(K))
+    got = model._streaming_position_labels(chunk, {1: torch.ones(K)}, "stay")
+    assert got is not None
+    labels, mask = got
+    assert labels.shape == (1, 3, K)
+    assert torch.equal(labels[0, 0], torch.ones(K))
+    assert torch.equal(labels[0, 1], torch.zeros(K))
+    # ...and marked absent, so the losses skip it rather than treating an
+    # all-zero row as "no concepts present".
+    assert bool(mask[0, 0].all()) and not bool(mask[0, 1].any())
 
 
 def test_streaming_teacher_returns_none_when_nothing_is_labeled() -> None:
     """No labels at all means no substitution, not a tensor of zeros."""
     model = _decomposed_model(vocab=64)
-    assert model._streaming_teacher(_streaming_chunk(), {}, "stay", 1.0, 1.0) is None
+    assert model._streaming_position_labels(_streaming_chunk(), {}, "stay") is None

@@ -789,22 +789,23 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
             weights=loss_weights,
         )
 
-    def _streaming_teacher(
+    def _streaming_position_labels(
         self,
         chunk: StreamingChunk,
         concept_labels: ConceptLabelDict,
         supervision: ConceptSupervision,
-        alpha_known: float,
-        alpha_unknown: float,
-    ) -> TeacherForcing | None:
-        """Per-position ground-truth concepts for teacher forcing.
+    ) -> tuple[torch.Tensor, torch.Tensor] | None:
+        """Per-position concept labels and a mask of where they were found.
 
-        Labels arrive keyed by subject (or subject+visit) and teacher
-        forcing needs one row per position, so broadcast each position's
-        owning key. Positions with no label keep the model's own
-        prediction, which is why the mask is carried as zeros rather than
-        dropped: substituting a k_hat_gt built from zeros would teach the
-        head that an unlabeled position means "no concepts present".
+        Labels arrive keyed by subject (or subject+visit) and pooled to
+        supervision points, but teacher forcing and the reconstruction and
+        independence losses all act per position, so each position needs
+        its owning key's row. Positions with no label are returned as
+        zeros AND marked False, so a caller can skip them rather than
+        teach the head that an unlabeled position means "no concepts
+        present".
+
+        Returns ``None`` when nothing in the chunk is labeled.
         """
         flat_subjects = chunk.subject_ids.reshape(-1)
         # cast, not dict(): the key type is a union here and rebuilding
@@ -822,14 +823,15 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         if present is None:
             return None
         zeros = torch.zeros_like(present)
-        stacked = torch.stack([r if r is not None else zeros for r in rows])
-        return TeacherForcing(
-            concept_labels=stacked.reshape(
-                *chunk.subject_ids.shape, present.shape[-1]
-            ).to(chunk.batch.concept_ids.device),
-            alpha_known=alpha_known,
-            alpha_unknown=alpha_unknown,
+        device = chunk.batch.concept_ids.device
+        labels = torch.stack([r if r is not None else zeros for r in rows]).reshape(
+            *chunk.subject_ids.shape, present.shape[-1]
         )
+        found = torch.tensor([r is not None for r in rows], device=device).reshape(
+            chunk.subject_ids.shape
+        )
+        mask = found.unsqueeze(-1).expand_as(labels)
+        return labels.to(device), mask
 
     def compute_streaming_loss(
         self,
@@ -880,14 +882,18 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         objective = objective or ForecastObjective()
         # Teacher forcing needs the labels laid out per position, which is
         # what the pooling step below builds; do that first when it is on.
+        position_labels = self._streaming_position_labels(
+            chunk, concept_labels, supervision
+        )
         teacher = None
-        if max(teacher_alpha_known, teacher_alpha_unknown) > 0.0:
-            teacher = self._streaming_teacher(
-                chunk,
-                concept_labels,
-                supervision,
-                teacher_alpha_known,
-                teacher_alpha_unknown,
+        if (
+            position_labels is not None
+            and max(teacher_alpha_known, teacher_alpha_unknown) > 0.0
+        ):
+            teacher = TeacherForcing(
+                concept_labels=position_labels[0],
+                alpha_known=teacher_alpha_known,
+                alpha_unknown=teacher_alpha_unknown,
             )
         logits, bottleneck_out, new_state = self(
             chunk.batch,
@@ -968,15 +974,19 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
             concept_mask=mask_batch,
             weights=loss_weights,
         )
-        total, components = fold_in_bottleneck_losses(
-            self.bottleneck,
-            bottleneck_out,
-            labels_batch,
-            total,
-            components,
-            concept_mask=mask_batch,
-            weights=loss_weights,
-        )
+        # Per-position labels, not the pooled ones: the reconstruction
+        # target is defined against each position's own hidden state, and
+        # the independence loss measures covariance across positions.
+        if position_labels is not None:
+            total, components = fold_in_bottleneck_losses(
+                self.bottleneck,
+                bottleneck_out,
+                position_labels[0],
+                total,
+                components,
+                concept_mask=position_labels[1],
+                weights=loss_weights,
+            )
         # combined_loss reports the forecast term it was handed as
         # "task_loss"; split time back out so logs show both.
         components["task_loss"] = next_token_loss.detach()
