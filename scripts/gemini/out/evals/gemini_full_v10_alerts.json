@@ -1,0 +1,1916 @@
+[
+  {
+    "event": "vasopressor_start",
+    "horizon_hours": 8.0,
+    "scorer": "concept",
+    "n_at_risk": 221287,
+    "n_positive": 1042,
+    "n_censored": 55038,
+    "auroc": 0.8056420351807656,
+    "brier": null,
+    "calibration": null,
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "vasopressor_start",
+    "horizon_hours": 8.0,
+    "scorer": "hazard",
+    "n_at_risk": 221287,
+    "n_positive": 1042,
+    "n_censored": 55038,
+    "auroc": 0.9529651545354154,
+    "brier": 0.0036194298919190147,
+    "calibration": [
+      {
+        "predicted": 1.4093593540697599e-06,
+        "observed": 0.0,
+        "n": 22129
+      },
+      {
+        "predicted": 2.0976215594233635e-05,
+        "observed": 0.0,
+        "n": 22129
+      },
+      {
+        "predicted": 9.388581623337866e-05,
+        "observed": 0.0,
+        "n": 22129
+      },
+      {
+        "predicted": 0.00021482844839492985,
+        "observed": 4.518957024718695e-05,
+        "n": 22129
+      },
+      {
+        "predicted": 0.00039245517854312597,
+        "observed": 0.0004970852727190564,
+        "n": 22129
+      },
+      {
+        "predicted": 0.0006742663538414483,
+        "observed": 0.0003615165619774956,
+        "n": 22129
+      },
+      {
+        "predicted": 0.0011724078642852782,
+        "observed": 0.000903791404943739,
+        "n": 22129
+      },
+      {
+        "predicted": 0.002167610490636729,
+        "observed": 0.0012653651482284888,
+        "n": 22128
+      },
+      {
+        "predicted": 0.004967205886360708,
+        "observed": 0.0037509038322487346,
+        "n": 22128
+      },
+      {
+        "predicted": 0.039606569699851484,
+        "observed": 0.04026572668112798,
+        "n": 22128
+      }
+    ],
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "vasopressor_start",
+    "horizon_hours": 8.0,
+    "scorer": "next_mass",
+    "n_at_risk": 221287,
+    "n_positive": 1042,
+    "n_censored": 55038,
+    "auroc": 0.8067089721100594,
+    "brier": null,
+    "calibration": null,
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "vasopressor_start",
+    "horizon_hours": 8.0,
+    "scorer": "baseline_gbm",
+    "n_at_risk": 221287,
+    "n_positive": 1042,
+    "n_censored": 55038,
+    "auroc": 0.9061463396481906,
+    "brier": 0.0043631664956869905,
+    "calibration": [
+      {
+        "predicted": 0.00028450359047061996,
+        "observed": 4.518957024718695e-05,
+        "n": 22129
+      },
+      {
+        "predicted": 0.00042360527000520225,
+        "observed": 4.518957024718695e-05,
+        "n": 22129
+      },
+      {
+        "predicted": 0.0005768890569943716,
+        "observed": 0.0002711374214831217,
+        "n": 22129
+      },
+      {
+        "predicted": 0.0007698220084440481,
+        "observed": 0.0004518957024718695,
+        "n": 22129
+      },
+      {
+        "predicted": 0.0010317801933080839,
+        "observed": 0.0004970852727190564,
+        "n": 22129
+      },
+      {
+        "predicted": 0.0014140754230596716,
+        "observed": 0.0012653079669212345,
+        "n": 22129
+      },
+      {
+        "predicted": 0.002019807473867504,
+        "observed": 0.0018979619503818519,
+        "n": 22129
+      },
+      {
+        "predicted": 0.0031289635752453503,
+        "observed": 0.0031182212581344904,
+        "n": 22128
+      },
+      {
+        "predicted": 0.005597907475144788,
+        "observed": 0.006010484454085321,
+        "n": 22128
+      },
+      {
+        "predicted": 0.029469041523061224,
+        "observed": 0.03348698481561822,
+        "n": 22128
+      }
+    ],
+    "baseline_feature_set": "strong",
+    "baseline_n_features": 609,
+    "baseline_params": {
+      "learning_rate": 0.05,
+      "max_leaf_nodes": 63,
+      "min_samples_leaf": 100,
+      "n_rounds": 96.0
+    },
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "vasopressor_start",
+    "horizon_hours": 24.0,
+    "scorer": "concept",
+    "n_at_risk": 210181,
+    "n_positive": 2166,
+    "n_censored": 66144,
+    "auroc": 0.7818242684794665,
+    "brier": null,
+    "calibration": null,
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "vasopressor_start",
+    "horizon_hours": 24.0,
+    "scorer": "hazard",
+    "n_at_risk": 210181,
+    "n_positive": 2166,
+    "n_censored": 66144,
+    "auroc": 0.9297152642034814,
+    "brier": 0.007901767522511198,
+    "calibration": [
+      {
+        "predicted": 5.984644924087412e-06,
+        "observed": 0.0,
+        "n": 21019
+      },
+      {
+        "predicted": 8.084035212402169e-05,
+        "observed": 0.0,
+        "n": 21018
+      },
+      {
+        "predicted": 0.00039784306406305525,
+        "observed": 0.00014273479874393378,
+        "n": 21018
+      },
+      {
+        "predicted": 0.0008960159541378807,
+        "observed": 0.0008088305262156248,
+        "n": 21018
+      },
+      {
+        "predicted": 0.0015634032630457593,
+        "observed": 0.0009515653249595584,
+        "n": 21018
+      },
+      {
+        "predicted": 0.002545569654604111,
+        "observed": 0.0019507089161670949,
+        "n": 21018
+      },
+      {
+        "predicted": 0.004162639484429112,
+        "observed": 0.0029974307736226093,
+        "n": 21018
+      },
+      {
+        "predicted": 0.00731570026277645,
+        "observed": 0.005709391949757351,
+        "n": 21018
+      },
+      {
+        "predicted": 0.014794609480074782,
+        "observed": 0.010514796840803121,
+        "n": 21018
+      },
+      {
+        "predicted": 0.08444570301431878,
+        "observed": 0.07997906556285089,
+        "n": 21018
+      }
+    ],
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "vasopressor_start",
+    "horizon_hours": 24.0,
+    "scorer": "next_mass",
+    "n_at_risk": 210181,
+    "n_positive": 2166,
+    "n_censored": 66144,
+    "auroc": 0.7815241733690409,
+    "brier": null,
+    "calibration": null,
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "vasopressor_start",
+    "horizon_hours": 24.0,
+    "scorer": "baseline_gbm",
+    "n_at_risk": 210181,
+    "n_positive": 2166,
+    "n_censored": 66144,
+    "auroc": 0.8883383272243865,
+    "brier": 0.009257139293451528,
+    "calibration": [
+      {
+        "predicted": 0.0007627995935278922,
+        "observed": 0.0,
+        "n": 21019
+      },
+      {
+        "predicted": 0.0011870908579531983,
+        "observed": 0.00028546959748786756,
+        "n": 21018
+      },
+      {
+        "predicted": 0.0016566518655268235,
+        "observed": 0.0005709391949757351,
+        "n": 21018
+      },
+      {
+        "predicted": 0.002251342527826281,
+        "observed": 0.0010943001237034922,
+        "n": 21018
+      },
+      {
+        "predicted": 0.0030160502122631595,
+        "observed": 0.0021886002474069844,
+        "n": 21018
+      },
+      {
+        "predicted": 0.00409465990856552,
+        "observed": 0.0028071177086306976,
+        "n": 21018
+      },
+      {
+        "predicted": 0.005743670321219638,
+        "observed": 0.005804548482253306,
+        "n": 21018
+      },
+      {
+        "predicted": 0.008515288398557117,
+        "observed": 0.008468931392140071,
+        "n": 21018
+      },
+      {
+        "predicted": 0.014268987811835403,
+        "observed": 0.015558093063088781,
+        "n": 21018
+      },
+      {
+        "predicted": 0.05909987792701981,
+        "observed": 0.06627652488343325,
+        "n": 21018
+      }
+    ],
+    "baseline_feature_set": "strong",
+    "baseline_n_features": 609,
+    "baseline_params": {
+      "learning_rate": 0.05,
+      "max_leaf_nodes": 63,
+      "min_samples_leaf": 100,
+      "n_rounds": 95.0
+    },
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "vasopressor_start",
+    "horizon_hours": 72.0,
+    "scorer": "concept",
+    "n_at_risk": 176560,
+    "n_positive": 3739,
+    "n_censored": 99765,
+    "auroc": 0.7512389660405484,
+    "brier": null,
+    "calibration": null,
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "vasopressor_start",
+    "horizon_hours": 72.0,
+    "scorer": "hazard",
+    "n_at_risk": 176560,
+    "n_positive": 3739,
+    "n_censored": 99765,
+    "auroc": 0.8984974991067434,
+    "brier": 0.016572339439708303,
+    "calibration": [
+      {
+        "predicted": 1.631511394719382e-05,
+        "observed": 0.0,
+        "n": 17656
+      },
+      {
+        "predicted": 0.00023304734178187893,
+        "observed": 0.0,
+        "n": 17656
+      },
+      {
+        "predicted": 0.0013185073218574663,
+        "observed": 0.0006796556411418215,
+        "n": 17656
+      },
+      {
+        "predicted": 0.003106138141894157,
+        "observed": 0.0014725872224739466,
+        "n": 17656
+      },
+      {
+        "predicted": 0.005388771796934087,
+        "observed": 0.0031150883552333486,
+        "n": 17656
+      },
+      {
+        "predicted": 0.008468915312118427,
+        "observed": 0.007759401903035795,
+        "n": 17656
+      },
+      {
+        "predicted": 0.013122532407001612,
+        "observed": 0.011440869959220662,
+        "n": 17656
+      },
+      {
+        "predicted": 0.021181307631782345,
+        "observed": 0.01806751246035342,
+        "n": 17656
+      },
+      {
+        "predicted": 0.03741006734795737,
+        "observed": 0.031603987313094696,
+        "n": 17656
+      },
+      {
+        "predicted": 0.1512052522027822,
+        "observed": 0.13763026733121886,
+        "n": 17656
+      }
+    ],
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "vasopressor_start",
+    "horizon_hours": 72.0,
+    "scorer": "next_mass",
+    "n_at_risk": 176560,
+    "n_positive": 3739,
+    "n_censored": 99765,
+    "auroc": 0.7453775367639998,
+    "brier": null,
+    "calibration": null,
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "vasopressor_start",
+    "horizon_hours": 72.0,
+    "scorer": "baseline_gbm",
+    "n_at_risk": 176560,
+    "n_positive": 3739,
+    "n_censored": 99765,
+    "auroc": 0.8461075272699088,
+    "brier": 0.018974211010376156,
+    "calibration": [
+      {
+        "predicted": 0.001528127313986986,
+        "observed": 0.00011327594019030358,
+        "n": 17656
+      },
+      {
+        "predicted": 0.0028922917356019127,
+        "observed": 0.00011327594019030358,
+        "n": 17656
+      },
+      {
+        "predicted": 0.004394912346582337,
+        "observed": 0.003058450385138197,
+        "n": 17656
+      },
+      {
+        "predicted": 0.006195651857350812,
+        "observed": 0.004927503398278205,
+        "n": 17656
+      },
+      {
+        "predicted": 0.008551995171286146,
+        "observed": 0.005550521069324876,
+        "n": 17656
+      },
+      {
+        "predicted": 0.011658299140801092,
+        "observed": 0.010534662437698234,
+        "n": 17656
+      },
+      {
+        "predicted": 0.015959650188271016,
+        "observed": 0.01869053013140009,
+        "n": 17656
+      },
+      {
+        "predicted": 0.02241370642635702,
+        "observed": 0.021352514725872226,
+        "n": 17656
+      },
+      {
+        "predicted": 0.034551140607282996,
+        "observed": 0.03658812868146805,
+        "n": 17656
+      },
+      {
+        "predicted": 0.10473438021303291,
+        "observed": 0.11084050747621205,
+        "n": 17656
+      }
+    ],
+    "baseline_feature_set": "strong",
+    "baseline_n_features": 609,
+    "baseline_params": {
+      "learning_rate": 0.05,
+      "max_leaf_nodes": 63,
+      "min_samples_leaf": 100,
+      "n_rounds": 116.0
+    },
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "icu_admission",
+    "horizon_hours": 8.0,
+    "scorer": "hazard",
+    "n_at_risk": 188774,
+    "n_positive": 2638,
+    "n_censored": 87551,
+    "auroc": 0.9598043787299189,
+    "brier": 0.009024302057863566,
+    "calibration": [
+      {
+        "predicted": 2.9165037659116564e-05,
+        "observed": 0.00010594342621040364,
+        "n": 18878
+      },
+      {
+        "predicted": 0.00010665332390754603,
+        "observed": 0.00010594342621040364,
+        "n": 18878
+      },
+      {
+        "predicted": 0.0002219167657670915,
+        "observed": 0.00026485856552600914,
+        "n": 18878
+      },
+      {
+        "predicted": 0.0004068548673794853,
+        "observed": 0.00015891513931560547,
+        "n": 18878
+      },
+      {
+        "predicted": 0.0007176351678594351,
+        "observed": 0.000635694231074853,
+        "n": 18877
+      },
+      {
+        "predicted": 0.0012749020007667435,
+        "observed": 0.0011124649043809927,
+        "n": 18877
+      },
+      {
+        "predicted": 0.002392178812717592,
+        "observed": 0.0018541081739683212,
+        "n": 18877
+      },
+      {
+        "predicted": 0.00507776686187492,
+        "observed": 0.003019547597605552,
+        "n": 18877
+      },
+      {
+        "predicted": 0.013855154568495915,
+        "observed": 0.009747311543147745,
+        "n": 18877
+      },
+      {
+        "predicted": 0.1277984363702973,
+        "observed": 0.12274196111670287,
+        "n": 18877
+      }
+    ],
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "icu_admission",
+    "horizon_hours": 8.0,
+    "scorer": "next_mass",
+    "n_at_risk": 188774,
+    "n_positive": 2638,
+    "n_censored": 87551,
+    "auroc": 0.7596072817358095,
+    "brier": null,
+    "calibration": null,
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "icu_admission",
+    "horizon_hours": 8.0,
+    "scorer": "baseline_gbm",
+    "n_at_risk": 188774,
+    "n_positive": 2638,
+    "n_censored": 87551,
+    "auroc": 0.919947002767067,
+    "brier": 0.011498926219983104,
+    "calibration": [
+      {
+        "predicted": 0.00021902125330483838,
+        "observed": 0.00026485856552600914,
+        "n": 18878
+      },
+      {
+        "predicted": 0.0004139069883617486,
+        "observed": 0.00015891513931560547,
+        "n": 18878
+      },
+      {
+        "predicted": 0.0006420627699712019,
+        "observed": 0.0004767454179468164,
+        "n": 18878
+      },
+      {
+        "predicted": 0.0009494579611423424,
+        "observed": 0.0007416039834728255,
+        "n": 18878
+      },
+      {
+        "predicted": 0.0014383910699987473,
+        "observed": 0.001059490385124755,
+        "n": 18877
+      },
+      {
+        "predicted": 0.0023084287535024973,
+        "observed": 0.0025957514435556495,
+        "n": 18877
+      },
+      {
+        "predicted": 0.003993576319542932,
+        "observed": 0.004184987021242782,
+        "n": 18877
+      },
+      {
+        "predicted": 0.008016709707376193,
+        "observed": 0.00868782115802299,
+        "n": 18877
+      },
+      {
+        "predicted": 0.018644945158393586,
+        "observed": 0.020024368278857868,
+        "n": 18877
+      },
+      {
+        "predicted": 0.1006512157881727,
+        "observed": 0.10155215341420777,
+        "n": 18877
+      }
+    ],
+    "baseline_feature_set": "strong",
+    "baseline_n_features": 609,
+    "baseline_params": {
+      "learning_rate": 0.05,
+      "max_leaf_nodes": 31,
+      "min_samples_leaf": 20,
+      "n_rounds": 240.0
+    },
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "icu_admission",
+    "horizon_hours": 24.0,
+    "scorer": "hazard",
+    "n_at_risk": 179206,
+    "n_positive": 4897,
+    "n_censored": 97119,
+    "auroc": 0.9441280175937339,
+    "brier": 0.016818831143603254,
+    "calibration": [
+      {
+        "predicted": 0.00012084964622670828,
+        "observed": 0.00011160091512750405,
+        "n": 17921
+      },
+      {
+        "predicted": 0.00044371316318672676,
+        "observed": 0.0005580045756375203,
+        "n": 17921
+      },
+      {
+        "predicted": 0.0008918208992379457,
+        "observed": 0.0008370068634562804,
+        "n": 17921
+      },
+      {
+        "predicted": 0.0015356503495626715,
+        "observed": 0.0009486077785837844,
+        "n": 17921
+      },
+      {
+        "predicted": 0.0025108403762026388,
+        "observed": 0.0013950114390938006,
+        "n": 17921
+      },
+      {
+        "predicted": 0.004133188031386414,
+        "observed": 0.0038502315718988898,
+        "n": 17921
+      },
+      {
+        "predicted": 0.00709859804316823,
+        "observed": 0.0056919642857142854,
+        "n": 17920
+      },
+      {
+        "predicted": 0.01370023469374116,
+        "observed": 0.012053571428571429,
+        "n": 17920
+      },
+      {
+        "predicted": 0.03366912962270102,
+        "observed": 0.027176339285714286,
+        "n": 17920
+      },
+      {
+        "predicted": 0.22719308269609298,
+        "observed": 0.22064732142857144,
+        "n": 17920
+      }
+    ],
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "icu_admission",
+    "horizon_hours": 24.0,
+    "scorer": "next_mass",
+    "n_at_risk": 179206,
+    "n_positive": 4897,
+    "n_censored": 97119,
+    "auroc": 0.7301509770884193,
+    "brier": null,
+    "calibration": null,
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "icu_admission",
+    "horizon_hours": 24.0,
+    "scorer": "baseline_gbm",
+    "n_at_risk": 179206,
+    "n_positive": 4897,
+    "n_censored": 97119,
+    "auroc": 0.908112591272075,
+    "brier": 0.020496808069215108,
+    "calibration": [
+      {
+        "predicted": 0.000592959126207873,
+        "observed": 0.00033480274538251215,
+        "n": 17921
+      },
+      {
+        "predicted": 0.001139951081517631,
+        "observed": 0.0006138050332012723,
+        "n": 17921
+      },
+      {
+        "predicted": 0.001762472843803644,
+        "observed": 0.0016740137269125608,
+        "n": 17921
+      },
+      {
+        "predicted": 0.0026116162849134108,
+        "observed": 0.0034596283689526256,
+        "n": 17921
+      },
+      {
+        "predicted": 0.003875151329913525,
+        "observed": 0.00412923385971765,
+        "n": 17921
+      },
+      {
+        "predicted": 0.005895988971646422,
+        "observed": 0.005914848501757715,
+        "n": 17921
+      },
+      {
+        "predicted": 0.009590828167552952,
+        "observed": 0.008258928571428572,
+        "n": 17920
+      },
+      {
+        "predicted": 0.01749276837643627,
+        "observed": 0.018917410714285713,
+        "n": 17920
+      },
+      {
+        "predicted": 0.03835128914628284,
+        "observed": 0.04190848214285714,
+        "n": 17920
+      },
+      {
+        "predicted": 0.18020220128467374,
+        "observed": 0.18805803571428573,
+        "n": 17920
+      }
+    ],
+    "baseline_feature_set": "strong",
+    "baseline_n_features": 609,
+    "baseline_params": {
+      "learning_rate": 0.05,
+      "max_leaf_nodes": 63,
+      "min_samples_leaf": 100,
+      "n_rounds": 257.0
+    },
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "icu_admission",
+    "horizon_hours": 72.0,
+    "scorer": "hazard",
+    "n_at_risk": 150525,
+    "n_positive": 7083,
+    "n_censored": 125800,
+    "auroc": 0.914828762555346,
+    "brier": 0.028622654314848967,
+    "calibration": [
+      {
+        "predicted": 0.00043334366910474875,
+        "observed": 0.00046502358333886935,
+        "n": 15053
+      },
+      {
+        "predicted": 0.0016449545258613455,
+        "observed": 0.0018600943333554774,
+        "n": 15053
+      },
+      {
+        "predicted": 0.0032207135194988654,
+        "observed": 0.0027237095595562346,
+        "n": 15053
+      },
+      {
+        "predicted": 0.005228830308032924,
+        "observed": 0.005580283000066432,
+        "n": 15053
+      },
+      {
+        "predicted": 0.007932559474396925,
+        "observed": 0.006244602404836245,
+        "n": 15053
+      },
+      {
+        "predicted": 0.01202006653493749,
+        "observed": 0.012290725484985384,
+        "n": 15052
+      },
+      {
+        "predicted": 0.018752056199472192,
+        "observed": 0.019864469837895297,
+        "n": 15052
+      },
+      {
+        "predicted": 0.0315702771716,
+        "observed": 0.02909912304012756,
+        "n": 15052
+      },
+      {
+        "predicted": 0.06399001322890607,
+        "observed": 0.06291522721233059,
+        "n": 15052
+      },
+      {
+        "predicted": 0.311917333634743,
+        "observed": 0.32952431570555407,
+        "n": 15052
+      }
+    ],
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "icu_admission",
+    "horizon_hours": 72.0,
+    "scorer": "next_mass",
+    "n_at_risk": 150525,
+    "n_positive": 7083,
+    "n_censored": 125800,
+    "auroc": 0.7101323848243788,
+    "brier": null,
+    "calibration": null,
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "icu_admission",
+    "horizon_hours": 72.0,
+    "scorer": "baseline_gbm",
+    "n_at_risk": 150525,
+    "n_positive": 7083,
+    "n_censored": 125800,
+    "auroc": 0.8686396478866628,
+    "brier": 0.034964342971405604,
+    "calibration": [
+      {
+        "predicted": 0.0016959084019673048,
+        "observed": 0.00019929582143094398,
+        "n": 15053
+      },
+      {
+        "predicted": 0.003524391244969738,
+        "observed": 0.0033215970238490667,
+        "n": 15053
+      },
+      {
+        "predicted": 0.005649758963574337,
+        "observed": 0.004716667773865675,
+        "n": 15053
+      },
+      {
+        "predicted": 0.008335453897803118,
+        "observed": 0.0099647910715472,
+        "n": 15053
+      },
+      {
+        "predicted": 0.01196716530421045,
+        "observed": 0.014548594964458912,
+        "n": 15053
+      },
+      {
+        "predicted": 0.017203742544315535,
+        "observed": 0.01973159712994951,
+        "n": 15052
+      },
+      {
+        "predicted": 0.025947556615076656,
+        "observed": 0.028899813978208875,
+        "n": 15052
+      },
+      {
+        "predicted": 0.04248659571210466,
+        "observed": 0.042386393834706354,
+        "n": 15052
+      },
+      {
+        "predicted": 0.07712332258260123,
+        "observed": 0.07766409779431305,
+        "n": 15052
+      },
+      {
+        "predicted": 0.2579168575410961,
+        "observed": 0.26913366994419347,
+        "n": 15052
+      }
+    ],
+    "baseline_feature_set": "strong",
+    "baseline_n_features": 609,
+    "baseline_params": {
+      "learning_rate": 0.05,
+      "max_leaf_nodes": 63,
+      "min_samples_leaf": 100,
+      "n_rounds": 211.0
+    },
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "acute_kidney_injury",
+    "horizon_hours": 8.0,
+    "scorer": "concept",
+    "n_at_risk": 199125,
+    "n_positive": 1451,
+    "n_censored": 77200,
+    "auroc": 0.6787224323081433,
+    "brier": null,
+    "calibration": null,
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "acute_kidney_injury",
+    "horizon_hours": 8.0,
+    "scorer": "hazard",
+    "n_at_risk": 199125,
+    "n_positive": 1451,
+    "n_censored": 77200,
+    "auroc": 0.868416426667226,
+    "brier": 0.00694118696611915,
+    "calibration": [
+      {
+        "predicted": 0.00010560664935215686,
+        "observed": 0.00015065535077587506,
+        "n": 19913
+      },
+      {
+        "predicted": 0.0004439332600977996,
+        "observed": 0.0005524029528448752,
+        "n": 19913
+      },
+      {
+        "predicted": 0.0008448425508099822,
+        "observed": 0.0008537136543966253,
+        "n": 19913
+      },
+      {
+        "predicted": 0.0013549738225312857,
+        "observed": 0.0008537136543966253,
+        "n": 19913
+      },
+      {
+        "predicted": 0.002028348833458718,
+        "observed": 0.0019083011098277507,
+        "n": 19913
+      },
+      {
+        "predicted": 0.0030508392927109263,
+        "observed": 0.003013258336681398,
+        "n": 19912
+      },
+      {
+        "predicted": 0.004633341150716779,
+        "observed": 0.003816793893129771,
+        "n": 19912
+      },
+      {
+        "predicted": 0.007457318813410951,
+        "observed": 0.0051727601446364,
+        "n": 19912
+      },
+      {
+        "predicted": 0.013918567603014713,
+        "observed": 0.010897950984331056,
+        "n": 19912
+      },
+      {
+        "predicted": 0.05728075180656223,
+        "observed": 0.04565086380072318,
+        "n": 19912
+      }
+    ],
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "acute_kidney_injury",
+    "horizon_hours": 8.0,
+    "scorer": "next_mass",
+    "n_at_risk": 199125,
+    "n_positive": 1451,
+    "n_censored": 77200,
+    "auroc": 0.5,
+    "brier": null,
+    "calibration": null,
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "acute_kidney_injury",
+    "horizon_hours": 8.0,
+    "scorer": "baseline_gbm",
+    "n_at_risk": 199125,
+    "n_positive": 1451,
+    "n_censored": 77200,
+    "auroc": 0.8854284250715211,
+    "brier": 0.006888186697121798,
+    "calibration": [
+      {
+        "predicted": 0.0005061937792570025,
+        "observed": 5.021845025862502e-05,
+        "n": 19913
+      },
+      {
+        "predicted": 0.0009106823018646012,
+        "observed": 0.0002510922512931251,
+        "n": 19913
+      },
+      {
+        "predicted": 0.0012802725831125017,
+        "observed": 0.0005524029528448752,
+        "n": 19913
+      },
+      {
+        "predicted": 0.0016649387143269612,
+        "observed": 0.0009039321046552504,
+        "n": 19913
+      },
+      {
+        "predicted": 0.002137749674952045,
+        "observed": 0.001958519560086376,
+        "n": 19913
+      },
+      {
+        "predicted": 0.0027418373306913714,
+        "observed": 0.0019586179188429086,
+        "n": 19912
+      },
+      {
+        "predicted": 0.0036460803412628772,
+        "observed": 0.003113700281237445,
+        "n": 19912
+      },
+      {
+        "predicted": 0.005240854232156567,
+        "observed": 0.006126958617918843,
+        "n": 19912
+      },
+      {
+        "predicted": 0.009172665635716053,
+        "observed": 0.009692647649658498,
+        "n": 19912
+      },
+      {
+        "predicted": 0.04880989650272142,
+        "observed": 0.048262354359180394,
+        "n": 19912
+      }
+    ],
+    "baseline_feature_set": "strong",
+    "baseline_n_features": 609,
+    "baseline_params": {
+      "learning_rate": 0.05,
+      "max_leaf_nodes": 63,
+      "min_samples_leaf": 100,
+      "n_rounds": 88.0
+    },
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "acute_kidney_injury",
+    "horizon_hours": 24.0,
+    "scorer": "concept",
+    "n_at_risk": 188927,
+    "n_positive": 4818,
+    "n_censored": 87398,
+    "auroc": 0.6482063758226175,
+    "brier": null,
+    "calibration": null,
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "acute_kidney_injury",
+    "horizon_hours": 24.0,
+    "scorer": "hazard",
+    "n_at_risk": 188927,
+    "n_positive": 4818,
+    "n_censored": 87398,
+    "auroc": 0.819398445901864,
+    "brier": 0.022948748692354786,
+    "calibration": [
+      {
+        "predicted": 0.0005441700106722602,
+        "observed": 0.0006351558778383528,
+        "n": 18893
+      },
+      {
+        "predicted": 0.002536531063951684,
+        "observed": 0.003175779389191764,
+        "n": 18893
+      },
+      {
+        "predicted": 0.00484801727511572,
+        "observed": 0.006351558778383528,
+        "n": 18893
+      },
+      {
+        "predicted": 0.007472875828980983,
+        "observed": 0.007674800190546763,
+        "n": 18893
+      },
+      {
+        "predicted": 0.01058869576596762,
+        "observed": 0.009580267824061822,
+        "n": 18893
+      },
+      {
+        "predicted": 0.014345977154680617,
+        "observed": 0.01503202244217435,
+        "n": 18893
+      },
+      {
+        "predicted": 0.019818541882863805,
+        "observed": 0.018207801831366114,
+        "n": 18893
+      },
+      {
+        "predicted": 0.028616117820279365,
+        "observed": 0.025672242218928647,
+        "n": 18892
+      },
+      {
+        "predicted": 0.04687098516086237,
+        "observed": 0.042081304255769635,
+        "n": 18892
+      },
+      {
+        "predicted": 0.13875499031388758,
+        "observed": 0.12661443997459243,
+        "n": 18892
+      }
+    ],
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "acute_kidney_injury",
+    "horizon_hours": 24.0,
+    "scorer": "next_mass",
+    "n_at_risk": 188927,
+    "n_positive": 4818,
+    "n_censored": 87398,
+    "auroc": 0.5,
+    "brier": null,
+    "calibration": null,
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "acute_kidney_injury",
+    "horizon_hours": 24.0,
+    "scorer": "baseline_gbm",
+    "n_at_risk": 188927,
+    "n_positive": 4818,
+    "n_censored": 87398,
+    "auroc": 0.8335129594040616,
+    "brier": 0.022707552235893422,
+    "calibration": [
+      {
+        "predicted": 0.002185484942596682,
+        "observed": 0.000264648282432647,
+        "n": 18893
+      },
+      {
+        "predicted": 0.005109535387069277,
+        "observed": 0.0026994124808129996,
+        "n": 18893
+      },
+      {
+        "predicted": 0.006735353205707575,
+        "observed": 0.004657809770814587,
+        "n": 18893
+      },
+      {
+        "predicted": 0.008529381340097566,
+        "observed": 0.007251362938654528,
+        "n": 18893
+      },
+      {
+        "predicted": 0.010841839261959326,
+        "observed": 0.008362885724871646,
+        "n": 18893
+      },
+      {
+        "predicted": 0.013920378219764676,
+        "observed": 0.014026358968930291,
+        "n": 18893
+      },
+      {
+        "predicted": 0.01800814043837956,
+        "observed": 0.018049012861906525,
+        "n": 18893
+      },
+      {
+        "predicted": 0.024925306055531515,
+        "observed": 0.025195850095278426,
+        "n": 18892
+      },
+      {
+        "predicted": 0.0406364981813639,
+        "observed": 0.04229303408850307,
+        "n": 18892
+      },
+      {
+        "predicted": 0.1354409476713004,
+        "observed": 0.13222528054202837,
+        "n": 18892
+      }
+    ],
+    "baseline_feature_set": "strong",
+    "baseline_n_features": 609,
+    "baseline_params": {
+      "learning_rate": 0.05,
+      "max_leaf_nodes": 63,
+      "min_samples_leaf": 100,
+      "n_rounds": 85.0
+    },
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "acute_kidney_injury",
+    "horizon_hours": 72.0,
+    "scorer": "concept",
+    "n_at_risk": 158447,
+    "n_positive": 10803,
+    "n_censored": 117878,
+    "auroc": 0.6128061985717737,
+    "brier": null,
+    "calibration": null,
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "acute_kidney_injury",
+    "horizon_hours": 72.0,
+    "scorer": "hazard",
+    "n_at_risk": 158447,
+    "n_positive": 10803,
+    "n_censored": 117878,
+    "auroc": 0.7918881813461585,
+    "brier": 0.05649618855087374,
+    "calibration": [
+      {
+        "predicted": 0.0016663592634384623,
+        "observed": 0.0010097822656989586,
+        "n": 15845
+      },
+      {
+        "predicted": 0.008102093486990527,
+        "observed": 0.010665825181445251,
+        "n": 15845
+      },
+      {
+        "predicted": 0.015258876195500122,
+        "observed": 0.018807194698643104,
+        "n": 15845
+      },
+      {
+        "predicted": 0.023315737502512476,
+        "observed": 0.02966235405490691,
+        "n": 15845
+      },
+      {
+        "predicted": 0.03290133037639364,
+        "observed": 0.03584727043231303,
+        "n": 15845
+      },
+      {
+        "predicted": 0.04435748776715424,
+        "observed": 0.04947933101924897,
+        "n": 15845
+      },
+      {
+        "predicted": 0.05889999889432161,
+        "observed": 0.06134427264121174,
+        "n": 15845
+      },
+      {
+        "predicted": 0.08103941216579563,
+        "observed": 0.08362787174955819,
+        "n": 15844
+      },
+      {
+        "predicted": 0.12134222137043194,
+        "observed": 0.1246528654380207,
+        "n": 15844
+      },
+      {
+        "predicted": 0.2796844774516235,
+        "observed": 0.2667255743499116,
+        "n": 15844
+      }
+    ],
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "acute_kidney_injury",
+    "horizon_hours": 72.0,
+    "scorer": "next_mass",
+    "n_at_risk": 158447,
+    "n_positive": 10803,
+    "n_censored": 117878,
+    "auroc": 0.5,
+    "brier": null,
+    "calibration": null,
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "acute_kidney_injury",
+    "horizon_hours": 72.0,
+    "scorer": "baseline_gbm",
+    "n_at_risk": 158447,
+    "n_positive": 10803,
+    "n_censored": 117878,
+    "auroc": 0.787813364661671,
+    "brier": 0.057011676804166835,
+    "calibration": [
+      {
+        "predicted": 0.002667930622999119,
+        "observed": 0.0010728936573051436,
+        "n": 15845
+      },
+      {
+        "predicted": 0.012946178169747179,
+        "observed": 0.0112969390975071,
+        "n": 15845
+      },
+      {
+        "predicted": 0.021375820689355705,
+        "observed": 0.021394761754496686,
+        "n": 15845
+      },
+      {
+        "predicted": 0.029099945113695617,
+        "observed": 0.03041969075418113,
+        "n": 15845
+      },
+      {
+        "predicted": 0.037998729242335084,
+        "observed": 0.03408015146733986,
+        "n": 15845
+      },
+      {
+        "predicted": 0.04952504230244715,
+        "observed": 0.04632376143893973,
+        "n": 15845
+      },
+      {
+        "predicted": 0.06492395549517653,
+        "observed": 0.0673398548437993,
+        "n": 15845
+      },
+      {
+        "predicted": 0.09002957160899326,
+        "observed": 0.08179752587730371,
+        "n": 15844
+      },
+      {
+        "predicted": 0.13447377183285344,
+        "observed": 0.12591517293612725,
+        "n": 15844
+      },
+      {
+        "predicted": 0.29114141639102503,
+        "observed": 0.2621812673567281,
+        "n": 15844
+      }
+    ],
+    "baseline_feature_set": "strong",
+    "baseline_n_features": 609,
+    "baseline_params": {
+      "learning_rate": 0.05,
+      "max_leaf_nodes": 31,
+      "min_samples_leaf": 20,
+      "n_rounds": 297.0
+    },
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "death",
+    "horizon_hours": 8.0,
+    "scorer": "hazard",
+    "n_at_risk": 269739,
+    "n_positive": 650,
+    "n_censored": 6586,
+    "auroc": 0.9743028629075253,
+    "brier": 0.002168183309894717,
+    "calibration": [
+      {
+        "predicted": 1.1002375726536488e-06,
+        "observed": 0.0,
+        "n": 26974
+      },
+      {
+        "predicted": 3.372755805141641e-06,
+        "observed": 0.0,
+        "n": 26974
+      },
+      {
+        "predicted": 7.097135704194959e-06,
+        "observed": 3.707273670942389e-05,
+        "n": 26974
+      },
+      {
+        "predicted": 1.3601977043635515e-05,
+        "observed": 0.0,
+        "n": 26974
+      },
+      {
+        "predicted": 2.6608166175271507e-05,
+        "observed": 0.0,
+        "n": 26974
+      },
+      {
+        "predicted": 5.730833020496291e-05,
+        "observed": 3.707273670942389e-05,
+        "n": 26974
+      },
+      {
+        "predicted": 0.00014947057256460314,
+        "observed": 3.707273670942389e-05,
+        "n": 26974
+      },
+      {
+        "predicted": 0.0005276587136355519,
+        "observed": 0.0003707273670942389,
+        "n": 26974
+      },
+      {
+        "predicted": 0.0020144733446950933,
+        "observed": 0.0010751093645732929,
+        "n": 26974
+      },
+      {
+        "predicted": 0.03294583834552776,
+        "observed": 0.022541059578096614,
+        "n": 26973
+      }
+    ],
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "death",
+    "horizon_hours": 8.0,
+    "scorer": "next_mass",
+    "n_at_risk": 269739,
+    "n_positive": 650,
+    "n_censored": 6586,
+    "auroc": 0.9128711690184289,
+    "brier": null,
+    "calibration": null,
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "death",
+    "horizon_hours": 8.0,
+    "scorer": "baseline_gbm",
+    "n_at_risk": 269739,
+    "n_positive": 650,
+    "n_censored": 6586,
+    "auroc": 0.9109811166279844,
+    "brier": 0.002518886133439573,
+    "calibration": [
+      {
+        "predicted": 0.00043819517324370714,
+        "observed": 3.707273670942389e-05,
+        "n": 26974
+      },
+      {
+        "predicted": 0.0005291754232817002,
+        "observed": 0.00011121821012827167,
+        "n": 26974
+      },
+      {
+        "predicted": 0.0006206152761862732,
+        "observed": 0.00018536368354711945,
+        "n": 26974
+      },
+      {
+        "predicted": 0.0007232250750951257,
+        "observed": 0.00014829094683769555,
+        "n": 26974
+      },
+      {
+        "predicted": 0.0008542408785421877,
+        "observed": 0.0002965818936753911,
+        "n": 26974
+      },
+      {
+        "predicted": 0.0010257648480111023,
+        "observed": 0.0005190183139319345,
+        "n": 26974
+      },
+      {
+        "predicted": 0.0012571103419466547,
+        "observed": 0.0007043819974790539,
+        "n": 26974
+      },
+      {
+        "predicted": 0.0016564694168379839,
+        "observed": 0.0011863275747015644,
+        "n": 26974
+      },
+      {
+        "predicted": 0.0025432365527011916,
+        "observed": 0.0031882553570104547,
+        "n": 26974
+      },
+      {
+        "predicted": 0.0181420045706374,
+        "observed": 0.017721425128832537,
+        "n": 26973
+      }
+    ],
+    "baseline_feature_set": "strong",
+    "baseline_n_features": 609,
+    "baseline_params": {
+      "learning_rate": 0.05,
+      "max_leaf_nodes": 63,
+      "min_samples_leaf": 100,
+      "n_rounds": 55.0
+    },
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "death",
+    "horizon_hours": 24.0,
+    "scorer": "hazard",
+    "n_at_risk": 264540,
+    "n_positive": 2020,
+    "n_censored": 11785,
+    "auroc": 0.9664381761389608,
+    "brier": 0.006391140334216896,
+    "calibration": [
+      {
+        "predicted": 7.101287104207985e-06,
+        "observed": 0.0,
+        "n": 26454
+      },
+      {
+        "predicted": 1.9846577992954428e-05,
+        "observed": 0.0,
+        "n": 26454
+      },
+      {
+        "predicted": 3.944299402552018e-05,
+        "observed": 3.780146669690784e-05,
+        "n": 26454
+      },
+      {
+        "predicted": 7.19805283639097e-05,
+        "observed": 0.00011340440009072352,
+        "n": 26454
+      },
+      {
+        "predicted": 0.00013427615589301333,
+        "observed": 0.0,
+        "n": 26454
+      },
+      {
+        "predicted": 0.000278537953135161,
+        "observed": 0.00011340440009072352,
+        "n": 26454
+      },
+      {
+        "predicted": 0.0007236266299296987,
+        "observed": 0.0001890073334845392,
+        "n": 26454
+      },
+      {
+        "predicted": 0.002517243580112672,
+        "observed": 0.0012096469343010508,
+        "n": 26454
+      },
+      {
+        "predicted": 0.008891090952350572,
+        "observed": 0.006048234671505255,
+        "n": 26454
+      },
+      {
+        "predicted": 0.09189446957336493,
+        "observed": 0.06864746352158464,
+        "n": 26454
+      }
+    ],
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "death",
+    "horizon_hours": 24.0,
+    "scorer": "next_mass",
+    "n_at_risk": 264540,
+    "n_positive": 2020,
+    "n_censored": 11785,
+    "auroc": 0.8761926286050058,
+    "brier": null,
+    "calibration": null,
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "death",
+    "horizon_hours": 24.0,
+    "scorer": "baseline_gbm",
+    "n_at_risk": 264540,
+    "n_positive": 2020,
+    "n_censored": 11785,
+    "auroc": 0.9082056124342435,
+    "brier": 0.0071957825382447755,
+    "calibration": [
+      {
+        "predicted": 0.0004981434555520091,
+        "observed": 0.0,
+        "n": 26454
+      },
+      {
+        "predicted": 0.00077700303765243,
+        "observed": 0.0002646102668783549,
+        "n": 26454
+      },
+      {
+        "predicted": 0.0010932314321492837,
+        "observed": 0.0004914190670598019,
+        "n": 26454
+      },
+      {
+        "predicted": 0.0014958084365637645,
+        "observed": 0.00034021320027217056,
+        "n": 26454
+      },
+      {
+        "predicted": 0.001999251945169929,
+        "observed": 0.0006804264005443411,
+        "n": 26454
+      },
+      {
+        "predicted": 0.00268875400282511,
+        "observed": 0.0015120586678763137,
+        "n": 26454
+      },
+      {
+        "predicted": 0.0037334939211644065,
+        "observed": 0.003288727602630982,
+        "n": 26454
+      },
+      {
+        "predicted": 0.005506389256115999,
+        "observed": 0.005367808270960913,
+        "n": 26454
+      },
+      {
+        "predicted": 0.009424478840836385,
+        "observed": 0.009488168140923868,
+        "n": 26454
+      },
+      {
+        "predicted": 0.05492445943205091,
+        "observed": 0.05492553111060709,
+        "n": 26454
+      }
+    ],
+    "baseline_feature_set": "strong",
+    "baseline_n_features": 609,
+    "baseline_params": {
+      "learning_rate": 0.05,
+      "max_leaf_nodes": 63,
+      "min_samples_leaf": 100,
+      "n_rounds": 103.0
+    },
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "death",
+    "horizon_hours": 72.0,
+    "scorer": "hazard",
+    "n_at_risk": 248854,
+    "n_positive": 5712,
+    "n_censored": 27471,
+    "auroc": 0.9559748799372509,
+    "brier": 0.01654178266740814,
+    "calibration": [
+      {
+        "predicted": 4.394141307341212e-05,
+        "observed": 0.0,
+        "n": 24886
+      },
+      {
+        "predicted": 0.00011603166931916938,
+        "observed": 8.036647110825364e-05,
+        "n": 24886
+      },
+      {
+        "predicted": 0.0002199053730811757,
+        "observed": 8.036647110825364e-05,
+        "n": 24886
+      },
+      {
+        "predicted": 0.0003848120511502667,
+        "observed": 0.00016073294221650728,
+        "n": 24886
+      },
+      {
+        "predicted": 0.0006842904429084114,
+        "observed": 0.00020092425155716296,
+        "n": 24885
+      },
+      {
+        "predicted": 0.001369160858052357,
+        "observed": 0.0003214788024914607,
+        "n": 24885
+      },
+      {
+        "predicted": 0.0035101499427196035,
+        "observed": 0.001567209162145871,
+        "n": 24885
+      },
+      {
+        "predicted": 0.011237919318620905,
+        "observed": 0.007554751858549327,
+        "n": 24885
+      },
+      {
+        "predicted": 0.03610020950900663,
+        "observed": 0.030500301386377337,
+        "n": 24885
+      },
+      {
+        "predicted": 0.2185185853343233,
+        "observed": 0.18906972071529032,
+        "n": 24885
+      }
+    ],
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "death",
+    "horizon_hours": 72.0,
+    "scorer": "next_mass",
+    "n_at_risk": 248854,
+    "n_positive": 5712,
+    "n_censored": 27471,
+    "auroc": 0.845050880069806,
+    "brier": null,
+    "calibration": null,
+    "baseline_feature_set": null,
+    "baseline_n_features": null,
+    "baseline_params": null,
+    "landmark_protocol_version": 4
+  },
+  {
+    "event": "death",
+    "horizon_hours": 72.0,
+    "scorer": "baseline_gbm",
+    "n_at_risk": 248854,
+    "n_positive": 5712,
+    "n_censored": 27471,
+    "auroc": 0.8971028506079617,
+    "brier": 0.019641497361244372,
+    "calibration": [
+      {
+        "predicted": 0.0006290130662852195,
+        "observed": 4.018323555412682e-05,
+        "n": 24886
+      },
+      {
+        "predicted": 0.001295692583010919,
+        "observed": 0.0003616491199871414,
+        "n": 24886
+      },
+      {
+        "predicted": 0.002153611872125361,
+        "observed": 0.0008438479466366632,
+        "n": 24886
+      },
+      {
+        "predicted": 0.003329148806080263,
+        "observed": 0.0017278791288274531,
+        "n": 24886
+      },
+      {
+        "predicted": 0.004961879109737307,
+        "observed": 0.003938115330520394,
+        "n": 24885
+      },
+      {
+        "predicted": 0.00735009205713193,
+        "observed": 0.0067108700020092425,
+        "n": 24885
+      },
+      {
+        "predicted": 0.011103340242201061,
+        "observed": 0.010247136829415311,
+        "n": 24885
+      },
+      {
+        "predicted": 0.017511777498911443,
+        "observed": 0.02081575246132208,
+        "n": 24885
+      },
+      {
+        "predicted": 0.03151292352080769,
+        "observed": 0.03496081977094635,
+        "n": 24885
+      },
+      {
+        "predicted": 0.15116084163132673,
+        "observed": 0.14988949166164356,
+        "n": 24885
+      }
+    ],
+    "baseline_feature_set": "strong",
+    "baseline_n_features": 609,
+    "baseline_params": {
+      "learning_rate": 0.05,
+      "max_leaf_nodes": 63,
+      "min_samples_leaf": 100,
+      "n_rounds": 226.0
+    },
+    "landmark_protocol_version": 4
+  }
+]
