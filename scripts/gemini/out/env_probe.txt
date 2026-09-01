@@ -43,7 +43,7 @@ Python 3.12.3
 
 --- package managers ---
 uv       not found
-poetry   ./scripts/gemini/probe_env.sh: line 70: /mnt/nfs/home/krishnanam/.local/bin/poetry: cannot execute: required file not found
+poetry   ./scripts/gemini/probe_env.sh: line 70: /mnt/nfs/home/operator/.local/bin/poetry: cannot execute: required file not found
 conda    not found
 mamba    not found
 

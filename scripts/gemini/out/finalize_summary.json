@@ -1,10 +1,10 @@
 {
-  "n_subjects": "1118000",
-  "n_output_shards": 1119,
+  "n_subjects": "0",
+  "n_output_shards": 3,
   "splits": {
-    "train": "894000",
-    "tuning": "112000",
-    "held_out": "112000"
+    "train": "0",
+    "tuning": "<6",
+    "held_out": "<6"
   },
-  "warnings": 1119
+  "warnings": 3
 }

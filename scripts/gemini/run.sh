@@ -1029,7 +1029,7 @@ PY
         # quarantined 12-table dataset, so rung 2/3 must too, never the newer
         # 18-table finalize output, or model scale and schema change get
         # confounded. Pinnable via GEMINI_LADDER_DATA_DIR since the exact
-        # directory name is a real, one-off operator artifact (Amrit's
+        # directory name is a real, one-off operator artifact (the project lead's
         # finalize-quarantine step), not something derivable from code.
         MEDS_DIR="${GEMINI_MEDS_OUTPUT_DIR:-/mnt/nfs/project/subdural_hematoma_endotypes/gemini_meds_v1}"
         LADDER_DATA_DIR="${GEMINI_LADDER_DATA_DIR:-$MEDS_DIR/data_12table_trainfull}"

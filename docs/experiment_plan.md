@@ -1,10 +1,10 @@
 # Experiment plan: the ML4H paper (nothing else)
 
-Owner: lead session. Rewritten 2026-08-30 per Amrit: paper experiments
+Owner: lead session. Rewritten 2026-08-30 per the project lead: paper experiments
 only, complete vs remaining. Registry (docs/experiments.md) records what
 actually happened; this file is the queue.
 
-Paper contract (Amrit, 2026-08-30): results on MIMIC-IV, eICU, and
+Paper contract (the project lead, 2026-08-30): results on MIMIC-IV, eICU, and
 GEMINI; full scale only, no subset numbers anywhere; core is the CBM
 trust audit (readout / completeness / lever / audit-of-the-eval) plus a
 strong-model comparison against many baselines. Everything under
@@ -59,7 +59,7 @@ claims: seed replicates or they are labeled hypotheses.
 - **LN arm** `eicu_full_LN_v10` (VM2): LAUNCHED 00:12 UTC Sep 1 by
   odyssey-7d at 7e1c5db. R9's config with `unknown_dim: null -> 8` as the
   ONLY change (verified by config diff), i.e. global pairs PLUS a narrowed
-  residual. Amrit-directed after the R9-vs-R6 completeness reversal
+  residual. the project lead-directed after the R9-vs-R6 completeness reversal
   suggested the residual is an escape hatch: freezing the concept vectors
   made the model push signal INTO the residual (zero_unknown retains 53.0%
   on R9 vs 100.7% on R6) rather than use concepts more causally. Question:
@@ -81,12 +81,12 @@ claims: seed replicates or they are labeled hypotheses.
   intervention_cis.py on interventions_band15_per_subject.json (NOT part
   of the chain), scripts/vm_oneoff/readmission_alerts.sh, and
   scripts/vm_oneoff/supplemental_r6_vm2.sh for the R6 checkpoint.
-- GEMINI deferred (Amrit): MIMIC-IV + eICU full runs with thorough evals
+- GEMINI deferred (the project lead): MIMIC-IV + eICU full runs with thorough evals
   complete first.
 
 ## NEXT CYCLE (post Sept 10, pre-registered 2026-08-31)
 
-Prognosis-conditioned generation (the "patient simulator" paper, Amrit +
+Prognosis-conditioned generation (the "patient simulator" paper, the project lead +
 odyssey-4a discussion 2026-08-31). Motivation from this paper's lever
 result: current-state concepts cannot steer because they are rule-derived
 from the history the model already read (L2 teacher forcing confirmed:
@@ -136,8 +136,8 @@ rollouts.py, global-pairs bottleneck (R8/R9), landmark protocol v4.
 | R3b/c | stage-B replicates | CI on independent-vs-joint cost | R3 |
 | R4 | intervention sweep over R2's intermediate checkpoints | "scale fixes the readout, not the lever" as a within-run claim | R2 + W3 |
 | R5 | M-series full scale (M1, M3; M2 optional) | gradient-dial hypothesis or its demotion | DECISION D2 |
-| R8 | L-series full scale, seed 0: `concept_global_pairs=True` (context-free per-concept embeddings replace the (w+,w-) pair) + full eval chain | Amrit-authorized 2026-08-31 following the Guide Labs (Steerling) comparison: subset L1 (a14c386, 30 shards) corrected the truth-flip sign (+0.28) at a capability cost, every mode still below none -- fixes the paper's [SUBSET-PLACEHOLDER] tag on this claim (Sec 5.3) and tests whether the sign correction survives AND becomes useful at full scale. No new code (existing `TrainingConfig.concept_global_pairs` flag, already load-bearing in run_inference's checkpoint auto-detect). ~4h training, same eval chain as R2. | VM1 free (after R2's eval chain finishes) |
-| B1 | MIMIC v4 baseline completion: MEDS-Tab v4 export+sweep, TabICL/EBM/SurvivalPFN rescores on R2 rows. **TabICL MUST be the strong 609-feature panel at full capability (`n_estimators=8`, 50,000-row context), NOT the basic/reduced config** -- Amrit ruled 2026-08-31 that the basic-feature row is dropped and the full-capability one reported. This needs the 170GB ultra host (`odyssey-cbm-a100-ultra`, a2-ultragpu-1g), ~6h sequential; **BLOCKING-ASK, Amrit must approve the spin-up**. Rerunning on v4 rows also resolves three things the Aug 27 sweep (docs/tabicl_strong_feature_comparison.md, a02c1b3) cannot: its GBM came from a different dump than the paper's (same rows, but refits disagree, death 8h 0.953 vs 0.949), it is protocol v3, and its AKI cells predate the KDIGO fix -- AKI being the one cell where TabICL still loses, so the sole surviving gap currently rests on the known-bad label. Consequence to carry into the paper: at full capability TabICL ties the tuned GBM on 9/12 and BEATS our hazard heads on all three ICU-admission cells, so Sec 5.4's "TabICL loses 12 of 12" is known-false and is marked in main.tex as do-not-submit. | R2 dumps + ultra host approval. **Ultra host APPROVED and TabICL LAUNCHED 18:32 UTC 2026-08-31** (needs `ODYSSEY_TABICL_MEMORY_BUDGET_GB=120`, the guard's 16GB default refuses the strong panel). **EBM and SurvivalPFN are OUT OF SCOPE** (Amrit ruling 2026-08-31: "skip ebm and survivalpfn, ship hazard/gbm/tabicl"). The v4 alerts.json carries only hazard/baseline_gbm/concept/next_mass, so each would need its own `scripts/rescore_extra_baselines.py` pass on the v4 row dumps; judged not worth the GPU time before Sept 10. v4 tables therefore have three scorer columns. Consequence tracked in the main.tex header and coupled to D5: the "five tuned baseline families" claim appears in four places incl. the abstract, and after this ruling only GBM and TabICL are in a v4 table (MEDS-Tab in body text; EBM/SurvivalPFN prior-generation only). |
+| R8 | L-series full scale, seed 0: `concept_global_pairs=True` (context-free per-concept embeddings replace the (w+,w-) pair) + full eval chain | the project lead-authorized 2026-08-31 following the Guide Labs (Steerling) comparison: subset L1 (a14c386, 30 shards) corrected the truth-flip sign (+0.28) at a capability cost, every mode still below none -- fixes the paper's [SUBSET-PLACEHOLDER] tag on this claim (Sec 5.3) and tests whether the sign correction survives AND becomes useful at full scale. No new code (existing `TrainingConfig.concept_global_pairs` flag, already load-bearing in run_inference's checkpoint auto-detect). ~4h training, same eval chain as R2. | VM1 free (after R2's eval chain finishes) |
+| B1 | MIMIC v4 baseline completion: MEDS-Tab v4 export+sweep, TabICL/EBM/SurvivalPFN rescores on R2 rows. **TabICL MUST be the strong 609-feature panel at full capability (`n_estimators=8`, 50,000-row context), NOT the basic/reduced config** -- the project lead ruled 2026-08-31 that the basic-feature row is dropped and the full-capability one reported. This needs the 170GB ultra host (`odyssey-cbm-a100-ultra`, a2-ultragpu-1g), ~6h sequential; **BLOCKING-ASK, the project lead must approve the spin-up**. Rerunning on v4 rows also resolves three things the Aug 27 sweep (docs/tabicl_strong_feature_comparison.md, a02c1b3) cannot: its GBM came from a different dump than the paper's (same rows, but refits disagree, death 8h 0.953 vs 0.949), it is protocol v3, and its AKI cells predate the KDIGO fix -- AKI being the one cell where TabICL still loses, so the sole surviving gap currently rests on the known-bad label. Consequence to carry into the paper: at full capability TabICL ties the tuned GBM on 9/12 and BEATS our hazard heads on all three ICU-admission cells, so Sec 5.4's "TabICL loses 12 of 12" is known-false and is marked in main.tex as do-not-submit. | R2 dumps + ultra host approval. **Ultra host APPROVED and TabICL LAUNCHED 18:32 UTC 2026-08-31** (needs `ODYSSEY_TABICL_MEMORY_BUDGET_GB=120`, the guard's 16GB default refuses the strong panel). **EBM and SurvivalPFN are OUT OF SCOPE** (the project lead ruling 2026-08-31: "skip ebm and survivalpfn, ship hazard/gbm/tabicl"). The v4 alerts.json carries only hazard/baseline_gbm/concept/next_mass, so each would need its own `scripts/rescore_extra_baselines.py` pass on the v4 row dumps; judged not worth the GPU time before Sept 10. v4 tables therefore have three scorer columns. Consequence tracked in the main.tex header and coupled to D5: the "five tuned baseline families" claim appears in four places incl. the abstract, and after this ruling only GBM and TabICL are in a v4 table (MEDS-Tab in body text; EBM/SurvivalPFN prior-generation only). |
 
 ### eICU (VM2: TERMINATED; restart + code sync + v2 re-extraction first)
 
@@ -152,10 +152,10 @@ rollouts.py, global-pairs bottleneck (R8/R9), landmark protocol v4.
 
 ### GEMINI (H200, in-environment, aggregate exports only)
 
-STARTED 2026-08-31 per Amrit (supersedes the "defer until MIMIC+eICU solid"
-note): Amrit operates the node (runs `scripts/gemini/run.sh <step>` only);
+STARTED 2026-08-31 per the project lead (supersedes the "defer until MIMIC+eICU solid"
+note): the project lead operates the node (runs `scripts/gemini/run.sh <step>` only);
 the paper session (odyssey-6b at time of writing) owns the leg end-to-end
-(GitHub->GEMINI mirroring, step sequencing with Amrit, git copy-back of
+(GitHub->GEMINI mirroring, step sequencing with the project lead, git copy-back of
 results, paper integration); code changes and G2 stay with the lead
 session. First action: mirror (gemini/main was at 9e83e5f, pre-Aug-30
 tooling; step-0 out/ diff verified empty 2026-08-31 ~12:20 UTC).
@@ -178,7 +178,7 @@ completeness all modes, top-1 AND loss (W4); interventions with W3 dumps
 beside the input-counterfactual suite; alerts v4 vs baselines with
 alerts_cis + calibration (W6); registry row; append-only artifacts.
 
-### Decisions owed to Amrit
+### Decisions owed to the project lead
 
 - D1: confirm reset_prob 0.0 for the whole paper generation (recommended).
 - D2: M-series (R5) in or out (~12-18 GPU-h).
@@ -191,11 +191,11 @@ alerts_cis + calibration (W6); registry row; append-only artifacts.
   `https://anonymous.4open.science/r/odyssey-ml4h2026`, which is a
   PLACEHOLDER. Someone must create the anonymized mirror and paste the real
   issued URL before submitting. It must NOT resolve to
-  github.com/VectorInstitute/odyssey during review -- the org name
+  github.com/anonymous/anonymised-repo during review -- the org name
   deanonymizes, and ML4H requires "no identifying information present in
   the submitted manuscript" for both tracks. Swap to the public URL only in
   the camera-ready.
-- D5: abstract framing, DEFERRED BY AMRIT 2026-08-31 ("let CI land, then
+- D5: abstract framing, DEFERRED BY THE PROJECT LEAD 2026-08-31 ("let CI land, then
   discuss with odyssey-cf"; that lane is odyssey-6b this generation).
   Blocked on `intervention_cis.json` for R2/R6 from the supplemental
   scoring pass. Three coupled questions, to be settled in ONE pass, not

@@ -36,7 +36,7 @@ after-bundle 1h (base rate ~55%): distributional structure (bundle-size
 counts, multimodal gaps) plausibly lives there.
 
 - **Design:** freeze a flagship checkpoint's backbone; train ALTERNATIVE
-  time heads on the frozen features (post-training, per Amrit's framing
+  time heads on the frozen features (post-training, per the project lead's framing
   -- no backbone retraining): (a) current hazard head refit (control for
   head-capacity), (b) discretized-grid Bernoulli head (Doctor AI's
   framing, modernized), (c) log-normal mixture density (k=3), (d)

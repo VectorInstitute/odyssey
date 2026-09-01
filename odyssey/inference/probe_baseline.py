@@ -1,6 +1,6 @@
 """EHRSHOT-style frozen-probe benchmark: representation quality, not more heads.
 
-Direct response to Amrit's 2026-08-28 redirect: don't keep adding trained
+Direct response to the project lead's 2026-08-28 redirect: don't keep adding trained
 alert heads for every new clinical task (multi-task loss competition for
 shared-backbone gradient is real and already documented -- e.g.
 eicu_subset_v9's recency channel cost -2 to -9pp on other forecast

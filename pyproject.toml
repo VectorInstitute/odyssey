@@ -3,10 +3,10 @@ name = "odyssey"
 version = "0.1.0"
 description = "A toolkit to develop clinical foundation models using electronic health records"
 readme = "README.md"
-authors = [{name = "Vector AI Engineering", email = "odyssey@vectorinstitute.ai"}]
+authors = [{name = "Anonymous", email = "anonymous@example.org"}]
 license = "Apache-2.0"
-repository = "https://github.com/VectorInstitute/odyssey"
-documentation = "https://vectorinstitute.github.io/odyssey/"
+repository = "https://github.com/anonymous/anonymised-repo"
+documentation = "https://anonymous.github.io/anonymised-repo/"
 requires-python = ">=3.12"
 dependencies = [
     # MIMIC-IV -> MEDS extraction (hosp + icu modules; ED not yet covered upstream)
@@ -90,7 +90,7 @@ cuda = [
     "einops>=0.7.0",
 ]
 
-# GEMINI database access (odyssey/data/gemini/). Optional: nobody but Amrit
+# GEMINI database access (odyssey/data/gemini/). Optional: nobody but the project lead
 # has a login on the GEMINI node, so most of this project never needs a
 # Postgres driver at all — see docs/gemini.md.
 gemini = [

@@ -2200,7 +2200,7 @@ def test_fit_and_score_gbm_baselines_returns_none_without_a_baseline_source() ->
 
 
 # ---------------------------------------------------------------------------
-# Real-data finding (CPU end-to-end integration pass, Amrit's directive
+# Real-data finding (CPU end-to-end integration pass, the project lead's directive
 # relayed via odyssey-4b): backbone="transformer" + index_mode="landmark"
 # + truncation disagrees with the model-free ground truth on real MIMIC-IV
 # data. Gated on the local data actually being present -- this is real,

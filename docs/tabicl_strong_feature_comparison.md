@@ -14,7 +14,7 @@ This report is the first TabICL run on the strong panel at its actual full capab
 (`n_estimators=8`, 50,000-row context, no reduction). Getting there took three attempts:
 
 1. A reduced config (`n_estimators=1`, 20,000-row context) fit and scored fine on the original
-   82 GB-RAM host, but it isn't TabICL at its documented best, and Amrit asked for the real thing.
+   82 GB-RAM host, but it isn't TabICL at its documented best, and the project lead asked for the real thing.
 2. Disk offload (`offload_mode="disk"`) was tried next, to fit the full config in less RAM. It
    works for fitting, but TabICL rereads its entire context from disk on every `predict_proba`
    call with no caching. Scoring 200 rows took 12 minutes; scoring a normal batch (8,192 rows)

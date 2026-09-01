@@ -1,6 +1,6 @@
 """Tests for odyssey.inference.probe_baseline.
 
-Covers the pieces added for the EHRSHOT-style probe benchmark (Amrit's
+Covers the pieces added for the EHRSHOT-style probe benchmark (the project lead's
 2026-08-28 redirect: representation quality under a frozen probe, not more
 trained alert heads): ProbeBaselineModel/fit_binary_probe/fit_probe_baselines
 (mirrors the built-in GBM's fit shape and degenerate-label guards),

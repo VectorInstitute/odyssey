@@ -302,8 +302,8 @@ def hazard_events_for(
 
 
 # EHRSHOT-style PROBE tasks (Wornow et al., NeurIPS D&B 2023): frozen-probe
-# evaluation targets, deliberately NOT trained alert heads. Amrit's 2026-08-28
-# directive: don't keep adding heads that compete for shared-backbone
+# evaluation targets, deliberately NOT trained alert heads. A 2026-08-28
+# project directive: don't keep adding heads that compete for shared-backbone
 # gradient (documented cost, e.g. eicu_subset_v9's recency channel: -2 to
 # -9pp on other families) -- instead measure whether the GENERAL
 # representation already supports these tasks under a frozen probe (see

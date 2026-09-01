@@ -22,7 +22,7 @@ standing in for the real database.
 
 odyssey has two git remotes:
 
-- `origin` — GitHub (`VectorInstitute/odyssey`), the canonical development
+- `origin` — GitHub (`anonymous/anonymised-repo`), the canonical development
   remote. All history lives here.
 - `gemini` — GEMINI's internal GitLab
   (`git@code.gemini-hpc.ca:vector-ai-engineering/odyssey.git`), reachable
