@@ -291,3 +291,51 @@ def test_a_single_matched_file_needs_no_agreement_check(tmp_path: Path) -> None:
     cells = load_matched([a])
     rows, _ = build_rows(cells, {}, {})
     assert any("Death" in r for r in rows)
+
+
+def _delta(key: str, *, separated: bool, point: float = 0.05) -> dict:
+    return {"paired_deltas": {key: {"auroc": {"point": point, "separated": separated}}}}
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "hazard_minus_baseline_gbm",  # alerts.json vocabulary
+        "hazard_minus_gbm",  # tabicl_strong_compare.py vocabulary
+        "baseline_gbm_minus_hazard",  # whichever scorer alerts_cis saw first
+        "gbm_minus_hazard",
+    ],
+)
+def test_bold_finds_the_delta_under_either_vocabulary_or_direction(key: str) -> None:
+    """A missed lookup would silently fall back to the forbidden arg-max."""
+    scores = {"hazard": 0.9, "baseline_gbm": 0.8}
+    assert _bold_targets(scores, _delta(key, separated=True)) == {"hazard"}
+    assert _bold_targets(scores, _delta(key, separated=False)) == set()
+
+
+def test_bold_is_withheld_when_the_ci_file_does_not_cover_the_pair() -> None:
+    """Bold promises a checked separation, so an unchecked cell gets none."""
+    scores = {"hazard": 0.9, "baseline_gbm": 0.8}
+    assert _bold_targets(scores, {"paired_deltas": {}}) == set()
+
+
+def test_the_delta_examined_is_the_leader_against_the_runner_up() -> None:
+    """With three columns, only the top pair decides the bold.
+
+    TabICL sits between the two on many cells; a rule that looked at
+    every delta would let an unseparated third column veto a bold the
+    top two clearly earned.
+    """
+    scores = {"hazard": 0.99, "baseline_gbm": 0.90, "tabicl": 0.50}
+    cell = {
+        "paired_deltas": {
+            "hazard_minus_gbm": {"auroc": {"point": 0.09, "separated": True}},
+            "hazard_minus_tabicl": {"auroc": {"point": 0.49, "separated": False}},
+        }
+    }
+    assert _bold_targets(scores, cell) == {"hazard"}
+
+
+def test_a_single_scored_column_is_bolded_without_a_delta() -> None:
+    """There is no runner-up to separate from."""
+    assert _bold_targets({"hazard": 0.9}, {"paired_deltas": {}}) == {"hazard"}
