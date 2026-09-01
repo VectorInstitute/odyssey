@@ -1,12 +1,39 @@
-"""Full-capability TabICL(strong) vs GBM(strong) on MIMIC, with bootstrap CIs.
+"""Hazard vs GBM(strong) vs TabICL(strong) on MIMIC, on one matched row set.
 
-Reuses the existing GBM(strong) scores already dumped in alerts_rows_v3.parquet
-(fit on 30 train shards, scored on 4 held-out shards, protocol v3) instead of
-refitting the GBM. Fits TabICL at its real default capability (n_estimators=8,
-TABICL_MAX_ROWS=50,000, both fit_tabicl_baselines/tabicl_baseline.py defaults)
-on the strong 609-feature panel, offload_mode="cpu" (this host has 165GB free
-RAM, no need for disk offload). One model fit+scored+dropped at a time, same
-discipline as scripts/rescore_extra_baselines.py.
+Reuses the hazard and GBM(strong) scores already dumped in the run's
+alerts_rows parquet instead of refitting either. Fits TabICL at its real
+default capability (n_estimators=8, TABICL_MAX_ROWS=50,000, both
+fit_tabicl_baselines/tabicl_baseline.py defaults) on the strong 609-feature
+panel, offload_mode="cpu" (the ultra host has 165GB free RAM, no need for
+disk offload). One model fit+scored+dropped at a time, same discipline as
+scripts/rescore_extra_baselines.py.
+
+ROW COVERAGE IS THE THING TO WATCH. TabICL costs about half an hour of
+prediction per cell, so this scores ``--max-held-out-shards`` (4) of the 37
+held-out shards, while the eval chain's alerts.json covers all 37. Those two
+numbers are therefore NOT interchangeable, and a comparator table that takes
+its hazard column from alerts.json and its TabICL column from here is
+comparing different samples. That is why this script scores hazard itself,
+off the same join: every column it reports describes one row set.
+
+``--dump-rows`` writes that row set in the column layout
+``scripts/alerts_cis.py`` consumes, which turns the three columns into
+PAIRED subject-clustered deltas. Point estimates with separate intervals
+cannot settle "does TabICL beat the hazard heads"; the paired delta can.
+
+Usage::
+
+    uv run python scripts/tabicl_strong_compare.py \\
+        --run-dir ~/runs/full_run_v10 \\
+        --train-shard-dir ~/data/mimiciv_3.1_v1/data/train \\
+        --held-out-shard-dir ~/data/mimiciv_3.1_v1/data/held_out \\
+        --existing-dump ~/runs/full_run_v10/alerts_rows.parquet \\
+        --output-json ~/runs/full_run_v10/tabicl_strong_v4.json \\
+        --dump-rows ~/runs/full_run_v10/tabicl_matched_rows.parquet
+
+Add ``--skip-tabicl`` to get the hazard/GBM half in minutes: it exercises
+the same prep, join and row-set checks without the fits, so it doubles as a
+cheap smoke test before committing the host to a multi-hour run.
 """
 
 import argparse
@@ -16,6 +43,7 @@ import json
 import logging
 import time
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -34,10 +62,91 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("tabicl_full_compare")
 
 HORIZONS = (8.0, 24.0, 72.0)
+# Scored in this order, and the paper's own model comes first: alerts_cis.py
+# pairs every later scorer against the first, so hazard-vs-GBM and
+# hazard-vs-TabICL are the deltas that come out of the dump.
+SCORERS = ("hazard", "gbm", "tabicl")
+# Key, label and score columns; the ~600 f_* feature columns and the ctx.*
+# diagnostics are not part of a scoring dump and would multiply its size.
+_DUMP_KEYS = frozenset({"subject_id", "visit_id", "time_hours", "event"})
 
 
-def main() -> None:  # noqa: PLR0915
-    """Fit TabICL(strong, full capability) per core event, score vs. the GBM dump."""
+def _dumped(column: str) -> bool:
+    """Whether ``column`` belongs in the row dump alerts_cis.py consumes."""
+    prefix = column.split("@", maxsplit=1)[0]
+    return column in _DUMP_KEYS or (
+        "@" in column and (prefix == "y" or prefix in SCORERS)
+    )
+
+
+def join_matched_rows(
+    dump: pl.DataFrame, scored: pl.DataFrame, event: str
+) -> pl.DataFrame:
+    """Inner-join freshly scored rows onto the dump, on the landmark key.
+
+    ``time_hours`` reaches the two sides through independent float code
+    paths (the dump via the tokenizer, ``scored`` via polars arithmetic),
+    so both are rounded to the 6 decimals ``alerts._landmark_key_set``
+    uses; an exact float join silently drops every row differing in the
+    last bits. A partial overlap is refused rather than scored, because
+    the whole point of the join is that one row set backs every column.
+    """
+    key_cols = ["subject_id", "visit_id", "time_hours"]
+    rounded = pl.col("time_hours").round(6)
+    dump, scored = dump.with_columns(rounded), scored.with_columns(rounded)
+    for side, frame in (("dump", dump), ("new", scored)):
+        n_dup = frame.height - frame.unique(subset=key_cols).height
+        if n_dup:
+            raise RuntimeError(
+                f"{event}: {n_dup} duplicate (subject, visit, time) keys on "
+                f"the {side} side -- an inner join would fan out; refusing "
+                "to score"
+            )
+    joined = dump.join(scored, on=key_cols, how="inner")
+    if joined.height != scored.height:
+        raise RuntimeError(
+            f"{event}: joined {joined.height} of {scored.height} held-out "
+            f"rows against the dump ({dump.height} dump rows) -- the row "
+            "sets disagree (different shards / landmark_hours / protocol?); "
+            "refusing to score a silently reduced overlap"
+        )
+    return joined
+
+
+def score_horizon(joined: pl.DataFrame, horizon: float) -> dict[str, Any] | None:
+    """Bootstrap AUROC for every scorer present at one horizon.
+
+    All scorers share a single row mask: a row one scorer cannot score
+    leaves every scorer, or the columns of a single table row describe
+    different samples and no comparison across them is paired. Returns
+    ``None`` when the horizon is absent from the dump or has no positives
+    left, which is a skip rather than a failure.
+    """
+    hcol = f"{horizon:g}h"
+    if f"y@{hcol}" not in joined.columns:
+        return None
+    y = joined[f"y@{hcol}"].to_numpy().astype(np.float64)
+    sid = joined["subject_id"].to_numpy().astype(int)
+    preds = {
+        name: joined[f"{name}@{hcol}"].to_numpy().astype(np.float64)
+        for name in SCORERS
+        if f"{name}@{hcol}" in joined.columns
+    }
+    mask = ~np.isnan(y)
+    for pred in preds.values():
+        mask &= ~np.isnan(pred)
+    y, sid = y[mask], sid[mask]
+    if len(np.unique(y)) < 2:
+        return None
+    cell: dict[str, Any] = {"n": int(mask.sum()), "n_positive": int(y.sum())}
+    for name, pred in preds.items():
+        ci = bootstrap_auroc(y, pred[mask], sid)
+        cell[name] = None if ci is None else vars(ci)
+    return cell
+
+
+def main() -> None:  # noqa: PLR0915  (argparse + pipeline wiring, not logic)
+    """Fit TabICL per core event, then score every scorer on the matched rows."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", required=True, type=Path)
     parser.add_argument("--train-shard-dir", required=True, type=Path)
@@ -51,6 +160,26 @@ def main() -> None:  # noqa: PLR0915
     )
     parser.add_argument("--offload-mode", default="cpu")
     parser.add_argument("--output-json", required=True, type=Path)
+    parser.add_argument(
+        "--dump-rows",
+        type=Path,
+        default=None,
+        help=(
+            "write the joined per-row scores here, in the column layout "
+            "scripts/alerts_cis.py consumes, so the three scorers get paired "
+            "subject-clustered deltas rather than three separate intervals"
+        ),
+    )
+    parser.add_argument(
+        "--skip-tabicl",
+        action="store_true",
+        help=(
+            "score hazard and GBM on the rows TabICL would have been scored "
+            "on, without fitting it. Minutes instead of hours, and the GBM it "
+            "reproduces is a direct check that a previous full run's row set "
+            "is the one being matched"
+        ),
+    )
     args = parser.parse_args()
 
     raw_config = json.loads((args.run_dir / "config.json").read_text())
@@ -132,110 +261,102 @@ def main() -> None:  # noqa: PLR0915
 
     existing = pl.read_parquet(args.existing_dump)
 
-    results = {}
+    results: dict[str, Any] = {}
+    dumps: list[pl.DataFrame] = []
     for alert in alerts:
         event = alert.name
         rows = train.rows.get(event, [])
-        if not rows:
-            continue
-        t0 = time.time()
-        models = fit_tabicl_baselines(
-            pl.DataFrame(),
-            {event: rows},
-            {event: train.times[event]},
-            horizons=HORIZONS,
-            source=source,
-            feature_set="strong",
-            features={event: train.features["strong"][event]},
-            offload_mode=args.offload_mode,
-        )
-        fit_s = time.time() - t0
-        logger.info("fit %s: %d models in %.0fs", event, len(models), fit_s)
-
         held_rows = held.rows.get(event, [])
+        if not rows or not held_rows:
+            continue
+
+        models: dict[tuple[str, float], Any] = {}
+        fit_s = 0.0
+        if not args.skip_tabicl:
+            t0 = time.time()
+            models = fit_tabicl_baselines(
+                pl.DataFrame(),
+                {event: rows},
+                {event: train.times[event]},
+                horizons=HORIZONS,
+                source=source,
+                feature_set="strong",
+                features={event: train.features["strong"][event]},
+                offload_mode=args.offload_mode,
+            )
+            fit_s = time.time() - t0
+            logger.info("fit %s: %d models in %.0fs", event, len(models), fit_s)
+
         held_feats = held.features["strong"][event]
         existing_ev = existing.filter(pl.col("event") == event)
 
+        # Predict every horizon first, then join ONCE. The join is what
+        # defines the row set the scorers share, so joining per horizon
+        # would make "hazard, GBM and TabICL saw the same rows" three
+        # separate assertions instead of one.
+        new_cols = pl.DataFrame(
+            {
+                "subject_id": [float(r.subject_id) for r in held_rows],
+                "visit_id": [float(r.visit_id) for r in held_rows],
+                "time_hours": [r.time_hours for r in held_rows],
+            }
+        )
+        predict_s: dict[float, float] = {}
         for h in HORIZONS:
             model = models.pop((event, h), None)
             if model is None:
                 continue
             t0 = time.time()
             proba = model.predict_proba(held_feats)
-            predict_s = time.time() - t0
+            predict_s[h] = time.time() - t0
             del model
             gc.collect()
-
-            new_cols = pl.DataFrame(
-                {
-                    "subject_id": [float(r.subject_id) for r in held_rows],
-                    "visit_id": [float(r.visit_id) for r in held_rows],
-                    "time_hours": [r.time_hours for r in held_rows],
-                    f"tabicl@{h:g}h": [float(v) for v in proba],
-                }
+            new_cols = new_cols.with_columns(
+                pl.Series(f"tabicl@{h:g}h", [float(v) for v in proba])
             )
-            # time_hours reaches the two sides through independent float
-            # code paths (the dump via the tokenizer, new_cols via polars
-            # arithmetic), so round to the same 6-decimal tolerance
-            # alerts._landmark_key_set uses before joining -- an exact
-            # float join silently drops every row that differs in the
-            # last bits. The height checks below make any remaining
-            # mismatch (or a duplicate dump key fanning out) loud instead
-            # of quietly shifting n and the CIs.
-            key_cols = ["subject_id", "visit_id", "time_hours"]
-            rounded = pl.col("time_hours").round(6)
-            new_keyed = new_cols.with_columns(rounded)
-            existing_keyed = existing_ev.with_columns(rounded)
-            for side_name, frame in (("dump", existing_keyed), ("new", new_keyed)):
-                n_dup = frame.height - frame.unique(subset=key_cols).height
-                if n_dup:
-                    raise RuntimeError(
-                        f"{event}@{h:g}h: {n_dup} duplicate "
-                        f"(subject, visit, time) keys on the {side_name} side -- "
-                        "an inner join would fan out; refusing to score"
-                    )
-            joined = existing_keyed.join(new_keyed, on=key_cols, how="inner")
-            if joined.height != new_keyed.height:
-                raise RuntimeError(
-                    f"{event}@{h:g}h: joined {joined.height} of "
-                    f"{new_keyed.height} freshly-scored rows against the dump "
-                    f"({existing_keyed.height} dump rows) -- the row sets "
-                    "disagree (different shards/landmark_hours/protocol?); "
-                    "refusing to score a silently-reduced overlap"
-                )
-            y = joined[f"y@{h:g}h"].to_numpy()
-            gbm_p = joined[f"gbm@{h:g}h"].to_numpy()
-            tabicl_p = joined[f"tabicl@{h:g}h"].to_numpy()
-            sid = joined["subject_id"].to_numpy().astype(int)
-            mask = ~np.isnan(y)
-            y, gbm_p, tabicl_p, sid = y[mask], gbm_p[mask], tabicl_p[mask], sid[mask]
-
-            gbm_ci = bootstrap_auroc(y, gbm_p, sid)
-            tabicl_ci = bootstrap_auroc(y, tabicl_p, sid)
-
-            cell = {
-                "n": int(mask.sum()),
-                "fit_s": fit_s,
-                "predict_s": predict_s,
-                "gbm": None if gbm_ci is None else vars(gbm_ci),
-                "tabicl": None if tabicl_ci is None else vars(tabicl_ci),
-            }
-            results[f"{event}@{h:g}h"] = cell
-            logger.info(
-                "%s@%gh n=%d gbm=%.4f tabicl=%.4f (predict %.0fs)",
-                event,
-                h,
-                cell["n"],
-                gbm_ci.point_estimate if gbm_ci else float("nan"),
-                tabicl_ci.point_estimate if tabicl_ci else float("nan"),
-                predict_s,
-            )
-            args.output_json.write_text(json.dumps(results, indent=2))
         del models
         gc.collect()
 
+        joined = join_matched_rows(existing_ev, new_cols, event)
+        for h in HORIZONS:
+            cell = score_horizon(joined, h)
+            if cell is None:
+                logger.warning("%s@%gh has no scoreable rows, skipped", event, h)
+                continue
+            cell["fit_s"] = fit_s
+            cell["predict_s"] = predict_s.get(h)
+            results[f"{event}@{h:g}h"] = cell
+            logger.info(
+                "%s@%gh n=%d %s",
+                event,
+                h,
+                cell["n"],
+                " ".join(
+                    f"{name}={cell[name]['point_estimate']:.4f}"
+                    for name in SCORERS
+                    if cell.get(name)
+                ),
+            )
+            args.output_json.write_text(json.dumps(results, indent=2))
+
+        if args.dump_rows is not None:
+            dumps.append(joined.select([c for c in joined.columns if _dumped(c)]))
+
     args.output_json.write_text(json.dumps(results, indent=2))
     logger.info("wrote %s", args.output_json)
+    if args.dump_rows is not None and dumps:
+        # diagonal: an event whose TabICL fit was skipped contributes no
+        # tabicl@ columns, and concat must not refuse the frame over it.
+        rows_out = pl.concat(dumps, how="diagonal")
+        args.dump_rows.parent.mkdir(parents=True, exist_ok=True)
+        rows_out.write_parquet(args.dump_rows)
+        logger.info(
+            "wrote %s (%d rows); feed it to scripts/alerts_cis.py with "
+            "--scorers %s for the paired deltas",
+            args.dump_rows,
+            rows_out.height,
+            " ".join(SCORERS),
+        )
 
 
 if __name__ == "__main__":
