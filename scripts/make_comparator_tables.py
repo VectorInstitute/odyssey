@@ -229,7 +229,26 @@ def main() -> None:
     ]
     header += [f"% WARNING: {n}" for n in notes]
     args.output_tex.parent.mkdir(parents=True, exist_ok=True)
-    args.output_tex.write_text("\n".join(header + rows) + "\n")
+    # Emit the COMPLETE tabular, not just its rows. \input-ing a bare row
+    # body inside a tabular breaks LaTeX's alignment scanning ("Misplaced
+    # \noalign" at the following \bottomrule), and the generator is the
+    # thing that knows how many columns it produced, so it should own the
+    # preamble and header too.
+    has_tabicl = bool(tabicl)
+    spec = "llrrrr" if has_tabicl else "llrrr"
+    head_cells = ["Event", "$h$", "$n$ (pos)", "Hazard", "GBM"]
+    if has_tabicl:
+        head_cells.append("TabICL")
+    table = [
+        f"\\begin{{tabular}}{{{spec}}}",
+        "\\toprule",
+        " & ".join(head_cells) + r" \\",
+        "\\midrule",
+        *rows,
+        "\\bottomrule",
+        "\\end{tabular}",
+    ]
+    args.output_tex.write_text("\n".join(header + table) + "\n")
     for note in notes:
         logger.warning("%s", note)
     logger.info(

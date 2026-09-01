@@ -1,6 +1,8 @@
 """Tests for the comparator-table generator."""
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -185,3 +187,56 @@ def test_horizon_labels_have_no_trailing_zeros(tmp_path: Path, horizon: float) -
     rows, _ = build_rows(cells, {}, {})
     assert any(f"{horizon:g}h" in r for r in rows)
     assert not any(".0h" in r for r in rows)
+
+
+def test_emits_a_complete_tabular_not_a_bare_row_body(tmp_path: Path) -> None:
+    """The file must be a self-contained tabular.
+
+    \\input-ing a bare row body inside a tabular breaks LaTeX's alignment
+    scanning and raises "Misplaced \\noalign" at the following
+    \\bottomrule, which silently corrupts the table. The generator owns the
+    preamble because it is the thing that knows its own column count.
+    """
+    alerts = _write(tmp_path, "a.json", _alerts_records())
+    out = tmp_path / "body.tex"
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/make_comparator_tables.py",
+            "--alerts",
+            str(alerts),
+            "--output-tex",
+            str(out),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    text = out.read_text()
+    assert "\\begin{tabular}{llrrr}" in text
+    assert "\\toprule" in text and "\\bottomrule" in text
+    assert text.rstrip().endswith("\\end{tabular}")
+    assert "Event & $h$ & $n$ (pos) & Hazard & GBM" in text
+
+
+def test_tabicl_column_widens_the_preamble_and_header(tmp_path: Path) -> None:
+    """Six columns when TabICL is supplied, five when it is not."""
+    alerts = _write(tmp_path, "a.json", _alerts_records())
+    tab = _write(tmp_path, "t.json", {"death@8h": {"tabicl": {"point_estimate": 0.97}}})
+    out = tmp_path / "body.tex"
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/make_comparator_tables.py",
+            "--alerts",
+            str(alerts),
+            "--tabicl",
+            str(tab),
+            "--output-tex",
+            str(out),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    text = out.read_text()
+    assert "\\begin{tabular}{llrrrr}" in text
+    assert "TabICL" in text
