@@ -666,6 +666,38 @@ def build_model(
     )
 
 
+def optimizer_param_groups(
+    model: torch.nn.Module, weight_decay: float
+) -> list[dict[str, object]]:
+    """Parameter groups for AdamW, with decay-exempt parameters at 0.0.
+
+    A bottleneck may declare ``decay_exempt_parameters()``; the decomposed
+    one exempts its concept embeddings, following Steerling's "weight
+    decay ... excluding embeddings". Its known embeddings receive no task
+    gradient in expectation, so decaying them is a steady pull toward an
+    inert named channel rather than regularization. Every other parameter
+    keeps ``weight_decay`` unchanged, so no other arm's behaviour moves.
+    """
+    exempt_fn = getattr(
+        getattr(model, "bottleneck", None), "decay_exempt_parameters", None
+    )
+    exempt = {id(p) for p in (exempt_fn() if exempt_fn is not None else [])}
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    decayed = [p for p in trainable if id(p) not in exempt]
+    undecayed = [p for p in trainable if id(p) in exempt]
+    groups: list[dict[str, object]] = [
+        {"params": decayed, "weight_decay": weight_decay}
+    ]
+    if undecayed:
+        groups.append({"params": undecayed, "weight_decay": 0.0})
+        logger.info(
+            "[optim] %d parameter tensors (%.3fM values) exempt from weight decay",
+            len(undecayed),
+            sum(p.numel() for p in undecayed) / 1e6,
+        )
+    return groups
+
+
 def _checked_unknown_dim(config: TrainingConfig) -> int | None:
     """Return ``config.unknown_dim``, warning if it silently voids the penalty.
 
@@ -1276,9 +1308,8 @@ def _run_training(  # noqa: PLR0912, PLR0915
         )
 
     optimizer = torch.optim.AdamW(
-        [p for p in model.parameters() if p.requires_grad],
+        optimizer_param_groups(model, config.weight_decay),
         lr=config.learning_rate,
-        weight_decay=config.weight_decay,
     )
     pos_weight = None
     if config.concept_pos_weight and not train_labels:

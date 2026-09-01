@@ -326,21 +326,25 @@ def test_zero_weights_remove_the_terms_from_the_total() -> None:
 
 
 def test_teacher_forcing_substitutes_the_ground_truth_contribution() -> None:
-    """alpha=1 replaces k_hat with k_hat_gt when forming h_bar."""
-    bn = _bottleneck()
+    """alpha=1 replaces k_hat with k_hat_gt when forming h_bar.
+
+    residual_dropout=1.0 zeroes eps, so the bottleneck is exactly the two
+    parts that were used and the substitution is observable.
+    """
+    bn = _bottleneck(residual_dropout=1.0)
     bn.train()  # teacher forcing is a training-time substitution
     h = torch.randn(4, HIDDEN)
     labels = torch.randint(0, 2, (4, K)).float()
 
     own = bn(h)
     forced = bn(h, teacher=TeacherForcing(labels, alpha_known=1.0))
-    expected = bn.known_contribution(labels) + own.unknown_embedding + own.residual
+    expected = bn.known_contribution(labels) + own.unknown_embedding
     assert torch.allclose(forced.bottleneck, expected, atol=1e-5)
 
 
 def test_teacher_forcing_on_the_unknown_head_uses_h_minus_k_hat_gt() -> None:
     """The unknown substitution is the reconstruction target itself."""
-    bn = _bottleneck()
+    bn = _bottleneck(residual_dropout=1.0)
     bn.train()
     h = torch.randn(4, HIDDEN)
     labels = torch.randint(0, 2, (4, K)).float()
@@ -348,8 +352,64 @@ def test_teacher_forcing_on_the_unknown_head_uses_h_minus_k_hat_gt() -> None:
     own = bn(h)
     forced = bn(h, teacher=TeacherForcing(labels, alpha_unknown=1.0))
     known_gt = bn.known_contribution(labels)
-    expected = own.known_part + (h - known_gt) + own.residual
+    expected = own.known_part + (h - known_gt)
     assert torch.allclose(forced.bottleneck, expected, atol=1e-5)
+
+
+def test_teacher_forcing_recomputes_the_residual_from_the_used_parts() -> None:
+    """Steerling Eq (11)-(12): "when u_hat = u_hat_gt, eps = 0".
+
+    The residual is whatever the parts actually summed into h_bar leave
+    unexplained. With no dropout that makes h_bar == h under every
+    forcing pattern. The previous behaviour held the model's OWN eps fixed
+    and added it on top of the forced parts, so full forcing produced
+    h + eps: the residual direction entered the LM head twice in training
+    and once at inference, which is a direct push toward residual reliance
+    in the arm built to measure residual reliance.
+    """
+    bn = _bottleneck()  # dropout off
+    bn.train()
+    h = torch.randn(4, HIDDEN)
+    labels = torch.randint(0, 2, (4, K)).float()
+    own = bn(h)
+    assert own.residual.abs().sum() > 1e-3  # the own eps is not trivially 0
+
+    for known, unknown in ((1.0, 1.0), (1.0, 0.0), (0.0, 1.0)):
+        forced = bn(
+            h, teacher=TeacherForcing(labels, alpha_known=known, alpha_unknown=unknown)
+        )
+        assert torch.allclose(forced.bottleneck, h, atol=1e-5), (known, unknown)
+
+
+def test_teacher_forcing_leaves_unlabeled_positions_alone() -> None:
+    """Where the mask says no label was found, the model's own parts stand.
+
+    Otherwise an all-zero label row becomes "no concepts present" and the
+    forced unknown becomes the whole hidden state, at every position that
+    merely lacks a visit id.
+    """
+    bn = _bottleneck(residual_dropout=1.0)
+    bn.train()
+    h = torch.randn(4, HIDDEN)
+    labels = torch.randint(0, 2, (4, K)).float()
+    mask = torch.ones(4, K, dtype=torch.bool)
+    mask[1] = False
+
+    own = bn(h)
+    forced = bn(
+        h,
+        teacher=TeacherForcing(
+            labels, alpha_known=1.0, alpha_unknown=1.0, concept_mask=mask
+        ),
+    )
+    known_gt = bn.known_contribution(labels)
+    assert torch.allclose(
+        forced.bottleneck[0], h[0], atol=1e-5
+    )  # forced: k_gt + (h - k_gt)
+    assert torch.allclose(
+        forced.bottleneck[1], own.known_part[1] + own.unknown_embedding[1], atol=1e-5
+    )
+    assert not torch.allclose(forced.bottleneck[1], known_gt[1] + h[1] - known_gt[1])
 
 
 def test_teacher_forcing_never_fires_in_eval() -> None:
@@ -433,6 +493,30 @@ def test_streaming_loss_carries_both_terms_and_teacher_forcing() -> None:
     assert torch.isfinite(total)
     total.backward()
     assert model.bottleneck.unknown_proj.weight.grad.abs().sum() > 0
+
+
+def test_streaming_loss_hands_the_found_mask_to_teacher_forcing() -> None:
+    """The mask the helper builds must reach the bottleneck, or it is decor."""
+    model = _decomposed_model(vocab=64)
+    # Subject 2 is unlabeled, so it must not be a supervision point.
+    chunk = _streaming_chunk()._replace(patient_end=torch.tensor([[True, False, True]]))
+    seen: list[TeacherForcing | None] = []
+    original = model.bottleneck.forward
+
+    def spy(hidden, intervention=None, *, teacher=None):
+        seen.append(teacher)
+        return original(hidden, intervention=intervention, teacher=teacher)
+
+    model.bottleneck.forward = spy  # type: ignore[method-assign]
+    model.compute_streaming_loss(
+        chunk, {1: torch.ones(K), 3: torch.ones(K)}, teacher_alpha_known=1.0
+    )
+    assert seen and seen[0] is not None
+    mask = seen[0].concept_mask
+    assert mask is not None and mask.shape == (1, 3, K)
+    assert (
+        bool(mask[0, 0].all()) and not bool(mask[0, 1].any()) and bool(mask[0, 2].all())
+    )
 
 
 def test_streaming_teacher_labels_fall_back_to_zero_where_absent() -> None:
@@ -600,12 +684,15 @@ def test_auxiliary_losses_still_train_the_unknown_head_only() -> None:
     assert known_grad is None or float(known_grad.abs().sum()) == 0.0
 
 
-def test_lm_path_still_reaches_the_backbone_through_the_unknown_part() -> None:
-    """Only the AUXILIARY losses are confined; the task loss is not.
+def test_lm_path_reaches_the_backbone_but_not_the_unknown_head() -> None:
+    """Steerling Sec 10.2.2: the unknown prediction enters h_bar detached.
 
-    The bottleneck is what the heads see, so the task gradient must still
-    flow through u_hat into the backbone. Detaching the unknown head
-    outright would silently sever that too.
+    The task loss must still train the backbone, through k_hat and eps,
+    but it must not train the unknown head: that head is a reconstructor
+    of h - k_hat_gt, shaped by Eq (12) and (14) only. Letting the task
+    loss into it hands the model a second free channel, which is exactly
+    how the unknown part came to carry 28.5% of top-1 while the named
+    channel stayed at 2%.
     """
     torch.manual_seed(0)
     cb = DecomposedConceptBottleneck(hidden_size=32, num_concepts=4, unknown_ratio=3)
@@ -613,6 +700,49 @@ def test_lm_path_still_reaches_the_backbone_through_the_unknown_part() -> None:
     hidden = torch.randn(2, 5, 32, requires_grad=True)
     cb(hidden).bottleneck.sum().backward()
     assert hidden.grad is not None and float(hidden.grad.abs().sum()) > 0.0
+    for name in ("unknown_proj.weight", "unknown_embeddings_full"):
+        grad = dict(cb.named_parameters())[name].grad
+        assert grad is None or float(grad.abs().sum()) == 0.0, name
+
+
+def test_known_embeddings_receive_task_gradient_through_residual_dropout() -> None:
+    """The only task pressure on K is the dropout noise on eps.
+
+    h_bar = k + u + D(h - k - u), so with D the identity (eval, or
+    p_eps = 0) the task gradient into K is exactly zero, and with p_eps > 0
+    it is nonzero per sample. This pins that the pressure exists at all;
+    weight decay on K would otherwise win by default.
+    """
+    torch.manual_seed(0)
+    cb = DecomposedConceptBottleneck(
+        hidden_size=32, num_concepts=4, unknown_ratio=3, residual_dropout=0.3
+    )
+    cb.train()
+    hidden = torch.randn(2, 5, 32)
+    (cb(hidden).bottleneck * torch.randn(32)).sum().backward()
+    assert cb.known_embeddings.grad is not None
+    assert float(cb.known_embeddings.grad.abs().sum()) > 0.0
+
+    cb.zero_grad()
+    cb.eval()
+    (cb(hidden).bottleneck * torch.randn(32)).sum().backward()
+    grad = cb.known_embeddings.grad
+    assert grad is None or float(grad.abs().max()) < 1e-6
+
+
+def test_decay_exempt_parameters_are_the_concept_embeddings() -> None:
+    """Steerling: weight decay "excluding embeddings"."""
+    full = _bottleneck()
+    assert [id(p) for p in full.decay_exempt_parameters()] == [
+        id(full.known_embeddings),
+        id(full.unknown_embeddings_full),
+    ]
+    low = _bottleneck(unknown_rank=2)
+    assert [id(p) for p in low.decay_exempt_parameters()] == [
+        id(low.known_embeddings),
+        id(low.unknown_factor_a),
+        id(low.unknown_factor_b),
+    ]
 
 
 def test_detached_unknown_part_matches_the_live_one_numerically() -> None:

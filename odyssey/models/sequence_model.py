@@ -913,6 +913,9 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
                 concept_labels=position_labels[0],
                 alpha_known=teacher_alpha_known,
                 alpha_unknown=teacher_alpha_unknown,
+                # Unlabeled positions keep the model's own parts rather
+                # than being forced to "no concepts" and u_hat_gt = h.
+                concept_mask=position_labels[1],
             )
         logits, bottleneck_out, new_state = self(
             chunk.batch,

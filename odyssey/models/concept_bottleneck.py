@@ -164,6 +164,14 @@ class TeacherForcing:
     alpha_unknown: float = 0.0
     """Probability of substituting ``u_hat_gt`` this step."""
 
+    concept_mask: torch.Tensor | None = None
+    """Optional ``(..., num_concepts)`` mask of where ``concept_labels``
+    were actually found. A position with no label at all keeps the
+    model's own parts: substituting an all-zero row there would teach the
+    LM head that "no label" means "no concepts present" and hand it the
+    whole hidden state as ``u_hat_gt``. On MIMIC about a fifth of events
+    carry no visit id and so have no visit-scoped label."""
+
 
 def annealed_alpha(
     step: int,
@@ -641,7 +649,11 @@ class DecomposedBottleneckOutput(NamedTuple):
     """
 
     unknown_embedding: torch.Tensor
-    """(..., hidden_size) ``u_hat``, the unknown concepts' weighted sum."""
+    """(..., hidden_size) ``u_hat``, the unknown concepts' weighted sum,
+    as it enters the bottleneck: DETACHED. Steerling routes the unknown
+    head's prediction into ``h_bar`` "detached before the bottleneck", so
+    the LM loss cannot train ``u_hat`` into a second residual; the head is
+    shaped by the reconstruction and independence losses alone."""
 
     bottleneck: torch.Tensor
     """(..., hidden_size) ``h_bar = k_hat + u_hat + eps``; the only thing
@@ -668,20 +680,16 @@ class DecomposedBottleneckOutput(NamedTuple):
     reconstruction target is defined against it."""
 
     unknown_embedding_detached: torch.Tensor
-    """``u_hat`` recomputed from a detached head input, for Equations
-    (12) and (14) ONLY.
+    """``u_hat`` with a gradient path to the unknown head and nowhere
+    else, for Equations (12) and (14).
 
     Steerling states of the two auxiliary losses that "gradients are
-    detached so that only the unknown head is updated". Using
-    :attr:`unknown_embedding` for them instead backpropagates the
-    reconstruction and independence terms through the unknown head and
-    into the backbone, which is not what the paper specifies. This
-    carries the same values, computed from the same dropout mask, but
-    with the path to the backbone cut: gradients still reach the unknown
-    projection and the unknown embeddings, which are the unknown head.
-
-    The LM loss still flows through :attr:`unknown_embedding` into the
-    backbone, as it should; only the auxiliary terms are confined."""
+    detached so that only the unknown head is updated". The head reads a
+    detached copy of its input, so the reconstruction and independence
+    terms reach the unknown projection and the unknown embeddings, which
+    are the unknown head, and never the backbone. Same values as
+    :attr:`unknown_embedding`, same dropout mask; that one is detached
+    entirely because it is what the bottleneck sums."""
 
 
 class DecomposedConceptBottleneck(nn.Module):
@@ -721,6 +729,24 @@ class DecomposedConceptBottleneck(nn.Module):
       than nominal;
     * :func:`independence_loss`, which stops the unknown head re-encoding
       what the concepts already say.
+
+    Two gradient rules make the pressure land where Steerling puts it.
+    The unknown head's prediction enters ``h_bar`` detached (Section
+    10.2.2: "detached before the bottleneck"), so the LM loss trains the
+    backbone through ``k_hat`` and ``eps`` only and cannot grow ``u_hat``
+    into a second residual. And under teacher forcing ``eps`` is the
+    remainder of the parts actually used, ``h - used_known -
+    used_unknown``, so that "when u_hat = u_hat_gt, eps = 0" holds; adding
+    the model's own residual on top of the forced parts would feed the LM
+    head ``h + eps`` in training and ``h`` at inference, weighting the
+    residual direction twice.
+
+    Note also that with inverted dropout the EXPECTED LM gradient into
+    ``k_hat`` is zero (``h_bar = k + u + D(h - k - u)`` and ``E[D] = I``);
+    the known embeddings grow only through the dropout-noise pressure on
+    ``eps``. Weight decay on them is therefore a net shrink toward an
+    inert named channel, which is why :meth:`decay_exempt_parameters`
+    exists and Steerling decays "excluding embeddings".
 
     Every arm this project ran before 2026-09-01 lacked all three, and in
     the two arms that tried to control the residual by narrowing it, the
@@ -810,6 +836,21 @@ class DecomposedConceptBottleneck(nn.Module):
             return self.unknown_embeddings_full
         return self.unknown_factor_a @ self.unknown_factor_b
 
+    def decay_exempt_parameters(self) -> list[nn.Parameter]:
+        """Return the concept embeddings ``K`` and ``U`` (or its factors).
+
+        Steerling applies weight decay "excluding embeddings". The task
+        gradient into ``K`` is zero in expectation (see the class
+        docstring), so decaying it is a one-way pull toward the solution
+        where the named channel carries nothing.
+        """
+        params = [self.known_embeddings]
+        if self.unknown_rank is None:
+            params.append(self.unknown_embeddings_full)
+        else:
+            params.extend([self.unknown_factor_a, self.unknown_factor_b])
+        return params
+
     def known_contribution(self, probs: torch.Tensor) -> torch.Tensor:
         """``k_hat`` for given activations: Equation (7)'s known half."""
         # Annotated rather than returned directly: matmul against a Parameter
@@ -892,19 +933,21 @@ class DecomposedConceptBottleneck(nn.Module):
         """
         x = self.dropout(hidden_states)
         concept_logits = self.known_proj(x)
-        unknown_logits = self.unknown_proj(x)
         observability_logits = self.observability_proj(x)
         concept_probs = torch.sigmoid(concept_logits)
-        unknown_probs = torch.sigmoid(unknown_logits)
+
+        # The unknown head reads a detached copy of its input, so the
+        # auxiliary losses reach the head and never the backbone; and what
+        # the bottleneck sums is detached again, so the LM loss reaches
+        # neither. Steerling: the unknown prediction is "detached before
+        # the bottleneck". The head is trained by Equations (12) and (14)
+        # alone, which is what makes it a reconstructor of h - k_hat_gt
+        # rather than a second residual the task loss can route through.
+        unknown_probs = torch.sigmoid(self.unknown_proj(x.detach()))
+        unknown_head = unknown_probs @ self.unknown_embeddings()
+        unknown_part = unknown_head.detach()
 
         own_known = self.known_contribution(concept_probs)
-        unknown_embeddings = self.unknown_embeddings()
-        unknown_part = unknown_probs @ unknown_embeddings
-        # Same x, same dropout mask, but detached: the auxiliary losses must
-        # update the unknown head without pushing on the backbone.
-        unknown_part_detached = (
-            torch.sigmoid(self.unknown_proj(x.detach())) @ unknown_embeddings
-        )
         # eps from the model's OWN parts, before any edit. Recomputing it
         # after an override would cancel the override exactly.
         residual = hidden_states - own_known - unknown_part
@@ -924,17 +967,35 @@ class DecomposedConceptBottleneck(nn.Module):
             else self.known_contribution(mix_probs)
         )
 
-        used_known, used_unknown = known_part, unknown_part
+        used_known, used_unknown, used_residual = known_part, unknown_part, residual
         if teacher is not None and self.training:
-            labels = teacher.concept_labels.to(hidden_states.dtype)
-            while labels.dim() < hidden_states.dim():
-                labels = labels.unsqueeze(-2)
+            labels = _broadcast_over_positions(
+                teacher.concept_labels.to(hidden_states.dtype), hidden_states
+            )
             known_gt = self.known_contribution(labels.expand(*concept_probs.shape))
+            # Where no label exists the model's own parts stand: an
+            # all-zero row is not "no concepts present".
+            labeled = (
+                None
+                if teacher.concept_mask is None
+                else _broadcast_over_positions(teacher.concept_mask, hidden_states)
+                .any(dim=-1, keepdim=True)
+                .expand_as(hidden_states)
+            )
+
+            def substitute(forced: torch.Tensor, own: torch.Tensor) -> torch.Tensor:
+                return forced if labeled is None else torch.where(labeled, forced, own)
+
             if torch.rand(()).item() < teacher.alpha_known:
-                used_known = known_gt
+                used_known = substitute(known_gt, used_known)
             if torch.rand(()).item() < teacher.alpha_unknown:
-                used_unknown = hidden_states - known_gt
-        used_residual = self.residual_dropout(residual)
+                used_unknown = substitute(hidden_states - known_gt, used_unknown)
+            # The residual is whatever the used parts leave unexplained.
+            # With both heads forced that is exactly zero, as Equation
+            # (11)-(12) state; holding the model's own eps fixed here
+            # instead would put the residual into h_bar twice.
+            used_residual = hidden_states - used_known - used_unknown
+        used_residual = self.residual_dropout(used_residual)
         if intervention is not None:
             if intervention.zero_known:
                 used_known = torch.zeros_like(used_known)
@@ -948,7 +1009,7 @@ class DecomposedConceptBottleneck(nn.Module):
             concept_probs=concept_probs,
             concept_embeddings=mix_probs,
             unknown_embedding=unknown_part,
-            unknown_embedding_detached=unknown_part_detached,
+            unknown_embedding_detached=unknown_head,
             bottleneck=used_known + used_unknown + used_residual,
             observability_logits=observability_logits,
             observability_probs=torch.sigmoid(observability_logits),
