@@ -807,31 +807,50 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
 
         Returns ``None`` when nothing in the chunk is labeled.
         """
-        flat_subjects = chunk.subject_ids.reshape(-1)
+        # .tolist() ONCE, not element-wise iteration: chunk.subject_ids
+        # lives on the GPU, and indexing a CUDA tensor per element forces a
+        # device sync each time. At 64 lanes x 512 positions that was 32,768
+        # syncs per training step and ran the whole run at 44% of the
+        # mixture arm's throughput.
+        subjects = chunk.subject_ids.reshape(-1).tolist()
         # cast, not dict(): the key type is a union here and rebuilding
         # the mapping just to satisfy it would copy it every chunk.
         lookup = cast("dict[object, torch.Tensor]", concept_labels)
         if supervision == "stay":
-            keys: list[object] = [int(s) for s in flat_subjects]
+            keys: list[object] = subjects
         else:
-            keys = [
-                (int(s), int(v))
-                for s, v in zip(flat_subjects, chunk.visit_ids.reshape(-1), strict=True)
-            ]
-        rows = [lookup.get(k) for k in keys]
-        present = next((r for r in rows if r is not None), None)
+            keys = list(
+                zip(subjects, chunk.visit_ids.reshape(-1).tolist(), strict=True)
+            )
+
+        # One row per DISTINCT key, then gather. A chunk holds at most a few
+        # dozen patients, so this stacks tens of rows rather than 32,768.
+        order: dict[object, int] = {}
+        index: list[int] = []
+        for key in keys:
+            slot = order.get(key)
+            if slot is None:
+                slot = len(order)
+                order[key] = slot
+            index.append(slot)
+        distinct = [lookup.get(k) for k in order]
+        present = next((r for r in distinct if r is not None), None)
         if present is None:
             return None
-        zeros = torch.zeros_like(present)
+
         device = chunk.batch.concept_ids.device
-        labels = torch.stack([r if r is not None else zeros for r in rows]).reshape(
-            *chunk.subject_ids.shape, present.shape[-1]
+        zeros = torch.zeros_like(present)
+        table = torch.stack([r if r is not None else zeros for r in distinct]).to(
+            device
         )
-        found = torch.tensor([r is not None for r in rows], device=device).reshape(
-            chunk.subject_ids.shape
+        found = torch.tensor([r is not None for r in distinct], device=device)
+        gather = torch.tensor(index, device=device)
+        shape = (*chunk.subject_ids.shape, present.shape[-1])
+        labels = table[gather].reshape(shape)
+        mask = (
+            found[gather].reshape(chunk.subject_ids.shape).unsqueeze(-1).expand(shape)
         )
-        mask = found.unsqueeze(-1).expand_as(labels)
-        return labels.to(device), mask
+        return labels, mask
 
     def compute_streaming_loss(
         self,

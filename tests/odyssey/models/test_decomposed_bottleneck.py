@@ -520,3 +520,44 @@ def test_mixture_displacement_lands_in_its_own_block() -> None:
         assert torch.equal(out[i, i * 4 : (i + 1) * 4], directions[i])
         assert out[i, : i * 4].abs().sum() == 0
         assert out[i, (i + 1) * 4 :].abs().sum() == 0
+
+
+def test_position_labels_are_correct_when_subjects_repeat() -> None:
+    """The gather path must agree with a naive per-position lookup.
+
+    Rows are stacked once per DISTINCT key and then gathered, because the
+    naive version indexed a CUDA tensor per position and cost 32,768
+    device syncs per training step. Repeats are the case that path exists
+    for, so they are the case worth pinning.
+    """
+    chunk = _streaming_chunk()._replace(
+        subject_ids=torch.tensor([[7, 7, 9]]),
+        visit_ids=torch.tensor([[1, 2, 1]]),
+    )
+    model = _decomposed_model(vocab=64)
+    labels = {7: torch.ones(K), 9: torch.full((K,), 2.0)}
+
+    got = model._streaming_position_labels(chunk, labels, "stay")
+    assert got is not None
+    values, mask = got
+    assert torch.equal(values[0, 0], torch.ones(K))
+    assert torch.equal(values[0, 1], torch.ones(K))  # same subject, same row
+    assert torch.equal(values[0, 2], torch.full((K,), 2.0))
+    assert bool(mask.all())
+
+
+def test_position_labels_key_on_the_visit_when_supervision_is_visit() -> None:
+    """Two visits of one subject must not collapse to a single row."""
+    chunk = _streaming_chunk()._replace(
+        subject_ids=torch.tensor([[7, 7, 7]]),
+        visit_ids=torch.tensor([[1, 2, 1]]),
+    )
+    model = _decomposed_model(vocab=64)
+    labels = {(7, 1): torch.ones(K), (7, 2): torch.zeros(K)}
+
+    got = model._streaming_position_labels(chunk, labels, "visit")
+    assert got is not None
+    values, _ = got
+    assert torch.equal(values[0, 0], torch.ones(K))
+    assert torch.equal(values[0, 1], torch.zeros(K))
+    assert torch.equal(values[0, 2], torch.ones(K))
