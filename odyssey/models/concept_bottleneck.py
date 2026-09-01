@@ -602,6 +602,16 @@ class AdditiveConceptBottleneck(nn.Module):
             return gram.new_zeros(())
         return gram[off_diagonal].abs().mean()
 
+    def unaccounted_orthogonality(self) -> torch.Tensor:
+        """Return the parameter-space penalty ``combined_loss`` cannot compute.
+
+        ``combined_loss`` derives orthogonality from the output tensors, and
+        this bottleneck has no per-concept embedding or unknown slot for it
+        to use, so the term it computes is structurally zero. The redundancy
+        that matters here lives in the parameters instead.
+        """
+        return self.direction_orthogonality()
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -650,3 +660,34 @@ class AdditiveConceptBottleneck(nn.Module):
             observability_probs=torch.sigmoid(observability_logits),
             bottleneck=bottleneck,
         )
+
+
+def fold_in_bottleneck_orthogonality(
+    bottleneck: nn.Module,
+    total: torch.Tensor,
+    components: dict[str, torch.Tensor],
+    weights: ConceptBottleneckLossWeights | None = None,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Add any orthogonality penalty ``combined_loss`` could not compute.
+
+    ``combined_loss`` derives its orthogonality term from the forward pass's
+    output tensors, which suits the mixture bottleneck and suits nothing
+    else: a design whose redundancy lives in its parameters rather than its
+    activations has no way to report it there. Rather than branch on the
+    bottleneck's type at every call site -- which would need editing for
+    each new variant -- every bottleneck exposes
+    ``unaccounted_orthogonality()`` and this folds the result in under the
+    same weight. A bottleneck whose penalty is already accounted for
+    returns zero and the total is unchanged.
+    """
+    penalty = getattr(bottleneck, "unaccounted_orthogonality", None)
+    if penalty is None:
+        return total, components
+    value = penalty()
+    if not bool(value.any()):
+        return total, components
+    weights = weights or ConceptBottleneckLossWeights()
+    return (
+        total + weights.orthogonality * value,
+        {**components, "orthogonality_loss": value.detach()},
+    )

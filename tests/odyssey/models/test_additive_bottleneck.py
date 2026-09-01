@@ -12,12 +12,16 @@ design promises, independent of the input, and the backbone representation
 survives so interpretability is not paid for in capacity.
 """
 
+import pytest
 import torch
 
+from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
 from odyssey.models.concept_bottleneck import (
     AdditiveConceptBottleneck,
     BottleneckIntervention,
+    ConceptBottleneck,
 )
+from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
 
 
 HIDDEN, K = 8, 3
@@ -109,3 +113,35 @@ def test_direction_orthogonality_is_width_agnostic_and_nonvacuous() -> None:
     with torch.no_grad():
         bn.concept_directions.copy_(torch.eye(K, HIDDEN))
     assert bn.direction_orthogonality().item() < 1e-6
+
+
+def test_sequence_model_can_be_built_with_either_bottleneck() -> None:
+    """The kind is selectable and the heads size themselves off its output."""
+    for kind in ("mixture", "additive"):
+        model = ConceptBottleneckSequenceModel(
+            backbone=TinyGRUBackbone(vocab_size=11, hidden_size=HIDDEN),
+            vocab_size=11,
+            num_concepts=K,
+            embedding_dim=4,
+            padding_idx=0,
+            bottleneck_kind=kind,
+        )
+        if kind == "additive":
+            assert isinstance(model.bottleneck, AdditiveConceptBottleneck)
+            assert model.lm_head.in_features == HIDDEN
+        else:
+            assert isinstance(model.bottleneck, ConceptBottleneck)
+            assert model.lm_head.in_features == K * 4 + 4
+
+
+def test_unknown_bottleneck_kind_is_rejected() -> None:
+    """An unrecognised kind fails at construction, not at first forward."""
+    with pytest.raises(ValueError, match="bottleneck_kind"):
+        ConceptBottleneckSequenceModel(
+            backbone=TinyGRUBackbone(vocab_size=11, hidden_size=HIDDEN),
+            vocab_size=11,
+            num_concepts=K,
+            embedding_dim=4,
+            padding_idx=0,
+            bottleneck_kind="nope",
+        )
