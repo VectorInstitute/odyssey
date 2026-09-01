@@ -517,3 +517,136 @@ def combined_loss(
         "observability_loss": obs_loss.detach(),
     }
     return total, components
+
+
+class AdditiveConceptBottleneck(nn.Module):
+    """A parametric, additive bottleneck: the backbone stream survives.
+
+    The mixture bottleneck of :class:`ConceptBottleneck` REPLACES the
+    representation every head sees with ``[z_1, ..., z_k, z_u]``, where each
+    ``z_i = p_i w_i^+ + (1 - p_i) w_i^-``. Two consequences follow, and both
+    are measured in this project. Capacity must be paid for out of the
+    concepts, and by default the poles are functions of the hidden state, so
+    overriding ``p_i`` only re-weights two vectors that already encode the
+    patient -- which is why the lever is inert.
+
+    This variant instead leaves the backbone representation intact and lets
+    each concept ADD a fixed direction to it::
+
+        out = h + sum_i p_i * v_i
+
+    with ``v_i`` a learned parameter, identical for every patient and
+    timestep. Two properties follow directly, and
+    ``tests/odyssey/models/test_additive_bottleneck.py`` pins both:
+
+    * **Steerable by construction.** Changing ``p_i`` by ``delta`` moves the
+      output by exactly ``delta * v_i``, a known displacement that does not
+      depend on ``h``. There is no context inside the thing the dial mixes,
+      so an override cannot be re-derived away.
+    * **No capacity is taken from the backbone.** ``h`` still reaches every
+      head, so interpretability is not paid for in accuracy. This is the
+      property the mixture design cannot offer and the reason to try it.
+
+    The completeness probes keep their meaning and become more symmetric:
+    ``zero_known`` drops the concept offset and leaves ``h``; ``zero_unknown``
+    drops ``h`` and leaves the concept offset alone, which is precisely "how
+    much task signal do the named concepts carry by themselves".
+
+    NOT YET WIRED INTO TRAINING. ``ConceptBottleneckSequenceModel`` still
+    constructs :class:`ConceptBottleneck`; selecting this one needs a config
+    flag and a decision about the orthogonality term (see
+    :meth:`direction_orthogonality`).
+    """
+
+    def __init__(
+        self,
+        hidden_size: int,
+        num_concepts: int,
+        *,
+        concept_dropout: float = 0.1,
+    ) -> None:
+        """Initialize the additive bottleneck."""
+        super().__init__()
+        if num_concepts <= 0:
+            raise ValueError("num_concepts must be positive")
+        self.hidden_size = hidden_size
+        self.num_concepts = num_concepts
+        # The representation handed to the heads is the backbone's own width:
+        # concepts add to it rather than replacing it.
+        self.output_dim = hidden_size
+
+        self.dropout = nn.Dropout(concept_dropout)
+        self.concept_prob_proj = nn.Linear(hidden_size, num_concepts)
+        self.observability_proj = nn.Linear(hidden_size, num_concepts)
+        # One global direction per concept. Patient-independent BY DESIGN --
+        # that is the whole point, and what makes an override mean the same
+        # thing for every patient.
+        self.concept_directions = nn.Parameter(torch.empty(num_concepts, hidden_size))
+        nn.init.xavier_uniform_(self.concept_directions)
+
+    def direction_orthogonality(self) -> torch.Tensor:
+        """Mean absolute cosine similarity between distinct concept directions.
+
+        The additive analogue of :func:`orthogonality_loss`. There is no
+        unknown slot to be redundant with here, so the meaningful redundancy
+        is between the concepts themselves: two concepts pointing the same
+        way are not separately steerable. Width-agnostic, unlike the mixture
+        version, so it cannot go silently inert.
+        """
+        directions = F.normalize(self.concept_directions, dim=-1)
+        gram = directions @ directions.T
+        off_diagonal = ~torch.eye(
+            self.num_concepts, dtype=torch.bool, device=gram.device
+        )
+        if not bool(off_diagonal.any()):
+            return gram.new_zeros(())
+        return gram[off_diagonal].abs().mean()
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        intervention: BottleneckIntervention | None = None,
+    ) -> ConceptBottleneckOutput:
+        """Add each concept's global direction, scaled by its probability."""
+        x = self.dropout(hidden_states)
+        concept_logits = self.concept_prob_proj(x)
+        concept_probs = torch.sigmoid(concept_logits)
+
+        mix_probs = concept_probs
+        if intervention is not None and intervention.probs is not None:
+            override = intervention.probs.to(concept_probs.dtype).expand_as(
+                concept_probs
+            )
+            apply = intervention_apply_mask(intervention, concept_probs)
+            if apply is not None:
+                override = torch.where(apply, override, concept_probs)
+            mix_probs = override
+
+        offset = mix_probs @ self.concept_directions
+        residual = hidden_states
+        if intervention is not None and intervention.zero_known:
+            offset = torch.zeros_like(offset)
+        if intervention is not None and intervention.zero_unknown:
+            residual = torch.zeros_like(residual)
+        bottleneck = residual + offset
+
+        observability_logits: torch.Tensor = self.observability_proj(x)
+
+        # The per-concept contribution is p_i * v_i, of shape
+        # (..., k, hidden_size). Materializing it would cost roughly a
+        # gigabyte at our training geometry (64 lanes x 512 chunk x 29
+        # concepts x 256 dims), so we report the scalar coefficient instead
+        # and leave the unknown slot empty: this design has no separate
+        # residual embedding, the backbone stream IS the residual. The
+        # differing last dimensions also make the mixture-specific
+        # orthogonality_loss return zero rather than misbehave; use
+        # direction_orthogonality() instead.
+        return ConceptBottleneckOutput(
+            concept_logits=concept_logits,
+            concept_probs=concept_probs,
+            concept_embeddings=mix_probs.unsqueeze(-1),
+            unknown_embedding=hidden_states.new_zeros((*hidden_states.shape[:-1], 0)),
+            observability_logits=observability_logits,
+            observability_probs=torch.sigmoid(observability_logits),
+            bottleneck=bottleneck,
+        )
