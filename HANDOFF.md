@@ -13,6 +13,79 @@ carries three do-not-submit / frozen markers), then `docs/experiment_plan.md`
 
 ---
 
+## 0. MORNING BRIEFING (odyssey-7d, overnight 2026-08-31/09-01)
+
+**Paper status: all four `[TBD]` appendices are filled, zero remain. Build is
+clean at 18 pages, body ends p8, References tops p9, no LaTeX errors, no
+undefined citations.** `paper/` is gitignored, so all paper work lives in the
+working tree only.
+
+### What landed while you were away
+
+**`tab:eicu` is real v4 data.** It had carried subset-scale placeholders all
+along. Now generated from R6's `alerts.json` via
+`scripts/make_comparator_tables.py`. The hazard heads lose all twelve cells,
+which is what the body already claimed.
+
+**Four appendices written, all generated or sourced, none transcribed:**
+* *Concept Registry* — built from `odyssey.data.concepts`, so it cannot drift
+  from what was trained. It independently reproduces the body's own counts
+  (29 MIMIC, 26 resolving on eICU), which is a free cross-check.
+* *Audit Chronology* — eight defects with measured effects and a direction
+  column. Note the KDIGO fix is the only defect that moved numbers in our
+  favour, and it helped the GBM more than our heads (0.020 vs 0.039), so
+  completing that label NARROWED our deficit.
+* *Intervention details* — the W3 band sweep, below.
+* *Baselines and inference* — panel/search configs, SurvivalPFN degeneracy
+  guards, and why we never infer separation from overlapping marginals.
+
+**The displacement-asymmetry confound is closed, and more firmly than the
+earlier argument.** Full sweep on R6:
+
+| Band | Coverage | Disp. truth/flip | Asym. | truth−flip |
+|---|---|---|---|---|
+| 0.02 | 64.4% | 0.4997/0.5003 | +0.0006 | +0.154 |
+| 0.10 | 99.3% | 0.4935/0.5065 | +0.0131 | +0.526 |
+| 0.15 | 100.0% | 0.4870/0.5130 | +0.0259 | +0.535 |
+| 0.20 | 100.0% | 0.4796/0.5204 | +0.0407 | +0.521 |
+
+The weak argument is "separation survives at near-zero asymmetry". The strong
+one is the last three rows: **asymmetry triples from band 0.10 to 0.20 while
+separation stays flat.** An asymmetry-driven separation would grow with it.
+This one saturates when COVERAGE does, so the band is a coverage control, not
+an asymmetry control.
+
+**R8 finished** (47,750 steps, best_val 2.1362) and its chain auto-launched at
+`ALERT_SHARDS=37`, coverage-matched to R2. Global pairs cost **0.081 nats on
+MIMIC against 0.253 on eICU** — about 3x cheaper on the dataset carrying the
+wrong-sign headline, so the lever/capability trade is not a fixed property of
+the architecture.
+
+**The additive bottleneck is implemented, tested, wired and TRAINING** (see §0b).
+
+### What still needs YOU
+
+1. **D5 abstract decision** — unchanged, still owed, now with eICU CIs in hand
+   (§1ba). MIMIC's CIs arrive when R8's chain finishes.
+2. **The "five baseline families" claim** after EBM/SurvivalPFN came out of the
+   v4 tables. Coupled to D5.
+3. **D6: the anonymised repo URL is a placeholder** and must be created before
+   submission.
+4. **GEMINI REB reference** — still BLOCKING-VERIFY.
+
+### Traps I hit that would silently corrupt output
+
+* `\input` of a bare row body inside a `tabular` breaks alignment scanning.
+  The generator now emits complete tabulars.
+* `<`, `>`, `^` in rule text are math-mode characters: they render as inverted
+  punctuation rather than erroring.
+* A float cannot break across pages; a 29-row table silently drops rows.
+* My section-replacement helper **truncated `\end{document}`** when the target
+  section was last in the file. Caught from the build; all sections intact.
+  There is no git safety net for `paper/`.
+
+---
+
 ## 1. Running right now — do not disturb, one GPU job per card
 
 | What | Host | Started | Expect | Watch |
