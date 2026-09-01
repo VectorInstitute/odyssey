@@ -56,6 +56,24 @@ claims: seed replicates or they are labeled hypotheses.
   steps; 2.2677 vs 2.0148), so the global-pairs capability cost is
   visible in the optimisation itself at full scale, larger than subset
   L1 suggested. Registered in docs/experiments.md.
+- **LN arm** `eicu_full_LN_v10` (VM2): LAUNCHED 00:12 UTC Sep 1 by
+  odyssey-7d at 7e1c5db. R9's config with `unknown_dim: null -> 8` as the
+  ONLY change (verified by config diff), i.e. global pairs PLUS a narrowed
+  residual. Amrit-directed after the R9-vs-R6 completeness reversal
+  suggested the residual is an escape hatch: freezing the concept vectors
+  made the model push signal INTO the residual (zero_unknown retains 53.0%
+  on R9 vs 100.7% on R6) rather than use concepts more causally. Question:
+  does closing that hatch buy steerability, and at what accuracy cost?
+  PRIOR EVIDENCE, subset scale, MIMIC: L3 = L1+unknown_dim 8 and L4 =
+  L1+unknown_dim 1 already ran this. Applied-only truth-flip separation
+  rises L1 +0.28 -> L3 +0.88 -> L4 +2.83 while set top-1 falls 75.3 ->
+  75.0 -> 74.2, so roughly 10x the lever for about a point of accuracy.
+  CONFOUND to control: `orthogonality_loss` returns exactly zero whenever
+  `unknown_dim != embedding_dim` (documented behaviour, the width cap
+  replaces the penalty), so L1-vs-L3/L4 and R9-vs-LN each change the
+  penalty as well as the width. Interpret as "narrow residual as a
+  package", not as an isolated width effect, until a control run separates
+  them.
 - **R9 eval chain** (VM2): LAUNCHED 18:07:44 UTC Aug 31 by odyssey-7d,
   checkout b99be32 (floor >=8161e19 verified, imports smoke-tested, no
   uv sync). STREAM_BASELINE=1, LANES=64. Produces Guide Labs modes,
