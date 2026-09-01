@@ -618,11 +618,47 @@ def build_model(
         event_names=event_names,
         event_head_hidden=event_head_hidden,
         concept_global_pairs=bool(getattr(config, "concept_global_pairs", False)),
-        unknown_dim=getattr(config, "unknown_dim", None),
+        unknown_dim=_checked_unknown_dim(config),
         value_head=bool(getattr(config, "value_head", False)),
         value_head_hidden=int(getattr(config, "value_head_hidden", 0) or 0),
         source=getattr(config, "source", "mimic_iv"),
     )
+
+
+def _checked_unknown_dim(config: TrainingConfig) -> int | None:
+    """Return ``config.unknown_dim``, warning if it silently voids the penalty.
+
+    ``orthogonality_loss`` compares a known concept's embedding against the
+    unknown slot's by cosine similarity, which is undefined when the two
+    have different widths; it returns exactly zero in that case, by design
+    (the width cap becomes the leakage control instead). The trap is that
+    the term then vanishes *silently* while ``orthogonality_weight`` still
+    reads as nonzero in the config and the run still logs an
+    ``orthogonality_loss`` of 0.0 as though it were being optimized. Any
+    sweep over ``unknown_dim`` therefore changes TWO things at once unless
+    the weight is zeroed everywhere, which cost us a confounded comparison
+    across the L1/L3/L4 arms. Warn loudly rather than let the next sweep
+    inherit the same silence.
+    """
+    unknown_dim = getattr(config, "unknown_dim", None)
+    weight = float(getattr(config, "orthogonality_weight", 0.0) or 0.0)
+    if (
+        unknown_dim is not None
+        and int(unknown_dim) != int(config.embedding_dim)
+        and weight > 0
+    ):
+        logger.warning(
+            "[bottleneck] orthogonality_weight=%.3g is INERT: unknown_dim=%d "
+            "!= embedding_dim=%d, so orthogonality_loss returns 0 by "
+            "construction. This run is effectively unpenalized. For a clean "
+            "unknown_dim sweep set orthogonality_weight=0.0 at EVERY point, "
+            "including unknown_dim == embedding_dim, or the endpoint is the "
+            "only penalized arm.",
+            weight,
+            int(unknown_dim),
+            int(config.embedding_dim),
+        )
+    return unknown_dim
 
 
 def build_objective(
