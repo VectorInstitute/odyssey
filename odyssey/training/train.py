@@ -69,7 +69,10 @@ from odyssey.data.streaming import PackedLaneSampler
 from odyssey.data.value_binning import CLIP_TAIL, QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import PAD_ID, Vocabulary
 from odyssey.models.backbones.base import TimeAwareState
-from odyssey.models.concept_bottleneck import ConceptBottleneckLossWeights
+from odyssey.models.concept_bottleneck import (
+    ConceptBottleneckLossWeights,
+    annealed_alpha,
+)
 from odyssey.models.sequence_model import (
     BaselineSequenceModel,
     ConceptBottleneckSequenceModel,
@@ -180,9 +183,22 @@ class TrainingConfig:
     :mod:`odyssey.data.sidecars`)."""
     concept_global_pairs: bool = False
     bottleneck_kind: str = "mixture"
-    """'mixture' (CEM-style per-concept embedding pairs) or 'additive'
-    (concepts add a global direction to an untouched backbone stream).
-    'additive' ignores embedding_dim/unknown_dim/concept_global_pairs."""
+    """'mixture' (CEM-style per-concept embedding pairs) or 'decomposed'
+    (Steerling: h splits into known concepts, unknown concepts and a
+    residual). 'decomposed' ignores embedding_dim, unknown_dim and
+    concept_global_pairs, and uses unknown_ratio/unknown_rank/
+    residual_dropout instead."""
+    unknown_ratio: int = 3
+    """Decomposed bottleneck: m = unknown_ratio * n unknown concepts."""
+    unknown_rank: int | None = None
+    """Decomposed bottleneck: factorize U = A @ B at this rank, or None
+    for the full matrix. Steerling factorizes because m is 101k; at our
+    n a full matrix is a few tens of thousands of parameters."""
+    residual_dropout: float = 0.1
+    """Decomposed bottleneck: dropout on the unexplained residual eps
+    during training (Steerling's p_eps). This is the direct counter-
+    pressure to residual domination; they raise it to 0.3 when
+    tightening a trained model."""
     """Leakage control: input-independent (w+, w-) per known concept, so a
     concept slot carries only its probability (see ConceptBottleneck)."""
     unknown_dim: int | None = None
@@ -242,6 +258,23 @@ class TrainingConfig:
     concept_weight: float = 1.0
     orthogonality_weight: float = 0.1
     observability_weight: float = 0.1
+    teacher_known_start: float = 0.0
+    teacher_known_end: float = 0.0
+    teacher_unknown_start: float = 0.0
+    teacher_unknown_end: float = 0.0
+    teacher_anneal_steps: int = 4500
+    """Steerling's concept teacher forcing, off by default so an existing
+    config keeps its behaviour. Their known head anneals 1.0 -> 0.5
+    (cosine) over the first 10% of steps. Their unknown head is described
+    as annealing FROM 1 in the prose and as 0.0 -> 0.5 in Table 26; the
+    two disagree, so both endpoints are explicit here and whichever is
+    used gets recorded with the run. The ramp length is absolute because
+    this loop never knows max_steps; 4,500 is their tenth at our run
+    lengths."""
+    reconstruction_weight: float = 1.0
+    """Decomposed bottleneck only: Steerling's lambda_rec."""
+    independence_weight: float = 1.0
+    """Decomposed bottleneck only: Steerling's lambda_indep."""
     task_weight: float = 1.0
     """Weight of the forecasting (task) loss; see
     ConceptBottleneckLossWeights.task. 0.0, paired with init_from and
@@ -624,6 +657,9 @@ def build_model(
         concept_global_pairs=bool(getattr(config, "concept_global_pairs", False)),
         unknown_dim=_checked_unknown_dim(config),
         bottleneck_kind=str(getattr(config, "bottleneck_kind", "mixture")),
+        unknown_ratio=int(getattr(config, "unknown_ratio", 3)),
+        unknown_rank=getattr(config, "unknown_rank", None),
+        residual_dropout=float(getattr(config, "residual_dropout", 0.1)),
         value_head=bool(getattr(config, "value_head", False)),
         value_head_hidden=int(getattr(config, "value_head_hidden", 0) or 0),
         source=getattr(config, "source", "mimic_iv"),
@@ -1249,6 +1285,8 @@ def _run_training(  # noqa: PLR0912, PLR0915
         orthogonality=config.orthogonality_weight,
         observability=config.observability_weight,
         task=config.task_weight,
+        reconstruction=config.reconstruction_weight,
+        independence=config.independence_weight,
         concept_pos_weight=pos_weight,
     )
 
@@ -1369,6 +1407,19 @@ def _run_training(  # noqa: PLR0912, PLR0915
                     intervention=intervention,
                     objective=objective,
                     event_targets=event_targets,
+                    teacher_alpha_known=annealed_alpha(
+                        global_step,
+                        config.teacher_anneal_steps,
+                        start=config.teacher_known_start,
+                        end=config.teacher_known_end,
+                        cosine=True,
+                    ),
+                    teacher_alpha_unknown=annealed_alpha(
+                        global_step,
+                        config.teacher_anneal_steps,
+                        start=config.teacher_unknown_start,
+                        end=config.teacher_unknown_end,
+                    ),
                 )
             optimizer.zero_grad()
             total.backward()  # type: ignore[no-untyped-call]

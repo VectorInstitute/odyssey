@@ -114,9 +114,9 @@ def _require_mixture_bottleneck(model: object) -> ConceptBottleneck:
 
     Every routine in this module decomposes the LM head over per-concept
     embedding blocks and a trailing unknown slot, which only
-    :class:`ConceptBottleneck` has. An additive bottleneck adds directions to
-    the backbone stream, so there are no blocks to slice and the
-    decomposition is undefined rather than merely different. Slicing a
+    :class:`ConceptBottleneck` has. A decomposed bottleneck sums whole-width
+    concept embeddings into one vector, so there are no blocks to slice
+    and this decomposition is undefined rather than merely different. Slicing a
     stream into imaginary blocks would yield confident, meaningless
     attributions, so refuse with an explanation instead.
     """
