@@ -10,6 +10,7 @@ import pytest
 from scripts.make_comparator_tables import (
     _bold_targets,
     build_rows,
+    check_row_sets,
     load_alerts,
     load_matched,
     load_tabicl,
@@ -110,11 +111,11 @@ def test_tabicl_column_is_added_when_supplied(tmp_path: Path) -> None:
         "t.json",
         {"death@8h": {"tabicl": {"point_estimate": 0.97}}},
     )
-    tabicl = load_tabicl(tabicl_path)
+    tabicl, _ = load_tabicl(tabicl_path)
     rows, notes = build_rows(cells, tabicl, {})
     # The column is present, so no ABSENT note. (A PARTIAL note IS expected
     # here and is asserted separately: this fixture covers one of two cells.)
-    assert not any("ABSENT" in n for n in notes)
+    assert not any("column absent" in n for n in notes)
     death_row = next(r for r in rows if "Death" in r)
     # TabICL leads this cell, so it takes the bold
     assert "\\textbf{0.970}" in death_row
@@ -128,7 +129,7 @@ def test_partial_tabicl_coverage_is_reported(tmp_path: Path) -> None:
     cell, so pointing at a still-running job produces exactly this.
     """
     cells, _ = load_alerts(_write(tmp_path, "a.json", _alerts_records()))
-    tabicl = load_tabicl(
+    tabicl, _ = load_tabicl(
         _write(tmp_path, "t.json", {"death@8h": {"tabicl": {"point_estimate": 0.97}}})
     )
     _, notes = build_rows(cells, tabicl, {})
@@ -140,7 +141,7 @@ def test_partial_tabicl_coverage_is_reported(tmp_path: Path) -> None:
 
 def test_complete_tabicl_coverage_reports_no_partial_warning(tmp_path: Path) -> None:
     cells, _ = load_alerts(_write(tmp_path, "a.json", _alerts_records()))
-    tabicl = load_tabicl(
+    tabicl, _ = load_tabicl(
         _write(
             tmp_path,
             "t.json",
@@ -157,7 +158,7 @@ def test_complete_tabicl_coverage_reports_no_partial_warning(tmp_path: Path) -> 
 def test_absent_tabicl_reports_absent_not_partial(tmp_path: Path) -> None:
     cells, _ = load_alerts(_write(tmp_path, "a.json", _alerts_records()))
     _, notes = build_rows(cells, {}, {})
-    assert any("ABSENT" in n for n in notes)
+    assert any("column absent" in n for n in notes)
     assert not any("PARTIAL" in n for n in notes)
 
 
@@ -339,3 +340,35 @@ def test_the_delta_examined_is_the_leader_against_the_runner_up() -> None:
 def test_a_single_scored_column_is_bolded_without_a_delta() -> None:
     """There is no runner-up to separate from."""
     assert _bold_targets({"hazard": 0.9}, {"paired_deltas": {}}) == {"hazard"}
+
+
+def test_tabicl_from_a_different_row_set_is_refused() -> None:
+    """A subsample AUROC must never land beside a full-coverage n.
+
+    This is the coverage-mismatch trap the script's own "pass --tabicl"
+    note used to invite on a full-coverage table.
+    """
+    cells: dict[str, dict[str, object]] = {
+        "acute_kidney_injury@8h": {"n": 451_747},
+        "death@8h": {"n": 621_125},
+    }
+    with pytest.raises(SystemExit) as excinfo:
+        check_row_sets(cells, {"acute_kidney_injury@8h": 79_389, "death@8h": 621_125})
+    message = str(excinfo.value)
+    assert "451,747" in message and "79,389" in message
+    assert "--matched" in message
+    # Only the offending cell is named; the agreeing one is not noise.
+    assert "death@8h" not in message
+
+
+def test_matching_row_sets_are_allowed() -> None:
+    """The guard must not fire when the coverages genuinely agree."""
+    cells: dict[str, dict[str, object]] = {"death@8h": {"n": 621_125}}
+    check_row_sets(cells, {"death@8h": 621_125})
+
+
+def test_unknown_row_count_is_not_treated_as_a_mismatch() -> None:
+    """A missing n is unknown, not evidence of disagreement."""
+    cells: dict[str, dict[str, object]] = {"death@8h": {"n": None}}
+    check_row_sets(cells, {"death@8h": 621_125})
+    check_row_sets({"death@8h": {"n": 621_125}}, {"death@8h": None})
