@@ -699,6 +699,24 @@ def _checked_unknown_dim(config: TrainingConfig) -> int | None:
             int(unknown_dim),
             int(config.embedding_dim),
         )
+    if (
+        str(getattr(config, "bottleneck_kind", "mixture")) == "decomposed"
+        and weight > 0
+    ):
+        # Same silent zero, different cause: combined_loss derives its
+        # orthogonality term from the mixture's per-concept embedding
+        # blocks, which the decomposition does not produce, so the term is
+        # structurally 0 there too. independence_weight is the knob that
+        # actually controls known/unknown redundancy in that design.
+        logger.warning(
+            "[bottleneck] orthogonality_weight=%.3g is INERT for "
+            "bottleneck_kind='decomposed': that term is defined over the "
+            "mixture's per-concept embedding blocks and returns 0 here. Use "
+            "independence_weight, which penalizes known/unknown redundancy "
+            "on activations, and set orthogonality_weight=0.0 so the logs "
+            "stop implying an active penalty.",
+            weight,
+        )
     return unknown_dim
 
 
