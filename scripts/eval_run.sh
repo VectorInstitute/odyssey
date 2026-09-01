@@ -90,9 +90,13 @@ stage eval "$PYTHON" -m odyssey.inference.run_inference --run-dir "$RUN_DIR" --h
 # happened to the first decomposed-bottleneck run on 2026-09-01.
 BOTTLENECK_KIND=$("$PYTHON" -c "import json,sys;print(json.load(open(sys.argv[1])).get('bottleneck_kind','mixture'))" "$RUN_DIR/config.json" 2>/dev/null || echo mixture)
 if [ "$BOTTLENECK_KIND" = "decomposed" ]; then
-  INTERVENTION_MODES="none truth flip flip_gated random zero_known zero_unknown"
-  CALIBRATED_ARGS=""
-  echo "=== NOTE: bottleneck_kind=decomposed; dropping the output-calibrated modes and the attribution stage (both need the mixture bottleneck's per-concept LM-head blocks) ==="
+  # The calibrated modes ARE defined here: a unit of k_i adds K_i, so the
+  # per-token logit shift is K_i projected through the head, no estimation
+  # pass needed. Only the attribution stage is genuinely undefined, since
+  # it slices the head into per-concept blocks this design does not have.
+  INTERVENTION_MODES="none truth flip flip_gated truth_calibrated flip_calibrated random zero_known zero_unknown"
+  CALIBRATED_ARGS="--calibrated-tau 1.0"
+  echo "=== NOTE: bottleneck_kind=decomposed; keeping the output-calibrated modes and skipping only the attribution stage (that one needs per-concept LM-head blocks) ==="
 else
   INTERVENTION_MODES="none truth flip flip_gated truth_calibrated flip_calibrated random zero_known zero_unknown"
   CALIBRATED_ARGS="--calibrated-tau 1.0"

@@ -547,13 +547,21 @@ def evaluate_interventions(
     calibration_gammas: torch.Tensor | None = None
     gamma_by_name: dict[str, float] | None = None
     if any(m in CALIBRATED_MODES for m in modes):
-        directions = mean_concept_directions(
-            model,
-            events_binned,
-            vocab,
-            num_lanes=num_lanes,
-            chunk_size=chunk_size,
-            device=device,
+        # Only a bottleneck whose per-unit displacement is data dependent
+        # needs the estimation pass. The decomposition's displacement is a
+        # parameter, so asking for directions there would be a forward
+        # pass over the whole split to recover something already stored.
+        directions = (
+            mean_concept_directions(
+                model,
+                events_binned,
+                vocab,
+                num_lanes=num_lanes,
+                chunk_size=chunk_size,
+                device=device,
+            )
+            if getattr(model.bottleneck, "needs_calibration_directions", True)
+            else None
         )
         calibration_gammas = calibrated_gammas(model, directions, tau=calibrated_tau)
         gamma_by_name = {

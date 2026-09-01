@@ -20,6 +20,7 @@ import torch
 
 from odyssey.data.streaming import StreamingChunk
 from odyssey.data.types import AuxiliaryInputs, ClinicalSequenceBatch
+from odyssey.inference.concept_attribution import calibrated_gammas
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
 from odyssey.models.concept_bottleneck import (
     BottleneckIntervention,
@@ -459,3 +460,63 @@ def test_streaming_teacher_returns_none_when_nothing_is_labeled() -> None:
     """No labels at all means no substitution, not a tensor of zeros."""
     model = _decomposed_model(vocab=64)
     assert model._streaming_position_labels(_streaming_chunk(), {}, "stay") is None
+
+
+def test_unit_displacement_is_the_concept_embedding() -> None:
+    """One unit of k_i adds exactly K_i to h_bar.
+
+    This is what makes output calibration definable here without a data
+    pass: the mixture's displacement is (w+ - w-), a function of the
+    hidden state, and has to be estimated; this one is a parameter.
+    """
+    bn = _bottleneck()
+    assert torch.equal(bn.unit_displacements(), bn.known_embeddings.detach())
+    assert bn.needs_calibration_directions is False
+
+
+def test_unit_displacement_predicts_the_actual_movement() -> None:
+    """The interface must agree with what the forward pass really does."""
+    bn = _bottleneck()
+    h = torch.randn(4, HIDDEN)
+    disp = bn.unit_displacements()
+    for concept in range(K):
+        moved = (
+            _override(bn, h, 1.0, concept=concept).bottleneck
+            - _override(bn, h, 0.0, concept=concept).bottleneck
+        )
+        assert torch.allclose(moved[0], disp[concept], atol=1e-5), concept
+
+
+def test_calibrated_gammas_need_no_directions_for_the_decomposition() -> None:
+    """Equal peak logit shift per concept, computed from parameters alone."""
+    model = _decomposed_model(vocab=32)
+    gammas = calibrated_gammas(model, None, tau=1.0)
+    assert gammas.shape == (K,)
+    assert bool((gammas > 0).all())
+
+    # gamma_i = tau / peak_i, so displacing p_i by gamma_i must move every
+    # concept's largest logit by the same tau.
+    weight = model.lm_head.weight.detach().double()
+    shifts = model.bottleneck.unit_displacements().to(weight) @ weight.T
+    peak_shift = (shifts * gammas.unsqueeze(1)).abs().amax(dim=1)
+    assert torch.allclose(peak_shift, torch.ones(K, dtype=peak_shift.dtype), atol=1e-8)
+
+
+def test_mixture_still_requires_its_measured_directions() -> None:
+    """The mixture's displacement is data dependent and must say so."""
+    bn = ConceptBottleneck(hidden_size=HIDDEN, num_concepts=K, embedding_dim=4)
+    assert bn.needs_calibration_directions is True
+    with pytest.raises(ValueError, match="data.*dependent"):
+        bn.unit_displacements(None)
+
+
+def test_mixture_displacement_lands_in_its_own_block() -> None:
+    """Scattering keeps each concept's move inside the block it owns."""
+    bn = ConceptBottleneck(hidden_size=HIDDEN, num_concepts=K, embedding_dim=4)
+    directions = torch.arange(K * 4, dtype=torch.float32).reshape(K, 4) + 1.0
+    out = bn.unit_displacements(directions)
+    assert out.shape == (K, bn.output_dim)
+    for i in range(K):
+        assert torch.equal(out[i, i * 4 : (i + 1) * 4], directions[i])
+        assert out[i, : i * 4].abs().sum() == 0
+        assert out[i, (i + 1) * 4 :].abs().sum() == 0

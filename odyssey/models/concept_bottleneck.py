@@ -352,6 +352,32 @@ class ConceptBottleneck(nn.Module):
         directions: torch.Tensor = known_ctx[..., 0, :] - known_ctx[..., 1, :]
         return directions
 
+    needs_calibration_directions = True
+    """Output calibration needs the ``(w+ - w-)`` directions measured over
+    data: the poles are functions of the hidden state unless
+    ``global_pairs``, so the displacement per unit of probability is not a
+    parameter and has to be estimated."""
+
+    def unit_displacements(self, directions: torch.Tensor | None) -> torch.Tensor:
+        """(k, output_dim) added to the bottleneck output per unit of ``p_i``.
+
+        Concept ``i`` owns one embedding block of the concatenation, so a
+        unit of its probability moves only that block, by
+        ``(w+ - w-)_i``. Scattering the directions into their blocks lets
+        output calibration project them through the LM head without
+        knowing how this bottleneck is laid out.
+        """
+        if directions is None:
+            raise ValueError(
+                "the mixture bottleneck's per-unit displacement is data "
+                "dependent; pass mean_concept_directions(...) output"
+            )
+        k, d = self.num_concepts, self.embedding_dim
+        out = directions.new_zeros((k, self.output_dim))
+        for i in range(k):
+            out[i, i * d : (i + 1) * d] = directions[i]
+        return out
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -771,6 +797,21 @@ class DecomposedConceptBottleneck(nn.Module):
     def known_contribution(self, probs: torch.Tensor) -> torch.Tensor:
         """``k_hat`` for given activations: Equation (7)'s known half."""
         return probs @ self.known_embeddings
+
+    needs_calibration_directions = False
+    """Output calibration needs no data pass here: a unit of ``k_i`` adds
+    exactly ``K_i``, which is a parameter."""
+
+    def unit_displacements(
+        self, directions: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """(k, hidden_size) added to ``h_bar`` per unit of ``k_i``: ``K_i``.
+
+        ``directions`` is accepted and ignored so both bottlenecks present
+        one interface; it is meaningless here because the displacement is
+        a parameter rather than an estimate.
+        """
+        return self.known_embeddings.detach()
 
     def unaccounted_orthogonality(self) -> torch.Tensor:
         """No parameter-space penalty: redundancy is handled by a loss.
