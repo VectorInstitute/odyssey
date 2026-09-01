@@ -79,6 +79,65 @@ def _dumped(column: str) -> bool:
     )
 
 
+def landmark_keys(rows: list[Any]) -> pl.DataFrame:
+    """Build the (subject, visit, time) key frame for a set of landmark rows."""
+    return pl.DataFrame(
+        {
+            "subject_id": [float(r.subject_id) for r in rows],
+            "visit_id": [float(r.visit_id) for r in rows],
+            "time_hours": [r.time_hours for r in rows],
+        }
+    )
+
+
+def tabicl_columns(
+    event: str,
+    train_rows: list[Any],
+    train: Any,
+    held_features: Any,
+    keys: pl.DataFrame,
+    *,
+    source: str,
+    offload_mode: str,
+) -> tuple[pl.DataFrame, float, dict[float, float]]:
+    """Fit TabICL for one event and score every horizon onto ``keys``.
+
+    Each model is dropped as soon as it has been scored (the same
+    discipline as scripts/rescore_extra_baselines.py): at the strong
+    panel's width these do not comfortably co-exist in RAM.
+    """
+    t0 = time.time()
+    models = fit_tabicl_baselines(
+        pl.DataFrame(),
+        {event: train_rows},
+        {event: train.times[event]},
+        horizons=HORIZONS,
+        source=source,
+        feature_set="strong",
+        features={event: train.features["strong"][event]},
+        offload_mode=offload_mode,
+    )
+    fit_s = time.time() - t0
+    logger.info("fit %s: %d models in %.0fs", event, len(models), fit_s)
+
+    predict_s: dict[float, float] = {}
+    for horizon in HORIZONS:
+        model = models.pop((event, horizon), None)
+        if model is None:
+            continue
+        t0 = time.time()
+        proba = model.predict_proba(held_features)
+        predict_s[horizon] = time.time() - t0
+        del model
+        gc.collect()
+        keys = keys.with_columns(
+            pl.Series(f"tabicl@{horizon:g}h", [float(v) for v in proba])
+        )
+    del models
+    gc.collect()
+    return keys, fit_s, predict_s
+
+
 def join_matched_rows(
     dump: pl.DataFrame, scored: pl.DataFrame, event: str
 ) -> pl.DataFrame:
@@ -229,21 +288,27 @@ def main() -> None:  # noqa: PLR0915  (argparse + pipeline wiring, not logic)
     if args.only_event:
         alerts = [a for a in alerts if a.name == args.only_event]
 
-    t0 = time.time()
-    logger.info("preparing %d train shard(s)", args.max_train_shards)
-    train = prepare_baseline_data(
-        shard_paths(args.train_shard_dir, max_shards=args.max_train_shards),
-        prepare,
-        binner,
-        alerts=alerts,
-        feature_sets=("strong",),
-        source=source,
-        landmark_hours=args.landmark_hours,
-        task_set=task_set,
-    )
-    logger.info("train prep done in %.0fs", time.time() - t0)
-    for name, rows in train.rows.items():
-        logger.info("  train candidate rows %s: %d", name, len(rows))
+    # The training panel exists only to fit TabICL, and it is the larger of
+    # the two preps (8 shards against 4, ~600 float columns each). Skipping
+    # it under --skip-tabicl is most of what makes that mode cheap enough
+    # to run beside another job.
+    train = None
+    if not args.skip_tabicl:
+        t0 = time.time()
+        logger.info("preparing %d train shard(s)", args.max_train_shards)
+        train = prepare_baseline_data(
+            shard_paths(args.train_shard_dir, max_shards=args.max_train_shards),
+            prepare,
+            binner,
+            alerts=alerts,
+            feature_sets=("strong",),
+            source=source,
+            landmark_hours=args.landmark_hours,
+            task_set=task_set,
+        )
+        logger.info("train prep done in %.0fs", time.time() - t0)
+        for name, rows in train.rows.items():
+            logger.info("  train candidate rows %s: %d", name, len(rows))
 
     t0 = time.time()
     logger.info("preparing %d held-out shard(s)", args.max_held_out_shards)
@@ -265,57 +330,30 @@ def main() -> None:  # noqa: PLR0915  (argparse + pipeline wiring, not logic)
     dumps: list[pl.DataFrame] = []
     for alert in alerts:
         event = alert.name
-        rows = train.rows.get(event, [])
         held_rows = held.rows.get(event, [])
-        if not rows or not held_rows:
+        rows = [] if train is None else train.rows.get(event, [])
+        if not held_rows or (train is not None and not rows):
             continue
-
-        models: dict[tuple[str, float], Any] = {}
-        fit_s = 0.0
-        if not args.skip_tabicl:
-            t0 = time.time()
-            models = fit_tabicl_baselines(
-                pl.DataFrame(),
-                {event: rows},
-                {event: train.times[event]},
-                horizons=HORIZONS,
-                source=source,
-                feature_set="strong",
-                features={event: train.features["strong"][event]},
-                offload_mode=args.offload_mode,
-            )
-            fit_s = time.time() - t0
-            logger.info("fit %s: %d models in %.0fs", event, len(models), fit_s)
 
         held_feats = held.features["strong"][event]
         existing_ev = existing.filter(pl.col("event") == event)
-
         # Predict every horizon first, then join ONCE. The join is what
         # defines the row set the scorers share, so joining per horizon
         # would make "hazard, GBM and TabICL saw the same rows" three
         # separate assertions instead of one.
-        new_cols = pl.DataFrame(
-            {
-                "subject_id": [float(r.subject_id) for r in held_rows],
-                "visit_id": [float(r.visit_id) for r in held_rows],
-                "time_hours": [r.time_hours for r in held_rows],
-            }
-        )
+        new_cols = landmark_keys(held_rows)
+        fit_s: float = 0.0
         predict_s: dict[float, float] = {}
-        for h in HORIZONS:
-            model = models.pop((event, h), None)
-            if model is None:
-                continue
-            t0 = time.time()
-            proba = model.predict_proba(held_feats)
-            predict_s[h] = time.time() - t0
-            del model
-            gc.collect()
-            new_cols = new_cols.with_columns(
-                pl.Series(f"tabicl@{h:g}h", [float(v) for v in proba])
+        if train is not None:
+            new_cols, fit_s, predict_s = tabicl_columns(
+                event,
+                rows,
+                train,
+                held_feats,
+                new_cols,
+                source=source,
+                offload_mode=args.offload_mode,
             )
-        del models
-        gc.collect()
 
         joined = join_matched_rows(existing_ev, new_cols, event)
         for h in HORIZONS:
