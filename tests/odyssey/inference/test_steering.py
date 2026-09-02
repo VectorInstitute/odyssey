@@ -313,6 +313,10 @@ def test_rank_by_lift_applies_support_and_threshold() -> None:
     # token 1 has 10 < 15 occurrences and is below support.
     got = rank_by_lift(total, per_concept, top_k=3, min_count=15)
     assert got == {0: [0]}
+    # Token 0 has lift exactly 2.0: a strict min_lift of 2 excludes it too.
+    assert rank_by_lift(total, per_concept, top_k=3, min_count=15, min_lift=2.0) == {
+        0: []
+    }
     # A share floor of 60% of the concept's 100 positions excludes token 0 too.
     assert rank_by_lift(total, per_concept, top_k=3, min_count=15, min_share=0.6) == {
         0: []

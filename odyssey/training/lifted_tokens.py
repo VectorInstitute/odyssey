@@ -34,6 +34,7 @@ def lifted_token_sets(
     top_k: int = 25,
     min_count: int = 20,
     min_share: float = 0.005,
+    min_lift: float = 2.0,
     num_lanes: int = 8,
     chunk_size: int = 256,
     device: str = "cuda",
@@ -75,7 +76,12 @@ def lifted_token_sets(
         total += one_hot.sum(dim=0).cpu()
         per_concept += (active.T @ one_hot).cpu()
     return rank_by_lift(
-        total, per_concept, top_k=top_k, min_count=min_count, min_share=min_share
+        total,
+        per_concept,
+        top_k=top_k,
+        min_count=min_count,
+        min_share=min_share,
+        min_lift=min_lift,
     )
 
 
@@ -86,6 +92,7 @@ def rank_by_lift(
     top_k: int,
     min_count: int,
     min_share: float = 0.0,
+    min_lift: float = 1.0,
 ) -> dict[int, list[int]]:
     """Top-``top_k`` tokens by ``P(token | c) / P(token)`` per concept.
 
@@ -93,7 +100,10 @@ def rank_by_lift(
     ``per_concept`` is ``(num_concepts, vocab)`` counts at positions where
     each concept is active. A token needs at least ``min_count``
     occurrences under the concept and at least ``min_share`` of the
-    concept's positions; tokens with lift at or below 1 are excluded.
+    concept's positions, and lift above ``min_lift`` (at least above 1): a
+    token barely over-represented under a concept says nothing about it,
+    and with a share floor alone the sets filled with generic ICU care-plan
+    items shared by every concept.
     """
     base = total / total.sum().clamp_min(1.0)
     sets: dict[int, list[int]] = {}
@@ -104,7 +114,8 @@ def rank_by_lift(
         lift = torch.where(
             counts >= support, cond / base.clamp_min(1e-12), torch.zeros_like(cond)
         )
-        keep = int(min(top_k, int((lift > 1.0).sum().item())))
+        threshold = max(min_lift, 1.0)
+        keep = int(min(top_k, int((lift > threshold).sum().item())))
         sets[c] = (
             [int(i) for i in torch.topk(lift, k=keep).indices.tolist()] if keep else []
         )

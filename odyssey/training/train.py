@@ -305,6 +305,7 @@ class TrainingConfig:
     lifted_top_k: int = 25
     lifted_min_count: int = 20
     lifted_min_share: float = 0.005
+    lifted_min_lift: float = 2.0
     lifted_patients: int = 2000
     """How many training patients the lifted token sets are counted over."""
     task_weight: float = 1.0
@@ -783,6 +784,7 @@ def _prepare_steering(
         top_k=config.lifted_top_k,
         min_count=config.lifted_min_count,
         min_share=config.lifted_min_share,
+        min_lift=config.lifted_min_lift,
         num_lanes=config.num_lanes,
         chunk_size=config.chunk_size,
         device=device,

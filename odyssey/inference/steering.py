@@ -648,6 +648,7 @@ def prepare(
     chunk_size: int,
     metadata_dir: str | Path | None = None,
     min_share: float = 0.005,
+    min_lift: float = 2.0,
 ) -> SteeringPrepared:
     """Load the run, bin the held-out split, and build the lifted token sets."""
     model, vocab, binner, config = load_run(
@@ -689,6 +690,7 @@ def prepare(
         concept_first_times=first_times,
         supervision=supervision,
         min_share=min_share,
+        min_lift=min_lift,
         num_lanes=num_lanes,
         chunk_size=chunk_size,
         device=device,
@@ -875,6 +877,12 @@ def _main() -> None:
         help="lifted-set support: share of a concept's positions a token needs",
     )
     parser.add_argument(
+        "--min-lift",
+        type=float,
+        default=2.0,
+        help="lifted-set filter: minimum P(token|c)/P(token) (our default)",
+    )
+    parser.add_argument(
         "--metadata-dir",
         default=None,
         help="MEDS metadata dir with codes.parquet, for readable token names "
@@ -912,6 +920,7 @@ def _main() -> None:
         chunk_size=args.chunk_size,
         metadata_dir=metadata_dir,
         min_share=args.min_share,
+        min_lift=args.min_lift,
     )
     layer_index = args.layer_index
     if args.site == "stream" and layer_index is None:
