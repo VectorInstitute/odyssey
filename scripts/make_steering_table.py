@@ -25,6 +25,8 @@ import math
 from pathlib import Path
 from typing import Any
 
+from odyssey.data.concepts import canonical_concept_name
+
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +74,8 @@ def rows_for(
                 cells.append(_cell(o))
         respond = f"{s['respond_baseline']:.2f}$\\to${s['respond_steered']:.2f}"
         arrow = "$\\uparrow$" if s["direction"] == "amplify" else "$\\downarrow$"
-        out.append((s["concept"].replace("_", " "), arrow, respond, cells))
+        name = canonical_concept_name(s["concept"]).replace("_", " ")
+        out.append((name, arrow, respond, cells))
     return out
 
 

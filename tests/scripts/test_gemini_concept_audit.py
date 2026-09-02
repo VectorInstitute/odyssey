@@ -38,7 +38,7 @@ def test_concept_resolution_matches_the_source_expansion() -> None:
     # mapping; the four that need signals the datacut lacks do not.
     assert resolution["hyperkalemia"] is True
     assert resolution["anemia"] is True
-    assert resolution["shock"] is False  # no mean arterial pressure
+    assert resolution["sustained_hypotension_map"] is False  # no mean arterial pressure
     assert resolution["oliguria"] is False  # no urine output anywhere
     assert result["n_concepts_resolving"] == sum(resolution.values())
 
