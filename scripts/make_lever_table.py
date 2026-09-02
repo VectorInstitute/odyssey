@@ -54,7 +54,7 @@ def _load(path: Path) -> Any:
 def _fmt(pair: dict[str, Any] | None) -> str:
     if pair is None:
         return "--"
-    text = f"${100 * pair['point']:+.2f}$ [{100 * pair['ci_low']:+.2f}, {100 * pair['ci_high']:+.2f}]"
+    text = f"${100 * pair['point']:+.2f}$ [{100 * pair['ci_low']:+.2f},{100 * pair['ci_high']:+.2f}]"
     return f"\\textbf{{{text}}}" if pair.get("separated") else text
 
 

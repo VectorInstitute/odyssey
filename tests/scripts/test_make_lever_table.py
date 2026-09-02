@@ -57,7 +57,7 @@ def test_ci_rows_are_bold_when_separated_and_point_rows_are_starred(
     ]
     assert len(lines) == 2  # the arm with nothing banked is skipped
     with_cis, points = lines
-    assert with_cis.startswith("With CIs & \\textbf{$-0.15$ [-0.16, -0.14]}")
-    assert "$+0.02$ [-0.06, +0.11]" in with_cis and "\\textbf{$+0.02$" not in with_cis
+    assert with_cis.startswith("With CIs & \\textbf{$-0.15$ [-0.16,-0.14]}")
+    assert "$+0.02$ [-0.06,+0.11]" in with_cis and "\\textbf{$+0.02$" not in with_cis
     assert with_cis.rstrip(" \\").endswith("$+0.016$")  # loss delta from the band file
     assert points.startswith("Points only$^\\ast$ & $+0.52$ & $+0.07$ & --")
