@@ -14,7 +14,6 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 import torch
-import torch.nn.functional as F  # noqa: N812
 
 from odyssey.data.sequences import PatientSequence
 from odyssey.data.streaming import PackedLaneSampler, move_to_device
@@ -72,9 +71,15 @@ def lifted_token_sets(
             continue
         targets = chunk.targets[real]
         active = (labels[real] * observed[real]).to(torch.float64)  # (N, k)
-        one_hot = F.one_hot(targets, num_classes=vocab_size).to(torch.float64)
-        total += one_hot.sum(dim=0).cpu()
-        per_concept += (active.T @ one_hot).cpu()
+        # Scatter-add rather than a dense one-hot: at 64 lanes x 512 positions
+        # the one-hot over a 20k vocabulary is 5 GB and does not fit beside
+        # a running eval chain.
+        total += torch.bincount(targets, minlength=vocab_size).to(torch.float64).cpu()
+        per_concept_dev = torch.zeros(
+            num_concepts, vocab_size, dtype=torch.float64, device=targets.device
+        )
+        per_concept_dev.index_add_(1, targets, active.T)
+        per_concept += per_concept_dev.cpu()
     return rank_by_lift(
         total,
         per_concept,
