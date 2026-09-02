@@ -12,13 +12,10 @@ these, which is why they live with the model rather than with either.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from contextlib import contextmanager
-from typing import Any
-
 import torch
 
 from odyssey.models.concept_bottleneck import DecomposedConceptBottleneck
+from odyssey.models.injection import middle_layer, stream_injection
 from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
 
 
@@ -82,46 +79,9 @@ def suppress_logits(
     return logits - strength * torch.relu(alignment).to(logits)
 
 
-@contextmanager
-def stream_injection(
-    backbone: torch.nn.Module, layer_index: int, vector: torch.Tensor
-) -> Iterator[None]:
-    """Add ``vector`` to the hidden state at every block from ``layer_index`` on.
-
-    Steerling's Eq. 18: ``h^(l) <- h^(l) + gamma e_c`` for ``l >= L_inj``, so
-    the signal accumulates toward the bottleneck. Registered as forward
-    hooks on those blocks; every position of every later chunk is pushed
-    and the recurrent state carries the push forward. ``vector`` may be a
-    single direction ``(d,)`` or anything that broadcasts against the
-    block output ``(lanes, T, d)``, so a training phase can push only the
-    positions attributed to the concept. The hooks are removed on exit
-    even if the pass raises.
-    """
-    layers = getattr(backbone, "layers", None)
-    if layers is None:
-        raise TypeError(
-            f"{type(backbone).__name__} exposes no `layers` to inject into; the "
-            "stream site needs a block-structured backbone"
-        )
-    if not 0 <= layer_index < len(layers):
-        raise IndexError(f"layer_index {layer_index} outside 0..{len(layers) - 1}")
-
-    def push(_module: torch.nn.Module, _inputs: tuple[Any, ...], output: Any) -> Any:
-        if isinstance(output, tuple):
-            hidden, *rest = output
-            return (hidden + vector.to(hidden), *rest)
-        return output + vector.to(output)
-
-    handles = [layer.register_forward_hook(push) for layer in layers[layer_index:]]
-    try:
-        yield
-    finally:
-        for handle in handles:
-            handle.remove()
-
-
 __all__ = [
     "concept_alignment",
+    "middle_layer",
     "steering_direction",
     "steering_gamma",
     "stream_injection",

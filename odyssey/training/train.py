@@ -44,6 +44,7 @@ different, not equivalent, position.
 """
 
 import gc
+import itertools
 import json
 import logging
 import time
@@ -65,7 +66,7 @@ from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.packed_context import PackedContextSampler
 from odyssey.data.sequences import PatientSequence
 from odyssey.data.sidecars import activate_sidecars, active_sidecar_names
-from odyssey.data.streaming import PackedLaneSampler
+from odyssey.data.streaming import PackedLaneSampler, StreamingChunk
 from odyssey.data.value_binning import CLIP_TAIL, QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import PAD_ID, Vocabulary
 from odyssey.models.backbones.base import TimeAwareState
@@ -73,6 +74,7 @@ from odyssey.models.concept_bottleneck import (
     ConceptBottleneckLossWeights,
     annealed_alpha,
 )
+from odyssey.models.injection import middle_layer
 from odyssey.models.sequence_model import (
     BaselineSequenceModel,
     ConceptBottleneckSequenceModel,
@@ -81,6 +83,7 @@ from odyssey.models.sequence_model import (
     ForecastObjective,
     SequenceModel,
 )
+from odyssey.models.steering import steering_direction, steering_gamma
 from odyssey.models.time_to_event import DEFAULT_TIME_BIN_EDGES_HOURS
 from odyssey.training.data import (
     build_concept_first_times,
@@ -95,6 +98,7 @@ from odyssey.training.data import (
     token_type_lookup,
 )
 from odyssey.training.event_targets import EventTimeTables, event_hazard_targets
+from odyssey.training.lifted_tokens import lifted_token_sets
 from odyssey.training.running_labels import randint_intervention
 from odyssey.training.shard_stream import (
     build_corpus_stats,
@@ -103,6 +107,11 @@ from odyssey.training.shard_stream import (
     iter_patients_streaming,
     make_preparer,
     shard_paths,
+)
+from odyssey.training.steering_phase import (
+    Injection,
+    SteeringSchedule,
+    choose_injection,
 )
 from odyssey.utils.env_fingerprint import write_run_provenance
 
@@ -275,6 +284,29 @@ class TrainingConfig:
     """Decomposed bottleneck only: Steerling's lambda_rec."""
     independence_weight: float = 1.0
     """Decomposed bottleneck only: Steerling's lambda_indep."""
+    steering_phases: int = 0
+    """Steerling's steering training (their 10.2.4), off by default: this
+    many consecutive phases of ``steering_phase_steps`` steps, starting
+    after ``steering_warmup_steps``, in which a concept's direction is
+    injected at the positions its running label covers and the respond
+    and express losses are added to the forecasting loss. Meant for a
+    short mid-training run started with ``init_from``."""
+    steering_phase_steps: int = 0
+    steering_warmup_steps: int = 100
+    steering_gamma: float = 1.0
+    """Injection strength during steering phases (their Table 36: 1.0)."""
+    steering_tau: float | None = None
+    """If set, calibrate the strength per concept as tau / peak(e_c)
+    (their Eq. 19) instead of using ``steering_gamma`` for every concept."""
+    steering_layer_index: int | None = None
+    """First backbone block whose output is pushed; ``None`` = the middle."""
+    respond_weight: float = 1.0
+    express_weight: float = 1.0
+    lifted_top_k: int = 25
+    lifted_min_count: int = 20
+    lifted_min_share: float = 0.005
+    lifted_patients: int = 2000
+    """How many training patients the lifted token sets are counted over."""
     task_weight: float = 1.0
     """Weight of the forecasting (task) loss; see
     ConceptBottleneckLossWeights.task. 0.0, paired with init_from and
@@ -663,6 +695,126 @@ def build_model(
         value_head=bool(getattr(config, "value_head", False)),
         value_head_hidden=int(getattr(config, "value_head_hidden", 0) or 0),
         source=getattr(config, "source", "mimic_iv"),
+    )
+
+
+@dataclass
+class _SteeringRuntime:
+    """Everything a steering step needs, built once per run."""
+
+    schedule: SteeringSchedule
+    directions: torch.Tensor
+    """(num_concepts, hidden) unit steering directions."""
+    gammas: list[float]
+    layer_index: int
+    lifted: dict[int, torch.Tensor]
+    labels: ConceptLabelDict
+    masks: ConceptLabelDict
+    first_times: ConceptLabelDict
+    supervision: ConceptSupervision
+    generator: torch.Generator
+
+    def injection_for(self, chunk: StreamingChunk, step: int) -> Injection | None:
+        """Return the chunk's target concept and positions; ``None`` outside a phase."""
+        if not self.schedule.is_steering_step(step):
+            return None
+        return choose_injection(
+            chunk,
+            self.labels,
+            self.masks,
+            self.first_times,
+            supervision=self.supervision,
+            num_concepts=int(self.directions.shape[0]),
+            generator=self.generator,
+        )
+
+
+def _prepare_steering(
+    config: TrainingConfig,
+    model: SequenceModel,
+    corpus: "PreparedCorpus",
+    device: str,
+) -> "_SteeringRuntime | None":
+    """Build the steering runtime when the config asks for steering phases."""
+    schedule = SteeringSchedule(
+        warmup_steps=config.steering_warmup_steps,
+        phases=config.steering_phases,
+        phase_steps=config.steering_phase_steps,
+    )
+    if not schedule.enabled:
+        return None
+    if not isinstance(model, ConceptBottleneckSequenceModel):
+        raise ValueError("steering phases need a concept-bottleneck model")
+    if not corpus.train_first_times:
+        raise ValueError(
+            "steering phases need concept first-trigger times (running labels); "
+            "the corpus was prepared without them"
+        )
+    num_concepts = len(corpus.concepts)
+    directions = torch.stack(
+        [steering_direction(model, c) for c in range(num_concepts)]
+    )
+    if config.steering_tau is not None:
+        gammas = [
+            steering_gamma(model, directions[c], tau=config.steering_tau)
+            for c in range(num_concepts)
+        ]
+    else:
+        gammas = [config.steering_gamma] * num_concepts
+    layer_index = (
+        config.steering_layer_index
+        if config.steering_layer_index is not None
+        else middle_layer(model.backbone)
+    )
+    logger.info(
+        "[steering] counting lifted tokens over %d training patients",
+        config.lifted_patients,
+    )
+    lifted = lifted_token_sets(
+        itertools.islice(
+            corpus.make_train_patients(config.seed + 7919), config.lifted_patients
+        ),
+        vocab_size=len(corpus.vocab),
+        num_concepts=num_concepts,
+        concept_labels=corpus.train_labels,
+        concept_mask=corpus.train_masks,
+        concept_first_times=corpus.train_first_times,
+        supervision=config.concept_supervision,  # type: ignore[arg-type]
+        top_k=config.lifted_top_k,
+        min_count=config.lifted_min_count,
+        min_share=config.lifted_min_share,
+        num_lanes=config.num_lanes,
+        chunk_size=config.chunk_size,
+        device=device,
+    )
+    names = [c.name for c in corpus.concepts]
+    for c, ids in lifted.items():
+        logger.info(
+            "[steering] %s: %d lifted tokens, e.g. %s",
+            names[c],
+            len(ids),
+            [corpus.vocab.id_to_token[i] for i in ids[:5]],
+        )
+    logger.info(
+        "[steering] %d phases x %d steps after %d warmup steps; gamma %s; "
+        "injecting from block %d",
+        schedule.phases,
+        schedule.phase_steps,
+        schedule.warmup_steps,
+        "calibrated" if config.steering_tau is not None else config.steering_gamma,
+        layer_index,
+    )
+    return _SteeringRuntime(
+        schedule=schedule,
+        directions=directions.to(device),
+        gammas=gammas,
+        layer_index=layer_index,
+        lifted={c: torch.tensor(ids, dtype=torch.long) for c, ids in lifted.items()},
+        labels=corpus.train_labels,
+        masks=corpus.train_masks,
+        first_times=corpus.train_first_times,
+        supervision=config.concept_supervision,  # type: ignore[arg-type]
+        generator=torch.Generator().manual_seed(config.seed + 4243),
     )
 
 
@@ -1329,6 +1481,7 @@ def _run_training(  # noqa: PLR0912, PLR0915
             "[loss] concept pos_weight: %s",
             [round(float(w), 2) for w in pos_weight],
         )
+    steering = _prepare_steering(config, model, corpus, device)
     loss_weights = ConceptBottleneckLossWeights(
         concept=config.concept_weight,
         orthogonality=config.orthogonality_weight,
@@ -1434,6 +1587,28 @@ def _run_training(  # noqa: PLR0912, PLR0915
             if isinstance(model, BaselineSequenceModel):
                 total, components, state = model.compute_streaming_loss(
                     chunk, state=state, objective=objective, event_targets=event_targets
+                )
+            elif (
+                steering is not None
+                and (injection := steering.injection_for(chunk, global_step))
+                is not None
+            ):
+                # Steerling's steering phase: forecasting loss plus respond
+                # and express at the injected positions; the interpretability
+                # losses are off for these steps, as in their recipe.
+                total, components, state = model.compute_steering_loss(
+                    chunk,
+                    state=state,
+                    concept_index=injection.concept_index,
+                    injected=injection.positions,
+                    direction=steering.directions[injection.concept_index],
+                    gamma=steering.gammas[injection.concept_index],
+                    layer_index=steering.layer_index,
+                    lifted_ids=steering.lifted[injection.concept_index],
+                    objective=objective,
+                    event_targets=event_targets,
+                    respond_weight=config.respond_weight,
+                    express_weight=config.express_weight,
                 )
             else:
                 intervention = randint_intervention(

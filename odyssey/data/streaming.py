@@ -63,7 +63,7 @@ target to begin with.
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import NamedTuple
+from typing import NamedTuple, TypeVar
 
 import torch
 
@@ -75,6 +75,9 @@ from odyssey.data.vocabulary import PAD_ID
 # Sentinel `subject_ids` value at padding positions.
 NO_SUBJECT = -1
 _NAN = float("nan")
+
+
+_MovableT = TypeVar("_MovableT")
 
 
 class StreamingChunk(NamedTuple):
@@ -408,3 +411,17 @@ class PackedLaneSampler:
             if chunk is None:
                 return
             yield chunk
+
+
+def move_to_device(chunk: _MovableT, device: str) -> _MovableT:
+    """Move every tensor field of a (possibly nested) NamedTuple to ``device``.
+
+    Works for :class:`StreamingChunk` and its nested batch/aux tuples
+    without depending on their exact field lists, so a new field added to
+    any of them needs no matching change here.
+    """
+    if isinstance(chunk, torch.Tensor):
+        return chunk.to(device)  # type: ignore[return-value]
+    if isinstance(chunk, tuple) and hasattr(chunk, "_fields"):  # NamedTuple
+        return type(chunk)(*(move_to_device(v, device) for v in chunk))
+    return chunk

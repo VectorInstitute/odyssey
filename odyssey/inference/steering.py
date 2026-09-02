@@ -75,7 +75,7 @@ from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.concepts import concepts_for_source
 from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.sidecars import activate_sidecars
-from odyssey.data.streaming import PackedLaneSampler, StreamingChunk
+from odyssey.data.streaming import PackedLaneSampler, StreamingChunk, move_to_device
 from odyssey.data.value_binning import add_value_tokens
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.run_inference import load_run, refuse_existing_output
@@ -104,7 +104,6 @@ from odyssey.training.data import (
 )
 from odyssey.training.event_targets import EventTimeTables, event_hazard_targets
 from odyssey.training.lifted_tokens import lifted_token_sets
-from odyssey.training.train import _move_chunk_to_device
 
 
 logger = logging.getLogger(__name__)
@@ -364,7 +363,7 @@ def run_steering_pass(
     state: Any = None
     with torch.no_grad():
         for chunk in sampler:
-            chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
+            chunk = move_to_device(chunk, device)  # noqa: PLW2901
             logits, probs, features, state = _forward_pushed(model, chunk, state, push)
             real = chunk.real_mask
             if not real.any():
@@ -682,9 +681,9 @@ def prepare(
     labels, mask, first_times = _labels_for(lift_raw, concepts, supervision)
     del lift_raw
     lifted = lifted_token_sets(
-        model,
-        lift_binned,
-        vocab,
+        iter_patient_sequences(lift_binned, vocab),
+        vocab_size=len(vocab.token_to_id),
+        num_concepts=model.bottleneck.num_concepts,
         concept_labels=labels,
         concept_mask=mask,
         concept_first_times=first_times,

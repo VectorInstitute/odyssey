@@ -55,6 +55,7 @@ from odyssey.models.concept_bottleneck import (
     combined_loss,
     fold_in_bottleneck_losses,
 )
+from odyssey.models.injection import stream_injection
 from odyssey.models.time_to_event import (
     EventHazardHeads,
     TimeToEventHead,
@@ -788,6 +789,80 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
             concept_mask=concept_mask,
             weights=loss_weights,
         )
+
+    def compute_steering_loss(
+        self,
+        chunk: StreamingChunk,
+        *,
+        state: TimeAwareState | None,
+        concept_index: int,
+        injected: torch.Tensor,
+        direction: torch.Tensor,
+        gamma: float,
+        layer_index: int,
+        lifted_ids: torch.Tensor,
+        objective: ForecastObjective | None = None,
+        event_targets: Optional["EventHazardTargets"] = None,
+        respond_weight: float = 1.0,
+        express_weight: float = 1.0,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor], TimeAwareState]:
+        """Steerling's steering-phase objective for one chunk (their Eqs. 31-33).
+
+        The concept's direction, scaled by ``gamma``, is injected into the
+        backbone at the positions ``injected`` (``(lanes, T)`` bool) at every
+        block from ``layer_index`` on, exactly as steering is applied at
+        inference. On top of the forecasting loss two terms are added at
+        the injected positions: *respond*, ``-log k_c`` so the bottleneck
+        activates the injected concept; and *express*, ``-log`` of the
+        probability mass on the concept's lifted tokens so the output moves
+        toward events that express it. The interpretability losses are not
+        computed here; Steerling switches them off during steering phases.
+        """
+        objective = objective or ForecastObjective()
+        push = (gamma * direction).to(chunk.batch.concept_ids.device)
+        per_position = injected.to(push.dtype).unsqueeze(-1) * push
+        with stream_injection(self.backbone, layer_index, per_position):
+            logits, bottleneck_out, new_state = self(
+                chunk.batch, state=state, reset_mask=chunk.reset_mask
+            )
+        next_token_loss = self._streaming_task_loss(logits, chunk, objective)
+        head_feats = bottleneck_out.bottleneck
+        time_loss, _ = self._streaming_time_loss(self.time_head, head_feats, chunk)
+        event_loss = self._streaming_event_loss(
+            self.event_heads, head_feats, event_targets
+        )
+        value_loss, _ = self._streaming_value_loss(self.value_head, head_feats, chunk)
+        forecast_loss = (
+            next_token_loss
+            + objective.time_weight * time_loss
+            + objective.event_hazard_weight * event_loss
+            + objective.value_head_weight * value_loss
+        )
+        at = injected & chunk.real_mask
+        if bool(at.any()):
+            k = bottleneck_out.concept_probs[..., concept_index][at].clamp_min(1e-6)
+            respond = -k.log().mean()
+            if lifted_ids.numel():
+                logp = F.log_softmax(logits[at].float(), dim=-1)
+                express = -torch.logsumexp(
+                    logp[:, lifted_ids.to(logp.device)], dim=-1
+                ).mean()
+            else:
+                express = forecast_loss.new_zeros(())
+        else:
+            respond = forecast_loss.new_zeros(())
+            express = forecast_loss.new_zeros(())
+        total = forecast_loss + respond_weight * respond + express_weight * express
+        components = {
+            "task_loss": next_token_loss.detach(),
+            "time_loss": time_loss.detach(),
+            "event_loss": event_loss.detach(),
+            "value_loss": value_loss.detach(),
+            "respond_loss": respond.detach(),
+            "express_loss": express.detach(),
+            "n_injected": at.sum().detach(),
+        }
+        return total, components, new_state
 
     def _streaming_position_labels(
         self,

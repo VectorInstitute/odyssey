@@ -11,27 +11,22 @@ the express loss pushes mass onto.
 
 from __future__ import annotations
 
-import polars as pl
+from collections.abc import Iterable
+
 import torch
 import torch.nn.functional as F  # noqa: N812
 
-from odyssey.data.streaming import PackedLaneSampler
-from odyssey.data.vocabulary import Vocabulary
-from odyssey.models.sequence_model import (
-    ConceptBottleneckSequenceModel,
-    ConceptLabelDict,
-    ConceptSupervision,
-)
-from odyssey.training.data import iter_patient_sequences
+from odyssey.data.sequences import PatientSequence
+from odyssey.data.streaming import PackedLaneSampler, move_to_device
+from odyssey.models.sequence_model import ConceptLabelDict, ConceptSupervision
 from odyssey.training.running_labels import position_running_labels
-from odyssey.training.train import _move_chunk_to_device
 
 
 def lifted_token_sets(
-    model: ConceptBottleneckSequenceModel,
-    events_binned: pl.DataFrame,
-    vocab: Vocabulary,
+    patients: Iterable[PatientSequence],
     *,
+    vocab_size: int,
+    num_concepts: int,
     concept_labels: ConceptLabelDict,
     concept_mask: ConceptLabelDict,
     concept_first_times: ConceptLabelDict,
@@ -56,18 +51,13 @@ def lifted_token_sets(
     shock on MIMIC-IV were pressure-ulcer measurements seen a few dozen
     times. Only tokens with lift above 1 are kept.
     """
-    num_concepts = model.bottleneck.num_concepts
-    vocab_size = len(vocab.token_to_id)
     total = torch.zeros(vocab_size, dtype=torch.float64)
     per_concept = torch.zeros(num_concepts, vocab_size, dtype=torch.float64)
     sampler = PackedLaneSampler(
-        iter_patient_sequences(events_binned, vocab),
-        num_lanes=num_lanes,
-        chunk_size=chunk_size,
-        reset_prob=0.0,
+        iter(patients), num_lanes=num_lanes, chunk_size=chunk_size, reset_prob=0.0
     )
     for chunk in sampler:
-        chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
+        chunk = move_to_device(chunk, device)  # noqa: PLW2901
         labels, observed = position_running_labels(
             chunk,
             concept_labels,
