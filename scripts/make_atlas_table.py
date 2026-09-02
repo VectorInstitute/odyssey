@@ -41,7 +41,11 @@ def short_name(name: str, limit: int = 34) -> str:
         name = re.sub(pat, rep, name)
     name = name.strip()
     if len(name) > limit:
-        name = name[: limit - 1].rstrip() + "…"
+        # Cut at a word boundary so a cell never ends mid-word.
+        cut = name[: limit - 1]
+        if " " in cut[limit // 2 :]:
+            cut = cut[: cut.rfind(" ")]
+        name = cut.rstrip() + "…"
     return (
         name.replace("&", "\\&")
         .replace("%", "\\%")
