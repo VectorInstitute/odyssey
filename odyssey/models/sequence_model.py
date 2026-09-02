@@ -35,6 +35,7 @@ from typing import (
     NamedTuple,
     Optional,
     Union,
+    cast,
 )
 
 import torch
@@ -45,14 +46,16 @@ from odyssey.data.streaming import StreamingChunk
 from odyssey.data.types import ClinicalSequenceBatch
 from odyssey.models.backbones.base import SequenceBackbone, TimeAwareState
 from odyssey.models.concept_bottleneck import (
-    AdditiveConceptBottleneck,
     BottleneckIntervention,
     ConceptBottleneck,
     ConceptBottleneckLossWeights,
     ConceptBottleneckOutput,
+    DecomposedConceptBottleneck,
+    TeacherForcing,
     combined_loss,
-    fold_in_bottleneck_orthogonality,
+    fold_in_bottleneck_losses,
 )
+from odyssey.models.injection import stream_injection
 from odyssey.models.time_to_event import (
     EventHazardHeads,
     TimeToEventHead,
@@ -619,6 +622,9 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         concept_global_pairs: bool = False,
         unknown_dim: int | None = None,
         bottleneck_kind: str = "mixture",
+        unknown_ratio: int = 3,
+        unknown_rank: int | None = None,
+        residual_dropout: float = 0.1,
         value_head: bool = False,
         value_head_hidden: int = 0,
         source: str = "mimic_iv",
@@ -634,22 +640,24 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         and :mod:`odyssey.models.value_head`.
         """
         super().__init__(backbone, padding_idx=padding_idx)
-        if bottleneck_kind not in ("mixture", "additive"):
+        if bottleneck_kind not in ("mixture", "decomposed"):
             raise ValueError(
-                f"bottleneck_kind must be 'mixture' or 'additive', got "
+                f"bottleneck_kind must be 'mixture' or 'decomposed', got "
                 f"{bottleneck_kind!r}"
             )
         self.bottleneck_kind = bottleneck_kind
-        self.bottleneck: ConceptBottleneck | AdditiveConceptBottleneck
-        if bottleneck_kind == "additive":
+        self.bottleneck: ConceptBottleneck | DecomposedConceptBottleneck
+        if bottleneck_kind == "decomposed":
             # embedding_dim/global_pairs/unknown_dim have no meaning here:
-            # concepts add a fixed direction to the backbone stream rather
-            # than mixing per-concept embeddings, and there is no unknown
-            # slot (the stream itself is the residual).
-            self.bottleneck = AdditiveConceptBottleneck(
+            # this decomposes the backbone state into known concepts,
+            # unknown concepts and a residual, all at the backbone's width.
+            self.bottleneck = DecomposedConceptBottleneck(
                 hidden_size=backbone.hidden_size,
                 num_concepts=num_concepts,
+                unknown_ratio=unknown_ratio,
+                unknown_rank=unknown_rank,
                 concept_dropout=concept_dropout,
+                residual_dropout=residual_dropout,
             )
         else:
             self.bottleneck = ConceptBottleneck(
@@ -695,6 +703,7 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         state: TimeAwareState | None = None,
         reset_mask: torch.Tensor | None = None,
         intervention: BottleneckIntervention | None = None,
+        teacher: TeacherForcing | None = None,
     ) -> tuple[torch.Tensor, ConceptBottleneckOutput, TimeAwareState]:
         """Return ``(next-token logits, bottleneck output, new backbone state)``.
 
@@ -706,7 +715,10 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         hidden_states, new_state = self.backbone(
             batch, state=state, reset_mask=reset_mask
         )
-        bottleneck_out = self.bottleneck(hidden_states, intervention=intervention)
+        kwargs = {} if teacher is None else {"teacher": teacher}
+        bottleneck_out = self.bottleneck(
+            hidden_states, intervention=intervention, **kwargs
+        )
         logits = self.lm_head(bottleneck_out.bottleneck)
         return logits, bottleneck_out, new_state
 
@@ -727,6 +739,8 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         concept_mask: torch.Tensor | None = None,
         loss_weights: ConceptBottleneckLossWeights | None = None,
         labels: torch.Tensor | None = None,
+        *,
+        teacher: TeacherForcing | None = None,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Compute next-token + concept + orthogonality loss.
 
@@ -736,7 +750,7 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         one whole patient sequence per row; use :meth:`compute_streaming_loss`
         for packed, chunked batches.
         """
-        logits, bottleneck_out, _ = self(batch)
+        logits, bottleneck_out, _ = self(batch, teacher=teacher)
         next_token_loss = self._whole_sequence_next_token_loss(logits, batch, labels)
 
         pooled_concept_logits = _pool_last_non_padding(
@@ -762,9 +776,156 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
             concept_mask=concept_mask,
             weights=loss_weights,
         )
-        return fold_in_bottleneck_orthogonality(
-            self.bottleneck, total, components, loss_weights
+        # Per-position tensors, not the pooled ones: Steerling averages
+        # the reconstruction and independence terms over token positions,
+        # and pooling to one vector per subject would destroy the
+        # cross-position covariance the independence loss measures.
+        return fold_in_bottleneck_losses(
+            self.bottleneck,
+            bottleneck_out,
+            concept_labels,
+            total,
+            components,
+            concept_mask=concept_mask,
+            weights=loss_weights,
         )
+
+    def compute_steering_loss(
+        self,
+        chunk: StreamingChunk,
+        *,
+        state: TimeAwareState | None,
+        concept_index: int,
+        injected: torch.Tensor,
+        direction: torch.Tensor,
+        gamma: float,
+        layer_index: int,
+        lifted_ids: torch.Tensor,
+        objective: ForecastObjective | None = None,
+        event_targets: Optional["EventHazardTargets"] = None,
+        respond_weight: float = 1.0,
+        express_weight: float = 1.0,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor], TimeAwareState]:
+        """Steerling's steering-phase objective for one chunk (their Eqs. 31-33).
+
+        The concept's direction, scaled by ``gamma``, is injected into the
+        backbone at the positions ``injected`` (``(lanes, T)`` bool) at every
+        block from ``layer_index`` on, exactly as steering is applied at
+        inference. On top of the forecasting loss two terms are added at
+        the injected positions: *respond*, ``-log k_c`` so the bottleneck
+        activates the injected concept; and *express*, ``-log`` of the
+        probability mass on the concept's lifted tokens so the output moves
+        toward events that express it. The interpretability losses are not
+        computed here; Steerling switches them off during steering phases.
+        """
+        objective = objective or ForecastObjective()
+        push = (gamma * direction).to(chunk.batch.concept_ids.device)
+        per_position = injected.to(push.dtype).unsqueeze(-1) * push
+        with stream_injection(self.backbone, layer_index, per_position):
+            logits, bottleneck_out, new_state = self(
+                chunk.batch, state=state, reset_mask=chunk.reset_mask
+            )
+        next_token_loss = self._streaming_task_loss(logits, chunk, objective)
+        head_feats = bottleneck_out.bottleneck
+        time_loss, _ = self._streaming_time_loss(self.time_head, head_feats, chunk)
+        event_loss = self._streaming_event_loss(
+            self.event_heads, head_feats, event_targets
+        )
+        value_loss, _ = self._streaming_value_loss(self.value_head, head_feats, chunk)
+        forecast_loss = (
+            next_token_loss
+            + objective.time_weight * time_loss
+            + objective.event_hazard_weight * event_loss
+            + objective.value_head_weight * value_loss
+        )
+        at = injected & chunk.real_mask
+        if bool(at.any()):
+            k = bottleneck_out.concept_probs[..., concept_index][at].clamp_min(1e-6)
+            respond = -k.log().mean()
+            if lifted_ids.numel():
+                logp = F.log_softmax(logits[at].float(), dim=-1)
+                express = -torch.logsumexp(
+                    logp[:, lifted_ids.to(logp.device)], dim=-1
+                ).mean()
+            else:
+                express = forecast_loss.new_zeros(())
+        else:
+            respond = forecast_loss.new_zeros(())
+            express = forecast_loss.new_zeros(())
+        total = forecast_loss + respond_weight * respond + express_weight * express
+        components = {
+            "task_loss": next_token_loss.detach(),
+            "time_loss": time_loss.detach(),
+            "event_loss": event_loss.detach(),
+            "value_loss": value_loss.detach(),
+            "respond_loss": respond.detach(),
+            "express_loss": express.detach(),
+            "n_injected": at.sum().detach(),
+        }
+        return total, components, new_state
+
+    def _streaming_position_labels(
+        self,
+        chunk: StreamingChunk,
+        concept_labels: ConceptLabelDict,
+        supervision: ConceptSupervision,
+    ) -> tuple[torch.Tensor, torch.Tensor] | None:
+        """Per-position concept labels and a mask of where they were found.
+
+        Labels arrive keyed by subject (or subject+visit) and pooled to
+        supervision points, but teacher forcing and the reconstruction and
+        independence losses all act per position, so each position needs
+        its owning key's row. Positions with no label are returned as
+        zeros AND marked False, so a caller can skip them rather than
+        teach the head that an unlabeled position means "no concepts
+        present".
+
+        Returns ``None`` when nothing in the chunk is labeled.
+        """
+        # .tolist() ONCE, not element-wise iteration: chunk.subject_ids
+        # lives on the GPU, and indexing a CUDA tensor per element forces a
+        # device sync each time. At 64 lanes x 512 positions that was 32,768
+        # syncs per training step and ran the whole run at 44% of the
+        # mixture arm's throughput.
+        subjects = chunk.subject_ids.reshape(-1).tolist()
+        # cast, not dict(): the key type is a union here and rebuilding
+        # the mapping just to satisfy it would copy it every chunk.
+        lookup = cast("dict[object, torch.Tensor]", concept_labels)
+        if supervision == "stay":
+            keys: list[object] = subjects
+        else:
+            keys = list(
+                zip(subjects, chunk.visit_ids.reshape(-1).tolist(), strict=True)
+            )
+
+        # One row per DISTINCT key, then gather. A chunk holds at most a few
+        # dozen patients, so this stacks tens of rows rather than 32,768.
+        order: dict[object, int] = {}
+        index: list[int] = []
+        for key in keys:
+            slot = order.get(key)
+            if slot is None:
+                slot = len(order)
+                order[key] = slot
+            index.append(slot)
+        distinct = [lookup.get(k) for k in order]
+        present = next((r for r in distinct if r is not None), None)
+        if present is None:
+            return None
+
+        device = chunk.batch.concept_ids.device
+        zeros = torch.zeros_like(present)
+        table = torch.stack([r if r is not None else zeros for r in distinct]).to(
+            device
+        )
+        found = torch.tensor([r is not None for r in distinct], device=device)
+        gather = torch.tensor(index, device=device)
+        shape = (*chunk.subject_ids.shape, present.shape[-1])
+        labels = table[gather].reshape(shape)
+        mask = (
+            found[gather].reshape(chunk.subject_ids.shape).unsqueeze(-1).expand(shape)
+        )
+        return labels, mask
 
     def compute_streaming_loss(
         self,
@@ -778,6 +939,8 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         intervention: BottleneckIntervention | None = None,
         objective: ForecastObjective | None = None,
         event_targets: Optional["EventHazardTargets"] = None,
+        teacher_alpha_known: float = 0.0,
+        teacher_alpha_unknown: float = 0.0,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor], TimeAwareState]:
         """Compute next-token + concept + orthogonality + observability loss.
 
@@ -811,11 +974,30 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         forecast.
         """
         objective = objective or ForecastObjective()
+        # Teacher forcing needs the labels laid out per position, which is
+        # what the pooling step below builds; do that first when it is on.
+        position_labels = self._streaming_position_labels(
+            chunk, concept_labels, supervision
+        )
+        teacher = None
+        if (
+            position_labels is not None
+            and max(teacher_alpha_known, teacher_alpha_unknown) > 0.0
+        ):
+            teacher = TeacherForcing(
+                concept_labels=position_labels[0],
+                alpha_known=teacher_alpha_known,
+                alpha_unknown=teacher_alpha_unknown,
+                # Unlabeled positions keep the model's own parts rather
+                # than being forced to "no concepts" and u_hat_gt = h.
+                concept_mask=position_labels[1],
+            )
         logits, bottleneck_out, new_state = self(
             chunk.batch,
             state=state,
             reset_mask=chunk.reset_mask,
             intervention=intervention,
+            teacher=teacher,
         )
         next_token_loss = self._streaming_task_loss(logits, chunk, objective)
         head_feats = bottleneck_out.bottleneck
@@ -889,9 +1071,19 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
             concept_mask=mask_batch,
             weights=loss_weights,
         )
-        total, components = fold_in_bottleneck_orthogonality(
-            self.bottleneck, total, components, loss_weights
-        )
+        # Per-position labels, not the pooled ones: the reconstruction
+        # target is defined against each position's own hidden state, and
+        # the independence loss measures covariance across positions.
+        if position_labels is not None:
+            total, components = fold_in_bottleneck_losses(
+                self.bottleneck,
+                bottleneck_out,
+                position_labels[0],
+                total,
+                components,
+                concept_mask=position_labels[1],
+                weights=loss_weights,
+            )
         # combined_loss reports the forecast term it was handed as
         # "task_loss"; split time back out so logs show both.
         components["task_loss"] = next_token_loss.detach()

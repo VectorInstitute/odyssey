@@ -114,9 +114,9 @@ def _require_mixture_bottleneck(model: object) -> ConceptBottleneck:
 
     Every routine in this module decomposes the LM head over per-concept
     embedding blocks and a trailing unknown slot, which only
-    :class:`ConceptBottleneck` has. An additive bottleneck adds directions to
-    the backbone stream, so there are no blocks to slice and the
-    decomposition is undefined rather than merely different. Slicing a
+    :class:`ConceptBottleneck` has. A decomposed bottleneck sums whole-width
+    concept embeddings into one vector, so there are no blocks to slice
+    and this decomposition is undefined rather than merely different. Slicing a
     stream into imaginary blocks would yield confident, meaningless
     attributions, so refuse with an explanation instead.
     """
@@ -312,7 +312,7 @@ def mean_concept_directions(
 
 def calibrated_gammas(
     model: ConceptBottleneckSequenceModel,
-    directions: torch.Tensor,
+    directions: torch.Tensor | None,
     *,
     tau: float,
 ) -> torch.Tensor:
@@ -325,15 +325,20 @@ def calibrated_gammas(
     same largest achievable logit shift ``tau``, decoupling intervention
     strength from how big the head's weights happen to be per concept.
     """
-    bottleneck = _require_mixture_bottleneck(model)
     if tau <= 0:
         raise ValueError("tau must be positive")
-    k = bottleneck.num_concepts
-    d = bottleneck.embedding_dim
     weight = model.lm_head.weight.detach().double().cpu()
-    known_weight = weight[:, : k * d].view(-1, k, d)  # (vocab, k, d)
-    shifts = torch.einsum("vkd,kd->vk", known_weight, directions.to(known_weight))
-    peaks = shifts.abs().amax(dim=0).clamp_min(1e-12)  # (k,)
+    # Ask the bottleneck what one unit of a concept adds to the vector the
+    # head reads, rather than assuming the mixture's per-concept blocks.
+    # For the mixture that is the direction scattered into its own block;
+    # for the decomposition it is the concept embedding itself. Either way
+    # the shift is that displacement projected through the head, so
+    # calibration is defined for both.
+    displacements = model.bottleneck.unit_displacements(
+        None if directions is None else directions.to(weight)
+    ).to(weight)
+    shifts = displacements @ weight.T  # (k, vocab)
+    peaks = shifts.abs().amax(dim=1).clamp_min(1e-12)  # (k,)
     # Annotated rather than returned directly: `float / Tensor` dispatches
     # through Tensor.__rtruediv__, which some torch stub versions type as
     # Any -- green locally, no-any-return under CI's stubs.

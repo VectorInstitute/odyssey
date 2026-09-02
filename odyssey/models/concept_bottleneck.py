@@ -33,6 +33,7 @@ wired back into the concept probability computation in this version --
 see ``research_journal/05_missingness.html`` for the full reasoning.
 """
 
+import math
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -120,6 +121,81 @@ class BottleneckIntervention:
     zero_unknown: bool = False
     """Zero the unknown concept's mixed embedding (how much task signal
     flows outside the supervised concepts)."""
+
+    zero_residual: bool = False
+    """Zero the unexplained residual ``eps``, for a bottleneck that has
+    one as a channel distinct from the unknown concepts
+    (:class:`DecomposedConceptBottleneck`). The mixture bottleneck folds
+    "unknown concept" and "unexplained remainder" into one slot, so there
+    ``zero_unknown`` covers both and this is ignored."""
+
+
+@dataclass(frozen=True)
+class TeacherForcing:
+    """Steerling's concept teacher forcing, for one training step.
+
+    Routing ``h_bar`` through predicted activations lets the language
+    modeling loss push those activations to encode more than the labeled
+    concepts, which is concept leakage. Koh et al. (2020) avoid it by
+    feeding ground truth forward always; Steerling does the same on a
+    schedule, replacing ``k_hat`` with ``k_hat_gt`` with probability
+    ``alpha_known`` and ``u_hat`` with ``u_hat_gt = h - k_hat_gt`` with
+    probability ``alpha_unknown``, annealing both so the model comes to
+    rely on its own heads as they become accurate.
+
+    The draw is per forward pass, matching "with probability alpha(s) at
+    training step s". Labels here are subject-level and broadcast across
+    positions, since a concept is a property of the visit rather than of
+    one token.
+
+    NOTE on the schedules: Steerling's prose says ``alpha_unknown``
+    anneals FROM 1, while its Table 26 lists ``0.0 -> 0.5``. The two
+    disagree; :func:`annealed_alpha` takes explicit endpoints so the
+    choice is made in the config and recorded with the run rather than
+    guessed here.
+    """
+
+    concept_labels: torch.Tensor
+    """(batch, num_concepts) ground-truth activations."""
+
+    alpha_known: float = 0.0
+    """Probability of substituting ``k_hat_gt`` this step."""
+
+    alpha_unknown: float = 0.0
+    """Probability of substituting ``u_hat_gt`` this step."""
+
+    concept_mask: torch.Tensor | None = None
+    """Optional ``(..., num_concepts)`` mask of where ``concept_labels``
+    were actually found. A position with no label at all keeps the
+    model's own parts: substituting an all-zero row there would teach the
+    LM head that "no label" means "no concepts present" and hand it the
+    whole hidden state as ``u_hat_gt``. On MIMIC about a fifth of events
+    carry no visit id and so have no visit-scoped label."""
+
+
+def annealed_alpha(
+    step: int,
+    anneal_steps: int,
+    *,
+    start: float,
+    end: float,
+    cosine: bool = False,
+) -> float:
+    """Anneal from ``start`` to ``end`` over ``anneal_steps``, then hold.
+
+    Steerling ramps both teacher-forcing probabilities to their steady
+    state by step ``0.10 * max_steps`` and holds them there, cosine for
+    the known head and linear for the unknown one. Our training loop is
+    epoch-based over a stream and never knows ``max_steps``, so the ramp
+    length is given in absolute steps instead; at our run lengths (about
+    45k steps) their tenth corresponds to roughly 4,500.
+    """
+    if anneal_steps <= 0:
+        return end
+    progress = min(1.0, step / anneal_steps)
+    if cosine:
+        progress = 0.5 * (1.0 - math.cos(math.pi * progress))
+    return start + (end - start) * progress
 
 
 def intervention_apply_mask(
@@ -283,6 +359,32 @@ class ConceptBottleneck(nn.Module):
         known_ctx = context[..., : k * 2 * d].view(*batch_shape, k, 2, d)
         directions: torch.Tensor = known_ctx[..., 0, :] - known_ctx[..., 1, :]
         return directions
+
+    needs_calibration_directions = True
+    """Output calibration needs the ``(w+ - w-)`` directions measured over
+    data: the poles are functions of the hidden state unless
+    ``global_pairs``, so the displacement per unit of probability is not a
+    parameter and has to be estimated."""
+
+    def unit_displacements(self, directions: torch.Tensor | None) -> torch.Tensor:
+        """(k, output_dim) added to the bottleneck output per unit of ``p_i``.
+
+        Concept ``i`` owns one embedding block of the concatenation, so a
+        unit of its probability moves only that block, by
+        ``(w+ - w-)_i``. Scattering the directions into their blocks lets
+        output calibration project them through the LM head without
+        knowing how this bottleneck is laid out.
+        """
+        if directions is None:
+            raise ValueError(
+                "the mixture bottleneck's per-unit displacement is data "
+                "dependent; pass mean_concept_directions(...) output"
+            )
+        k, d = self.num_concepts, self.embedding_dim
+        out = directions.new_zeros((k, self.output_dim))
+        for i in range(k):
+            out[i, i * d : (i + 1) * d] = directions[i]
+        return out
 
     def forward(
         self,
@@ -459,6 +561,14 @@ class ConceptBottleneckLossWeights:
     representations that carry no gradient signal from what helps the
     forecast, only from being a correct, well-separated concept."""
 
+    reconstruction: float = 1.0
+    """Weight of :func:`reconstruction_loss` (Steerling's lambda_rec, 1.0).
+    Only :class:`DecomposedConceptBottleneck` produces this term."""
+
+    independence: float = 1.0
+    """Weight of :func:`independence_loss` (Steerling's lambda_indep, 1.0).
+    Only :class:`DecomposedConceptBottleneck` produces this term."""
+
     concept_pos_weight: torch.Tensor | None = None
     """Optional per-concept ``(num_concepts,)`` positive-class weight for
     :func:`concept_loss` (see its docstring); ``None`` keeps plain BCE."""
@@ -519,43 +629,160 @@ def combined_loss(
     return total, components
 
 
-class AdditiveConceptBottleneck(nn.Module):
-    """A parametric, additive bottleneck: the backbone stream survives.
+class DecomposedBottleneckOutput(NamedTuple):
+    """Outputs of a :class:`DecomposedConceptBottleneck` forward pass."""
 
-    The mixture bottleneck of :class:`ConceptBottleneck` REPLACES the
-    representation every head sees with ``[z_1, ..., z_k, z_u]``, where each
-    ``z_i = p_i w_i^+ + (1 - p_i) w_i^-``. Two consequences follow, and both
-    are measured in this project. Capacity must be paid for out of the
-    concepts, and by default the poles are functions of the hidden state, so
-    overriding ``p_i`` only re-weights two vectors that already encode the
-    patient -- which is why the lever is inert.
+    concept_logits: torch.Tensor
+    """(..., num_concepts) known-concept activation logits, pre-sigmoid."""
 
-    This variant instead leaves the backbone representation intact and lets
-    each concept ADD a fixed direction to it::
+    concept_probs: torch.Tensor
+    """(..., num_concepts) sigmoid(concept_logits); ``k`` in Equation (6)."""
 
-        out = h + sum_i p_i * v_i
+    concept_embeddings: torch.Tensor
+    """(..., num_concepts) each concept's scalar weight on its embedding.
 
-    with ``v_i`` a learned parameter, identical for every patient and
-    timestep. Two properties follow directly, and
-    ``tests/odyssey/models/test_additive_bottleneck.py`` pins both:
+    The per-concept contribution is ``k_i * K_i``, of shape
+    ``(..., n, d)``; materializing it costs about a gigabyte at our
+    training geometry, so the coefficient is reported and the caller
+    multiplies by :attr:`DecomposedConceptBottleneck.known_embeddings`
+    when it wants the vectors.
+    """
 
-    * **Steerable by construction.** Changing ``p_i`` by ``delta`` moves the
-      output by exactly ``delta * v_i``, a known displacement that does not
-      depend on ``h``. There is no context inside the thing the dial mixes,
-      so an override cannot be re-derived away.
-    * **No capacity is taken from the backbone.** ``h`` still reaches every
-      head, so interpretability is not paid for in accuracy. This is the
-      property the mixture design cannot offer and the reason to try it.
+    unknown_embedding: torch.Tensor
+    """(..., hidden_size) ``u_hat``, the unknown concepts' weighted sum,
+    as it enters the bottleneck: DETACHED. Steerling routes the unknown
+    head's prediction into ``h_bar`` "detached before the bottleneck", so
+    the LM loss cannot train ``u_hat`` into a second residual; the head is
+    shaped by the reconstruction and independence losses alone."""
 
-    The completeness probes keep their meaning and become more symmetric:
-    ``zero_known`` drops the concept offset and leaves ``h``; ``zero_unknown``
-    drops ``h`` and leaves the concept offset alone, which is precisely "how
-    much task signal do the named concepts carry by themselves".
+    bottleneck: torch.Tensor
+    """(..., hidden_size) ``h_bar = k_hat + u_hat + eps``; the only thing
+    the heads see."""
 
-    NOT YET WIRED INTO TRAINING. ``ConceptBottleneckSequenceModel`` still
-    constructs :class:`ConceptBottleneck`; selecting this one needs a config
-    flag and a decision about the orthogonality term (see
-    :meth:`direction_orthogonality`).
+    observability_logits: torch.Tensor
+    """(..., num_concepts) predicted "would this concept be observed"."""
+
+    observability_probs: torch.Tensor
+    """(..., num_concepts) sigmoid(observability_logits)."""
+
+    known_part: torch.Tensor
+    """(..., hidden_size) ``k_hat``, the known concepts' weighted sum."""
+
+    unknown_probs: torch.Tensor
+    """(..., num_unknown) ``u`` in Equation (6)."""
+
+    residual: torch.Tensor
+    """(..., hidden_size) ``eps = h - k_hat - u_hat``, computed from the
+    model's OWN parts and held fixed under an intervention."""
+
+    hidden: torch.Tensor
+    """(..., hidden_size) the backbone state ``h``, kept because the
+    reconstruction target is defined against it."""
+
+    unknown_embedding_detached: torch.Tensor
+    """``u_hat`` with a gradient path to the unknown head and nowhere
+    else, for Equations (12) and (14).
+
+    Steerling states of the two auxiliary losses that "gradients are
+    detached so that only the unknown head is updated". The head reads a
+    detached copy of its input, so the reconstruction and independence
+    terms reach the unknown projection and the unknown embeddings, which
+    are the unknown head, and never the backbone. Same values as
+    :attr:`unknown_embedding`, same dropout mask; that one is detached
+    entirely because it is what the bottleneck sums."""
+
+
+class DecomposedConceptBottleneck(nn.Module):
+    """Decompose the hidden state into known + unknown concepts + residual.
+
+    This follows the concept module of \\citet{madsen2026steerling}
+    exactly. For each token the backbone produces ``h``, and the module
+    splits it three ways (their Equation 5)::
+
+        h_bar = k_hat + u_hat + eps,    eps = h - k_hat - u_hat
+
+    with ``k_hat = k @ K`` over the ``n`` supervised concepts and
+    ``u_hat = u @ U`` over ``m >> n`` unsupervised ones, where
+    ``k = sigmoid(f(h))`` and ``u = sigmoid(g(h))`` (their Equation 6/7).
+    Only ``h_bar`` is passed downstream, so with a linear head every logit
+    decomposes as ``k_hat @ W + u_hat @ W + eps @ W``.
+
+    THE DECOMPOSITION IS AN ALGEBRAIC IDENTITY: ``h_bar == h`` exactly.
+    That is worth stating plainly, because it is what our earlier additive
+    attempt got wrong. Writing ``out = h + sum_i p_i v_i`` ADDS a concept
+    term to an untouched backbone stream; nothing then relates the
+    ``v_i`` to ``h``, the task loss is minimized through ``h`` alone, and
+    the concept term decays into decoration. Measured on the full-scale
+    eICU run: deleting all 26 concepts cost 1.6% of accuracy. Steerling
+    names this failure mode, residual domination, and predicts it exactly
+    for a model trained without the losses below -- "algebraically exact
+    but practically vacuous".
+
+    So the identity is not where the pressure comes from. Three things
+    supply it, and all three must be present:
+
+    * ``residual_dropout`` on ``eps`` during training, so the model cannot
+      route prediction through the unexplained channel and expect it to
+      survive;
+    * :func:`reconstruction_loss`, which pins ``u_hat`` to
+      ``h - k_hat_gt`` and so forces the decomposition to be real rather
+      than nominal;
+    * :func:`independence_loss`, which stops the unknown head re-encoding
+      what the concepts already say.
+
+    Two gradient rules make the pressure land where Steerling puts it.
+    The unknown head's prediction enters ``h_bar`` detached (Section
+    10.2.2: "detached before the bottleneck"), so the LM loss trains the
+    backbone through ``k_hat`` and ``eps`` only and cannot grow ``u_hat``
+    into a second residual. And under teacher forcing ``eps`` is the
+    remainder of the parts actually used, ``h - used_known -
+    used_unknown``, so that "when u_hat = u_hat_gt, eps = 0" holds; adding
+    the model's own residual on top of the forced parts would feed the LM
+    head ``h + eps`` in training and ``h`` at inference, weighting the
+    residual direction twice.
+
+    Note also that with inverted dropout the EXPECTED LM gradient into
+    ``k_hat`` is zero (``h_bar = k + u + D(h - k - u)`` and ``E[D] = I``);
+    the known embeddings grow only through the dropout-noise pressure on
+    ``eps``. Weight decay on them is therefore a net shrink toward an
+    inert named channel, which is why :meth:`decay_exempt_parameters`
+    exists and Steerling decays "excluding embeddings".
+
+    Every arm this project ran before 2026-09-01 lacked all three, and in
+    the two arms that tried to control the residual by narrowing it, the
+    only mechanism present (``orthogonality_loss``) is identically zero
+    whenever the unknown slot's width differs from ``embedding_dim``. The
+    residual has therefore never actually been constrained here.
+
+    Steerability, and why the residual is frozen under an override
+    ---------------------------------------------------------------
+    ``eps`` is computed from the model's own ``k_hat`` and ``u_hat`` and
+    then held fixed. This matters: if ``eps`` were recomputed after an
+    override it would absorb the edit exactly, since
+    ``k_hat' + u_hat + (h - k_hat' - u_hat) == h`` for any ``k_hat'``, and
+    the intervention would be a no-op by construction. Holding it fixed
+    makes an override move the output by exactly ``(k' - k) @ K``, a known
+    displacement independent of the patient.
+
+    Parameters
+    ----------
+    hidden_size : int
+        Width of the backbone hidden state ``h``.
+    num_concepts : int
+        Number of supervised concepts, ``n``.
+    unknown_ratio : int
+        ``m = unknown_ratio * n`` unsupervised concepts. Steerling uses 3.
+    unknown_rank : int | None
+        Factorize ``U = A @ B`` with this rank, as Steerling does to stop
+        a 101k-concept embedding matrix dominating the parameter count.
+        At our ``n`` the full matrix is a few tens of thousands of
+        parameters, so ``None`` (no factorization) is the sane default.
+    concept_dropout : float
+        Dropout on ``h`` before the heads (Steerling's ``p_cfg``, 0.1).
+    residual_dropout : float
+        Dropout on ``eps`` during training (their ``p_eps``). They use 0.1
+        in pretraining and raise it to 0.3 when tightening the model,
+        "applying more pressure on eps to vanish".
     """
 
     def __init__(
@@ -563,64 +790,167 @@ class AdditiveConceptBottleneck(nn.Module):
         hidden_size: int,
         num_concepts: int,
         *,
+        unknown_ratio: int = 3,
+        unknown_rank: int | None = None,
         concept_dropout: float = 0.1,
+        residual_dropout: float = 0.1,
     ) -> None:
-        """Initialize the additive bottleneck."""
+        """Initialize the decomposition."""
         super().__init__()
         if num_concepts <= 0:
             raise ValueError("num_concepts must be positive")
+        if unknown_ratio <= 0:
+            raise ValueError("unknown_ratio must be positive")
         self.hidden_size = hidden_size
         self.num_concepts = num_concepts
-        # The representation handed to the heads is the backbone's own width:
-        # concepts add to it rather than replacing it.
+        self.num_unknown = unknown_ratio * num_concepts
+        # The heads see the backbone's own width: this decomposes h, it
+        # does not replace it with a narrower concatenation.
         self.output_dim = hidden_size
 
         self.dropout = nn.Dropout(concept_dropout)
-        self.concept_prob_proj = nn.Linear(hidden_size, num_concepts)
+        self.residual_dropout = nn.Dropout(residual_dropout)
+        self.known_proj = nn.Linear(hidden_size, num_concepts)
+        self.unknown_proj = nn.Linear(hidden_size, self.num_unknown)
         self.observability_proj = nn.Linear(hidden_size, num_concepts)
-        # One global direction per concept. Patient-independent BY DESIGN --
-        # that is the whole point, and what makes an override mean the same
-        # thing for every patient.
-        self.concept_directions = nn.Parameter(torch.empty(num_concepts, hidden_size))
-        nn.init.xavier_uniform_(self.concept_directions)
 
-    def direction_orthogonality(self) -> torch.Tensor:
-        """Mean absolute cosine similarity between distinct concept directions.
+        self.known_embeddings = nn.Parameter(torch.empty(num_concepts, hidden_size))
+        nn.init.xavier_uniform_(self.known_embeddings)
+        self.unknown_rank = unknown_rank
+        if unknown_rank is None:
+            self.unknown_embeddings_full = nn.Parameter(
+                torch.empty(self.num_unknown, hidden_size)
+            )
+            nn.init.xavier_uniform_(self.unknown_embeddings_full)
+        else:
+            self.unknown_factor_a = nn.Parameter(
+                torch.empty(self.num_unknown, unknown_rank)
+            )
+            self.unknown_factor_b = nn.Parameter(torch.empty(unknown_rank, hidden_size))
+            nn.init.xavier_uniform_(self.unknown_factor_a)
+            nn.init.xavier_uniform_(self.unknown_factor_b)
 
-        The additive analogue of :func:`orthogonality_loss`. There is no
-        unknown slot to be redundant with here, so the meaningful redundancy
-        is between the concepts themselves: two concepts pointing the same
-        way are not separately steerable. Width-agnostic, unlike the mixture
-        version, so it cannot go silently inert.
+    def unknown_embeddings(self) -> torch.Tensor:
+        """(num_unknown, hidden_size) unknown-concept embeddings ``U``."""
+        if self.unknown_rank is None:
+            return self.unknown_embeddings_full
+        return self.unknown_factor_a @ self.unknown_factor_b
+
+    def decay_exempt_parameters(self) -> list[nn.Parameter]:
+        """Return the concept embeddings ``K`` and ``U`` (or its factors).
+
+        Steerling applies weight decay "excluding embeddings". The task
+        gradient into ``K`` is zero in expectation (see the class
+        docstring), so decaying it is a one-way pull toward the solution
+        where the named channel carries nothing.
         """
-        directions = F.normalize(self.concept_directions, dim=-1)
-        gram = directions @ directions.T
-        off_diagonal = ~torch.eye(
-            self.num_concepts, dtype=torch.bool, device=gram.device
-        )
-        if not bool(off_diagonal.any()):
-            return gram.new_zeros(())
-        return gram[off_diagonal].abs().mean()
+        params = [self.known_embeddings]
+        if self.unknown_rank is None:
+            params.append(self.unknown_embeddings_full)
+        else:
+            params.extend([self.unknown_factor_a, self.unknown_factor_b])
+        return params
+
+    def known_contribution(self, probs: torch.Tensor) -> torch.Tensor:
+        """``k_hat`` for given activations: Equation (7)'s known half."""
+        # Annotated rather than returned directly: matmul against a Parameter
+        # is typed as Any by some torch stub versions -- green locally,
+        # no-any-return under CI's stubs.
+        known: torch.Tensor = probs @ self.known_embeddings
+        return known
+
+    needs_calibration_directions = False
+    """Output calibration needs no data pass here: a unit of ``k_i`` adds
+    exactly ``K_i``, which is a parameter."""
+
+    def unit_displacements(
+        self, directions: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """(k, hidden_size) added to ``h_bar`` per unit of ``k_i``: ``K_i``.
+
+        ``directions`` is accepted and ignored so both bottlenecks present
+        one interface; it is meaningless here because the displacement is
+        a parameter rather than an estimate.
+        """
+        return self.known_embeddings.detach()
 
     def unaccounted_orthogonality(self) -> torch.Tensor:
-        """Return the parameter-space penalty ``combined_loss`` cannot compute.
+        """No parameter-space penalty: redundancy is handled by a loss.
 
-        ``combined_loss`` derives orthogonality from the output tensors, and
-        this bottleneck has no per-concept embedding or unknown slot for it
-        to use, so the term it computes is structurally zero. The redundancy
-        that matters here lives in the parameters instead.
+        The mixture bottleneck hides its redundancy in the parameters, so
+        ``fold_in_bottleneck_orthogonality`` exists to reach it. Here the
+        known/unknown redundancy is measured on activations by
+        :func:`independence_loss`, which is where Steerling puts it, so
+        there is nothing left for the fold-in to add.
         """
-        return self.direction_orthogonality()
+        return self.known_embeddings.new_zeros(())
+
+    def auxiliary_losses(
+        self,
+        output: DecomposedBottleneckOutput,
+        concept_labels: torch.Tensor,
+        concept_mask: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
+        """Return the two losses that keep the decomposition honest.
+
+        Steerling's Equations (12) and (14). Returned unweighted and keyed
+        by the name they carry in the training logs, so
+        :func:`fold_in_bottleneck_losses` can apply the weights without
+        knowing which bottleneck produced them.
+        """
+        return {
+            "reconstruction_loss": reconstruction_loss(
+                output.unknown_embedding_detached,
+                output.hidden,
+                self.known_embeddings,
+                concept_labels,
+                concept_mask,
+            ),
+            "independence_loss": independence_loss(
+                output.known_part,
+                output.unknown_embedding_detached,
+                None
+                if concept_mask is None
+                else _broadcast_over_positions(concept_mask, output.hidden)
+                .any(dim=-1)
+                .expand(output.hidden.shape[:-1]),
+            ),
+        }
 
     def forward(
         self,
         hidden_states: torch.Tensor,
         intervention: BottleneckIntervention | None = None,
-    ) -> ConceptBottleneckOutput:
-        """Add each concept's global direction, scaled by its probability."""
+        *,
+        teacher: TeacherForcing | None = None,
+    ) -> DecomposedBottleneckOutput:
+        """Split ``h`` into known concepts, unknown concepts and a residual.
+
+        ``teacher`` substitutes the ground-truth ``k_hat_gt``/``u_hat_gt``
+        when forming ``h_bar`` with the given probabilities, which is
+        Steerling's teacher forcing. Substitution only happens in training
+        mode; the annealing schedule lives in the training loop.
+        """
         x = self.dropout(hidden_states)
-        concept_logits = self.concept_prob_proj(x)
+        concept_logits = self.known_proj(x)
+        observability_logits = self.observability_proj(x)
         concept_probs = torch.sigmoid(concept_logits)
+
+        # The unknown head reads a detached copy of its input, so the
+        # auxiliary losses reach the head and never the backbone; and what
+        # the bottleneck sums is detached again, so the LM loss reaches
+        # neither. Steerling: the unknown prediction is "detached before
+        # the bottleneck". The head is trained by Equations (12) and (14)
+        # alone, which is what makes it a reconstructor of h - k_hat_gt
+        # rather than a second residual the task loss can route through.
+        unknown_probs = torch.sigmoid(self.unknown_proj(x.detach()))
+        unknown_head = unknown_probs @ self.unknown_embeddings()
+        unknown_part = unknown_head.detach()
+
+        own_known = self.known_contribution(concept_probs)
+        # eps from the model's OWN parts, before any edit. Recomputing it
+        # after an override would cancel the override exactly.
+        residual = hidden_states - own_known - unknown_part
 
         mix_probs = concept_probs
         if intervention is not None and intervention.probs is not None:
@@ -631,63 +961,188 @@ class AdditiveConceptBottleneck(nn.Module):
             if apply is not None:
                 override = torch.where(apply, override, concept_probs)
             mix_probs = override
+        known_part = (
+            own_known
+            if mix_probs is concept_probs
+            else self.known_contribution(mix_probs)
+        )
 
-        offset = mix_probs @ self.concept_directions
-        residual = hidden_states
-        if intervention is not None and intervention.zero_known:
-            offset = torch.zeros_like(offset)
-        if intervention is not None and intervention.zero_unknown:
-            residual = torch.zeros_like(residual)
-        bottleneck = residual + offset
+        used_known, used_unknown, used_residual = known_part, unknown_part, residual
+        if teacher is not None and self.training:
+            labels = _broadcast_over_positions(
+                teacher.concept_labels.to(hidden_states.dtype), hidden_states
+            )
+            known_gt = self.known_contribution(labels.expand(*concept_probs.shape))
+            # Where no label exists the model's own parts stand: an
+            # all-zero row is not "no concepts present".
+            labeled = (
+                None
+                if teacher.concept_mask is None
+                else _broadcast_over_positions(teacher.concept_mask, hidden_states)
+                .any(dim=-1, keepdim=True)
+                .expand_as(hidden_states)
+            )
 
-        observability_logits: torch.Tensor = self.observability_proj(x)
+            def substitute(forced: torch.Tensor, own: torch.Tensor) -> torch.Tensor:
+                return forced if labeled is None else torch.where(labeled, forced, own)
 
-        # The per-concept contribution is p_i * v_i, of shape
-        # (..., k, hidden_size). Materializing it would cost roughly a
-        # gigabyte at our training geometry (64 lanes x 512 chunk x 29
-        # concepts x 256 dims), so we report the scalar coefficient instead
-        # and leave the unknown slot empty: this design has no separate
-        # residual embedding, the backbone stream IS the residual. The
-        # differing last dimensions also make the mixture-specific
-        # orthogonality_loss return zero rather than misbehave; use
-        # direction_orthogonality() instead.
-        return ConceptBottleneckOutput(
+            if torch.rand(()).item() < teacher.alpha_known:
+                used_known = substitute(known_gt, used_known)
+            if torch.rand(()).item() < teacher.alpha_unknown:
+                used_unknown = substitute(hidden_states - known_gt, used_unknown)
+            # The residual is whatever the used parts leave unexplained.
+            # With both heads forced that is exactly zero, as Equation
+            # (11)-(12) state; holding the model's own eps fixed here
+            # instead would put the residual into h_bar twice.
+            used_residual = hidden_states - used_known - used_unknown
+        used_residual = self.residual_dropout(used_residual)
+        if intervention is not None:
+            if intervention.zero_known:
+                used_known = torch.zeros_like(used_known)
+            if intervention.zero_unknown:
+                used_unknown = torch.zeros_like(used_unknown)
+            if intervention.zero_residual:
+                used_residual = torch.zeros_like(used_residual)
+
+        return DecomposedBottleneckOutput(
             concept_logits=concept_logits,
             concept_probs=concept_probs,
-            concept_embeddings=mix_probs.unsqueeze(-1),
-            unknown_embedding=hidden_states.new_zeros((*hidden_states.shape[:-1], 0)),
+            concept_embeddings=mix_probs,
+            unknown_embedding=unknown_part,
+            unknown_embedding_detached=unknown_head,
+            bottleneck=used_known + used_unknown + used_residual,
             observability_logits=observability_logits,
             observability_probs=torch.sigmoid(observability_logits),
-            bottleneck=bottleneck,
+            known_part=known_part,
+            unknown_probs=unknown_probs,
+            residual=residual,
+            hidden=hidden_states,
         )
 
 
-def fold_in_bottleneck_orthogonality(
+def _broadcast_over_positions(
+    labels: torch.Tensor, reference: torch.Tensor
+) -> torch.Tensor:
+    """Give subject-level labels a position axis to match ``reference``.
+
+    Concept labels here are one row per subject (or per visit), while the
+    hidden state has a position axis. A concept is a property of the
+    visit, so the label applies at every position within it; inserting
+    singleton axes lets it broadcast rather than silently misaligning
+    sequence length against concept count.
+    """
+    while labels.dim() < reference.dim():
+        labels = labels.unsqueeze(-2)
+    return labels
+
+
+def reconstruction_loss(
+    unknown_part: torch.Tensor,
+    hidden: torch.Tensor,
+    known_embeddings: torch.Tensor,
+    concept_labels: torch.Tensor,
+    concept_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Steerling Equation (12): pin ``u_hat`` to ``h - k_hat_gt``.
+
+    The unknown head is trained to carry exactly the part of the hidden
+    state the true concepts do not explain, so the three-way split is a
+    real decomposition rather than a bookkeeping identity. Without this
+    the unknown channel is free to absorb the whole prediction, which is
+    the residual-domination failure mode.
+
+    The target is detached: it is a target, and Steerling notes that
+    gradients here should reach the unknown head rather than the backbone
+    or the known side.
+
+    ``concept_mask`` marks positions where the concept labels are
+    observed. Steerling averages over masked diffusion positions; the
+    analogue here is to average over positions with usable labels, since
+    an unobserved label would otherwise define a target from a
+    ``k_hat_gt`` built out of zeros.
+    """
+    labels = _broadcast_over_positions(
+        concept_labels.to(known_embeddings.dtype), hidden
+    )
+    if concept_mask is not None:
+        labels = labels * _broadcast_over_positions(
+            concept_mask.to(labels.dtype), hidden
+        )
+    target = (hidden - labels @ known_embeddings).detach()
+    per_position = (unknown_part - target).pow(2).sum(-1)
+    if concept_mask is None:
+        return per_position.mean()
+    usable = (
+        _broadcast_over_positions(concept_mask, hidden)
+        .any(dim=-1)
+        .expand_as(per_position)
+        .to(per_position.dtype)
+    )
+    total = usable.sum()
+    if not bool(total > 0):
+        return per_position.new_zeros(())
+    return (per_position * usable).sum() / total
+
+
+def independence_loss(
+    known_part: torch.Tensor,
+    unknown_part: torch.Tensor,
+    valid_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Steerling Equations (13)-(14): decorrelate known from unknown.
+
+    A normalized cross-covariance penalty in the spirit of HSIC with a
+    linear kernel. Centre both representations over the batch, then
+    penalize ``||Psi^T Phi||_F^2 / (d^2 (N - 1))``. Reconstruction alone
+    does not stop the unknown head re-encoding what the concepts already
+    say; this does.
+
+    Gradients flow only through the unknown side: Steerling treats the
+    known representation as a fixed input here.
+    """
+    known = known_part.reshape(-1, known_part.shape[-1])
+    unknown = unknown_part.reshape(-1, unknown_part.shape[-1])
+    if valid_mask is not None:
+        keep = valid_mask.reshape(-1).to(torch.bool)
+        known, unknown = known[keep], unknown[keep]
+    n_positions, width = unknown.shape
+    if n_positions < 2:
+        return unknown.new_zeros(())
+    phi = (known - known.mean(dim=0, keepdim=True)).detach()
+    psi = unknown - unknown.mean(dim=0, keepdim=True)
+    cross = psi.transpose(0, 1) @ phi
+    return cross.pow(2).sum() / (width**2 * (n_positions - 1))
+
+
+def fold_in_bottleneck_losses(
     bottleneck: nn.Module,
+    output: object,
+    concept_labels: torch.Tensor,
     total: torch.Tensor,
     components: dict[str, torch.Tensor],
+    *,
+    concept_mask: torch.Tensor | None = None,
     weights: ConceptBottleneckLossWeights | None = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """Add any orthogonality penalty ``combined_loss`` could not compute.
+    """Add any auxiliary losses only the bottleneck itself can compute.
 
-    ``combined_loss`` derives its orthogonality term from the forward pass's
-    output tensors, which suits the mixture bottleneck and suits nothing
-    else: a design whose redundancy lives in its parameters rather than its
-    activations has no way to report it there. Rather than branch on the
-    bottleneck's type at every call site -- which would need editing for
-    each new variant -- every bottleneck exposes
-    ``unaccounted_orthogonality()`` and this folds the result in under the
-    same weight. A bottleneck whose penalty is already accounted for
-    returns zero and the total is unchanged.
+    ``combined_loss`` derives its terms from the shapes the mixture
+    bottleneck produces, which suits that design and nothing else. Rather
+    than branch on the bottleneck's type at every call site -- which would
+    need editing for each new variant -- a bottleneck may expose
+    ``auxiliary_losses()`` and this folds the result in under the matching
+    weight. A bottleneck without one is left alone.
     """
-    penalty = getattr(bottleneck, "unaccounted_orthogonality", None)
-    if penalty is None:
-        return total, components
-    value = penalty()
-    if not bool(value.any()):
+    report = getattr(bottleneck, "auxiliary_losses", None)
+    if report is None:
         return total, components
     weights = weights or ConceptBottleneckLossWeights()
-    return (
-        total + weights.orthogonality * value,
-        {**components, "orthogonality_loss": value.detach()},
-    )
+    scale = {
+        "reconstruction_loss": weights.reconstruction,
+        "independence_loss": weights.independence,
+    }
+    extra = report(output, concept_labels, concept_mask)
+    for name, value in extra.items():
+        total = total + scale.get(name, 1.0) * value
+        components[name] = value.detach()
+    return total, components
