@@ -406,3 +406,32 @@ sharding/output rules now live in their own doc:
 **[`docs/gemini_extraction.md`](gemini_extraction.md)**, kept separate from
 this page since it's specific to the extraction design rather than the
 git-only workflow this page documents. No extraction code exists yet.
+
+## Known label-definition issues on GEMINI
+
+**`aki_stage_3`'s absolute-value criterion was unit-blind, confirmed
+2026-09-01/02.** `odyssey/data/concepts.py`'s `aki_stage_3` rule includes
+`LoincThreshold(_CREATININE, "at_or_above", 4.0)` (KDIGO's `>= 4.0 mg/dL`
+leg) with no per-source unit override, so `4.0` was compared directly
+against GEMINI's creatinine values, which are SI (umol/L, roughly 60-110
+normal) rather than mg/dL -- the criterion fired for essentially every
+creatinine result on GEMINI, not just genuine Stage 3 cases. Fixed
+(353.7 umol/L on GEMINI-tagged prefixes) in the same PR as the
+`GEMINI_TO_LOINC` mapping extension.
+
+Scope, precisely (do not over- or under-extend it): only the `aki_stage_3`
+*concept* on GEMINI is affected -- its readout AUROC and completeness
+numbers from `gemini_full_v10` (G3), and the label supervision that
+concept gave the model during that training run. Nothing else is touched:
+`aki_stage_3`'s other three criteria (creatinine ratio, RRT code
+occurrence, urine rate/anuria) are all unit-independent by construction;
+`acute_kidney_injury` (KDIGO Stage 1, the event actually scored in
+`alerts.json`/`alerts_cis.py`) uses `LoincBaselineRelative` with an
+explicit `unit_deltas=(("umol/L", 26.5),)` override, already unit-safe;
+`aki_stage_2` is ratio- and urine-rate-only, also unit-safe; there is no
+`aki_stage_3`-named alert event at all (`alert_events.py` only scores
+`acute_kidney_injury`). So the already-banked G4 `alerts.json`/
+`alerts_cis.py` numbers, including every `acute_kidney_injury` cell, are
+unaffected. The GEMINI decomposed run (`gemini_full_DEC_v12`) that Amrit
+launches once the mapping lands trains under the corrected rule,
+so nothing needs rerunning ahead of that.
