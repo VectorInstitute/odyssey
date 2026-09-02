@@ -1,4 +1,4 @@
-"""What the concepts say: exact alignment of every concept direction with the vocabulary.
+"""What the concepts say: exact alignment of each concept direction with the vocabulary.
 
 The next-event head is linear in the bottleneck sum, so for concept ``c``
 with embedding ``K_c`` (or unknown ``U_j``) the vector ``W K_c`` is exactly
@@ -96,7 +96,7 @@ def contribution_pass(
     chunk_size: int,
     device: str,
 ) -> dict[str, Any]:
-    """Compute Steerling's Concept Contribution on the linear head, plus activations.
+    """Compute Concept Contribution on the linear head, plus mean activations.
 
     For each real position and its predicted token ``y``: the logit is
     ``k_hat.W_y + u_hat.W_y + eps.W_y``; the shares are the absolute terms
