@@ -45,8 +45,8 @@ from odyssey.data.concepts import ANTIBIOTIC_PATTERN
 
 logger = logging.getLogger("build_eicu_sidecars")
 
+# Offsets at or beyond +/- one year null the derived time (specs/eICU.yaml).
 OFFSET_GUARD_MINUTES = 525_600
-"""Offsets at or beyond +/- one year null the derived time (specs/eICU.yaml)."""
 HICL_DICTIONARY = (
     Path(__file__).resolve().parent.parent
     / "odyssey"
