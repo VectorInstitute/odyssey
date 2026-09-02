@@ -19,21 +19,48 @@
     "hypoxemic_respiratory_failure": false,
     "oliguria": false,
     "sepsis3": false,
-    "hyperkalemia": false,
-    "hypokalemia": false,
-    "hyponatremia": false,
-    "hypernatremia": false,
-    "hypoglycemia": false,
-    "hyperglycemia": false,
-    "anemia": false,
-    "thrombocytopenia": false,
-    "coagulopathy": false,
-    "metabolic_acidosis": false,
+    "hyperkalemia": true,
+    "hypokalemia": true,
+    "hyponatremia": true,
+    "hypernatremia": true,
+    "hypoglycemia": true,
+    "hyperglycemia": true,
+    "anemia": true,
+    "thrombocytopenia": true,
+    "coagulopathy": true,
+    "metabolic_acidosis": true,
     "shock": false
   },
   "n_concepts_mimic_v3": 29,
-  "n_concepts_resolving": 15,
+  "n_concepts_resolving": 25,
   "mapping": {
+    "LAB//3000963//": {
+      "loinc": "718-7",
+      "n_codes": 3,
+      "token_count_bounds": [
+        15405000,
+        15405000
+      ],
+      "unit_variants": [
+        "UNK",
+        "g/dl",
+        "g/l"
+      ],
+      "curated_bins": false
+    },
+    "LAB//3007461//": {
+      "loinc": "777-3",
+      "n_codes": 2,
+      "token_count_bounds": [
+        14868000,
+        14868000
+      ],
+      "unit_variants": [
+        "UNK",
+        "x10e9/l"
+      ],
+      "curated_bins": false
+    },
     "LAB//3008037//": {
       "loinc": "32693-4",
       "n_codes": 2,
@@ -63,6 +90,33 @@
       ],
       "curated_bins": false
     },
+    "LAB//3013826//": {
+      "loinc": "2345-7",
+      "n_codes": 3,
+      "token_count_bounds": [
+        7998000,
+        7998000
+      ],
+      "unit_variants": [
+        "%",
+        "UNK",
+        "mmol/l"
+      ],
+      "curated_bins": false
+    },
+    "LAB//3016293//": {
+      "loinc": "1963-8",
+      "n_codes": 2,
+      "token_count_bounds": [
+        13320000,
+        13320000
+      ],
+      "unit_variants": [
+        "UNK",
+        "mmol/l"
+      ],
+      "curated_bins": false
+    },
     "LAB//3018405//": {
       "loinc": "32693-4",
       "n_codes": 2,
@@ -75,6 +129,19 @@
         "mmol/l"
       ],
       "curated_bins": true
+    },
+    "LAB//3019550//": {
+      "loinc": "2951-2",
+      "n_codes": 2,
+      "token_count_bounds": [
+        17006000,
+        17006000
+      ],
+      "unit_variants": [
+        "UNK",
+        "mmol/l"
+      ],
+      "curated_bins": false
     },
     "LAB//3020138//": {
       "loinc": "32693-4",
@@ -100,6 +167,32 @@
         "umol/l"
       ],
       "curated_bins": true
+    },
+    "LAB//3023103//": {
+      "loinc": "2823-3",
+      "n_codes": 2,
+      "token_count_bounds": [
+        16970000,
+        16970000
+      ],
+      "unit_variants": [
+        "UNK",
+        "mmol/l"
+      ],
+      "curated_bins": false
+    },
+    "LAB//3032080//": {
+      "loinc": "6301-6",
+      "n_codes": 2,
+      "token_count_bounds": [
+        4344000,
+        4344000
+      ],
+      "unit_variants": [
+        "UNK",
+        "inr"
+      ],
+      "curated_bins": false
     },
     "VITALS//3004249//": {
       "loinc": "8480-6",
@@ -223,20 +316,8 @@
       "count": "22253000"
     },
     {
-      "code": "LAB//3019550//mmol/l",
-      "count": "16804000"
-    },
-    {
-      "code": "LAB//3023103//mmol/l",
-      "count": "16762000"
-    },
-    {
       "code": "LAB//3014576//mmol/l",
       "count": "16663000"
-    },
-    {
-      "code": "LAB//3000963//g/l",
-      "count": "15127000"
     },
     {
       "code": "LAB//3040151//mmol/l",
@@ -245,14 +326,6 @@
     {
       "code": "LAB//3024731//fl",
       "count": "13830000"
-    },
-    {
-      "code": "LAB//3007461//x10e9/l",
-      "count": "13719000"
-    },
-    {
-      "code": "LAB//3016293//mmol/l",
-      "count": "13145000"
     },
     {
       "code": "LAB//3026361//x10e12/l",
@@ -305,10 +378,6 @@
     {
       "code": "LAB//3013115//x10e9/l",
       "count": "7842000"
-    },
-    {
-      "code": "LAB//3013826//mmol/l",
-      "count": "7829000"
     },
     {
       "code": "LAB//3006315//x10e9/l",
@@ -377,6 +446,30 @@
     {
       "code": "VITALS//3005629//UNK",
       "count": "4454000"
+    },
+    {
+      "code": "LAB//3051651//UNK",
+      "count": "4452000"
+    },
+    {
+      "code": "LAB//3006140//umol/l",
+      "count": "3826000"
+    },
+    {
+      "code": "LAB//3001490//x10e9/l",
+      "count": "3512000"
+    },
+    {
+      "code": "LAB//3053331//UNK",
+      "count": "3479000"
+    },
+    {
+      "code": "LAB//3006923//u/l",
+      "count": "3125000"
+    },
+    {
+      "code": "LAB//3035995//u/l",
+      "count": "3026000"
     }
   ]
 }
