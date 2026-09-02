@@ -818,6 +818,16 @@ def _prepare_steering(
     )
 
 
+def _needs_running_labels(config: TrainingConfig) -> bool:
+    """Whether the corpus must carry concept first-trigger times.
+
+    Both intervention-aware training (RandInt) and Steerling's steering
+    phases substitute or inject at positions where a concept has already
+    triggered, which only the running labels can say.
+    """
+    return config.randint_prob > 0.0 or config.steering_phases > 0
+
+
 def optimizer_param_groups(
     model: torch.nn.Module, weight_decay: float
 ) -> list[dict[str, object]]:
@@ -1113,12 +1123,12 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
         tuning_labels, tuning_masks = build_visit_concept_label_dicts(
             tuning_events, concepts
         )
-        if config.randint_prob > 0.0:
+        if _needs_running_labels(config):
             train_first_times = build_visit_concept_first_times(train_events, concepts)
     elif config.concept_supervision == "stay":
         train_labels, train_masks = build_concept_label_dicts(train_events, concepts)
         tuning_labels, tuning_masks = build_concept_label_dicts(tuning_events, concepts)
-        if config.randint_prob > 0.0:
+        if _needs_running_labels(config):
             train_first_times = build_concept_first_times(train_events, concepts)
     else:
         raise ValueError(
@@ -1261,7 +1271,7 @@ def _train_streaming(config: TrainingConfig, output_dir: Path, device: str) -> P
         source=config.source,
         concepts=concepts,
         concept_supervision=config.concept_supervision,
-        with_first_times=config.randint_prob > 0.0,
+        with_first_times=_needs_running_labels(config),
         alerts=(
             hazard_events_for(
                 config.task_set, config.auxiliary_event_names, source=config.source
