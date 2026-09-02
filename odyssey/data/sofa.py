@@ -44,7 +44,7 @@ special case of it.
 import functools
 import warnings
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import (
     Any,
     TypeVar,
@@ -69,6 +69,27 @@ class SofaSourceConfig:
     infusion_end_prefix: str
     ventilation_start: tuple[str, ...]
     ventilation_end: tuple[str, ...]
+    cardiovascular_fixed_tier: dict[str, int] = field(default_factory=dict)
+    """Score a drug's whole infusion at one fixed tier instead of reading
+    its START row's ``value`` as a mcg/kg/min rate. For a source whose
+    numeric field is not confirmed to be in that unit (free-text dosages
+    mixing boluses and continuous rates, or a rate charted per-minute
+    rather than per-kg-per-minute with no verified conversion) --
+    guessing a conversion would silently produce a wrong severity tier
+    rather than fail loudly. Keyed by drug name (``"dopamine"``,
+    ``"epinephrine"``, ``"norepinephrine"``, ``"dobutamine"``); a drug not
+    present here still uses the rate-based tiers, so this is opt-in per
+    drug, not a source-wide switch. Set the *lower* of a drug's two
+    rate-dependent tiers so the approximation never over-scores (an
+    infusion always exists at some real rate, so the true tier is always
+    >= this one); this does not affect *whether* Sepsis-3's SOFA-rise
+    criterion fires, since starting any pressor already lifts the
+    cardiovascular component by at least 2 from a baseline of 0 or 1 --
+    only the exact score is approximate. Same spirit as ``oliguria``
+    using absolute urine volume rather than KDIGO's weight-normalized
+    rate: a stated, documented simplification rather than an unverifiable
+    guess.
+    """
     daily_weight: tuple[str, ...] = ()
     """Code prefixes of the recurring charted body weight, in kg.
 
@@ -93,6 +114,10 @@ SOFA_SOURCE_CONFIG: dict[str, SofaSourceConfig] = {
         infusion_end_prefix="INFUSION_END//",
         ventilation_start=("PROCEDURE//START//225792", "PROCEDURE//START//225794"),
         ventilation_end=("PROCEDURE//END//225792", "PROCEDURE//END//225794"),
+        # Dobutamine has no rate-dependent SOFA tier (any dose scores 2);
+        # MIMIC-IV's other three pressors ARE rate-based here, chartevents'
+        # rate items being natively charted in mcg/kg/min already.
+        cardiovascular_fixed_tier={"dobutamine": 2},
         # chartevents 224639 "Daily Weight" / 226512 "Admission Weight (Kg)",
         # both charted in kg. Deliberately NOT routed through the LOINC layer:
         # both carry the same body-weight LOINC, so a LOINC lookup could not
@@ -101,6 +126,69 @@ SOFA_SOURCE_CONFIG: dict[str, SofaSourceConfig] = {
         # that distinction.
         daily_weight=("LAB//224639//",),
         admission_weight=("LAB//226512//",),
+    ),
+    "eicu": SofaSourceConfig(
+        # Vasopressor identity comes from odyssey.data.code_normalization's
+        # HICL-first normalization (the same source-of-truth
+        # odyssey.data.concepts.on_vasopressors and
+        # odyssey.data.alert_events's vasopressor_start already build on),
+        # NOT a hand-rolled name/regex match here: every real HICL entry
+        # for these four drugs (checked against
+        # odyssey/data/resources/eicu_hicl_ingredients.csv directly --
+        # e.g. HICL 2051 "norepinephrine bitartrate", 36346
+        # "norepinephrine", 37410 "norepinephrine bitar-0.9% nacl") reduces
+        # to an ingredient string starting with the drug's generic name,
+        # so a plain prefix on the post-normalization code catches every
+        # named AND HICL-resolved-but-originally-unnamed row (36% of
+        # eICU's medication rows carry no drugname at all; 94% of those
+        # carry a resolving HICL). This assumes normalize_medications=True
+        # has already run (true of every training/inference path by
+        # default, verified against maybe_normalize's call sites).
+        norepinephrine=("norepinephrine", "levophed"),
+        epinephrine=("epinephrine",),
+        dopamine=("dopamine",),
+        dobutamine=("dobutamine",),
+        infusion_start_prefix="MEDICATION//STARTED//",
+        infusion_end_prefix="MEDICATION//STOPPED//",
+        # No rate confirmed in mcg/kg/min for any of the four -- eICU's
+        # medication.dosage is free text mixing bolus doses and continuous
+        # rates in unverified units, and infusionDrug.infusionrate's own
+        # extraction comment notes some drugs are charted per-minute, not
+        # per-kg-per-minute ("Norepinephrine (mcg/min)"), with no shipped
+        # weight-based conversion. Guessing one would silently produce a
+        # wrong severity tier, so every drug here is fixed rather than
+        # rate-scored -- set to the LOWER of each drug's two
+        # rate-dependent SOFA tiers so this never over-scores (see
+        # SofaSourceConfig.cardiovascular_fixed_tier's own docstring for
+        # why this does not affect whether/when sepsis3 fires, only the
+        # exact score). Same documented-limitation spirit as oliguria's
+        # absolute-volume choice below.
+        cardiovascular_fixed_tier={
+            "dopamine": 3,
+            "epinephrine": 3,
+            "norepinephrine": 3,
+            "dobutamine": 2,
+        },
+        # eICU has no respiratoryCare/respiratoryCharting table; ventilation
+        # status comes from carePlanGeneral's periodically recharted
+        # nursing assessment (CAREPLAN_GENERAL//Ventilation//{value}), not
+        # a discrete start/end procedure event. "Ventilated"/"Spontaneous"
+        # cover the two states _intervals_to_points needs (repeated
+        # "Ventilated" readings before the next "Spontaneous" are handled
+        # there, not here -- see that function's docstring). NOT verified
+        # against a real cplitemvalue distinct-value dump: the exact
+        # capitalization here is inferred from eICU-CRD's public
+        # documentation, and a tracheostomy-ventilated patient (a
+        # "Trach - ..." value, if the real data uses one) would not match
+        # either prefix and reads as never-ventilated. Confirm both before
+        # this lands in a training run.
+        ventilation_start=("CAREPLAN_GENERAL//Ventilation//Ventilated",),
+        ventilation_end=("CAREPLAN_GENERAL//Ventilation//Spontaneous",),
+        # No recurring daily weight in eICU (the patient table has only
+        # once-per-stay admission/discharge weight); left empty, same
+        # graceful-degradation this dataclass already supports for any
+        # source without one.
+        admission_weight=("ICU_ADMISSION_WEIGHT",),
     ),
 }
 
@@ -236,6 +324,21 @@ def _intervals_to_points(
     (missing END -> capped at :data:`MAX_INFUSION_HOURS`), then sampled
     every ``step_hours`` so a 24 h worst-value window sees an active
     infusion / ventilation continuously, not only at its first row.
+
+    A source that recharts status repeatedly rather than emitting a single
+    discrete START (eICU's care-plan ventilation readings: nursing
+    re-enters "Ventilated" at every assessment, not just at intubation)
+    produces one paired-and-exploded range per repeated START, all ending
+    at the same next END -- the same points several times over, not a
+    correctness problem (a worst-in-window score is insensitive to
+    duplicates) but an avoidable memory cost at nursing-assessment
+    frequency. Deduplicated below rather than left to the caller.
+
+    A trailing START with no later END is still capped at
+    :data:`MAX_INFUSION_HOURS` -- correct for a patient discharged still
+    ventilated, but a source without a reliable end signal (a missed
+    extubation note) reads as ventilated for the full cap, not truly
+    unbounded.
     """
     if starts.height == 0:
         return starts.select(
@@ -266,7 +369,7 @@ def _intervals_to_points(
     keep = [key, pl.col("_ts").alias(time_col)] + (
         [pl.col("value")] if "value" in starts.columns else []
     )
-    return expanded.select(keep)
+    return expanded.select(keep).unique()
 
 
 @_quiet_asof
@@ -369,10 +472,13 @@ def component_observations(  # noqa: PLR0912, PLR0915
 
     dopamine = infusion_points(cfg.dopamine)
     if dopamine.height:
+        fixed = cfg.cardiovascular_fixed_tier.get("dopamine")
         parts.append(
             _scored(
                 dopamine,
-                pl.when(pl.col("value") > 15)
+                pl.lit(fixed)
+                if fixed is not None
+                else pl.when(pl.col("value") > 15)
                 .then(4)
                 .when(pl.col("value") > 5)
                 .then(3)
@@ -384,14 +490,31 @@ def component_observations(  # noqa: PLR0912, PLR0915
         )
     dobutamine = infusion_points(cfg.dobutamine)
     if dobutamine.height:
-        parts.append(_scored(dobutamine, pl.lit(2), "cardiovascular", key, time_col))
-    for items in (cfg.epinephrine, cfg.norepinephrine):
+        # Dobutamine has no rate-dependent tier in SOFA (any dose scores 2),
+        # so it is always fixed -- every SOFA_SOURCE_CONFIG entry with a
+        # non-empty dobutamine tuple must set this key.
+        parts.append(
+            _scored(
+                dobutamine,
+                pl.lit(cfg.cardiovascular_fixed_tier["dobutamine"]),
+                "cardiovascular",
+                key,
+                time_col,
+            )
+        )
+    for drug, items in (
+        ("epinephrine", cfg.epinephrine),
+        ("norepinephrine", cfg.norepinephrine),
+    ):
         pts = infusion_points(items)
         if pts.height:
+            fixed = cfg.cardiovascular_fixed_tier.get(drug)
             parts.append(
                 _scored(
                     pts,
-                    pl.when(pl.col("value") > 0.1).then(4).otherwise(3),
+                    pl.lit(fixed)
+                    if fixed is not None
+                    else pl.when(pl.col("value") > 0.1).then(4).otherwise(3),
                     "cardiovascular",
                     key,
                     time_col,
@@ -676,13 +799,13 @@ def urine_output_rate(
 
     cfg = SOFA_SOURCE_CONFIG[source]
     out = rolled.sort([key, time_col])
-    for field, alias in (
+    for weight_codes, alias in (
         (cfg.daily_weight, "_w_daily"),
         (cfg.admission_weight, "_w_admission"),
     ):
         weights = _numeric(
             events,
-            list(field),
+            list(weight_codes),
             key=key,
             code_col=code_col,
             value_col=value_col,

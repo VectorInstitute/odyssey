@@ -264,16 +264,19 @@ def test_hazard_events_for_appends_requested_auxiliary_events() -> None:
 def test_alert_events_are_source_resolved() -> None:
     """Concept-backed alerts drop where their concept does not resolve.
 
-    sepsis3 does not resolve on eICU, so its alert event must drop with
-    it (the R6 launch failure of 2026-08-30); code-based events and
-    resolving concept events stay, and no source means no filtering.
+    sepsis3 used to not resolve on eICU (the R6 launch failure of
+    2026-08-30, when its alert event had to be dropped along with the
+    concept); it resolves now that SOFA_SOURCE_CONFIG has an eicu entry,
+    so its alert event is present again. Code-based events and every
+    other resolving concept event stay either way, and no source means
+    no filtering.
     """
     unfiltered = alert_events_for("v3")
     assert {a.name for a in unfiltered} >= {"sepsis3", "readmission_30d"}
     eicu = alert_events_for("v3", source="eicu")
     names = {a.name for a in eicu}
-    assert "sepsis3" not in names
     assert {
+        "sepsis3",
         "vasopressor_start",
         "icu_admission",
         "acute_kidney_injury",
