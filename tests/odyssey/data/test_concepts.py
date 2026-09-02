@@ -1160,7 +1160,8 @@ def test_gemini_v3_resolves_the_lab_panel_concepts() -> None:
     The four that stay out need signals the datacut does not chart:
     urine output (oliguria; none anywhere in the datacut), FiO2/PaO2
     (hypoxemic respiratory failure; FiO2 is unmapped free text), mean
-    arterial pressure (shock; only systolic and diastolic are charted),
+    arterial pressure (sustained_hypotension_map; only systolic and
+    diastolic are charted),
     and sepsis3's SOFA components.
     """
     names = {c.name for c in concepts_for_source("gemini", task_set="v3")}
@@ -1178,7 +1179,12 @@ def test_gemini_v3_resolves_the_lab_panel_concepts() -> None:
         "metabolic_acidosis",
     } <= names
     assert names.isdisjoint(
-        {"oliguria", "hypoxemic_respiratory_failure", "shock", "sepsis3"}
+        {
+            "oliguria",
+            "hypoxemic_respiratory_failure",
+            "sustained_hypotension_map",
+            "sepsis3",
+        }
     )
     # metabolic acidosis keeps its bicarbonate criterion; the pH one drops
     acidosis = next(
@@ -1273,7 +1279,7 @@ _V3_NEW_NAMES = (
     "thrombocytopenia",
     "coagulopathy",
     "metabolic_acidosis",
-    "shock",
+    "sustained_hypotension_map",
 )
 # Added later, in the same task set, but derived from SOFA signals rather
 # than a plain LOINC threshold -- so, like sepsis3, they only expand on
@@ -1458,7 +1464,7 @@ def test_metabolic_acidosis_triggers_on_either_bicarb_or_ph() -> None:
 
 
 def test_shock_requires_recurring_low_map_not_one_reading() -> None:
-    concept = _v3_concept("shock")
+    concept = _v3_concept("sustained_hypotension_map")
     events = _events(
         [
             # subject 1: two low-MAP readings 2h apart -- sustained, triggers
@@ -1469,7 +1475,7 @@ def test_shock_requires_recurring_low_map_not_one_reading() -> None:
         ]
     )
     labels = label_concepts(events, [concept]).sort("subject_id")
-    assert labels["shock"].to_list() == [1, 0]
+    assert labels["sustained_hypotension_map"].to_list() == [1, 0]
 
 
 def test_shock_pools_cuff_and_arterial_map_for_the_recurrence_check() -> None:
@@ -1481,7 +1487,7 @@ def test_shock_pools_cuff_and_arterial_map_for_the_recurrence_check() -> None:
     recurrence (clinically the same sustained hypotension) never
     triggered. The expansion is now a single pooled rule.
     """
-    concept = _v3_concept("shock")
+    concept = _v3_concept("sustained_hypotension_map")
     assert len(concept.rules) == 1
     rule = concept.rules[0]
     assert isinstance(rule, SustainedRule)
@@ -1497,17 +1503,17 @@ def test_shock_pools_cuff_and_arterial_map_for_the_recurrence_check() -> None:
         ]
     )
     labels = label_concepts(events, [concept]).sort("subject_id")
-    assert labels["shock"].to_list() == [1, 0]
+    assert labels["sustained_hypotension_map"].to_list() == [1, 0]
 
 
 def test_shock_is_not_defined_in_terms_of_on_vasopressors() -> None:
     """The dropped-redundancy check.
 
-    shock's rules never reference a vasopressor code pattern -- see its
+    the MAP-hypotension rule never references a vasopressor code pattern -- see its
     CanonicalConcept description for why the original vasopressor-OR
     clause was left out.
     """
-    concept = _v3_concept("shock")
+    concept = _v3_concept("sustained_hypotension_map")
     assert all(not isinstance(r, CodeOccurrenceRule) for r in concept.rules)
 
 

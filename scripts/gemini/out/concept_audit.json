@@ -29,7 +29,7 @@
     "thrombocytopenia": true,
     "coagulopathy": true,
     "metabolic_acidosis": true,
-    "shock": false
+    "sustained_hypotension_map": false
   },
   "n_concepts_mimic_v3": 29,
   "n_concepts_resolving": 25,

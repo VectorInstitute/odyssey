@@ -3,9 +3,9 @@
 The lever a clinician wants is not "does the model predict the recorded
 next token better when told the true state" (that is the trust test of
 :mod:`odyssey.inference.interventions`). It is: push the model along the
-*shock* direction and vasopressor risk should rise, ICU-transfer risk
+*sustained hypotension* direction and vasopressor risk should rise, ICU-transfer risk
 should rise, and the events the model expects next should look like
-shock; pull it the other way and they should fall. This module measures
+hypotension; pull it the other way and they should fall. This module measures
 exactly that, concept by concept, on held-out patients, with the same
 sign-agreement summary the input-level counterfactuals of
 :mod:`odyssey.inference.counterfactual` report, so the two levers are
@@ -72,7 +72,7 @@ import torch.nn.functional as F  # noqa: N812
 
 from odyssey.data.alert_events import all_event_times, hazard_events_for
 from odyssey.data.code_normalization import maybe_normalize
-from odyssey.data.concepts import concepts_for_source
+from odyssey.data.concepts import canonical_concept_name, concepts_for_source
 from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.sidecars import activate_sidecars
 from odyssey.data.streaming import PackedLaneSampler, StreamingChunk, move_to_device
@@ -123,7 +123,8 @@ HORIZONS_HOURS: tuple[float, ...] = (8.0, 24.0, 72.0)
 #: weak or indirect links are left out rather than padded in.
 #:
 #: The reasoning, in the order a clinician would give it:
-#: * circulatory failure (shock, hypotension, elevated lactate, metabolic
+#: * circulatory failure (sustained MAP hypotension, hypotension,
+#:   elevated lactate, metabolic
 #:   acidosis, oliguria) -> pressors, ICU, death, and kidney injury from
 #:   hypoperfusion;
 #: * sepsis and its screens (sepsis3, sirs, qsofa, fever) -> pressors,
@@ -139,7 +140,7 @@ HORIZONS_HOURS: tuple[float, ...] = (8.0, 24.0, 72.0)
 #: * hypertension is the one dial expected to LOWER a risk: a hypertensive
 #:   patient is not the one about to need a pressor.
 CLINICAL_EXPECTATIONS: dict[str, dict[str, int]] = {
-    "shock": {
+    "sustained_hypotension_map": {
         "vasopressor_start": +1,
         "icu_admission": +1,
         "death": +1,
@@ -224,7 +225,8 @@ class SubjectReadout:
 
     A position at or after an event's onset is not at risk: asking "will
     vasopressors start?" of a patient already on them is not a question,
-    and averaging it in is what made shock lower the start hazard.
+    and averaging it in is what made the sustained-hypotension (MAP)
+    dial, then named shock, lower the start hazard.
     """
 
     def add(
@@ -774,9 +776,10 @@ def evaluate_steering(
 ) -> list[ConceptSteeringSummary]:
     """Unsteered pass once, then amplify and suppress each requested concept."""
     names = prepared.concept_names
-    chosen = (
-        list(concepts) if concepts else [n for n in names if n in CLINICAL_EXPECTATIONS]
-    )
+    chosen = [
+        canonical_concept_name(c)
+        for c in (concepts or [n for n in names if n in CLINICAL_EXPECTATIONS])
+    ]
     unknown = sorted(set(chosen) - set(names))
     if unknown:
         raise ValueError(f"concepts not in this run's registry: {unknown}")

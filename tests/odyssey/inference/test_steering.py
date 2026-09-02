@@ -275,7 +275,7 @@ def test_summary_scores_outcomes_against_the_declared_direction() -> None:
     up = summarize_push(
         baseline,
         steered,
-        concept="shock",
+        concept="sustained_hypotension_map",
         concept_index=0,
         direction="amplify",
         gamma=1.0,
@@ -299,7 +299,7 @@ def test_summary_scores_outcomes_against_the_declared_direction() -> None:
     down = summarize_push(
         baseline,
         steered,
-        concept="shock",
+        concept="sustained_hypotension_map",
         concept_index=0,
         direction="suppress",
         gamma=-1.0,
