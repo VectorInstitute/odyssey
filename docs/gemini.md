@@ -191,6 +191,23 @@ CUDA compile) -- built as its own dedicated step, `env-gpu`, in a separate
 venv from the lightweight one `probe`/`schema`/`extract-dry` share, since
 none of those need torch/mamba-ssm at all.
 
+**Blocked external hosts, confirmed by real failures (do not retry these):**
+the node's proxy only reaches GitHub (for the `origin` remote), the GEMINI
+GitLab (`gemini` remote), and internal package mirrors
+(`packages.gemini-hpc.ca`) -- everything else external is unreachable, not
+merely slow. Confirmed so far: `pytorch.org` and `uv`'s own Python downloads
+(2026-08-22, above); and **TabICLv2** (2026-09-01), which downloads
+pretrained weights from Hugging Face's newer `xet`/CAS storage backend at
+import or first-call time rather than fitting fresh like classical TabICL --
+`RuntimeError: Task error: File reconstruction error` against
+`cas-server.xethub.hf.co`. Classical TabICL (the strong-panel, fit-per-call
+version already used for the B1 MIMIC/eICU comparator work) has no such
+dependency and is unaffected. There is no workaround through the git
+channel either: model weights are far over the 1 MiB push cap, and the
+channel is not meant to carry large binaries in either direction. Any
+GEMINI comparator table therefore has no TabICL column; the paper caption
+should say so -- it is a network boundary, not a scoring decision.
+
 ## scripts/gemini/run.sh
 
 The single entry point the operator actually runs on the node, mirroring
