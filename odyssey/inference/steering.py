@@ -60,8 +60,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -80,14 +79,19 @@ from odyssey.data.streaming import PackedLaneSampler, StreamingChunk
 from odyssey.data.value_binning import add_value_tokens
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.run_inference import load_run, refuse_existing_output
-from odyssey.models.concept_bottleneck import (
-    BottleneckIntervention,
-    DecomposedConceptBottleneck,
-)
+from odyssey.models.concept_bottleneck import BottleneckIntervention
 from odyssey.models.sequence_model import (
     ConceptBottleneckSequenceModel,
     ConceptLabelDict,
     ConceptSupervision,
+)
+from odyssey.models.steering import (
+    _known_embedding,
+    concept_alignment,
+    steering_direction,
+    steering_gamma,
+    stream_injection,
+    suppress_logits,
 )
 from odyssey.models.time_to_event import probability_within
 from odyssey.training.data import (
@@ -99,7 +103,7 @@ from odyssey.training.data import (
     load_meds_shards,
 )
 from odyssey.training.event_targets import EventTimeTables, event_hazard_targets
-from odyssey.training.running_labels import position_running_labels
+from odyssey.training.lifted_tokens import lifted_token_sets
 from odyssey.training.train import _move_chunk_to_device
 
 
@@ -198,106 +202,6 @@ def expectations_for(concept: str, event_names: Sequence[str]) -> dict[str, int]
     known = set(event_names)
     declared = CLINICAL_EXPECTATIONS.get(concept, {})
     return {ev: sign for ev, sign in declared.items() if ev in known}
-
-
-# ---------------------------------------------------------------------------
-# Where and how hard to push (Steerling Section 6.2).
-# ---------------------------------------------------------------------------
-
-
-def _known_embedding(
-    model: ConceptBottleneckSequenceModel, concept_index: int
-) -> torch.Tensor:
-    bottleneck = model.bottleneck
-    if not isinstance(bottleneck, DecomposedConceptBottleneck):
-        raise NotImplementedError(
-            "steering needs the decomposed bottleneck, where a unit of a concept "
-            "is the parameter K_c; the mixture's displacement is a function of "
-            "the hidden state and would have to be estimated per position"
-        )
-    embedding: torch.Tensor = bottleneck.known_embeddings[concept_index].detach()
-    return embedding
-
-
-def steering_direction(
-    model: ConceptBottleneckSequenceModel, concept_index: int
-) -> torch.Tensor:
-    """``e_c = K_c / ||K_c||_2``, Steerling's steering direction (their 6.2.1)."""
-    embedding = _known_embedding(model, concept_index)
-    unit: torch.Tensor = embedding / embedding.norm().clamp_min(1e-12)
-    return unit
-
-
-def steering_gamma(
-    model: ConceptBottleneckSequenceModel, direction: torch.Tensor, *, tau: float
-) -> float:
-    """``gamma = tau / peak(e_c)`` with ``peak(e_c) = max_y e_c . W_y`` (Eq. 19).
-
-    The maximum is signed, not absolute: the paper calibrates on the
-    largest logit *increase* the direction can produce.
-    """
-    if tau <= 0:
-        raise ValueError("tau must be positive")
-    weight = model.lm_head.weight.detach().to(direction)
-    peak = float((weight @ direction).max().item())
-    if peak <= 0:
-        raise ValueError("the direction raises no logit; calibration is undefined")
-    return tau / peak
-
-
-def concept_alignment(
-    model: ConceptBottleneckSequenceModel, direction: torch.Tensor
-) -> torch.Tensor:
-    """``a_c = W e_c``: the concept's contribution to every logit (Eq. 20)."""
-    weight = model.lm_head.weight.detach().to(direction)
-    alignment: torch.Tensor = weight @ direction
-    return alignment
-
-
-def suppress_logits(
-    logits: torch.Tensor, alignment: torch.Tensor, strength: float
-) -> torch.Tensor:
-    """``l_v -> l_v - s . ReLU(a_c[v])``, the ReLU-gated mask (Eq. 21).
-
-    Plain subtraction would promote tokens anti-aligned with the concept;
-    the gate leaves them untouched.
-    """
-    return logits - strength * torch.relu(alignment).to(logits)
-
-
-@contextmanager
-def stream_injection(
-    backbone: torch.nn.Module, layer_index: int, vector: torch.Tensor
-) -> Iterator[None]:
-    """Add ``vector`` to the hidden state at every block from ``layer_index`` on.
-
-    Steerling's Eq. 18: ``h^(l) <- h^(l) + gamma e_c`` for ``l >= L_inj``, so
-    the signal accumulates toward the bottleneck. Registered as forward
-    hooks on those blocks; every position of every later chunk is pushed
-    and the recurrent state carries the push forward. The hooks are
-    removed on exit even if the pass raises.
-    """
-    layers = getattr(backbone, "layers", None)
-    if layers is None:
-        raise TypeError(
-            f"{type(backbone).__name__} exposes no `layers` to inject into; the "
-            "stream site needs a block-structured backbone"
-        )
-    if not 0 <= layer_index < len(layers):
-        raise IndexError(f"layer_index {layer_index} outside 0..{len(layers) - 1}")
-
-    def push(_module: torch.nn.Module, _inputs: tuple[Any, ...], output: Any) -> Any:
-        if isinstance(output, tuple):
-            hidden, *rest = output
-            return (hidden + vector.to(hidden), *rest)
-        return output + vector.to(output)
-
-    handles = [layer.register_forward_hook(push) for layer in layers[layer_index:]]
-    try:
-        yield
-    finally:
-        for handle in handles:
-            handle.remove()
 
 
 # ---------------------------------------------------------------------------
@@ -480,105 +384,6 @@ def run_steering_pass(
                     probs_real[sel], mass[sel], risk[sel], at_risk[sel]
                 )
     return readouts
-
-
-# ---------------------------------------------------------------------------
-# Lifted tokens: the events that say "this concept is present".
-# ---------------------------------------------------------------------------
-
-
-def lifted_token_sets(
-    model: ConceptBottleneckSequenceModel,
-    events_binned: pl.DataFrame,
-    vocab: Vocabulary,
-    *,
-    concept_labels: ConceptLabelDict,
-    concept_mask: ConceptLabelDict,
-    concept_first_times: ConceptLabelDict,
-    supervision: ConceptSupervision,
-    top_k: int = 25,
-    min_count: int = 20,
-    min_share: float = 0.005,
-    num_lanes: int = 8,
-    chunk_size: int = 256,
-    device: str = "cuda",
-) -> dict[int, list[int]]:
-    """Per concept, the ``top_k`` next-event tokens with the highest lift.
-
-    Lift is ``P(token | concept active) / P(token)`` over target positions
-    of a labeled stream, with running labels so "active" means "has
-    triggered by this position"; Steerling defines the express target the
-    same way over its chunk tags, with a minimum-support filter. Tokens
-    seen fewer than ``min_count`` times under the concept are ignored so a
-    rare code cannot top the list on two occurrences, and the floor rises
-    with prevalence: a token must also account for at least ``min_share``
-    of the concept's positions. Without that, the highest-lift tokens for
-    shock on MIMIC-IV were pressure-ulcer measurements seen a few dozen
-    times. Only tokens with lift above 1 are kept.
-    """
-    num_concepts = model.bottleneck.num_concepts
-    vocab_size = len(vocab.token_to_id)
-    total = torch.zeros(vocab_size, dtype=torch.float64)
-    per_concept = torch.zeros(num_concepts, vocab_size, dtype=torch.float64)
-    sampler = PackedLaneSampler(
-        iter_patient_sequences(events_binned, vocab),
-        num_lanes=num_lanes,
-        chunk_size=chunk_size,
-        reset_prob=0.0,
-    )
-    for chunk in sampler:
-        chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
-        labels, observed = position_running_labels(
-            chunk,
-            concept_labels,
-            concept_mask,
-            concept_first_times,
-            supervision=supervision,
-            num_concepts=num_concepts,
-        )
-        real = chunk.real_mask
-        if not real.any():
-            continue
-        targets = chunk.targets[real]
-        active = (labels[real] * observed[real]).to(torch.float64)  # (N, k)
-        one_hot = F.one_hot(targets, num_classes=vocab_size).to(torch.float64)
-        total += one_hot.sum(dim=0).cpu()
-        per_concept += (active.T @ one_hot).cpu()
-    return rank_by_lift(
-        total, per_concept, top_k=top_k, min_count=min_count, min_share=min_share
-    )
-
-
-def rank_by_lift(
-    total: torch.Tensor,
-    per_concept: torch.Tensor,
-    *,
-    top_k: int,
-    min_count: int,
-    min_share: float = 0.0,
-) -> dict[int, list[int]]:
-    """Top-``top_k`` tokens by ``P(token | c) / P(token)`` per concept.
-
-    ``total`` is ``(vocab,)`` target counts over the stream and
-    ``per_concept`` is ``(num_concepts, vocab)`` counts at positions where
-    each concept is active. A token needs at least ``min_count``
-    occurrences under the concept and at least ``min_share`` of the
-    concept's positions; tokens with lift at or below 1 are excluded.
-    """
-    base = total / total.sum().clamp_min(1.0)
-    sets: dict[int, list[int]] = {}
-    for c in range(per_concept.shape[0]):
-        counts = per_concept[c]
-        support = max(float(min_count), min_share * float(counts.sum()))
-        cond = counts / counts.sum().clamp_min(1.0)
-        lift = torch.where(
-            counts >= support, cond / base.clamp_min(1e-12), torch.zeros_like(cond)
-        )
-        keep = int(min(top_k, int((lift > 1.0).sum().item())))
-        sets[c] = (
-            [int(i) for i in torch.topk(lift, k=keep).indices.tolist()] if keep else []
-        )
-    return sets
 
 
 def token_descriptions(

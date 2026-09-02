@@ -22,19 +22,21 @@ from odyssey.inference.steering import (
     SteeringPush,
     SubjectReadout,
     _forward_pushed,
-    concept_alignment,
     expectations_for,
     paired_delta,
-    rank_by_lift,
-    steering_direction,
-    steering_gamma,
-    stream_injection,
     summarize_push,
-    suppress_logits,
     token_descriptions,
 )
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
 from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
+from odyssey.models.steering import (
+    concept_alignment,
+    steering_direction,
+    steering_gamma,
+    stream_injection,
+    suppress_logits,
+)
+from odyssey.training.lifted_tokens import rank_by_lift
 
 
 HIDDEN, K, VOCAB = 8, 3, 11
