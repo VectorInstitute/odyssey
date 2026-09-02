@@ -48,7 +48,8 @@ def lifted_token_sets(
     rare code cannot top the list on two occurrences, and the floor rises
     with prevalence: a token must also account for at least ``min_share``
     of the concept's positions. Without that, the highest-lift tokens for
-    shock on MIMIC-IV were pressure-ulcer measurements seen a few dozen
+    the MAP-hypotension concept on MIMIC-IV were pressure-ulcer
+    measurements seen a few dozen
     times. Only tokens with lift above 1 are kept.
     """
     total = torch.zeros(vocab_size, dtype=torch.float64)

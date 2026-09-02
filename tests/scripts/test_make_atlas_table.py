@@ -56,4 +56,5 @@ def test_tables_render_rows() -> None:
     u = mod.unknown_table(atlas, top_concepts=5, top_events=3)
     k = mod.known_table(atlas, top_events=3)
     assert "unknown 3 & 0.50 & Calcium \\\\" in u
-    assert "shock & 0.70 & 0.30 & Heart Rhythm \\\\" in k
+    # legacy JSON names map to the current registry name
+    assert "sustained hypotension map & 0.70 & 0.30 & Heart Rhythm \\\\" in k

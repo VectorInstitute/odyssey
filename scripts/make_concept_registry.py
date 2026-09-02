@@ -117,7 +117,10 @@ DEFINITIONS: dict[str, tuple[str, str]] = {
         "metabolic acidosis",
         r"Bicarbonate $<$ 18 mEq/L, or arterial/venous pH $<$ 7.3",
     ),
-    "shock": ("shock", r"Mean arterial pressure $<$ 65 mmHg, recurring"),
+    "sustained_hypotension_map": (
+        "sustained hypotension (MAP)",
+        r"Mean arterial pressure $<$ 65 mmHg, recurring",
+    ),
 }
 
 TICK = r"\checkmark"

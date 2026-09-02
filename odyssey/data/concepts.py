@@ -834,6 +834,19 @@ TASK_SETS: dict[str, tuple[str, ...]] = {
     ),
 }
 TASK_SETS["v2"] = TASK_SETS["v1"] + ("sepsis3",)
+
+# Concepts renamed after runs were banked under the old name. Names are
+# positional at load time (concepts_for_source keeps the task-set order),
+# so a trained checkpoint is unaffected; only outputs that carry the name
+# (inference_results, steering and atlas JSON) need the mapping.
+LEGACY_CONCEPT_NAMES: dict[str, str] = {"shock": "sustained_hypotension_map"}
+
+
+def canonical_concept_name(name: str) -> str:
+    """Return the current registry name for ``name``, mapping legacy names."""
+    return LEGACY_CONCEPT_NAMES.get(name, name)
+
+
 # "v3" adds structurally-derived electrolyte/metabolic/hematologic concepts
 # (Track B item 11) -- see their CANONICAL_CONCEPTS entries for thresholds
 # and sources. v1/v2 are untouched by this addition (concepts_for_source
@@ -849,7 +862,7 @@ TASK_SETS["v3"] = TASK_SETS["v2"] + (
     "thrombocytopenia",
     "coagulopathy",
     "metabolic_acidosis",
-    "shock",
+    "sustained_hypotension_map",
     # Derived-signal concepts: only on sources with SOFA ingredients (the
     # LOINC layer drops them elsewhere, like sepsis3).
     "hypoxemic_respiratory_failure",
@@ -1276,12 +1289,16 @@ CANONICAL_CONCEPTS: list[AnyCanonicalConcept] = [
         "compensated cases a single measure would miss.",
     ),
     CanonicalConcept(
-        "shock",
+        "sustained_hypotension_map",
         (LoincSustained(_MAP, 65.0, "below", min_gap_hours=1.0),),
         "Mean arterial pressure < 65 mmHg, recurring (not a single "
         "transient reading, same SustainedRule operationalization as "
-        "sustained_tachypnea) -- the standard MAP-based shock/hemodynamic-"
-        "instability threshold. Deliberately NOT also OR'd with "
+        "sustained_tachypnea) -- the MAP criterion of shock/hemodynamic "
+        "instability. Named for what it measures: sustained hypotension "
+        "on MAP, not shock, since hypoperfusion evidence (lactate, "
+        "pressor requirement, organ dysfunction) is not required. Before "
+        "2026-09-02 this concept was named 'shock'; LEGACY_CONCEPT_NAMES "
+        "maps outputs written under that name. Deliberately NOT also OR'd with "
         "vasopressor administration (the concept's other common trigger "
         "in clinical use): that would make it near-redundant with the "
         "existing on_vasopressors concept (almost every vasopressor start "

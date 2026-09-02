@@ -20,6 +20,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from odyssey.data.concepts import canonical_concept_name
+
 
 _STRIP = [
     (r" \[Mass/volume\] in Serum or Plasma", ""),
@@ -67,7 +69,7 @@ def unknown_table(atlas: dict[str, Any], *, top_concepts: int, top_events: int) 
     for row in atlas["unknown"][:top_concepts]:
         events = ", ".join(short_name(p["name"]) for p in row["promotes"][:top_events])
         lines.append(
-            f"{row['name'].replace('_', ' ')} & {row['mean_activation']:.2f} & {events} \\\\"
+            f"{canonical_concept_name(row['name']).replace('_', ' ')} & {row['mean_activation']:.2f} & {events} \\\\"
         )
     lines += ["\\bottomrule", "\\end{tabular}"]
     return "\n".join(lines) + "\n"
@@ -86,7 +88,7 @@ def known_table(atlas: dict[str, Any], *, top_events: int) -> str:
     for row in atlas["known"]:
         events = ", ".join(short_name(p["name"]) for p in row["promotes"][:top_events])
         lines.append(
-            f"{row['name'].replace('_', ' ')} & {row['norm']:.2f} & {row['mean_activation']:.2f} & {events} \\\\"
+            f"{canonical_concept_name(row['name']).replace('_', ' ')} & {row['norm']:.2f} & {row['mean_activation']:.2f} & {events} \\\\"
         )
     lines += ["\\bottomrule", "\\end{tabular}"]
     return "\n".join(lines) + "\n"

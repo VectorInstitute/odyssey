@@ -90,7 +90,7 @@ exactly what a run trained:
 |---|---|---|
 | `v1` | 15: tachycardia, bradycardia, hypotension, hypertension, hypoxia, fever, hypothermia, elevated_lactate, sustained_tachypnea, acute_kidney_injury, aki_stage_2, aki_stage_3, sirs, qsofa, on_vasopressors | 4: vasopressor_start, icu_admission, acute_kidney_injury, death |
 | `v2` | v1 + sepsis3 (16) | v1 + sepsis3, readmission_30d (6) |
-| `v3` | v2 + 11 structurally-derived electrolyte/metabolic/hematologic concepts (hyperkalemia, hypokalemia, hyponatremia, hypernatremia, hypoglycemia, hyperglycemia, anemia, thrombocytopenia, coagulopathy, metabolic_acidosis, shock) -- 27 total | same as v2 (v3 widens concepts only; `alert_events_for("v3")` returns the v2 events) |
+| `v3` | v2 + 11 structurally-derived electrolyte/metabolic/hematologic concepts (hyperkalemia, hypokalemia, hyponatremia, hypernatremia, hypoglycemia, hyperglycemia, anemia, thrombocytopenia, coagulopathy, metabolic_acidosis, sustained_hypotension_map (MAP < 65 mmHg, recurring; named shock before 2026-09-02)) -- 27 total | same as v2 (v3 widens concepts only; `alert_events_for("v3")` returns the v2 events) |
 
 `v1` is the default (`DEFAULT_TASK_SET` / `TrainingConfig.task_set`
 default) and is what every run before 2026-08-23 trained with; its
