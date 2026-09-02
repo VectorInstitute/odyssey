@@ -104,6 +104,7 @@ from odyssey.training.data import (
 )
 from odyssey.training.event_targets import EventTimeTables, event_hazard_targets
 from odyssey.training.lifted_tokens import lifted_token_sets
+from odyssey.training.running_labels import position_running_labels
 
 
 logger = logging.getLogger(__name__)
@@ -334,6 +335,45 @@ def _forward_pushed(
     return logits, out.concept_probs, out.bottleneck, new_state
 
 
+@dataclass
+class PositionStrata:
+    """Split every scored position by whether a concept has already triggered.
+
+    The stratum is the concept's running label at the position (1 once it
+    has triggered for that patient or visit, 0 before), from the same
+    label dictionaries the training loop uses. Built to test whether a
+    dial's sign depends on treatment already under way: a low mean
+    arterial pressure on MIMIC-IV is usually a patient already on
+    vasopressors, and the at-risk rule removes those patients from the
+    vasopressor outcome but not from death or ICU admission.
+    """
+
+    name: str
+    concept_index: int
+    labels: ConceptLabelDict
+    mask: ConceptLabelDict
+    first_times: ConceptLabelDict
+    supervision: ConceptSupervision
+    num_concepts: int
+
+    def of(self, chunk: StreamingChunk) -> torch.Tensor:
+        """``(lanes, T)`` long: 1 where the concept has triggered by that position."""
+        labels, observed = position_running_labels(
+            chunk,
+            self.labels,
+            self.mask,
+            self.first_times,
+            supervision=self.supervision,
+            num_concepts=self.num_concepts,
+        )
+        active = labels[..., self.concept_index] * observed[..., self.concept_index]
+        return (active > 0).long()
+
+
+# Subject id, or (subject id, stratum) when a pass is stratified.
+ReadoutKey = int | tuple[int, int]
+
+
 def run_steering_pass(
     model: ConceptBottleneckSequenceModel,
     events_binned: pl.DataFrame,
@@ -346,7 +386,8 @@ def run_steering_pass(
     chunk_size: int = 256,
     device: str = "cuda",
     max_seq_len: int | None = None,
-) -> dict[int, SubjectReadout]:
+    strata: PositionStrata | None = None,
+) -> dict[ReadoutKey, SubjectReadout]:
     """Stream every held-out patient once under ``push`` (``None`` = unsteered).
 
     The same sampler and state carrying as every other scorer, so a pushed
@@ -362,7 +403,7 @@ def run_steering_pass(
         chunk_size=chunk_size,
         reset_prob=0.0,
     )
-    readouts: dict[int, SubjectReadout] = {}
+    readouts: dict[ReadoutKey, SubjectReadout] = {}
     lifted = [ids.to(device) for ids in lifted_sets]
     state: Any = None
     with torch.no_grad():
@@ -390,9 +431,19 @@ def run_steering_pass(
             )
             sids = chunk.subject_ids[real]
             probs_real = probs[real]
-            for sid in torch.unique(sids).tolist():
-                sel = sids == sid
-                readouts.setdefault(int(sid), SubjectReadout()).add(
+            if strata is None:
+                groups: list[tuple[ReadoutKey, torch.Tensor]] = [
+                    (int(sid), sids == sid) for sid in torch.unique(sids).tolist()
+                ]
+            else:
+                stratum_ids = strata.of(chunk)[real]
+                combined = sids * 2 + stratum_ids
+                groups = [
+                    ((int(code) // 2, int(code) % 2), combined == code)
+                    for code in torch.unique(combined).tolist()
+                ]
+            for key, sel in groups:
+                readouts.setdefault(key, SubjectReadout()).add(
                     probs_real[sel], mass[sel], risk[sel], at_risk[sel]
                 )
     return readouts
@@ -528,6 +579,8 @@ class ConceptSteeringSummary:
     express_steered: float
     express_delta: PairedDelta
     outcomes: list[OutcomeShift] = field(default_factory=list)
+    stratum: str | None = None
+    """``name=0``/``name=1`` when the pass was split by a concept's running label."""
 
     @property
     def sign_agreement(self) -> float | None:
@@ -604,7 +657,8 @@ def clinician_line(summary: ConceptSteeringSummary) -> str:
     """One readable line per dial: what moved, which way, whether it should have."""
     ratio = summary.express_steered / max(summary.express_baseline, 1e-9)
     parts = [
-        f"{summary.concept} {'up' if summary.direction == 'amplify' else 'down'}: "
+        (f"[{summary.stratum}] " if summary.stratum else "")
+        + f"{summary.concept} {'up' if summary.direction == 'amplify' else 'down'}: "
         f"k_c {summary.respond_baseline:.2f}->{summary.respond_steered:.2f}, "
         f"lifted mass x{ratio:.2f}"
     ]
@@ -642,6 +696,8 @@ class SteeringPrepared:
     tables: EventTimeTables | None
     """Event onsets on the held-out split, for the at-risk restriction."""
     token_names: dict[str, str]
+    strata: PositionStrata | None = None
+    """Set when the benchmark is split by a concept's running label."""
 
 
 def _labels_for(
@@ -670,8 +726,13 @@ def prepare(
     metadata_dir: str | Path | None = None,
     min_share: float = 0.005,
     min_lift: float = 2.0,
+    stratify_concept: str | None = None,
 ) -> SteeringPrepared:
-    """Load the run, bin the held-out split, and build the lifted token sets."""
+    """Load the run, bin the held-out split, and build the lifted token sets.
+
+    ``stratify_concept`` names a registry concept whose running label on
+    the held-out split splits every scored position into two strata.
+    """
     model, vocab, binner, config = load_run(
         run_dir, device=device, checkpoint_path=checkpoint_path
     )
@@ -744,6 +805,25 @@ def prepare(
             all_event_times(held_raw, alerts, source, task_set=config.task_set),
             names,
         )
+    strata: PositionStrata | None = None
+    if stratify_concept is not None:
+        stratum_name = canonical_concept_name(stratify_concept)
+        if stratum_name not in concept_names:
+            raise ValueError(
+                f"stratify concept {stratify_concept!r} is not in this run's registry"
+            )
+        held_labels, held_mask, held_first = _labels_for(
+            held_raw, concepts, supervision
+        )
+        strata = PositionStrata(
+            name=stratum_name,
+            concept_index=concept_names.index(stratum_name),
+            labels=held_labels,
+            mask=held_mask,
+            first_times=held_first,
+            supervision=supervision,
+            num_concepts=len(concept_names),
+        )
     del held_raw
     return SteeringPrepared(
         model=model,
@@ -759,6 +839,7 @@ def prepare(
         supervision=supervision,
         tables=tables,
         token_names=token_names,
+        strata=strata,
     )
 
 
@@ -773,8 +854,13 @@ def evaluate_steering(
     chunk_size: int,
     device: str,
     n_boot: int,
+    stratify: PositionStrata | None = None,
 ) -> list[ConceptSteeringSummary]:
-    """Unsteered pass once, then amplify and suppress each requested concept."""
+    """Unsteered pass once, then amplify and suppress each requested concept.
+
+    With ``stratify``, every dial is summarized separately over the
+    positions before and after that concept has triggered.
+    """
     names = prepared.concept_names
     chosen = [
         canonical_concept_name(c)
@@ -802,6 +888,7 @@ def evaluate_steering(
         num_lanes=num_lanes,
         chunk_size=chunk_size,
         device=device,
+        strata=stratify,
     )
     summaries: list[ConceptSteeringSummary] = []
     for column, (concept, c) in enumerate(zip(chosen, indices, strict=True)):
@@ -828,22 +915,60 @@ def evaluate_steering(
                 num_lanes=num_lanes,
                 chunk_size=chunk_size,
                 device=device,
+                strata=stratify,
             )
-            summary = summarize_push(
-                baseline,
-                steered,
-                concept=concept,
-                concept_index=c,
-                lifted_column=column,
-                direction=direction,
-                gamma=signed,
-                site=site,
-                event_names=prepared.event_names,
-                n_boot=n_boot,
-            )
-            logger.info("[steering] %s", clinician_line(summary))
-            summaries.append(summary)
+            for stratum, base_part, steer_part in _split_by_stratum(
+                baseline, steered, stratify
+            ):
+                summary = summarize_push(
+                    base_part,
+                    steer_part,
+                    concept=concept,
+                    concept_index=c,
+                    lifted_column=column,
+                    direction=direction,
+                    gamma=signed,
+                    site=site,
+                    event_names=prepared.event_names,
+                    n_boot=n_boot,
+                )
+                summary.stratum = stratum
+                logger.info("[steering] %s", clinician_line(summary))
+                summaries.append(summary)
     return summaries
+
+
+def _split_by_stratum(
+    baseline: Mapping[ReadoutKey, SubjectReadout],
+    steered: Mapping[ReadoutKey, SubjectReadout],
+    strata: PositionStrata | None,
+) -> list[tuple[str | None, dict[int, SubjectReadout], dict[int, SubjectReadout]]]:
+    """One (label, baseline, steered) triple per stratum, keyed by subject."""
+    if strata is None:
+        return [
+            (
+                None,
+                {int(k): v for k, v in baseline.items() if isinstance(k, int)},
+                {int(k): v for k, v in steered.items() if isinstance(k, int)},
+            )
+        ]
+    out: list[
+        tuple[str | None, dict[int, SubjectReadout], dict[int, SubjectReadout]]
+    ] = []
+    for value in (0, 1):
+        base = {
+            k[0]: v
+            for k, v in baseline.items()
+            if isinstance(k, tuple) and k[1] == value
+        }
+        steer = {
+            k[0]: v
+            for k, v in steered.items()
+            if isinstance(k, tuple) and k[1] == value
+        }
+        if base and steer:
+            out.append((f"{strata.name}={value}", base, steer))
+    return out
 
 
 def _to_json(summaries: Sequence[ConceptSteeringSummary]) -> list[dict[str, Any]]:
@@ -920,6 +1045,11 @@ def _main() -> None:
     parser.add_argument("--chunk-size", type=int, default=256)
     parser.add_argument("--n-boot", type=int, default=1000)
     parser.add_argument("--checkpoint", default=None)
+    parser.add_argument(
+        "--stratify-by",
+        default=None,
+        help="registry concept whose running label splits every dial into two strata",
+    )
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
     logging.basicConfig(
@@ -949,6 +1079,7 @@ def _main() -> None:
         metadata_dir=metadata_dir,
         min_share=args.min_share,
         min_lift=args.min_lift,
+        stratify_concept=args.stratify_by,
     )
     layer_index = args.layer_index
     if args.site == "stream" and layer_index is None:
@@ -966,9 +1097,11 @@ def _main() -> None:
         chunk_size=args.chunk_size,
         device=device,
         n_boot=args.n_boot,
+        stratify=prepared.strata,
     )
     payload = {
         "site": args.site,
+        "stratify_by": prepared.strata.name if prepared.strata else None,
         "layer_index": layer_index,
         "tau": args.tau,
         "suppress_strength": args.suppress_strength,

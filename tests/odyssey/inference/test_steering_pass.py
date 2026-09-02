@@ -18,6 +18,7 @@ from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.steering import (
     CLINICAL_EXPECTATIONS,
     HORIZONS_HOURS,
+    PositionStrata,
     SteeringPrepared,
     SteeringPush,
     SubjectReadout,
@@ -259,3 +260,77 @@ def test_labels_for_builds_stay_and_visit_dictionaries() -> None:
         assert len(labels) == len(mask) == len(first)
         row = next(iter(labels.values()))
         assert row.shape[-1] == len(concepts)
+
+
+def _strata() -> PositionStrata:
+    """Concept 0 has triggered by hour 3 for subjects 1 and 2, never for 3 and 4."""
+    inf = float("inf")
+    return PositionStrata(
+        name="tachycardia",
+        concept_index=0,
+        labels={
+            1: torch.tensor([1.0, 0.0, 0.0]),
+            2: torch.tensor([1.0, 0.0, 0.0]),
+            3: torch.zeros(3),
+            4: torch.zeros(3),
+        },
+        mask={sid: torch.ones(3) for sid in (1, 2, 3, 4)},
+        first_times={
+            1: torch.tensor([3.0, inf, inf]),
+            2: torch.tensor([3.0, inf, inf]),
+            3: torch.full((3,), inf),
+            4: torch.full((3,), inf),
+        },
+        supervision="stay",
+        num_concepts=3,
+    )
+
+
+def test_stratified_pass_splits_each_subject_by_the_running_label() -> None:
+    vocab = _vocab()
+    model = _model(len(vocab.token_to_id))
+    readouts = run_steering_pass(
+        model,
+        _events(),
+        vocab,
+        push=None,
+        lifted_sets=[torch.tensor([2])],
+        tables=None,
+        num_lanes=2,
+        chunk_size=8,
+        device="cpu",
+        strata=_strata(),
+    )
+    assert set(readouts) == {(1, 0), (1, 1), (2, 0), (2, 1), (3, 0), (4, 0)}
+    # subject 1: ten events, nine targets; the concept triggers at hour 3, so
+    # three positions (hours 0-2) sit before it and six on or after it
+    assert readouts[(1, 0)].n == 3 and readouts[(1, 1)].n == 6
+    assert readouts[(3, 0)].n == 9
+
+
+def test_evaluate_steering_reports_one_summary_per_stratum() -> None:
+    vocab = _vocab()
+    model = _model(len(vocab.token_to_id))
+    prepared = _prepared(model, vocab)
+    prepared.strata = _strata()
+    summaries = evaluate_steering(
+        prepared,
+        concepts=["fever"],
+        site="bottleneck",
+        layer_index=None,
+        suppress_strength=None,
+        num_lanes=2,
+        chunk_size=8,
+        device="cpu",
+        n_boot=10,
+        stratify=prepared.strata,
+    )
+    assert [(s.direction, s.stratum) for s in summaries] == [
+        ("amplify", "tachycardia=0"),
+        ("amplify", "tachycardia=1"),
+        ("suppress", "tachycardia=0"),
+        ("suppress", "tachycardia=1"),
+    ]
+    assert summaries[0].n_subjects == 4 and summaries[1].n_subjects == 2
+    assert "[tachycardia=1]" in clinician_line(summaries[1])
+    assert _to_json(summaries)[1]["stratum"] == "tachycardia=1"
