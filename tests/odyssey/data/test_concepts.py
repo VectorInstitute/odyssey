@@ -10,6 +10,7 @@ import pytest
 
 from odyssey.data import code_mapping
 from odyssey.data.concepts import (
+    _GLUCOSE,
     ANTIBIOTIC_ROUTE_EXCLUDE,
     CANONICAL_CONCEPTS,
     CONCEPTS,
@@ -21,6 +22,7 @@ from odyssey.data.concepts import (
     ConceptRule,
     DerivedGcsTotalRule,
     LoincBaselineRelative,
+    LoincThreshold,
     SustainedRule,
     _expand_rule,
     concepts_for_source,
@@ -1486,3 +1488,68 @@ def test_antibiotic_route_exclude_misses_real_mimic_route_abbreviations() -> Non
     # not overcorrect and start dropping real IV/PO antibiotic starts).
     assert not pattern.search("IV")
     assert not pattern.search("PO")
+
+
+# ---------------------------------------------------------------------------
+# Per-unit thresholds: a conventional-unit default plus SI overrides
+# ---------------------------------------------------------------------------
+
+
+def test_loinc_threshold_needs_a_default_or_per_unit_thresholds() -> None:
+    with pytest.raises(ValueError, match="threshold, unit_thresholds, or both"):
+        LoincThreshold(("2345-7",), "below")
+    # either alone is fine, and so are both together
+    LoincThreshold(("2345-7",), "below", 70.0)
+    LoincThreshold(("8310-5",), "above", unit_thresholds=(("C", 38.0),))
+    LoincThreshold(("2345-7",), "below", 70.0, unit_thresholds=(("mmol/L", 3.9),))
+
+
+def test_untagged_prefix_takes_the_default_and_tagged_prefix_its_own_unit() -> None:
+    """Glucose: mg/dL on the US sources, mmol/L wherever the prefix is tagged."""
+    rule = LoincThreshold(_GLUCOSE, "below", 70.0, unit_thresholds=(("mmol/L", 3.9),))
+    assert {r.threshold for r in _expand_rule(rule, "mimic_iv")} == {70.0}
+    assert {r.threshold for r in _expand_rule(rule, "eicu")} == {70.0}
+
+
+def test_tagged_prefix_without_an_entry_is_an_error_not_a_fallthrough() -> None:
+    """Creatinine is tagged umol/L on GEMINI; a mg/dL-only rule must refuse it."""
+    rule = LoincThreshold(("2160-0",), "above", 4.0)
+    with pytest.raises(ValueError, match="umol/L"):
+        _expand_rule(rule, "gemini")
+    # the temperature form (per-unit only) still refuses an untagged prefix
+    only_c = LoincThreshold(("8310-5",), "above", unit_thresholds=(("C", 38.0),))
+    with pytest.raises(ValueError, match="unit tag 'F'"):
+        _expand_rule(only_c, "mimic_iv")
+
+
+def test_hypoglycemia_hyperglycemia_and_anemia_carry_si_cutoffs() -> None:
+    by_name = {c.name: c for c in CANONICAL_CONCEPTS}
+    glucose_low = by_name["hypoglycemia"].rules[0]
+    glucose_high = by_name["hyperglycemia"].rules[0]
+    hemoglobin = by_name["anemia"].rules[0]
+    assert (glucose_low.threshold, glucose_low.unit_thresholds) == (
+        70.0,
+        (("mmol/L", 3.9),),
+    )
+    assert (glucose_high.threshold, glucose_high.unit_thresholds) == (
+        250.0,
+        (("mmol/L", 13.9),),
+    )
+    assert (hemoglobin.threshold, hemoglobin.unit_thresholds) == (7.0, (("g/L", 70.0),))
+
+
+def test_stage_3_creatinine_cutoff_is_unit_converted_on_gemini() -> None:
+    """KDIGO's absolute 4.0 mg/dL is 353.7 umol/L where creatinine is SI.
+
+    Before per-unit thresholds this rule compared GEMINI's umol/L values
+    against 4.0 and was true for essentially every creatinine result.
+    """
+    by_name = {c.name: c for c in CANONICAL_CONCEPTS}
+    absolute = [
+        r
+        for r in by_name["aki_stage_3"].rules
+        if isinstance(r, LoincThreshold) and r.threshold == 4.0
+    ]
+    assert len(absolute) == 1
+    assert [e.threshold for e in _expand_rule(absolute[0], "mimic_iv")] == [4.0]
+    assert [e.threshold for e in _expand_rule(absolute[0], "gemini")] == [353.7]

@@ -486,11 +486,17 @@ class LoincThreshold:
     clinically interchangeable for the rule (non-invasive 76534-7 and
     arterial 8480-6 systolic BP); inside a composite, a multi-prefix
     expansion is wrapped in :class:`AnyOf` so it still counts as one
-    criterion. Exactly one of ``threshold`` (unit-unambiguous signals)
-    or ``unit_thresholds`` (unit-split signals: temperature is charted
-    in Fahrenheit or Celsius depending on source and itemid, with the
-    same LOINC 8310-5) must be given; unit tags come from
-    :func:`odyssey.data.code_mapping.unit_for`.
+    criterion. ``threshold`` applies to every prefix whose unit is
+    unambiguous (no tag from :func:`odyssey.data.code_mapping.unit_for`);
+    ``unit_thresholds`` gives the same cutoff in other units for prefixes
+    that carry a tag, the way :class:`LoincBaselineRelative.unit_deltas`
+    does for deltas. Temperature is charted in Fahrenheit or Celsius
+    depending on source and itemid under one LOINC 8310-5, so it lists
+    both units and no default; glucose and hemoglobin are mg/dL and g/dL
+    on the US sources and mmol/L and g/L on GEMINI, so they keep the
+    conventional default and add the SI cutoff. At least one of the two
+    must be given, and a tagged prefix whose unit has no entry is an
+    error rather than a silent fall-through to the wrong unit.
     """
 
     loincs: tuple[str, ...]
@@ -499,12 +505,10 @@ class LoincThreshold:
     unit_thresholds: tuple[tuple[str, float], ...] | None = None
 
     def __post_init__(self) -> None:
-        """Require exactly one of ``threshold``/``unit_thresholds``."""
-        if (self.threshold is None) == (self.unit_thresholds is None):
+        """Require a default threshold, per-unit thresholds, or both."""
+        if self.threshold is None and self.unit_thresholds is None:
             raise ValueError(
-                "LoincThreshold needs exactly one of threshold or "
-                f"unit_thresholds, got threshold={self.threshold!r} "
-                f"unit_thresholds={self.unit_thresholds!r}"
+                "LoincThreshold needs a threshold, unit_thresholds, or both"
             )
 
 
@@ -645,18 +649,26 @@ def _loinc_prefixes(loincs: tuple[str, ...], source: str) -> list[str]:
 
 
 def _prefix_threshold(rule: LoincThreshold, prefix: str, source: str) -> float:
-    """Pick the threshold that applies to one concrete prefix."""
-    if rule.unit_thresholds is None:
-        assert rule.threshold is not None  # noqa: S101 -- __post_init__ guarantees
-        return rule.threshold
+    """Pick the threshold that applies to one concrete prefix.
+
+    A tagged unit takes its own entry from ``unit_thresholds``; an
+    untagged prefix takes the default ``threshold``. A tagged prefix with
+    no entry, or an untagged prefix on a rule with no default, is a
+    configuration error: silently using the wrong unit's number would
+    make a concept fire on assay noise or never at all.
+    """
     unit = unit_for(prefix, source=source)
-    for tagged_unit, threshold in rule.unit_thresholds:
-        if tagged_unit == unit:
-            return threshold
+    if unit is not None and rule.unit_thresholds is not None:
+        for tagged_unit, threshold in rule.unit_thresholds:
+            if tagged_unit == unit:
+                return threshold
+    if unit is None and rule.threshold is not None:
+        return rule.threshold
+    listed = [u for u, _ in rule.unit_thresholds or ()]
     raise ValueError(
         f"prefix {prefix!r} in source {source!r} has unit tag {unit!r}, but "
-        f"the rule only defines thresholds for "
-        f"{[u for u, _ in rule.unit_thresholds]!r} -- add the unit tag to "
+        f"the rule defines a default threshold of {rule.threshold!r} and "
+        f"per-unit thresholds for {listed!r} -- add the unit tag to "
         f"code_mapping._PREFIX_UNITS or a threshold for that unit."
     )
 
@@ -940,6 +952,16 @@ _MAP = ("76536-2", "8478-0")  # mean arterial pressure: non-invasive OR arterial
 
 _TEMP_HIGH = (("F", 100.4), ("C", 38.0))
 _TEMP_LOW = (("F", 96.8), ("C", 36.0))
+# SI cutoffs for the sources that chart glucose in mmol/L (1 mmol/L =
+# 18.016 mg/dL) and hemoglobin in g/L; the untagged US prefixes keep the
+# conventional-unit defaults on the rules themselves.
+_GLUCOSE_LOW = (("mmol/L", 3.9),)
+_GLUCOSE_HIGH = (("mmol/L", 13.9),)
+_HEMOGLOBIN_LOW = (("g/L", 70.0),)
+# KDIGO stage-3 absolute creatinine, 4.0 mg/dL, in the umol/L GEMINI charts
+# (x 88.42). Before per-unit thresholds this rule compared umol/L values
+# against 4.0 and fired on essentially every creatinine result there.
+_CREATININE_STAGE3 = (("umol/L", 353.7),)
 
 
 CANONICAL_CONCEPTS: list[AnyCanonicalConcept] = [
@@ -1048,7 +1070,9 @@ CANONICAL_CONCEPTS: list[AnyCanonicalConcept] = [
                 _CREATININE, ratio=3.0, direction="above", window_hours=168.0
             ),
             # KDIGO: >= 4.0, inclusive
-            LoincThreshold(_CREATININE, "at_or_above", 4.0),
+            LoincThreshold(
+                _CREATININE, "at_or_above", 4.0, unit_thresholds=_CREATININE_STAGE3
+            ),
             # RRT initiation is an automatic Stage 3 in KDIGO, whatever
             # creatinine and urine output say (mimic-code's rrt.sql item ids;
             # see RRT_CODE_PATTERN). First occurrence only, which is what
@@ -1208,21 +1232,21 @@ CANONICAL_CONCEPTS: list[AnyCanonicalConcept] = [
     ),
     CanonicalConcept(
         "hypoglycemia",
-        (LoincThreshold(_GLUCOSE, "below", 70.0),),
-        "Serum/plasma glucose < 70 mg/dL -- the ADA (American Diabetes "
-        "Association) hypoglycemia threshold.",
+        (LoincThreshold(_GLUCOSE, "below", 70.0, unit_thresholds=_GLUCOSE_LOW),),
+        "Serum/plasma glucose < 70 mg/dL (3.9 mmol/L) -- the ADA (American "
+        "Diabetes Association) hypoglycemia threshold.",
     ),
     CanonicalConcept(
         "hyperglycemia",
-        (LoincThreshold(_GLUCOSE, "above", 250.0),),
-        "Serum/plasma glucose > 250 mg/dL -- a standard marked-"
+        (LoincThreshold(_GLUCOSE, "above", 250.0, unit_thresholds=_GLUCOSE_HIGH),),
+        "Serum/plasma glucose > 250 mg/dL (13.9 mmol/L) -- a standard marked-"
         "hyperglycemia threshold, well above routine stress-hyperglycemia "
         "noise and below DKA-range values.",
     ),
     CanonicalConcept(
         "anemia",
-        (LoincThreshold(_HEMOGLOBIN, "below", 7.0),),
-        "Hemoglobin < 7 g/dL -- the restrictive-transfusion-strategy "
+        (LoincThreshold(_HEMOGLOBIN, "below", 7.0, unit_thresholds=_HEMOGLOBIN_LOW),),
+        "Hemoglobin < 7 g/dL (70 g/L) -- the restrictive-transfusion-strategy "
         "trigger (TRICC/TRISS-style ICU threshold), the more specific of "
         "the two commonly-cited cutoffs (7 vs. 8 g/dL).",
     ),
