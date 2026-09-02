@@ -1226,8 +1226,25 @@ def _fit_baseline_grid(
         keep = np.flatnonzero([v is not None for v in y])
         if len(keep) < 50 or len({int(y[i]) for i in keep}) < 2:
             continue
-        if len(keep) > GBM_FIT_MAX_ROWS:
+        # Logged because it is the number that says whether the GBM was
+        # data-starved, and nothing else records it: a run fitted on few
+        # shards and one fitted on hundreds are indistinguishable after the
+        # fact once both land above the cap, which is exactly the question
+        # asked of the GEMINI G4 baselines (30 of 895 train shards) and only
+        # answerable there by estimating rows-per-shard off the held-out side.
+        n_eligible = len(keep)
+        capped = n_eligible > GBM_FIT_MAX_ROWS
+        if capped:
             keep = rng.choice(keep, GBM_FIT_MAX_ROWS, replace=False)
+        logger.info(
+            "[alerts] %s@%gh GBM fit rows: %d eligible, %d used, cap %d %s",
+            event_name,
+            h,
+            n_eligible,
+            len(keep),
+            GBM_FIT_MAX_ROWS,
+            "BOUND (subsampled)" if capped else "not reached",
+        )
         x_fit = x_all[keep]
         y_fit = y[keep].astype(int)
         fill_columns = sparse_columns(x_fit)

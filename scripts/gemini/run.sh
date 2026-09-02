@@ -1347,6 +1347,262 @@ PY
         _backfill_eval_summaries
     }
 
+    _export_alerts_summary() {
+        # Same mechanism and same reasoning as _export_eval_summary above:
+        # validate against a whitelist, then copy verbatim into
+        # scripts/gemini/out/evals/, where the generic commit-and-push step
+        # at the bottom of this script picks it up. alerts.json is a BARE
+        # LIST of one record per (event, horizon, scorer) -- not an object --
+        # so the validator walks the list rather than a top-level dict.
+        #
+        # Everything in it is an aggregate over at-risk rows (counts, AUROC,
+        # decile calibration). No patient-level field exists in the record
+        # shape, which is what makes this safe to commit; alerts_rows.parquet,
+        # which IS patient-level, stays on the node and is refused by the
+        # data-like guard at the bottom regardless.
+        local run_name="$1"
+        local source_json="$2"
+        local dest_json="scripts/gemini/out/evals/${run_name}_alerts.json"
+
+        mkdir -p scripts/gemini/out/evals
+        if ! python3 - "$source_json" <<'PY'
+import json
+import sys
+
+# Mirrors odyssey/inference/alerts.py's AlertMetrics dataclass, plus the
+# landmark_protocol_version the writer attaches per record. Keep in sync by
+# hand if that dataclass gains a field -- an unrecognized key must refuse
+# rather than silently ride along into the shared record.
+RECORD_KEYS = {
+    "event", "horizon_hours", "scorer", "n_at_risk", "n_positive",
+    "n_censored", "auroc", "brier", "calibration", "baseline_feature_set",
+    "baseline_n_features", "baseline_params", "landmark_protocol_version",
+}
+CALIBRATION_KEYS = {"predicted", "observed", "n"}
+
+with open(sys.argv[1]) as f:
+    obj = json.load(f)
+
+if not isinstance(obj, list):
+    raise SystemExit(
+        f"alerts.json: expected a bare list of records, got {type(obj).__name__}"
+    )
+if not obj:
+    raise SystemExit("alerts.json: empty -- no cell was scored, refusing to export")
+
+for i, rec in enumerate(obj):
+    if not isinstance(rec, dict):
+        raise SystemExit(f"record {i}: expected an object, got {type(rec).__name__}")
+    extra = set(rec) - RECORD_KEYS
+    if extra:
+        raise SystemExit(f"record {i}: unrecognized key(s) {sorted(extra)}")
+    for required in ("event", "horizon_hours", "scorer", "n_at_risk"):
+        if required not in rec:
+            raise SystemExit(f"record {i}: missing required key {required!r}")
+    cal = rec.get("calibration")
+    if cal is not None:
+        if not isinstance(cal, list):
+            raise SystemExit(f"record {i}: calibration must be a list")
+        for j, b in enumerate(cal):
+            if not isinstance(b, dict):
+                raise SystemExit(f"record {i} calibration[{j}]: expected an object")
+            cal_extra = set(b) - CALIBRATION_KEYS
+            if cal_extra:
+                raise SystemExit(
+                    f"record {i} calibration[{j}]: unrecognized key(s) {sorted(cal_extra)}"
+                )
+
+scorers = sorted({r["scorer"] for r in obj})
+cells = len({(r["event"], r["horizon_hours"]) for r in obj})
+print(f"alerts.json validated: {len(obj)} records, {cells} cells, scorers {scorers}")
+PY
+        then
+            echo "REFUSING to export $source_json -- it did not validate (see above)." >&2
+            return 1
+        fi
+
+        cp "$source_json" "$dest_json"
+        echo "Exported alerts summary to $dest_json"
+    }
+
+    run_alerts() {
+        # The GBM/TabICL baseline leg (experiment_plan G4). Runs the alerts
+        # stage only -- NOT the full scripts/eval_run.sh chain -- because the
+        # baselines are what this is for. The hazard column comes along free
+        # (the stage scores both), but on a pre-decomposition checkpoint it is
+        # a stale architecture and must not be quoted as a CBM result; the
+        # baseline columns are model-independent given a fixed protocol and
+        # row set, which is exactly why they can be banked now.
+        local run_name="$1"
+        if [[ -z "$run_name" ]]; then
+            echo "alerts needs a run name: scripts/gemini/run.sh alerts <run-name>" >&2
+            echo "e.g.: scripts/gemini/run.sh alerts gemini_full_v10" >&2
+            exit 1
+        fi
+
+        # Held-out shard count is the one number that must match between this
+        # step and the tabicl step. On MIMIC they did not (alerts covered 37
+        # shards, TabICL 4), n differed 8.8x, and the two could never share a
+        # table -- see tab:tabicl's separate existence. One knob feeds both.
+        local alert_shards="${GEMINI_ALERT_SHARDS:-4}"
+        local baseline_shards="${GEMINI_BASELINE_SHARDS:-30}"
+        local num_lanes="${GEMINI_EVAL_NUM_LANES:-16}"
+        local chunk="${GEMINI_EVAL_CHUNK:-512}"
+        local checkpoint="${GEMINI_ALERT_CHECKPOINT:-checkpoint_best.pt}"
+
+        echo "=== alerts ($run_name) ==="
+        echo "Hazard heads vs the strong tuned per-event GBM on the landmark rows."
+        echo "alert_shards=$alert_shards (held-out), baseline_shards=$baseline_shards (train),"
+        echo "num_lanes=$num_lanes, chunk=$chunk, checkpoint=$checkpoint."
+        echo "Override via GEMINI_ALERT_SHARDS / GEMINI_BASELINE_SHARDS /"
+        echo "GEMINI_EVAL_NUM_LANES / GEMINI_EVAL_CHUNK / GEMINI_ALERT_CHECKPOINT."
+        if [[ -z "${TMUX:-}" && -z "${STY:-}" ]]; then
+            echo "WARNING: this doesn't look like a tmux or screen session --" >&2
+            echo "if the SSH connection drops, alerts dies with it." >&2
+            echo "Run it detached instead, e.g.:" >&2
+            echo "  tmux new -s alerts-$run_name 'scripts/gemini/run.sh $STEP $run_name'" >&2
+        fi
+
+        GPU_VENV="${GEMINI_GPU_VENV:-$HOME/.venvs/odyssey-gemini-gpu}"
+        if [[ ! -f "$GPU_VENV/bin/activate" ]]; then
+            echo "GPU venv not found at $GPU_VENV -- run 'scripts/gemini/run.sh env-gpu' first." >&2
+            exit 1
+        fi
+
+        RUN_DIR="$HOME/runs/$run_name"
+        if [[ ! -d "$RUN_DIR" ]]; then
+            echo "No run directory at $RUN_DIR -- run the training step that" >&2
+            echo "produces it first (e.g. train-full-cbm)." >&2
+            exit 1
+        fi
+
+        MEDS_DIR="${GEMINI_MEDS_OUTPUT_DIR:-/mnt/nfs/project/subdural_hematoma_endotypes/gemini_meds_v1}"
+        HELD_OUT_SHARD_DIR="${GEMINI_EVAL_HELD_OUT_DIR:-$MEDS_DIR/data/held_out}"
+        TRAIN_SHARD_DIR="${GEMINI_TRAIN_SHARD_DIR:-$MEDS_DIR/data/train}"
+        for d in "$HELD_OUT_SHARD_DIR" "$TRAIN_SHARD_DIR"; do
+            if [[ ! -d "$d" ]]; then
+                echo "Expected finalized MEDS data at $d -- run" >&2
+                echo "'scripts/gemini/run.sh finalize' first." >&2
+                exit 1
+            fi
+        done
+
+        OUTPUT_JSON="$RUN_DIR/alerts.json"
+        DUMP_ROWS="$RUN_DIR/alerts_rows.parquet"
+        echo "Run dir: $RUN_DIR"
+        echo "Held-out: $HELD_OUT_SHARD_DIR"
+        echo "Train (GBM fit): $TRAIN_SHARD_DIR"
+        echo "Output: $OUTPUT_JSON"
+        echo "Row dump: $DUMP_ROWS (patient-level, stays on this node)"
+
+        source "$GPU_VENV/bin/activate"
+        # --stream-baseline-shards is not optional at GEMINI scale: the
+        # whole-frame GBM fit path loads BASELINE_SHARDS entirely into memory
+        # and OOMs on a corpus this size (894 train shards).
+        python -m odyssey.inference.alerts \
+            --run-dir "$RUN_DIR" \
+            --held-out-shard-dir "$HELD_OUT_SHARD_DIR" \
+            --baseline-shard-dir "$TRAIN_SHARD_DIR" \
+            --max-shards "$alert_shards" \
+            --max-baseline-shards "$baseline_shards" \
+            --num-lanes "$num_lanes" \
+            --chunk-size "$chunk" \
+            --output-json "$OUTPUT_JSON" \
+            --dump-rows "$DUMP_ROWS" \
+            --checkpoint "$checkpoint" \
+            --stream-baseline-shards
+        deactivate
+        source "$VENV/bin/activate"
+
+        echo "$STEP complete. Results at $OUTPUT_JSON"
+
+        if ! _export_alerts_summary "$run_name" "$OUTPUT_JSON"; then
+            echo "WARNING: this run's alerts summary was not exported (see above)." >&2
+        fi
+    }
+
+    run_tabicl() {
+        # TabICLv2 on the SAME rows the alerts step already dumped, so its
+        # column can sit in one table beside hazard and the GBM instead of
+        # needing a separate one. --existing-dump is what enforces that.
+        local run_name="$1"
+        if [[ -z "$run_name" ]]; then
+            echo "tabicl needs a run name: scripts/gemini/run.sh tabicl <run-name>" >&2
+            echo "e.g.: scripts/gemini/run.sh tabicl gemini_full_v10" >&2
+            exit 1
+        fi
+
+        local alert_shards="${GEMINI_ALERT_SHARDS:-4}"
+        local train_shards="${GEMINI_TABICL_TRAIN_SHARDS:-8}"
+
+        echo "=== tabicl ($run_name) ==="
+        echo "TabICLv2, strong feature panel, at full capability: n_estimators=8"
+        echo "(TabICLClassifier's own default) and a 50,000-row context"
+        echo "(TABICL_MAX_ROWS, a module constant in tabicl_baseline.py --"
+        echo "neither is a CLI knob, so this matches the MIMIC/eICU legs by"
+        echo "construction rather than by remembering to pass a flag)."
+        echo "Held-out shards=$alert_shards (GEMINI_ALERT_SHARDS -- MUST be the"
+        echo "same value the alerts step ran with, or the two columns describe"
+        echo "different samples)."
+        echo "Budget roughly half an hour of inference PER CELL."
+        if [[ -z "${TMUX:-}" && -z "${STY:-}" ]]; then
+            echo "WARNING: this doesn't look like a tmux or screen session --" >&2
+            echo "if the SSH connection drops, tabicl dies with it." >&2
+            echo "Run it detached instead, e.g.:" >&2
+            echo "  tmux new -s tabicl-$run_name 'scripts/gemini/run.sh $STEP $run_name'" >&2
+        fi
+
+        GPU_VENV="${GEMINI_GPU_VENV:-$HOME/.venvs/odyssey-gemini-gpu}"
+        if [[ ! -f "$GPU_VENV/bin/activate" ]]; then
+            echo "GPU venv not found at $GPU_VENV -- run 'scripts/gemini/run.sh env-gpu' first." >&2
+            exit 1
+        fi
+
+        RUN_DIR="$HOME/runs/$run_name"
+        EXISTING_DUMP="$RUN_DIR/alerts_rows.parquet"
+        if [[ ! -f "$EXISTING_DUMP" ]]; then
+            echo "No row dump at $EXISTING_DUMP -- run" >&2
+            echo "'scripts/gemini/run.sh alerts $run_name' first. TabICL is scored" >&2
+            echo "on the alerts stage's own rows on purpose; there is no" >&2
+            echo "standalone path that would produce a comparable column." >&2
+            exit 1
+        fi
+
+        MEDS_DIR="${GEMINI_MEDS_OUTPUT_DIR:-/mnt/nfs/project/subdural_hematoma_endotypes/gemini_meds_v1}"
+        HELD_OUT_SHARD_DIR="${GEMINI_EVAL_HELD_OUT_DIR:-$MEDS_DIR/data/held_out}"
+        TRAIN_SHARD_DIR="${GEMINI_TRAIN_SHARD_DIR:-$MEDS_DIR/data/train}"
+        OUTPUT_JSON="$RUN_DIR/tabicl_compare.json"
+
+        source "$GPU_VENV/bin/activate"
+        if ! python -c "import tabicl" 2>/dev/null; then
+            echo "tabicl is not installed in $GPU_VENV." >&2
+            echo "It is an optional extra and env-gpu does not install it." >&2
+            echo "Install it into that venv first:" >&2
+            echo "  source $GPU_VENV/bin/activate && pip install 'tabicl>=2.0.0'" >&2
+            deactivate
+            source "$VENV/bin/activate"
+            exit 1
+        fi
+        # The guard's 16GB default refuses the strong panel outright; the
+        # MIMIC and eICU legs both needed this raised on a 170GB host. If this
+        # node has less memory than the budget claims, the fit will be killed
+        # rather than silently reduced -- that is the intended failure.
+        export ODYSSEY_TABICL_MEMORY_BUDGET_GB="${ODYSSEY_TABICL_MEMORY_BUDGET_GB:-120}"
+        echo "ODYSSEY_TABICL_MEMORY_BUDGET_GB=$ODYSSEY_TABICL_MEMORY_BUDGET_GB"
+        python scripts/tabicl_strong_compare.py \
+            --run-dir "$RUN_DIR" \
+            --train-shard-dir "$TRAIN_SHARD_DIR" \
+            --held-out-shard-dir "$HELD_OUT_SHARD_DIR" \
+            --existing-dump "$EXISTING_DUMP" \
+            --max-train-shards "$train_shards" \
+            --max-held-out-shards "$alert_shards" \
+            --output-json "$OUTPUT_JSON"
+        deactivate
+        source "$VENV/bin/activate"
+
+        echo "$STEP complete. Results at $OUTPUT_JSON"
+    }
+
     case "$STEP" in
         probe) run_probe ;;
         schema) run_schema ;;
@@ -1363,11 +1619,13 @@ PY
         train-full-cbm) run_train_cbm "" gemini_full_v10 ;;
         train-rung2) run_train_rung2 ;;
         eval-forecast) run_eval_forecast "${2:-}" ;;
+        alerts) run_alerts "${2:-}" ;;
+        tabicl) run_tabicl "${2:-}" ;;
         train) run_pending_stub train ;;
         eval) run_pending_stub eval ;;
         all) run_probe; run_schema; run_extract_dry ;;
         *)
-            echo "unknown step: $STEP (expected probe, schema, env-gpu, extract-dry, extract, finalize, export-codes, pipeline, train-smoke, train-smoke-2, train-full, train-smoke-cbm, train-full-cbm, train-rung2, eval-forecast, train, eval, or all)" >&2
+            echo "unknown step: $STEP (expected probe, schema, env-gpu, extract-dry, extract, finalize, export-codes, pipeline, train-smoke, train-smoke-2, train-full, train-smoke-cbm, train-full-cbm, train-rung2, eval-forecast, alerts, tabicl, train, eval, or all)" >&2
             exit 1
             ;;
     esac
