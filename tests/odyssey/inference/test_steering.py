@@ -262,6 +262,11 @@ def test_token_descriptions_use_meds_metadata_and_keep_the_bin(tmp_path) -> None
     assert names["MEDICATION//norepinephrine"] == "MEDICATION//norepinephrine"
     assert names["OTHER//x"] == "OTHER//x"
     assert token_descriptions(tokens, None) == {t: t for t in tokens}
+    # eICU's codes.parquet carries codes only: no crash, names stay as codes.
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    pl.DataFrame({"code": ["OTHER//x"]}).write_parquet(bare / "codes.parquet")
+    assert token_descriptions(tokens, bare) == {t: t for t in tokens}
 
 
 def test_summary_scores_outcomes_against_the_declared_direction() -> None:

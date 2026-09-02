@@ -402,7 +402,12 @@ def token_descriptions(
     if not path.exists():
         logger.warning("[steering] no %s; tokens stay as codes", path)
         return names
-    codes = pl.read_parquet(path, columns=["code", "description"])
+    codes = pl.read_parquet(path)
+    if "description" not in codes.columns:
+        logger.warning(
+            "[steering] %s has no description column; tokens stay as codes", path
+        )
+        return names
     lookup = dict(
         zip(codes["code"].to_list(), codes["description"].to_list(), strict=True)
     )
