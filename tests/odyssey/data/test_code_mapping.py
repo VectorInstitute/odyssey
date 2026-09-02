@@ -229,3 +229,18 @@ def test_gemini_prefixes_resolve_to_registry_loincs() -> None:
     assert unit_for("LAB//3020564//", source="gemini") == "umol/L"
     assert unit_for("VITALS//3020891//", source="gemini") == "C"
     assert unit_for("VITALS//3027018//", source="gemini") is None
+    # the lab panel: SI-tagged where the cutoff differs, untagged where
+    # mmol/L equals mEq/L and x10^9/L equals K/uL
+    assert loinc_for("LAB//3019550//", source="gemini") == "2951-2"  # sodium
+    assert loinc_for("LAB//3023103//", source="gemini") == "2823-3"  # potassium
+    assert loinc_for("LAB//3016293//", source="gemini") == "1963-8"  # bicarbonate
+    assert loinc_for("LAB//3007461//", source="gemini") == "777-3"  # platelets
+    assert loinc_for("LAB//3032080//", source="gemini") == "6301-6"  # INR
+    assert loinc_for("LAB//3000963//", source="gemini") == "718-7"  # hemoglobin
+    assert loinc_for("LAB//3013826//", source="gemini") == "2345-7"  # glucose
+    assert unit_for("LAB//3000963//", source="gemini") == "g/L"
+    assert unit_for("LAB//3013826//", source="gemini") == "mmol/L"
+    assert unit_for("LAB//3019550//", source="gemini") is None
+    assert (
+        loinc_for("LAB//3040151//", source="gemini") is None
+    )  # capillary glucose, as on MIMIC
