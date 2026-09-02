@@ -2,6 +2,8 @@
 
 import importlib.util
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 
@@ -99,9 +101,6 @@ def test_after_block_is_labelled_and_refuses_mismatched_heads(tmp_path) -> None:
     before, after = tmp_path / "b.json", tmp_path / "a.json"
     before.write_text(json.dumps(_payload()))
     after.write_text(json.dumps(other))
-    import subprocess
-    import sys
-
     proc = subprocess.run(
         [
             sys.executable,
@@ -115,5 +114,6 @@ def test_after_block_is_labelled_and_refuses_mismatched_heads(tmp_path) -> None:
         ],
         capture_output=True,
         text=True,
+        check=False,
     )
     assert proc.returncode != 0 and "different event heads" in proc.stderr
