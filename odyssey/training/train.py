@@ -302,6 +302,11 @@ class TrainingConfig:
     """First backbone block whose output is pushed; ``None`` = the middle."""
     respond_weight: float = 1.0
     express_weight: float = 1.0
+    steering_forecast_at_injected: bool = True
+    """Score the forecasting losses on injected positions during steering
+    phases (Steerling's Eq. 33 as written). ``False`` scores them on the
+    other real positions only, so an injected position is trained to
+    respond and express and not also to leave its forecast unchanged."""
     lifted_top_k: int = 25
     lifted_min_count: int = 20
     lifted_min_share: float = 0.005
@@ -1621,6 +1626,7 @@ def _run_training(  # noqa: PLR0912, PLR0915
                     event_targets=event_targets,
                     respond_weight=config.respond_weight,
                     express_weight=config.express_weight,
+                    forecast_at_injected=config.steering_forecast_at_injected,
                 )
             else:
                 intervention = randint_intervention(
