@@ -96,7 +96,11 @@ ALERT_EVENTS_V1: tuple[AlertEvent, ...] = (
 
 ALERT_EVENTS_V2: tuple[AlertEvent, ...] = ALERT_EVENTS_V1 + (
     # Sepsis-3 onset from the sepsis3 concept (suspected infection + SOFA
-    # >= 2; see odyssey.data.concepts.Sepsis3Rule). MIMIC-IV only today.
+    # >= 2; see odyssey.data.concepts.Sepsis3Rule). No source gate here --
+    # this event is available wherever the concept resolves, which is
+    # MIMIC-IV and, since SOFA_SOURCE_CONFIG gained an eicu entry, eICU
+    # too; GEMINI still lacks the SOFA ingredients (see
+    # docs/gemini_extraction.md).
     AlertEvent("sepsis3", concept="sepsis3"),
     # 30-day readmission: the next hospital admission after this visit's
     # last event; scored at discharge-anchored index rows with a 720h
@@ -148,7 +152,7 @@ def alert_events_for(
     """Return the alert events a run with ``task_set`` trains heads for / scores.
 
     With ``source``, concept-backed alerts whose concept does not resolve
-    for that source are dropped (sepsis3 on eICU), and code-prefix alerts
+    for that source are dropped (sepsis3 on GEMINI), and code-prefix alerts
     are remapped to that source's own vocabulary where it needs one
     (:data:`_SOURCE_CODE_PREFIXES`; GEMINI's bare structural tokens):
     head construction, the event-time computation, and scoring must all

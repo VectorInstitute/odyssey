@@ -1516,14 +1516,32 @@ def test_v3_eicu_expansion_resolves_every_new_concept() -> None:
 
     Every v3 LOINC-threshold concept is already mapped for eicu
     (code_mapping.py), so none of those should be dropped there. The
-    SOFA-derived ones are dropped, like sepsis3: they need ventilation
-    codes and urine-output mappings eicu's spec does not provide.
+    SOFA-derived ones (hypoxemic_respiratory_failure, oliguria) also
+    resolve now that eicu has a SofaSourceConfig entry -- see
+    test_eicu_v3_resolves_all_29_concepts below for the full count and
+    sepsis3, which is v1-era rather than a _V3_NEW_NAMES/_V3_DERIVED_NAMES
+    concept.
     """
     eicu_names = {c.name for c in concepts_for_source("eicu", task_set="v3")}
-    for name in _V3_NEW_NAMES:
+    for name in _V3_NEW_NAMES + _V3_DERIVED_NAMES:
         assert name in eicu_names, f"{name} unexpectedly dropped for eicu"
-    for name in _V3_DERIVED_NAMES:
-        assert name not in eicu_names, f"{name} unexpectedly present for eicu"
+
+
+def test_eicu_v3_resolves_all_29_concepts() -> None:
+    """All 29 v3 concepts resolve on eicu, asserted as a count, not observed.
+
+    sofa_supported("eicu") became true once SOFA_SOURCE_CONFIG gained an
+    eicu entry (vasopressor identity via the shared HICL-normalized
+    on_vasopressors path, fixed cardiovascular tiers since no eicu rate
+    field is confirmed to be mcg/kg/min, ventilation via carePlanGeneral),
+    which brings sepsis3, hypoxemic_respiratory_failure and oliguria in
+    together -- all three depend on the same gate, not three separate
+    fixes. Compare test_gemini_v3_resolves_the_lab_panel_concepts, the
+    same style of assertion for the other source with a partial registry.
+    """
+    names = {c.name for c in concepts_for_source("eicu", task_set="v3")}
+    assert len(names) == 29
+    assert {"sepsis3", "hypoxemic_respiratory_failure", "oliguria"} <= names
 
 
 # ---------------------------------------------------------------------------
