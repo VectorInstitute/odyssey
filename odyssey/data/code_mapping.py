@@ -249,6 +249,27 @@ GEMINI_TO_LOINC: dict[str, str] = {
     "LAB//3018405//": "32693-4",  # Lactate, arterial (1.27M)
     "LAB//3008037//": "32693-4",  # Lactate, venous (1.22M)
     "LAB//3020138//": "32693-4",  # Lactate, serum/plasma (0.76M)
+    # -- The electrolyte / CBC / coagulation panel the v3 concepts key on.
+    # OMOP ids and names from the datacut's lab concept lookup
+    # (scripts/gemini/out/lab_lookup_unmapped.json); row counts from the
+    # code inventory. Electrolytes and bicarbonate are charted in mmol/L,
+    # which equals the mEq/L the canonical thresholds use; platelets in
+    # x10^9/L, equal to MIMIC's K/uL. Hemoglobin and glucose are SI here
+    # (g/L, mmol/L) and carry unit tags in _PREFIX_UNITS so the rules
+    # apply their SI cutoffs.
+    "LAB//3019550//": "2951-2",  # Sodium, serum/plasma (16.8M, mmol/L)
+    "LAB//3023103//": "2823-3",  # Potassium, serum/plasma (16.8M, mmol/L)
+    "LAB//3016293//": "1963-8",  # Bicarbonate, serum/plasma (13.1M, mmol/L)
+    "LAB//3007461//": "777-3",  # Platelets (13.7M, x10^9/L)
+    "LAB//3032080//": "6301-6",  # INR (4.3M; unitless)
+    # Hemoglobin: 15.1M rows in g/L against 9k in g/dL under the same id;
+    # the prefix is tagged g/L, so the handful of g/dL rows read as very
+    # low values that never cross the anemia cutoff (a false negative on
+    # 0.06% of rows, not a false positive).
+    "LAB//3000963//": "718-7",  # Hemoglobin, blood (15.1M, g/L)
+    # Serum/plasma glucose only, matching MIMIC (50931) and eICU
+    # ("glucose"); capillary glucose 3040151 stays unmapped there too.
+    "LAB//3013826//": "2345-7",  # Glucose, serum/plasma (7.8M, mmol/L)
 }
 
 
@@ -282,6 +303,10 @@ _PREFIX_UNITS: dict[str, dict[str, str]] = {
         # thresholds/ranges must NOT apply; see CANONICAL_CLINICAL_RANGES'
         # umol/L entry and the AKI rule's unit_deltas.
         "LAB//3020564//": "umol/L",
+        # Hemoglobin and glucose are SI on GEMINI; the concept rules carry
+        # matching unit_thresholds (concepts.py _HEMOGLOBIN_LOW, _GLUCOSE_*).
+        "LAB//3000963//": "g/L",
+        "LAB//3013826//": "mmol/L",
         # Body temperature: Canadian network, Celsius (no Fahrenheit rows
         # observed in the vitals unit sampling).
         "VITALS//3020891//": "C",

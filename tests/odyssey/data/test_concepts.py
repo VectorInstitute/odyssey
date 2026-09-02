@@ -1154,6 +1154,88 @@ def test_gemini_source_resolves_all_but_gcs_dependent_concepts() -> None:
     assert len(names) == 15
 
 
+def test_gemini_v3_resolves_the_lab_panel_concepts() -> None:
+    """25 of 29 v3 concepts resolve once the electrolyte/CBC/INR ids are mapped.
+
+    The four that stay out need signals the datacut does not chart:
+    urine output (oliguria; none anywhere in the datacut), FiO2/PaO2
+    (hypoxemic respiratory failure; FiO2 is unmapped free text), mean
+    arterial pressure (shock; only systolic and diastolic are charted),
+    and sepsis3's SOFA components.
+    """
+    names = {c.name for c in concepts_for_source("gemini", task_set="v3")}
+    assert len(names) == 25
+    assert {
+        "hyperkalemia",
+        "hypokalemia",
+        "hyponatremia",
+        "hypernatremia",
+        "hypoglycemia",
+        "hyperglycemia",
+        "anemia",
+        "thrombocytopenia",
+        "coagulopathy",
+        "metabolic_acidosis",
+    } <= names
+    assert names.isdisjoint(
+        {"oliguria", "hypoxemic_respiratory_failure", "shock", "sepsis3"}
+    )
+    # metabolic acidosis keeps its bicarbonate criterion; the pH one drops
+    acidosis = next(
+        c
+        for c in concepts_for_source("gemini", task_set="v3")
+        if c.name == "metabolic_acidosis"
+    )
+    prefixes = {r.code_prefix for r in acidosis.rules}
+    assert prefixes == {"LAB//3016293//"}
+
+
+def test_gemini_shaped_events_label_the_si_lab_concepts() -> None:
+    """SI values cross the SI cutoffs (mmol/L glucose, g/L hemoglobin)."""
+    wanted = (
+        "hyponatremia",
+        "hyperkalemia",
+        "hypoglycemia",
+        "anemia",
+        "thrombocytopenia",
+        "coagulopathy",
+    )
+    concepts = [
+        c for c in concepts_for_source("gemini", task_set="v3") if c.name in wanted
+    ]
+    events = _events(
+        [
+            (1, "LAB//3019550//mmol/l", 125.0),  # sodium 125 -> hyponatremia
+            (1, "LAB//3023103//mmol/l", 6.1),  # potassium 6.1 -> hyperkalemia
+            (
+                1,
+                "LAB//3013826//mmol/l",
+                3.0,
+            ),  # glucose 3.0 mmol/L (54 mg/dL) -> hypoglycemia
+            (1, "LAB//3000963//g/l", 65.0),  # hemoglobin 65 g/L (6.5 g/dL) -> anemia
+            (1, "LAB//3007461//x10e9/l", 80.0),  # platelets 80 -> thrombocytopenia
+            (1, "LAB//3032080//inr", 2.1),  # INR 2.1 -> coagulopathy
+            (2, "LAB//3019550//mmol/l", 140.0),
+            (2, "LAB//3023103//mmol/l", 4.0),
+            (
+                2,
+                "LAB//3013826//mmol/l",
+                6.0,
+            ),  # 108 mg/dL: would be hypoglycemic under the mg/dL cutoff
+            (
+                2,
+                "LAB//3000963//g/l",
+                130.0,
+            ),  # 13 g/dL: would be anemic under the g/dL cutoff
+            (2, "LAB//3007461//x10e9/l", 250.0),
+            (2, "LAB//3032080//inr", 1.0),
+        ]
+    )
+    labels = label_concepts(events, concepts).sort("subject_id")
+    for name in wanted:
+        assert labels[name].to_list() == [1, 0], name
+
+
 def test_aki_delta_is_unit_converted_per_source() -> None:
     """KDIGO's 0.3 mg/dL rise becomes 26.5 umol/L on GEMINI, unchanged elsewhere.
 
