@@ -69,3 +69,30 @@ def test_silent_when_unknown_dim_is_unset() -> None:
     """unknown_dim=None defaults to embedding_dim, so the penalty is live."""
     cfg = _config(embedding_dim=32, unknown_dim=None, orthogonality_weight=0.1)
     assert _checked_unknown_dim(cfg) is None
+
+
+def test_warns_when_the_decomposed_bottleneck_makes_the_penalty_inert(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The same silent zero, reached by a different route.
+
+    combined_loss derives orthogonality from the mixture's per-concept
+    embedding blocks, which the decomposition does not produce, so the
+    term is structurally 0 there as well. Left unwarned this repeats the
+    L3/L4 confound in a new design.
+    """
+    cfg = _config(bottleneck_kind="decomposed", orthogonality_weight=0.1)
+    with caplog.at_level(logging.WARNING):
+        _checked_unknown_dim(cfg)
+    assert any("INERT" in r.message for r in caplog.records), caplog.text
+    assert any("independence_weight" in r.message for r in caplog.records)
+
+
+def test_decomposed_bottleneck_is_silent_with_the_weight_zeroed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Zeroing it is the correct configuration, not a warned one."""
+    cfg = _config(bottleneck_kind="decomposed", orthogonality_weight=0.0)
+    with caplog.at_level(logging.WARNING):
+        _checked_unknown_dim(cfg)
+    assert not any("INERT" in r.message for r in caplog.records)

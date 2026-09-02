@@ -96,14 +96,53 @@ def load_alerts(path: Path) -> tuple[dict[str, dict[str, Any]], set[int]]:
     return cells, protocols
 
 
-def load_tabicl(path: Path) -> dict[str, float | None]:
-    """TabICL point estimates keyed the same way as the alerts cells."""
+def load_tabicl(path: Path) -> tuple[dict[str, float | None], dict[str, int | None]]:
+    """TabICL point estimates, and the row count each was scored on.
+
+    The row counts are returned so the caller can refuse to print a
+    TabICL score beside an ``n`` it was not computed on; see
+    :func:`check_row_sets`.
+    """
     raw = json.loads(path.read_text())
     out: dict[str, float | None] = {}
+    rows: dict[str, int | None] = {}
     for key, cell in raw.items():
         entry = cell.get("tabicl")
         out[key] = None if entry is None else entry.get("point_estimate")
-    return out
+        rows[key] = cell.get("n")
+    return out, rows
+
+
+def check_row_sets(
+    cells: dict[str, dict[str, Any]], tabicl_rows: dict[str, int | None]
+) -> None:
+    """Refuse to merge TabICL scored on a different row set than the table.
+
+    TabICL costs about half an hour of inference per cell, so it is run on
+    a subsample while the alerts table covers every shard. Only the score
+    crosses over in the merge: the ``n`` column keeps saying the alerts
+    figure, so a subsample AUROC lands beside a row count it was never
+    computed on and the table looks finished. That is this project's most
+    repeated analysis bug, and the "pass --tabicl" note this script prints
+    on a full-coverage table walks straight into it -- the matched tables
+    exist precisely so the two coverages never share a column.
+    """
+    mismatched = {
+        key: (cells[key]["n"], n)
+        for key, n in tabicl_rows.items()
+        if key in cells and n is not None and cells[key]["n"] not in (None, n)
+    }
+    if mismatched:
+        detail = ", ".join(
+            f"{key}: table {tab:,} vs TabICL {tic:,}"
+            for key, (tab, tic) in sorted(mismatched.items())
+        )
+        raise SystemExit(
+            f"TabICL was scored on a different row set than this table in "
+            f"{len(mismatched)} cell(s): {detail}. Point estimates from "
+            "different coverages must not share a table. Build the matched "
+            "table with --matched instead of merging with --tabicl"
+        )
 
 
 def load_matched(paths: list[Path]) -> dict[str, dict[str, Any]]:
@@ -240,7 +279,10 @@ def build_rows(
     while rows and rows[-1] in ("", "\\midrule"):
         rows.pop()
     if not tabicl:
-        notes.append("TabICL column ABSENT: pass --tabicl (B1's tabicl_strong_v4.json)")
+        notes.append(
+            "TabICL column absent. Only merge --tabicl when it was scored on "
+            "THIS table's rows; a subsample belongs in a --matched table"
+        )
     if not cis:
         notes.append(
             "NO CIs: bold is plain arg-max, which the caption's bold rule does "
@@ -296,7 +338,10 @@ def main() -> None:
         }
     else:
         cells, protocols = load_alerts(args.alerts)
-        tabicl = load_tabicl(args.tabicl) if args.tabicl else {}
+        tabicl = {}
+        if args.tabicl:
+            tabicl, tabicl_rows = load_tabicl(args.tabicl)
+            check_row_sets(cells, tabicl_rows)
     cis = load_cis(args.cis) if args.cis else {}
 
     rows, notes = build_rows(cells, tabicl, cis)

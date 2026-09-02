@@ -22,7 +22,17 @@ Usage::
         [--scorers hazard gbm] [--n-boot 1000] [--seed 0]
 
 Scorer columns are the dump's ``{scorer}@{h}h`` columns; the default pair
-list compares every requested scorer against the first one.
+list compares every requested scorer against the first one. The dump names
+the tuned GBM column ``gbm`` while alerts.json's records call the same
+scorer ``baseline_gbm``; both spellings are accepted here and mapped to the
+dump's column.
+
+Runtime notes from the full-held-out runs: this script imports sklearn (for
+AUPRC), so on the GEMINI node it needs the GPU venv, not the lightweight
+one. A 1000-draw subject bootstrap over ~30M index rows takes 15-20 h
+(per-scorer CIs, then the paired pass); ``--max-subjects`` draws a
+subject-level subsample before bootstrapping when that is not affordable,
+and the subsample size is recorded in the output.
 """
 
 from __future__ import annotations
@@ -43,6 +53,11 @@ from odyssey.inference.uncertainty import (
     bootstrap_metric,
     bootstrap_metric_delta,
 )
+
+
+# alerts.json calls the tuned GBM "baseline_gbm"; the row dump's columns
+# call it "gbm". Accept both on the command line.
+SCORER_ALIASES = {"baseline_gbm": "gbm"}
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -148,6 +163,27 @@ def score_cell(
     return result
 
 
+def subsample_subjects(
+    frame: pl.DataFrame, *, max_subjects: int | None, seed: int
+) -> pl.DataFrame:
+    """Keep every row of a seeded random subset of subjects.
+
+    Subject-level (not row-level) so the clustered bootstrap still sees
+    whole subjects; a no-op when ``max_subjects`` is None or not smaller
+    than the subject count.
+    """
+    if max_subjects is None:
+        return frame
+    subjects = frame["subject_id"].unique().sort().to_numpy()
+    if len(subjects) <= max_subjects:
+        return frame
+    keep = np.random.default_rng(seed).choice(
+        subjects, size=max_subjects, replace=False
+    )
+    logger.info("subsampling %d of %d subjects", max_subjects, len(subjects))
+    return frame.filter(pl.col("subject_id").is_in(keep.tolist()))
+
+
 def main() -> None:
     """Compute per-cell CIs and paired deltas from alerts row dumps."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -156,18 +192,28 @@ def main() -> None:
     parser.add_argument("--scorers", nargs="+", default=["hazard", "gbm"])
     parser.add_argument("--n-boot", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--max-subjects",
+        type=int,
+        default=None,
+        help="subject-level subsample (seeded) before bootstrapping; default all",
+    )
     args = parser.parse_args()
+    args.scorers = [SCORER_ALIASES.get(s, s) for s in args.scorers]
 
     out: dict[str, Any] = {
         "scorers": args.scorers,
         "n_boot": args.n_boot,
         "seed": args.seed,
+        "max_subjects": args.max_subjects,
         "variance_scope": "finite-sample only (single fitted model); refit "
         "variance requires seed replicates",
         "cells": {},
     }
     for path in args.dump:
-        frame = pl.read_parquet(path)
+        frame = subsample_subjects(
+            pl.read_parquet(path), max_subjects=args.max_subjects, seed=args.seed
+        )
         events = (
             frame["event"].unique().to_list() if "event" in frame.columns else [None]
         )

@@ -37,6 +37,12 @@ DEFAULT_PAIRS = (
     ("random", "none"),
     ("zero_known", "none"),
     ("zero_unknown", "none"),
+    # Decomposed-bottleneck only; skipped on runs that never produced it.
+    # Paired against zero_known as well as none, because the paper's claim
+    # is comparative: a model that shrugs off losing its named channel but
+    # collapses without its residual has routed the task around the concepts.
+    ("zero_residual", "none"),
+    ("zero_residual", "zero_known"),
     ("truth_calibrated", "flip_calibrated"),
     ("truth_calibrated", "none"),
     ("flip_calibrated", "none"),

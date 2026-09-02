@@ -26,7 +26,9 @@ REPO = Path(__file__).resolve().parents[3]
 RUN_SH = REPO / "scripts" / "gemini" / "run.sh"
 
 
-def _cbm_config(tmp_path: Path, max_train_shards: str) -> dict:
+def _cbm_config(
+    tmp_path: Path, max_train_shards: str, bottleneck_kind: str | None = None
+) -> dict:
     """Run run.sh's own embedded python config builder for the CBM step.
 
     Extracts the heredoc from ``run_train_cbm`` and executes it exactly as
@@ -40,11 +42,10 @@ def _cbm_config(tmp_path: Path, max_train_shards: str) -> dict:
     script = tmp_path / "build_config.py"
     script.write_text(match.group(1))
     out = tmp_path / "config.json"
-    subprocess.run(
-        ["python3", str(script), str(out), max_train_shards],
-        check=True,
-        capture_output=True,
-    )
+    argv = ["python3", str(script), str(out), max_train_shards]
+    if bottleneck_kind is not None:
+        argv.append(bottleneck_kind)
+    subprocess.run(argv, check=True, capture_output=True)
     return json.loads(out.read_text())
 
 
@@ -136,3 +137,33 @@ def test_new_steps_are_dispatched_and_documented(step: str) -> None:
     source = RUN_SH.read_text()
     assert f"{step})" in source, f"{step} has no case branch"
     assert step in source.split("unknown step:")[1], f"{step} missing from usage error"
+
+
+def test_dec_step_adds_the_v12_decomposition_block_and_nothing_else(
+    tmp_path: Path,
+) -> None:
+    """train-full-dec is train-full-cbm plus the MIMIC/eICU v12 block."""
+    mixture = _cbm_config(tmp_path, "")
+    decomposed = _cbm_config(tmp_path, "", "decomposed")
+    assert decomposed["bottleneck_kind"] == "decomposed"
+    assert decomposed["unknown_ratio"] == 3
+    assert decomposed["residual_dropout"] == 0.3
+    assert decomposed["reconstruction_weight"] == 1.0
+    assert decomposed["independence_weight"] == 1.0
+    assert decomposed["teacher_known_end"] == 0.5
+    assert decomposed["teacher_anneal_steps"] == 4500
+    assert "bottleneck_kind" not in mixture
+    for key, value in mixture.items():
+        assert decomposed[key] == value, key
+    built = TrainingConfig(
+        train_shard_dir="/train",
+        tuning_shard_dir="/tuning",
+        output_dir="/out",
+        **decomposed,
+    )
+    assert built.bottleneck_kind == "decomposed"
+
+
+def test_unknown_bottleneck_kind_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(subprocess.CalledProcessError):
+        _cbm_config(tmp_path, "", "hybrid")

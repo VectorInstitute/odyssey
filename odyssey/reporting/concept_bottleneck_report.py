@@ -667,6 +667,8 @@ def build_intervention_finding(
 
     d_truth, d_flip, d_random = delta("truth"), delta("flip"), delta("random")
     d_zero_known, d_zero_unknown = delta("zero_known"), delta("zero_unknown")
+    # Decomposed bottleneck only; None on a mixture run, which has no residual.
+    d_zero_residual = delta("zero_residual")
     truth_row = by_mode.get("truth") or {}
     band = truth_row.get("uncertain_band")
     disp = {m: (by_mode.get(m) or {}).get("mean_abs_displacement") for m in by_mode}
@@ -688,11 +690,22 @@ def build_intervention_finding(
     mediates = gap is not None and gap >= 0.005
     signed_only = gap is not None and 0 < gap < 0.005
     randint_on = randint_prob is not None and randint_prob > 0
-    decorative = (
-        d_zero_known is not None
-        and abs(d_zero_known) < 0.005
-        and d_zero_unknown is not None
-        and abs(d_zero_unknown) >= 0.005
+    # "Not decorative" is NOT the same as "load-bearing": the original
+    # condition is false both when the concepts genuinely carry the task and
+    # when NOTHING named carries it. On a decomposed bottleneck the second
+    # case is the one under test -- if the residual absorbed the predictive
+    # capacity, both named channels go quiet together and the old test would
+    # have reported "load-bearing" for the most decorative model possible.
+    # So state the load-bearing claim positively, from the known channel
+    # actually mattering, and give residual domination its own verdict.
+    known_matters = d_zero_known is not None and abs(d_zero_known) >= 0.005
+    unknown_matters = d_zero_unknown is not None and abs(d_zero_unknown) >= 0.005
+    decorative = d_zero_known is not None and not known_matters and unknown_matters
+    residual_dominates = (
+        d_zero_residual is not None
+        and abs(d_zero_residual) >= 0.005
+        and not known_matters
+        and not unknown_matters
     )
 
     parts = [
@@ -764,18 +777,41 @@ def build_intervention_finding(
                 "magnitude-controlled direction test."
             )
     if d_zero_known is not None and d_zero_unknown is not None:
-        parts.append(
-            f" Zeroing the known-concept channel moves it {d_zero_known:+.1%} "
-            f"and zeroing the unknown channel {d_zero_unknown:+.1%} -- "
-            + (
-                "the supervised concepts are load-bearing for the task "
-                "head, not a decorative side channel."
-                if not decorative
-                else "task performance survives losing the known-concept "
+        if residual_dominates:
+            verdict = (
+                "neither named channel is load-bearing, while zeroing the "
+                f"residual moves it {d_zero_residual:+.1%}: the decomposition "
+                "is algebraically exact but practically vacuous, because the "
+                "predictive capacity went to the unnamed residual rather than "
+                "to either channel the audit can read."
+            )
+        elif decorative:
+            verdict = (
+                "task performance survives losing the known-concept "
                 "channel almost intact, which is the completeness "
                 "probe's warning sign: the interpretable channel isn't "
                 "where the task signal actually lives."
             )
+        elif known_matters:
+            verdict = (
+                "the supervised concepts are load-bearing for the task "
+                "head, not a decorative side channel."
+            )
+        else:
+            verdict = (
+                "neither channel moves the task head appreciably, so this "
+                "sweep does not locate the task signal at all; read it with "
+                "the residual probe before drawing a completeness conclusion."
+            )
+        residual_clause = (
+            f", zeroing the residual {d_zero_residual:+.1%}"
+            if d_zero_residual is not None and not residual_dominates
+            else ""
+        )
+        parts.append(
+            f" Zeroing the known-concept channel moves it {d_zero_known:+.1%} "
+            f"and zeroing the unknown channel {d_zero_unknown:+.1%}"
+            f"{residual_clause} -- " + verdict
         )
     return "".join(parts)
 

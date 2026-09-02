@@ -819,6 +819,52 @@ def test_build_intervention_finding_mentions_randint_when_training_used_it() -> 
     assert "RandInt p=0.50" in note
 
 
+def test_residual_domination_is_not_reported_as_load_bearing() -> None:
+    """The failure the decomposition exists to detect must not read as success.
+
+    Both named channels go quiet together when the residual absorbed the
+    task, so the old "not decorative -> load-bearing" dichotomy printed a
+    positive verdict for the most decorative model possible.
+    """
+    rows = [
+        {"mode": "none", "top1_accuracy": 0.50, "mean_task_loss": 1.0},
+        {"mode": "zero_known", "top1_accuracy": 0.499, "mean_task_loss": 1.0},
+        {"mode": "zero_unknown", "top1_accuracy": 0.4995, "mean_task_loss": 1.0},
+        {"mode": "zero_residual", "top1_accuracy": 0.20, "mean_task_loss": 2.0},
+    ]
+    note = build_intervention_finding(rows)
+    assert note is not None
+    assert "load-bearing for the task head" not in note
+    assert "algebraically exact but practically vacuous" in note
+
+
+def test_residual_is_reported_alongside_a_load_bearing_known_channel() -> None:
+    """A decomposed run where the concepts DO carry the task still shows eps."""
+    rows = [
+        {"mode": "none", "top1_accuracy": 0.50, "mean_task_loss": 1.0},
+        {"mode": "zero_known", "top1_accuracy": 0.20, "mean_task_loss": 2.0},
+        {"mode": "zero_unknown", "top1_accuracy": 0.499, "mean_task_loss": 1.0},
+        {"mode": "zero_residual", "top1_accuracy": 0.45, "mean_task_loss": 1.2},
+    ]
+    note = build_intervention_finding(rows)
+    assert note is not None
+    assert "load-bearing for the task head" in note
+    assert "zeroing the residual" in note
+
+
+def test_all_channels_quiet_reports_no_conclusion_rather_than_success() -> None:
+    """A mixture run where nothing moves must not claim the concepts carry it."""
+    rows = [
+        {"mode": "none", "top1_accuracy": 0.50, "mean_task_loss": 1.0},
+        {"mode": "zero_known", "top1_accuracy": 0.499, "mean_task_loss": 1.0},
+        {"mode": "zero_unknown", "top1_accuracy": 0.4995, "mean_task_loss": 1.0},
+    ]
+    note = build_intervention_finding(rows)
+    assert note is not None
+    assert "load-bearing for the task head" not in note
+    assert "does not locate the task signal" in note
+
+
 def test_build_intervention_finding_flags_decorative_known_channel() -> None:
     rows = [
         {"mode": "none", "top1_accuracy": 0.50, "mean_task_loss": 1.0},

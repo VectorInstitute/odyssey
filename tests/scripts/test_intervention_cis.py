@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from scripts.intervention_cis import paired_accuracy_delta
+from scripts.intervention_cis import DEFAULT_PAIRS, paired_accuracy_delta
 
 
 def _counts(n_subjects: int, acc: float, seed: int, per: int = 40) -> dict:
@@ -34,3 +34,22 @@ def test_mismatched_subject_sets_raise_rather_than_intersect() -> None:
     b = _counts(11, 0.5, seed=3)
     with pytest.raises(ValueError, match="differ between modes"):
         paired_accuracy_delta(a, b)
+
+
+def test_residual_pairs_are_requested_for_the_decomposed_bottleneck() -> None:
+    """The residual channel needs intervals, not just a point estimate.
+
+    The chain can now produce zero_residual, but the paper bolds only
+    what a paired bootstrap separates, so a residual number without a CI
+    is unusable. Both pairings are required: against none for the size of
+    the effect, and against zero_known for the comparative claim that the
+    task routed around the named channel.
+    """
+    assert ("zero_residual", "none") in DEFAULT_PAIRS
+    assert ("zero_residual", "zero_known") in DEFAULT_PAIRS
+
+
+def test_pairs_are_unique_and_never_self_paired() -> None:
+    """A duplicated pair would silently overwrite its own CI entry."""
+    assert len(DEFAULT_PAIRS) == len(set(DEFAULT_PAIRS))
+    assert all(a != b for a, b in DEFAULT_PAIRS)

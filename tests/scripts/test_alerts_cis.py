@@ -3,7 +3,12 @@
 import numpy as np
 import polars as pl
 
-from scripts.alerts_cis import horizons_in, score_cell
+from scripts.alerts_cis import (
+    SCORER_ALIASES,
+    horizons_in,
+    score_cell,
+    subsample_subjects,
+)
 
 
 def _dump(n_subjects: int = 60, rows_per: int = 4, seed: int = 0) -> pl.DataFrame:
@@ -63,3 +68,22 @@ def test_single_class_cell_is_marked_unscoreable() -> None:
     frame = _dump().with_columns(pl.lit(0.0).alias("y@8h"))
     cell = score_cell(frame, ["hazard"], 8.0, n_boot=10, seed=0)
     assert cell is not None and cell.get("unscoreable") is True
+
+
+def test_subsample_keeps_whole_subjects_and_is_seeded() -> None:
+    frame = _dump(n_subjects=60, rows_per=4)
+    small = subsample_subjects(frame, max_subjects=10, seed=0)
+    assert small["subject_id"].n_unique() == 10
+    assert small.height == 40  # every row of each kept subject
+    again = subsample_subjects(frame, max_subjects=10, seed=0)
+    assert small["subject_id"].to_list() == again["subject_id"].to_list()
+
+
+def test_subsample_is_a_noop_when_not_smaller() -> None:
+    frame = _dump(n_subjects=12)
+    assert subsample_subjects(frame, max_subjects=None, seed=0).height == frame.height
+    assert subsample_subjects(frame, max_subjects=12, seed=0).height == frame.height
+
+
+def test_alerts_json_scorer_name_maps_to_dump_column() -> None:
+    assert SCORER_ALIASES["baseline_gbm"] == "gbm"

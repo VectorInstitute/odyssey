@@ -44,6 +44,7 @@ different, not equivalent, position.
 """
 
 import gc
+import itertools
 import json
 import logging
 import time
@@ -65,11 +66,15 @@ from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.packed_context import PackedContextSampler
 from odyssey.data.sequences import PatientSequence
 from odyssey.data.sidecars import activate_sidecars, active_sidecar_names
-from odyssey.data.streaming import PackedLaneSampler
+from odyssey.data.streaming import PackedLaneSampler, StreamingChunk
 from odyssey.data.value_binning import CLIP_TAIL, QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import PAD_ID, Vocabulary
 from odyssey.models.backbones.base import TimeAwareState
-from odyssey.models.concept_bottleneck import ConceptBottleneckLossWeights
+from odyssey.models.concept_bottleneck import (
+    ConceptBottleneckLossWeights,
+    annealed_alpha,
+)
+from odyssey.models.injection import middle_layer
 from odyssey.models.sequence_model import (
     BaselineSequenceModel,
     ConceptBottleneckSequenceModel,
@@ -78,6 +83,7 @@ from odyssey.models.sequence_model import (
     ForecastObjective,
     SequenceModel,
 )
+from odyssey.models.steering import steering_direction, steering_gamma
 from odyssey.models.time_to_event import DEFAULT_TIME_BIN_EDGES_HOURS
 from odyssey.training.data import (
     build_concept_first_times,
@@ -92,6 +98,7 @@ from odyssey.training.data import (
     token_type_lookup,
 )
 from odyssey.training.event_targets import EventTimeTables, event_hazard_targets
+from odyssey.training.lifted_tokens import lifted_token_sets
 from odyssey.training.running_labels import randint_intervention
 from odyssey.training.shard_stream import (
     build_corpus_stats,
@@ -100,6 +107,11 @@ from odyssey.training.shard_stream import (
     iter_patients_streaming,
     make_preparer,
     shard_paths,
+)
+from odyssey.training.steering_phase import (
+    Injection,
+    SteeringSchedule,
+    choose_injection,
 )
 from odyssey.utils.env_fingerprint import write_run_provenance
 
@@ -180,9 +192,22 @@ class TrainingConfig:
     :mod:`odyssey.data.sidecars`)."""
     concept_global_pairs: bool = False
     bottleneck_kind: str = "mixture"
-    """'mixture' (CEM-style per-concept embedding pairs) or 'additive'
-    (concepts add a global direction to an untouched backbone stream).
-    'additive' ignores embedding_dim/unknown_dim/concept_global_pairs."""
+    """'mixture' (CEM-style per-concept embedding pairs) or 'decomposed'
+    (Steerling: h splits into known concepts, unknown concepts and a
+    residual). 'decomposed' ignores embedding_dim, unknown_dim and
+    concept_global_pairs, and uses unknown_ratio/unknown_rank/
+    residual_dropout instead."""
+    unknown_ratio: int = 3
+    """Decomposed bottleneck: m = unknown_ratio * n unknown concepts."""
+    unknown_rank: int | None = None
+    """Decomposed bottleneck: factorize U = A @ B at this rank, or None
+    for the full matrix. Steerling factorizes because m is 101k; at our
+    n a full matrix is a few tens of thousands of parameters."""
+    residual_dropout: float = 0.1
+    """Decomposed bottleneck: dropout on the unexplained residual eps
+    during training (Steerling's p_eps). This is the direct counter-
+    pressure to residual domination; they raise it to 0.3 when
+    tightening a trained model."""
     """Leakage control: input-independent (w+, w-) per known concept, so a
     concept slot carries only its probability (see ConceptBottleneck)."""
     unknown_dim: int | None = None
@@ -242,6 +267,47 @@ class TrainingConfig:
     concept_weight: float = 1.0
     orthogonality_weight: float = 0.1
     observability_weight: float = 0.1
+    teacher_known_start: float = 0.0
+    teacher_known_end: float = 0.0
+    teacher_unknown_start: float = 0.0
+    teacher_unknown_end: float = 0.0
+    teacher_anneal_steps: int = 4500
+    """Steerling's concept teacher forcing, off by default so an existing
+    config keeps its behaviour. Their known head anneals 1.0 -> 0.5
+    (cosine) over the first 10% of steps. Their unknown head is described
+    as annealing FROM 1 in the prose and as 0.0 -> 0.5 in Table 26; the
+    two disagree, so both endpoints are explicit here and whichever is
+    used gets recorded with the run. The ramp length is absolute because
+    this loop never knows max_steps; 4,500 is their tenth at our run
+    lengths."""
+    reconstruction_weight: float = 1.0
+    """Decomposed bottleneck only: Steerling's lambda_rec."""
+    independence_weight: float = 1.0
+    """Decomposed bottleneck only: Steerling's lambda_indep."""
+    steering_phases: int = 0
+    """Steerling's steering training (their 10.2.4), off by default: this
+    many consecutive phases of ``steering_phase_steps`` steps, starting
+    after ``steering_warmup_steps``, in which a concept's direction is
+    injected at the positions its running label covers and the respond
+    and express losses are added to the forecasting loss. Meant for a
+    short mid-training run started with ``init_from``."""
+    steering_phase_steps: int = 0
+    steering_warmup_steps: int = 100
+    steering_gamma: float = 1.0
+    """Injection strength during steering phases (their Table 36: 1.0)."""
+    steering_tau: float | None = None
+    """If set, calibrate the strength per concept as tau / peak(e_c)
+    (their Eq. 19) instead of using ``steering_gamma`` for every concept."""
+    steering_layer_index: int | None = None
+    """First backbone block whose output is pushed; ``None`` = the middle."""
+    respond_weight: float = 1.0
+    express_weight: float = 1.0
+    lifted_top_k: int = 25
+    lifted_min_count: int = 20
+    lifted_min_share: float = 0.005
+    lifted_min_lift: float = 2.0
+    lifted_patients: int = 2000
+    """How many training patients the lifted token sets are counted over."""
     task_weight: float = 1.0
     """Weight of the forecasting (task) loss; see
     ConceptBottleneckLossWeights.task. 0.0, paired with init_from and
@@ -624,10 +690,176 @@ def build_model(
         concept_global_pairs=bool(getattr(config, "concept_global_pairs", False)),
         unknown_dim=_checked_unknown_dim(config),
         bottleneck_kind=str(getattr(config, "bottleneck_kind", "mixture")),
+        unknown_ratio=int(getattr(config, "unknown_ratio", 3)),
+        unknown_rank=getattr(config, "unknown_rank", None),
+        residual_dropout=float(getattr(config, "residual_dropout", 0.1)),
         value_head=bool(getattr(config, "value_head", False)),
         value_head_hidden=int(getattr(config, "value_head_hidden", 0) or 0),
         source=getattr(config, "source", "mimic_iv"),
     )
+
+
+@dataclass
+class _SteeringRuntime:
+    """Everything a steering step needs, built once per run."""
+
+    schedule: SteeringSchedule
+    directions: torch.Tensor
+    """(num_concepts, hidden) unit steering directions."""
+    gammas: list[float]
+    layer_index: int
+    lifted: dict[int, torch.Tensor]
+    labels: ConceptLabelDict
+    masks: ConceptLabelDict
+    first_times: ConceptLabelDict
+    supervision: ConceptSupervision
+    generator: torch.Generator
+
+    def injection_for(self, chunk: StreamingChunk, step: int) -> Injection | None:
+        """Return the chunk's target concept and positions; ``None`` outside a phase."""
+        if not self.schedule.is_steering_step(step):
+            return None
+        return choose_injection(
+            chunk,
+            self.labels,
+            self.masks,
+            self.first_times,
+            supervision=self.supervision,
+            num_concepts=int(self.directions.shape[0]),
+            generator=self.generator,
+        )
+
+
+def _prepare_steering(
+    config: TrainingConfig,
+    model: SequenceModel,
+    corpus: "PreparedCorpus",
+    device: str,
+) -> "_SteeringRuntime | None":
+    """Build the steering runtime when the config asks for steering phases."""
+    schedule = SteeringSchedule(
+        warmup_steps=config.steering_warmup_steps,
+        phases=config.steering_phases,
+        phase_steps=config.steering_phase_steps,
+    )
+    if not schedule.enabled:
+        return None
+    if not isinstance(model, ConceptBottleneckSequenceModel):
+        raise ValueError("steering phases need a concept-bottleneck model")
+    if not corpus.train_first_times:
+        raise ValueError(
+            "steering phases need concept first-trigger times (running labels); "
+            "the corpus was prepared without them"
+        )
+    num_concepts = len(corpus.concepts)
+    directions = torch.stack(
+        [steering_direction(model, c) for c in range(num_concepts)]
+    )
+    if config.steering_tau is not None:
+        gammas = [
+            steering_gamma(model, directions[c], tau=config.steering_tau)
+            for c in range(num_concepts)
+        ]
+    else:
+        gammas = [config.steering_gamma] * num_concepts
+    layer_index = (
+        config.steering_layer_index
+        if config.steering_layer_index is not None
+        else middle_layer(model.backbone)
+    )
+    logger.info(
+        "[steering] counting lifted tokens over %d training patients",
+        config.lifted_patients,
+    )
+    lifted = lifted_token_sets(
+        itertools.islice(
+            corpus.make_train_patients(config.seed + 7919), config.lifted_patients
+        ),
+        vocab_size=len(corpus.vocab),
+        num_concepts=num_concepts,
+        concept_labels=corpus.train_labels,
+        concept_mask=corpus.train_masks,
+        concept_first_times=corpus.train_first_times,
+        supervision=config.concept_supervision,  # type: ignore[arg-type]
+        top_k=config.lifted_top_k,
+        min_count=config.lifted_min_count,
+        min_share=config.lifted_min_share,
+        min_lift=config.lifted_min_lift,
+        num_lanes=config.num_lanes,
+        chunk_size=config.chunk_size,
+        device=device,
+    )
+    names = [c.name for c in corpus.concepts]
+    for c, ids in lifted.items():
+        logger.info(
+            "[steering] %s: %d lifted tokens, e.g. %s",
+            names[c],
+            len(ids),
+            [corpus.vocab.id_to_token[i] for i in ids[:5]],
+        )
+    logger.info(
+        "[steering] %d phases x %d steps after %d warmup steps; gamma %s; "
+        "injecting from block %d",
+        schedule.phases,
+        schedule.phase_steps,
+        schedule.warmup_steps,
+        "calibrated" if config.steering_tau is not None else config.steering_gamma,
+        layer_index,
+    )
+    return _SteeringRuntime(
+        schedule=schedule,
+        directions=directions.to(device),
+        gammas=gammas,
+        layer_index=layer_index,
+        lifted={c: torch.tensor(ids, dtype=torch.long) for c, ids in lifted.items()},
+        labels=corpus.train_labels,
+        masks=corpus.train_masks,
+        first_times=corpus.train_first_times,
+        supervision=config.concept_supervision,  # type: ignore[arg-type]
+        generator=torch.Generator().manual_seed(config.seed + 4243),
+    )
+
+
+def _needs_running_labels(config: TrainingConfig) -> bool:
+    """Whether the corpus must carry concept first-trigger times.
+
+    Both intervention-aware training (RandInt) and Steerling's steering
+    phases substitute or inject at positions where a concept has already
+    triggered, which only the running labels can say.
+    """
+    return config.randint_prob > 0.0 or config.steering_phases > 0
+
+
+def optimizer_param_groups(
+    model: torch.nn.Module, weight_decay: float
+) -> list[dict[str, object]]:
+    """Parameter groups for AdamW, with decay-exempt parameters at 0.0.
+
+    A bottleneck may declare ``decay_exempt_parameters()``; the decomposed
+    one exempts its concept embeddings, following Steerling's "weight
+    decay ... excluding embeddings". Its known embeddings receive no task
+    gradient in expectation, so decaying them is a steady pull toward an
+    inert named channel rather than regularization. Every other parameter
+    keeps ``weight_decay`` unchanged, so no other arm's behaviour moves.
+    """
+    exempt_fn = getattr(
+        getattr(model, "bottleneck", None), "decay_exempt_parameters", None
+    )
+    exempt = {id(p) for p in (exempt_fn() if exempt_fn is not None else [])}
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    decayed = [p for p in trainable if id(p) not in exempt]
+    undecayed = [p for p in trainable if id(p) in exempt]
+    groups: list[dict[str, object]] = [
+        {"params": decayed, "weight_decay": weight_decay}
+    ]
+    if undecayed:
+        groups.append({"params": undecayed, "weight_decay": 0.0})
+        logger.info(
+            "[optim] %d parameter tensors (%.3fM values) exempt from weight decay",
+            len(undecayed),
+            sum(p.numel() for p in undecayed) / 1e6,
+        )
+    return groups
 
 
 def _checked_unknown_dim(config: TrainingConfig) -> int | None:
@@ -662,6 +894,24 @@ def _checked_unknown_dim(config: TrainingConfig) -> int | None:
             weight,
             int(unknown_dim),
             int(config.embedding_dim),
+        )
+    if (
+        str(getattr(config, "bottleneck_kind", "mixture")) == "decomposed"
+        and weight > 0
+    ):
+        # Same silent zero, different cause: combined_loss derives its
+        # orthogonality term from the mixture's per-concept embedding
+        # blocks, which the decomposition does not produce, so the term is
+        # structurally 0 there too. independence_weight is the knob that
+        # actually controls known/unknown redundancy in that design.
+        logger.warning(
+            "[bottleneck] orthogonality_weight=%.3g is INERT for "
+            "bottleneck_kind='decomposed': that term is defined over the "
+            "mixture's per-concept embedding blocks and returns 0 here. Use "
+            "independence_weight, which penalizes known/unknown redundancy "
+            "on activations, and set orthogonality_weight=0.0 so the logs "
+            "stop implying an active penalty.",
+            weight,
         )
     return unknown_dim
 
@@ -875,12 +1125,12 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
         tuning_labels, tuning_masks = build_visit_concept_label_dicts(
             tuning_events, concepts
         )
-        if config.randint_prob > 0.0:
+        if _needs_running_labels(config):
             train_first_times = build_visit_concept_first_times(train_events, concepts)
     elif config.concept_supervision == "stay":
         train_labels, train_masks = build_concept_label_dicts(train_events, concepts)
         tuning_labels, tuning_masks = build_concept_label_dicts(tuning_events, concepts)
-        if config.randint_prob > 0.0:
+        if _needs_running_labels(config):
             train_first_times = build_concept_first_times(train_events, concepts)
     else:
         raise ValueError(
@@ -1023,7 +1273,7 @@ def _train_streaming(config: TrainingConfig, output_dir: Path, device: str) -> P
         source=config.source,
         concepts=concepts,
         concept_supervision=config.concept_supervision,
-        with_first_times=config.randint_prob > 0.0,
+        with_first_times=_needs_running_labels(config),
         alerts=(
             hazard_events_for(
                 config.task_set, config.auxiliary_event_names, source=config.source
@@ -1222,9 +1472,8 @@ def _run_training(  # noqa: PLR0912, PLR0915
         )
 
     optimizer = torch.optim.AdamW(
-        [p for p in model.parameters() if p.requires_grad],
+        optimizer_param_groups(model, config.weight_decay),
         lr=config.learning_rate,
-        weight_decay=config.weight_decay,
     )
     pos_weight = None
     if config.concept_pos_weight and not train_labels:
@@ -1244,11 +1493,14 @@ def _run_training(  # noqa: PLR0912, PLR0915
             "[loss] concept pos_weight: %s",
             [round(float(w), 2) for w in pos_weight],
         )
+    steering = _prepare_steering(config, model, corpus, device)
     loss_weights = ConceptBottleneckLossWeights(
         concept=config.concept_weight,
         orthogonality=config.orthogonality_weight,
         observability=config.observability_weight,
         task=config.task_weight,
+        reconstruction=config.reconstruction_weight,
+        independence=config.independence_weight,
         concept_pos_weight=pos_weight,
     )
 
@@ -1348,6 +1600,28 @@ def _run_training(  # noqa: PLR0912, PLR0915
                 total, components, state = model.compute_streaming_loss(
                     chunk, state=state, objective=objective, event_targets=event_targets
                 )
+            elif (
+                steering is not None
+                and (injection := steering.injection_for(chunk, global_step))
+                is not None
+            ):
+                # Steerling's steering phase: forecasting loss plus respond
+                # and express at the injected positions; the interpretability
+                # losses are off for these steps, as in their recipe.
+                total, components, state = model.compute_steering_loss(
+                    chunk,
+                    state=state,
+                    concept_index=injection.concept_index,
+                    injected=injection.positions,
+                    direction=steering.directions[injection.concept_index],
+                    gamma=steering.gammas[injection.concept_index],
+                    layer_index=steering.layer_index,
+                    lifted_ids=steering.lifted[injection.concept_index],
+                    objective=objective,
+                    event_targets=event_targets,
+                    respond_weight=config.respond_weight,
+                    express_weight=config.express_weight,
+                )
             else:
                 intervention = randint_intervention(
                     chunk,
@@ -1369,6 +1643,19 @@ def _run_training(  # noqa: PLR0912, PLR0915
                     intervention=intervention,
                     objective=objective,
                     event_targets=event_targets,
+                    teacher_alpha_known=annealed_alpha(
+                        global_step,
+                        config.teacher_anneal_steps,
+                        start=config.teacher_known_start,
+                        end=config.teacher_known_end,
+                        cosine=True,
+                    ),
+                    teacher_alpha_unknown=annealed_alpha(
+                        global_step,
+                        config.teacher_anneal_steps,
+                        start=config.teacher_unknown_start,
+                        end=config.teacher_unknown_end,
+                    ),
                 )
             optimizer.zero_grad()
             total.backward()  # type: ignore[no-untyped-call]

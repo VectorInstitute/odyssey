@@ -83,15 +83,26 @@ stage eval "$PYTHON" -m odyssey.inference.run_inference --run-dir "$RUN_DIR" --h
 
 # The output-calibrated modes and the attribution stage both need the exact
 # per-concept logit decomposition, which slices the LM head into per-concept
-# blocks. An additive bottleneck has no such blocks, so both raise TypeError.
+# blocks. The decomposed bottleneck has no such blocks, so both raise
+# TypeError.
 # Asking for them directly SHOULD fail loudly, and does; but the chain must
 # not lose a two-hour intervention stage to an optional mode, which is what
-# happened to the first additive run on 2026-09-01.
+# happened to the first decomposed-bottleneck run on 2026-09-01.
 BOTTLENECK_KIND=$("$PYTHON" -c "import json,sys;print(json.load(open(sys.argv[1])).get('bottleneck_kind','mixture'))" "$RUN_DIR/config.json" 2>/dev/null || echo mixture)
-if [ "$BOTTLENECK_KIND" = "additive" ]; then
-  INTERVENTION_MODES="none truth flip flip_gated random zero_known zero_unknown"
-  CALIBRATED_ARGS=""
-  echo "=== NOTE: bottleneck_kind=additive; dropping the output-calibrated modes and the attribution stage (both need the mixture bottleneck's per-concept LM-head blocks) ==="
+if [ "$BOTTLENECK_KIND" = "decomposed" ]; then
+  # The calibrated modes ARE defined here: a unit of k_i adds K_i, so the
+  # per-token logit shift is K_i projected through the head, no estimation
+  # pass needed. Only the attribution stage is genuinely undefined, since
+  # it slices the head into per-concept blocks this design does not have.
+  # zero_residual is decomposed-only and is the reason this arm exists: the
+  # h = k + u + eps split is algebraically exact by construction, so the open
+  # question is whether the residual is where the predictive capacity went.
+  # Without it the chain measures every channel except the one under test.
+  # It is inert on the mixture bottleneck, so it stays out of the else branch
+  # rather than costing a pass to produce a meaningless row.
+  INTERVENTION_MODES="none truth flip flip_gated truth_calibrated flip_calibrated random zero_known zero_unknown zero_residual"
+  CALIBRATED_ARGS="--calibrated-tau 1.0"
+  echo "=== NOTE: bottleneck_kind=decomposed; adding zero_residual, keeping the output-calibrated modes, skipping only the attribution stage (that one needs per-concept LM-head blocks) ==="
 else
   INTERVENTION_MODES="none truth flip flip_gated truth_calibrated flip_calibrated random zero_known zero_unknown"
   CALIBRATED_ARGS="--calibrated-tau 1.0"
@@ -100,8 +111,8 @@ fi
 if [ "$MODEL_KIND" = "bottleneck" ]; then
   # shellcheck disable=SC2086
   stage interventions "$PYTHON" -m odyssey.inference.interventions --run-dir "$RUN_DIR" --held-out-shard-dir "$DATA_ROOT/held_out" --output-json "$RUN_DIR/interventions_band15.json" --max-shards "$ALERT_SHARDS" --num-lanes "$LANES" --chunk-size "$CHUNK" --uncertain-band 0.15 --modes $INTERVENTION_MODES $CALIBRATED_ARGS --dump-per-subject --checkpoint "$CHECKPOINT" $OVERWRITE_FLAG
-  if [ "$BOTTLENECK_KIND" = "additive" ]; then
-    echo "=== STAGE attribution SKIPPED (additive bottleneck) ==="
+  if [ "$BOTTLENECK_KIND" = "decomposed" ]; then
+    echo "=== STAGE attribution SKIPPED (decomposed bottleneck) ==="
   else
     stage attribution "$PYTHON" -m odyssey.inference.concept_attribution --run-dir "$RUN_DIR" --held-out-shard-dir "$DATA_ROOT/held_out" --output-json "$RUN_DIR/attribution.json" --max-shards "$ALERT_SHARDS" --num-lanes "$LANES" --chunk-size "$CHUNK" --checkpoint "$CHECKPOINT" $OVERWRITE_FLAG
   fi
