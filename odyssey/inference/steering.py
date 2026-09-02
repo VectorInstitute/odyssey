@@ -370,8 +370,8 @@ class PositionStrata:
         return (active > 0).long()
 
 
+# Subject id, or (subject id, stratum) when a pass is stratified.
 ReadoutKey = int | tuple[int, int]
-"""Subject id, or ``(subject id, stratum)`` when a pass is stratified."""
 
 
 def run_steering_pass(
@@ -436,8 +436,8 @@ def run_steering_pass(
                     (int(sid), sids == sid) for sid in torch.unique(sids).tolist()
                 ]
             else:
-                strat = strata.of(chunk)[real]
-                combined = sids * 2 + strat
+                stratum_ids = strata.of(chunk)[real]
+                combined = sids * 2 + stratum_ids
                 groups = [
                     ((int(code) // 2, int(code) % 2), combined == code)
                     for code in torch.unique(combined).tolist()
