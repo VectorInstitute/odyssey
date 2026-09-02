@@ -1,5 +1,7 @@
 """Steering phases fire on schedule, pick attributed positions, add two losses."""
 
+from typing import Any
+
 import torch
 from torch import nn
 
@@ -132,3 +134,50 @@ def test_steering_loss_adds_respond_and_express_at_injected_positions() -> None:
     assert (
         comp_none["respond_loss"].item() == 0.0 and comp_none["n_injected"].item() == 0
     )
+
+
+def test_forecast_losses_can_skip_the_injected_positions() -> None:
+    """With ``forecast_at_injected=False`` the forecast is scored off-injection.
+
+    The injected positions still carry respond and express; the
+    next-event loss equals the one computed on a chunk whose real mask
+    excludes them; and when every real position is injected the forecast
+    terms vanish so the total is respond plus express alone.
+    """
+    torch.manual_seed(0)
+    model = _model()
+    model.eval()  # no dropout, so the three forwards below are comparable
+    chunk = _chunk()
+    injected = torch.tensor([[False, True, True, False]])
+    direction = torch.nn.functional.normalize(torch.randn(HIDDEN), dim=0)
+    common: dict[str, Any] = {
+        "state": None,
+        "concept_index": 1,
+        "direction": direction,
+        "gamma": 1.0,
+        "layer_index": 0,
+        "lifted_ids": torch.tensor([4, 6]),
+    }
+    _, on, _ = model.compute_steering_loss(chunk, injected=injected, **common)
+    _, off, _ = model.compute_steering_loss(
+        chunk, injected=injected, forecast_at_injected=False, **common
+    )
+    assert off["n_injected"].item() == on["n_injected"].item() == 2
+    assert torch.isclose(off["respond_loss"], on["respond_loss"])
+    assert torch.isclose(off["express_loss"], on["express_loss"])
+    assert not torch.isclose(off["task_loss"], on["task_loss"])
+    # The same forward scored on a chunk that hides the injected positions.
+    hidden = chunk._replace(real_mask=chunk.real_mask & ~injected)
+    _, hidden_comp, _ = model.compute_steering_loss(
+        hidden, injected=injected, forecast_at_injected=False, **common
+    )
+    assert torch.isclose(hidden_comp["task_loss"], off["task_loss"])
+
+    everywhere = chunk.real_mask.clone()
+    total, comp, _ = model.compute_steering_loss(
+        chunk, injected=everywhere, forecast_at_injected=False, **common
+    )
+    assert comp["task_loss"].item() == 0.0 and comp["time_loss"].item() == 0.0
+    assert torch.isclose(total, comp["respond_loss"] + comp["express_loss"])
+    total.backward()
+    assert model.bottleneck.known_proj.weight.grad is not None
