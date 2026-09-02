@@ -952,7 +952,9 @@ def _split_by_stratum(
                 {int(k): v for k, v in steered.items() if isinstance(k, int)},
             )
         ]
-    out = []
+    out: list[
+        tuple[str | None, dict[int, SubjectReadout], dict[int, SubjectReadout]]
+    ] = []
     for value in (0, 1):
         base = {
             k[0]: v
