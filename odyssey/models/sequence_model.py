@@ -27,6 +27,7 @@ Both models support two training regimes:
   Section 05.
 """
 
+import dataclasses
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import (
@@ -805,6 +806,7 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         event_targets: Optional["EventHazardTargets"] = None,
         respond_weight: float = 1.0,
         express_weight: float = 1.0,
+        forecast_at_injected: bool = True,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor], TimeAwareState]:
         """Steerling's steering-phase objective for one chunk (their Eqs. 31-33).
 
@@ -817,6 +819,17 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         probability mass on the concept's lifted tokens so the output moves
         toward events that express it. The interpretability losses are not
         computed here; Steerling switches them off during steering phases.
+
+        ``forecast_at_injected`` keeps the forecasting losses on the
+        injected positions (Steerling's Eq. 33 as written). Our injected
+        positions are ones where the concept has already triggered, so
+        there the push adds nothing the input does not already say and
+        the forecast targets are unchanged; scoring them under injection
+        teaches the network that the push changes nothing, which is the
+        opposite of what a dial needs. With ``False`` the next-event,
+        time, hazard and value losses are scored on the real positions
+        that were not injected, and the injected positions carry only
+        respond and express.
         """
         objective = objective or ForecastObjective()
         push = (gamma * direction).to(chunk.batch.concept_ids.device)
@@ -825,13 +838,26 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
             logits, bottleneck_out, new_state = self(
                 chunk.batch, state=state, reset_mask=chunk.reset_mask
             )
-        next_token_loss = self._streaming_task_loss(logits, chunk, objective)
+        scored = chunk
+        if not forecast_at_injected:
+            keep = ~injected.to(chunk.real_mask.device)
+            # Both the real mask and the targets: the plain next-token path
+            # scores every non-padding target, not only the real positions.
+            scored = chunk._replace(
+                real_mask=chunk.real_mask & keep,
+                targets=chunk.targets.masked_fill(~keep, self.padding_idx),
+            )
+            if event_targets is not None:
+                event_targets = dataclasses.replace(
+                    event_targets, at_risk=event_targets.at_risk & keep.unsqueeze(-1)
+                )
+        next_token_loss = self._streaming_task_loss(logits, scored, objective)
         head_feats = bottleneck_out.bottleneck
-        time_loss, _ = self._streaming_time_loss(self.time_head, head_feats, chunk)
+        time_loss, _ = self._streaming_time_loss(self.time_head, head_feats, scored)
         event_loss = self._streaming_event_loss(
             self.event_heads, head_feats, event_targets
         )
-        value_loss, _ = self._streaming_value_loss(self.value_head, head_feats, chunk)
+        value_loss, _ = self._streaming_value_loss(self.value_head, head_feats, scored)
         forecast_loss = (
             next_token_loss
             + objective.time_weight * time_loss
