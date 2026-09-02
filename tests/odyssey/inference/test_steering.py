@@ -223,7 +223,7 @@ def _readouts(risk_death: float, k_shock: float) -> dict[int, SubjectReadout]:
         risk[:, 0, :] = risk_death
         risk[:, 1, :] = 0.3
         at_risk = torch.ones(2, len(EVENTS), dtype=torch.bool)
-        r.add(probs, torch.full((2,), 0.05), risk, at_risk)
+        r.add(probs, torch.full((2, 1), 0.05), risk, at_risk)
         out[sid] = r
     return out
 
@@ -236,12 +236,12 @@ def test_readout_counts_risk_only_where_the_patient_is_at_risk() -> None:
         [[[0.9], [0.1]], [[0.9], [0.1]], [[0.1], [0.1]]]
     )  # (N=3,E=2,H=1)
     at_risk = torch.tensor([[True, True], [False, True], [False, True]])
-    r.add(probs, torch.zeros(3), risk, at_risk)
+    r.add(probs, torch.zeros(3, 1), risk, at_risk)
     means = r.risk_means()
     assert means[0, 0] == pytest.approx(0.9)  # only the first position counted
     assert means[1, 0] == pytest.approx(0.1)
     never = SubjectReadout()
-    never.add(probs, torch.zeros(3), risk, torch.zeros(3, 2, dtype=torch.bool))
+    never.add(probs, torch.zeros(3, 1), risk, torch.zeros(3, 2, dtype=torch.bool))
     assert np.isnan(never.risk_means()).all()
     # Subjects never at risk drop out of the paired delta rather than poisoning it.
     d = paired_delta(np.array([0.2, np.nan, 0.4]), np.array([0.1, 0.5, 0.3]), n_boot=20)

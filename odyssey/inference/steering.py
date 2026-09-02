@@ -215,8 +215,8 @@ class SubjectReadout:
     n: int = 0
     concept_probs: np.ndarray = field(default_factory=lambda: np.zeros(0))
     """(num_concepts,) summed activations over all real positions."""
-    lifted_mass: float = 0.0
-    """Summed next-event probability on the concept's lifted tokens."""
+    lifted_mass: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    """(num_lifted_sets,) summed next-event probability on each lifted set."""
     risk: np.ndarray = field(default_factory=lambda: np.zeros((0, 0)))
     """(num_events, num_horizons) summed P(event within horizon), at-risk only."""
     risk_n: np.ndarray = field(default_factory=lambda: np.zeros(0))
@@ -236,20 +236,22 @@ class SubjectReadout:
     ) -> None:
         """Accumulate one batch of positions belonging to this subject.
 
-        ``risk`` is ``(N, E, H)`` and ``at_risk`` is ``(N, E)``; only at-risk
-        positions count toward an event's risk sum and its denominator.
+        ``mass`` is ``(N, num_lifted_sets)``, ``risk`` is ``(N, E, H)`` and
+        ``at_risk`` is ``(N, E)``; only at-risk positions count toward an
+        event's risk sum and its denominator.
         """
         p = probs.sum(dim=0).double().cpu().numpy()
         gate = at_risk.to(risk.dtype).unsqueeze(-1)
         r = (risk * gate).sum(dim=0).double().cpu().numpy()
         rn = at_risk.sum(dim=0).double().cpu().numpy()
+        m = mass.sum(dim=0).double().cpu().numpy()
         if self.n == 0:
-            self.concept_probs, self.risk, self.risk_n = p, r, rn
+            self.concept_probs, self.risk, self.risk_n, self.lifted_mass = p, r, rn, m
         else:
             self.concept_probs = self.concept_probs + p
             self.risk = self.risk + r
             self.risk_n = self.risk_n + rn
-        self.lifted_mass += float(mass.sum().item())
+            self.lifted_mass = self.lifted_mass + m
         self.n += int(probs.shape[0])
 
     def risk_means(self) -> np.ndarray:
@@ -336,7 +338,7 @@ def run_steering_pass(
     vocab: Vocabulary,
     *,
     push: SteeringPush | None,
-    lifted_ids: torch.Tensor,
+    lifted_sets: Sequence[torch.Tensor],
     tables: EventTimeTables | None,
     num_lanes: int = 8,
     chunk_size: int = 256,
@@ -359,7 +361,7 @@ def run_steering_pass(
         reset_prob=0.0,
     )
     readouts: dict[int, SubjectReadout] = {}
-    lifted = lifted_ids.to(device)
+    lifted = [ids.to(device) for ids in lifted_sets]
     state: Any = None
     with torch.no_grad():
         for chunk in sampler:
@@ -368,7 +370,16 @@ def run_steering_pass(
             real = chunk.real_mask
             if not real.any():
                 continue
-            mass = F.softmax(logits[real].float(), dim=-1)[:, lifted].sum(dim=-1)
+            probs_next = F.softmax(logits[real].float(), dim=-1)
+            mass = torch.stack(
+                [
+                    probs_next[:, ids].sum(dim=-1)
+                    if ids.numel()
+                    else probs_next.new_zeros(probs_next.shape[0])
+                    for ids in lifted
+                ],
+                dim=-1,
+            )
             risk = _outcome_risk(model, features[real])
             at_risk = (
                 event_hazard_targets(chunk, tables).at_risk[real]
@@ -466,7 +477,7 @@ def _subject_means(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """``(concept_probs (S,k), lifted_mass (S,), risk (S,E,H))`` per-subject means."""
     probs = np.stack([readouts[s].concept_probs / readouts[s].n for s in subjects])
-    mass = np.array([readouts[s].lifted_mass / readouts[s].n for s in subjects])
+    mass = np.stack([readouts[s].lifted_mass / readouts[s].n for s in subjects])
     risk = np.stack([readouts[s].risk_means() for s in subjects])
     return probs, mass, risk
 
@@ -531,6 +542,7 @@ def summarize_push(
     *,
     concept: str,
     concept_index: int,
+    lifted_column: int = 0,
     direction: Direction,
     gamma: float,
     site: SteerSite,
@@ -577,9 +589,11 @@ def summarize_push(
         respond_delta=paired_delta(
             p1[:, concept_index], p0[:, concept_index], n_boot=n_boot, seed=seed
         ),
-        express_baseline=float(m0.mean()),
-        express_steered=float(m1.mean()),
-        express_delta=paired_delta(m1, m0, n_boot=n_boot, seed=seed),
+        express_baseline=float(m0[:, lifted_column].mean()),
+        express_steered=float(m1[:, lifted_column].mean()),
+        express_delta=paired_delta(
+            m1[:, lifted_column], m0[:, lifted_column], n_boot=n_boot, seed=seed
+        ),
         outcomes=outcomes,
     )
 
@@ -767,22 +781,27 @@ def evaluate_steering(
     if unknown:
         raise ValueError(f"concepts not in this run's registry: {unknown}")
     every_lifted = sorted({i for ids in prepared.lifted.values() for i in ids})
-
+    indices = [names.index(c) for c in chosen]
+    lifted_sets = [
+        torch.tensor(prepared.lifted.get(c) or every_lifted, dtype=torch.long)
+        for c in indices
+    ]
+    # One unsteered pass serves every dial: its readouts carry the mass on
+    # each chosen concept's lifted set, so the pass is not repeated per
+    # concept (a third of the card time on a full-split run).
+    baseline = run_steering_pass(
+        prepared.model,
+        prepared.events_binned,
+        prepared.vocab,
+        push=None,
+        lifted_sets=lifted_sets,
+        tables=prepared.tables,
+        num_lanes=num_lanes,
+        chunk_size=chunk_size,
+        device=device,
+    )
     summaries: list[ConceptSteeringSummary] = []
-    for concept in chosen:
-        c = names.index(concept)
-        lifted = torch.tensor(prepared.lifted.get(c) or every_lifted, dtype=torch.long)
-        baseline = run_steering_pass(
-            prepared.model,
-            prepared.events_binned,
-            prepared.vocab,
-            push=None,
-            lifted_ids=lifted,
-            tables=prepared.tables,
-            num_lanes=num_lanes,
-            chunk_size=chunk_size,
-            device=device,
-        )
+    for column, (concept, c) in enumerate(zip(chosen, indices, strict=True)):
         gamma = prepared.gammas[c]
         directions: tuple[tuple[Direction, float], ...] = (
             ("amplify", gamma),
@@ -801,7 +820,7 @@ def evaluate_steering(
                 prepared.events_binned,
                 prepared.vocab,
                 push=push,
-                lifted_ids=lifted,
+                lifted_sets=lifted_sets,
                 tables=prepared.tables,
                 num_lanes=num_lanes,
                 chunk_size=chunk_size,
@@ -812,6 +831,7 @@ def evaluate_steering(
                 steered,
                 concept=concept,
                 concept_index=c,
+                lifted_column=column,
                 direction=direction,
                 gamma=signed,
                 site=site,
