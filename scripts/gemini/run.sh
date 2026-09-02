@@ -4,7 +4,7 @@
 # nobody can log into the node directly, so this is what actually runs there.
 #
 # Usage (on the GEMINI node, from the repo root):
-#   scripts/gemini/run.sh [probe|schema|env-gpu|extract-dry|extract|finalize|export-codes|pipeline|train-smoke|train-smoke-2|train-full|train-smoke-cbm|train-full-cbm|train-rung2|eval-forecast <run-name>|train|eval|all]
+#   scripts/gemini/run.sh [probe|schema|env-gpu|extract-dry|extract|finalize|export-codes|pipeline|train-smoke|train-smoke-2|train-full|train-smoke-cbm|train-full-cbm|train-smoke-dec|train-full-dec|train-rung2|eval-forecast <run-name>|alerts <run-name>|tabicl <run-name>|steering <run-name>|atlas <run-name>|train|eval|all]
 #
 # Steps:
 #   probe        scripts/gemini/probe_env.sh -> scripts/gemini/out/env_probe.txt
@@ -106,6 +106,18 @@
 #                trust-audit cell in the paper comes from; the baseline
 #                train-full/train-rung2 steps produce no readout,
 #                completeness or lever result at all.
+#   train-smoke-dec  smoke of the DECOMPOSED bottleneck (5 train shards,
+#                ~/runs/gemini_smoke_dec). Run before train-full-dec.
+#   train-full-dec   the decomposed concept bottleneck (Steerling
+#                h = k + u + eps) at full scale, ~/runs/gemini_full_DEC_v12:
+#                train-full-cbm's recipe plus the v12 decomposition block
+#                (bottleneck_kind=decomposed, unknown_ratio 3, residual
+#                dropout 0.3, reconstruction/independence losses,
+#                teacher forcing 1.0 -> 0.5 over 4,500 steps), verbatim
+#                from the MIMIC/eICU v12 runs so the three datasets'
+#                decomposition cells are comparable. Needs odyssey at
+#                69c8cb0 or later. The steering and atlas steps, and the
+#                alerts step's hazard column, are meant to read THIS run.
 #   train-rung2  ladder rung 2 (G4, docs/experiment_plan.md): same geometry
 #                as train-full, one deliberate delta -- hidden_size 256->512,
 #                an estimated ~60M parameters (the real, measured count logs
@@ -122,6 +134,24 @@
 #                background as training runs, since a ~60M model's
 #                checkpoints are large enough at checkpoint_every=2000 to
 #                threaten disk over a full 2-epoch run.
+#   steering <run-name>
+#                the clinical dial benchmark on a decomposed run: pushes
+#                each concept's direction into the residual stream
+#                (Steerling Sec. 6.2, gamma = tau / max alignment) and
+#                reports, per dial, the change in every hazard head's risk
+#                over at-risk patients with a paired subject bootstrap,
+#                against the clinical expectation table in
+#                odyssey/inference/steering.py. Every held-out shard by
+#                default (GEMINI_STEERING_MAX_SHARDS caps it), 16 lanes.
+#                Writes ~/runs/<run-name>/steering_full.json and exports it
+#                (aggregate-only) to scripts/gemini/out/evals/.
+#   atlas <run-name>
+#                the concept atlas for the paper appendix: per known and
+#                unknown concept, the tokens its direction promotes and
+#                suppresses through the next-event head, and the share of
+#                the next-event logit carried by named / unknown / residual
+#                parts. Writes ~/runs/<run-name>/concept_atlas.json and
+#                exports it to scripts/gemini/out/evals/.
 #   eval-forecast <run-name>
 #                run_inference against data/held_out for the named run under
 #                ~/runs/ (e.g. `eval-forecast gemini_full_14m_v1`) --
@@ -846,8 +876,17 @@ JSON
         #     gain. R2/R6 both set it true for their own sources.
         local max_train_shards="$1"   # empty = every shard
         local run_name="$2"
+        local bottleneck_kind="${3:-mixture}"   # mixture (v10) | decomposed (v12)
 
         echo "=== $STEP ($run_name) ==="
+        if [[ "$bottleneck_kind" == "decomposed" ]]; then
+            echo "DECOMPOSED bottleneck (Steerling h = k + u + eps; the v12 recipe"
+            echo "of MIMIC's full_run_DEC_v12 / eICU's eicu_full_DEC_v12): 3 unknown"
+            echo "concepts per known one, residual dropout 0.3, reconstruction and"
+            echo "independence losses on the unknown head, teacher forcing annealed"
+            echo "1.0 -> 0.5 over 4,500 steps. This is the run the steering and"
+            echo "atlas steps read."
+        fi
         echo "CONCEPT BOTTLENECK run (model_kind=bottleneck), source=gemini,"
         echo "task_set=v3 -> 15 resolving concepts, hazard heads ON,"
         echo "concept_supervision=visit, num_lanes=64/chunk_size=512 --"
@@ -888,12 +927,13 @@ JSON
         mkdir -p "$OUTPUT_DIR"
         CONFIG_JSON="$OUTPUT_DIR/train_cbm_config.json"
 
-        # Shard count passed as argv, never interpolated into the source.
-        python3 - "$CONFIG_JSON" "$max_train_shards" <<'PY'
+        # Shard count and bottleneck kind passed as argv, never interpolated
+        # into the source.
+        python3 - "$CONFIG_JSON" "$max_train_shards" "$bottleneck_kind" <<'PY'
 import json
 import sys
 
-config_path, max_train_shards = sys.argv[1:3]
+config_path, max_train_shards, bottleneck_kind = sys.argv[1:4]
 overrides = {
     "model_kind": "bottleneck",
     "source": "gemini",
@@ -916,6 +956,26 @@ overrides = {
 }
 if max_train_shards:
     overrides["max_train_shards"] = int(max_train_shards)
+if bottleneck_kind == "decomposed":
+    # Verbatim from ~/runs/full_run_DEC_v12/config.json on the MIMIC VM
+    # (commit 69c8cb0 and later); the eICU run used the same block.
+    overrides.update({
+        "bottleneck_kind": "decomposed",
+        "unknown_ratio": 3,
+        "residual_dropout": 0.3,
+        "concept_global_pairs": False,
+        "orthogonality_weight": 0.0,
+        "observability_weight": 0.1,
+        "reconstruction_weight": 1.0,
+        "independence_weight": 1.0,
+        "teacher_known_start": 1.0,
+        "teacher_known_end": 0.5,
+        "teacher_unknown_start": 1.0,
+        "teacher_unknown_end": 0.5,
+        "teacher_anneal_steps": 4500,
+    })
+elif bottleneck_kind != "mixture":
+    raise SystemExit(f"unknown bottleneck kind {bottleneck_kind!r}")
 with open(config_path, "w") as f:
     json.dump(overrides, f, indent=2)
 PY
@@ -1603,6 +1663,193 @@ PY
         echo "$STEP complete. Results at $OUTPUT_JSON"
     }
 
+    _export_aggregate_json() {
+        # Copies an aggregate-only JSON into scripts/gemini/out/evals/ after
+        # checking its top-level keys against a whitelist (same reasoning as
+        # _export_eval_summary: an unknown key refuses rather than riding
+        # along). Both callers' files carry per-concept and per-dial
+        # aggregates only -- no subject ids, no per-row fields.
+        local dest_json="$1"
+        local source_json="$2"
+        local allowed_keys="$3"   # space-separated
+
+        mkdir -p scripts/gemini/out/evals
+        if ! python3 - "$source_json" "$allowed_keys" <<'PY'
+import json
+import sys
+
+path, allowed = sys.argv[1], set(sys.argv[2].split())
+with open(path) as f:
+    obj = json.load(f)
+if not isinstance(obj, dict):
+    raise SystemExit(f"{path}: expected an object, got {type(obj).__name__}")
+unknown = set(obj) - allowed
+if unknown:
+    raise SystemExit(f"{path}: unrecognized top-level keys {sorted(unknown)}")
+FORBIDDEN = {"subject_id", "subject_ids", "rows", "per_subject"}
+
+def scan(node, where):
+    if isinstance(node, dict):
+        hit = FORBIDDEN & set(node)
+        if hit:
+            raise SystemExit(f"{path}: patient-level key {sorted(hit)} at {where}, refusing")
+        for k, v in node.items():
+            scan(v, f"{where}/{k}")
+    elif isinstance(node, list):
+        for i, v in enumerate(node[:50]):
+            scan(v, f"{where}[{i}]")
+
+scan(obj, "")
+PY
+        then
+            echo "Refusing to export $source_json (see above)." >&2
+            return 1
+        fi
+        cp "$source_json" "$dest_json"
+        echo "Exported $dest_json"
+    }
+
+    _require_run_and_data() {
+        # Shared preamble for the post-training analysis steps: GPU venv,
+        # the run directory, and the finalized MEDS split directories.
+        # Sets GPU_VENV, RUN_DIR, MEDS_DIR, HELD_OUT_SHARD_DIR,
+        # TRAIN_SHARD_DIR, METADATA_DIR for the caller.
+        local run_name="$1"
+        GPU_VENV="${GEMINI_GPU_VENV:-$HOME/.venvs/odyssey-gemini-gpu}"
+        if [[ ! -f "$GPU_VENV/bin/activate" ]]; then
+            echo "GPU venv not found at $GPU_VENV -- run 'scripts/gemini/run.sh env-gpu' first." >&2
+            exit 1
+        fi
+        RUN_DIR="$HOME/runs/$run_name"
+        if [[ ! -d "$RUN_DIR" ]]; then
+            echo "No run directory at $RUN_DIR -- run the training step that" >&2
+            echo "produces it first (train-full-dec for the decomposed model)." >&2
+            exit 1
+        fi
+        MEDS_DIR="${GEMINI_MEDS_OUTPUT_DIR:-/mnt/nfs/project/subdural_hematoma_endotypes/gemini_meds_v1}"
+        HELD_OUT_SHARD_DIR="${GEMINI_EVAL_HELD_OUT_DIR:-$MEDS_DIR/data/held_out}"
+        TRAIN_SHARD_DIR="${GEMINI_TRAIN_SHARD_DIR:-$MEDS_DIR/data/train}"
+        METADATA_DIR="${GEMINI_METADATA_DIR:-$MEDS_DIR/metadata}"
+        for d in "$HELD_OUT_SHARD_DIR" "$TRAIN_SHARD_DIR" "$METADATA_DIR"; do
+            if [[ ! -d "$d" ]]; then
+                echo "Expected finalized MEDS data at $d -- run" >&2
+                echo "'scripts/gemini/run.sh finalize' first." >&2
+                exit 1
+            fi
+        done
+    }
+
+    run_steering() {
+        # The clinical dial benchmark (Steerling Sec. 6.2 steering, applied
+        # to the decomposed model): for every concept with a clinical
+        # expectation (odyssey/inference/steering.py CLINICAL_EXPECTATIONS),
+        # push its direction into the residual stream at gamma = tau / max
+        # alignment and read the change in every hazard head's risk over
+        # at-risk patients, with a paired subject bootstrap. Also reports
+        # the readout response (k_c) and the lifted-token mass. Same
+        # settings as the MIMIC/eICU full-split runs: stream site, every
+        # held-out shard, lifted sets from 4 train shards.
+        local run_name="$1"
+        if [[ -z "$run_name" ]]; then
+            echo "steering needs a run name: scripts/gemini/run.sh steering <run-name>" >&2
+            echo "e.g.: scripts/gemini/run.sh steering gemini_full_DEC_v12" >&2
+            exit 1
+        fi
+        local num_lanes="${GEMINI_EVAL_NUM_LANES:-16}"
+        local chunk="${GEMINI_EVAL_CHUNK:-512}"
+        local max_shards="${GEMINI_STEERING_MAX_SHARDS:-}"   # empty = every held-out shard
+        local tau="${GEMINI_STEERING_TAU:-1.0}"
+
+        echo "=== steering ($run_name) ==="
+        echo "Clinical dials on the decomposed model: stream site, tau=$tau,"
+        echo "num_lanes=$num_lanes, chunk=$chunk, held-out shards=${max_shards:-all}."
+        echo "Override via GEMINI_EVAL_NUM_LANES / GEMINI_EVAL_CHUNK /"
+        echo "GEMINI_STEERING_MAX_SHARDS / GEMINI_STEERING_TAU."
+        if [[ -z "${TMUX:-}" && -z "${STY:-}" ]]; then
+            echo "WARNING: not a tmux/screen session; run detached, e.g.:" >&2
+            echo "  tmux new -s steering-$run_name 'scripts/gemini/run.sh $STEP $run_name'" >&2
+        fi
+        _require_run_and_data "$run_name"
+        if ! grep -q '"bottleneck_kind": "decomposed"' "$RUN_DIR/config.json" 2>/dev/null; then
+            echo "WARNING: $RUN_DIR/config.json is not a decomposed run; the dials" >&2
+            echo "are defined for the decomposition (train-full-dec). Continuing." >&2
+        fi
+
+        OUTPUT_JSON="$RUN_DIR/steering_full.json"
+        echo "Run dir: $RUN_DIR"
+        echo "Output: $OUTPUT_JSON"
+        local extra=()
+        if [[ -n "$max_shards" ]]; then extra+=(--max-shards "$max_shards"); fi
+
+        source "$GPU_VENV/bin/activate"
+        python -m odyssey.inference.steering \
+            --run-dir "$RUN_DIR" \
+            --held-out-shard-dir "$HELD_OUT_SHARD_DIR" \
+            --lift-shard-dir "$TRAIN_SHARD_DIR" \
+            --metadata-dir "$METADATA_DIR" \
+            --output-json "$OUTPUT_JSON" \
+            --site stream \
+            --tau "$tau" \
+            --lift-shards 4 \
+            --num-lanes "$num_lanes" \
+            --chunk-size "$chunk" \
+            "${extra[@]}"
+        deactivate
+        source "$VENV/bin/activate"
+
+        echo "$STEP complete. Results at $OUTPUT_JSON"
+        _export_aggregate_json \
+            "scripts/gemini/out/evals/${run_name}_steering_full.json" "$OUTPUT_JSON" \
+            "site layer_index tau suppress_strength horizons_hours event_names gammas lifted_tokens summaries" \
+            || echo "WARNING: steering output not exported (see above)." >&2
+    }
+
+    run_atlas() {
+        # The concept atlas (paper appendix "What the Concepts Say"): for
+        # every known and unknown concept, the vocabulary tokens its
+        # direction promotes and suppresses through the next-event head
+        # (W K_c / W U_j), the concept's mean activation, and the share of
+        # the next-event logit carried by named / unknown / residual parts.
+        # One held-out shard is enough for the shares; the token lists are
+        # a property of the weights.
+        local run_name="$1"
+        if [[ -z "$run_name" ]]; then
+            echo "atlas needs a run name: scripts/gemini/run.sh atlas <run-name>" >&2
+            echo "e.g.: scripts/gemini/run.sh atlas gemini_full_DEC_v12" >&2
+            exit 1
+        fi
+        local num_lanes="${GEMINI_EVAL_NUM_LANES:-16}"
+        local chunk="${GEMINI_EVAL_CHUNK:-512}"
+        local max_shards="${GEMINI_ATLAS_MAX_SHARDS:-1}"
+
+        echo "=== atlas ($run_name) ==="
+        echo "Concept atlas: num_lanes=$num_lanes, chunk=$chunk, shards=$max_shards."
+        _require_run_and_data "$run_name"
+
+        OUTPUT_JSON="$RUN_DIR/concept_atlas.json"
+        echo "Run dir: $RUN_DIR"
+        echo "Output: $OUTPUT_JSON"
+
+        source "$GPU_VENV/bin/activate"
+        python scripts/concept_atlas.py \
+            --run-dir "$RUN_DIR" \
+            --held-out-shard-dir "$HELD_OUT_SHARD_DIR" \
+            --metadata-dir "$METADATA_DIR" \
+            --output-json "$OUTPUT_JSON" \
+            --max-shards "$max_shards" \
+            --top 12 \
+            --num-lanes "$num_lanes" \
+            --chunk-size "$chunk"
+        deactivate
+        source "$VENV/bin/activate"
+
+        echo "$STEP complete. Results at $OUTPUT_JSON"
+        _export_aggregate_json \
+            "scripts/gemini/out/evals/${run_name}_concept_atlas.json" "$OUTPUT_JSON" \
+            "run_dir source n_positions contribution_share known unknown" \
+            || echo "WARNING: atlas output not exported (see above)." >&2
+    }
+
     case "$STEP" in
         probe) run_probe ;;
         schema) run_schema ;;
@@ -1617,15 +1864,19 @@ PY
         train-full) run_train_full ;;
         train-smoke-cbm) run_train_cbm 5 gemini_smoke_cbm ;;
         train-full-cbm) run_train_cbm "" gemini_full_v10 ;;
+        train-smoke-dec) run_train_cbm 5 gemini_smoke_dec decomposed ;;
+        train-full-dec) run_train_cbm "" gemini_full_DEC_v12 decomposed ;;
         train-rung2) run_train_rung2 ;;
         eval-forecast) run_eval_forecast "${2:-}" ;;
         alerts) run_alerts "${2:-}" ;;
         tabicl) run_tabicl "${2:-}" ;;
+        steering) run_steering "${2:-}" ;;
+        atlas) run_atlas "${2:-}" ;;
         train) run_pending_stub train ;;
         eval) run_pending_stub eval ;;
         all) run_probe; run_schema; run_extract_dry ;;
         *)
-            echo "unknown step: $STEP (expected probe, schema, env-gpu, extract-dry, extract, finalize, export-codes, pipeline, train-smoke, train-smoke-2, train-full, train-smoke-cbm, train-full-cbm, train-rung2, eval-forecast, alerts, tabicl, train, eval, or all)" >&2
+            echo "unknown step: $STEP (expected probe, schema, env-gpu, extract-dry, extract, finalize, export-codes, pipeline, train-smoke, train-smoke-2, train-full, train-smoke-cbm, train-full-cbm, train-smoke-dec, train-full-dec, train-rung2, eval-forecast, alerts, tabicl, steering, atlas, train, eval, or all)" >&2
             exit 1
             ;;
     esac
