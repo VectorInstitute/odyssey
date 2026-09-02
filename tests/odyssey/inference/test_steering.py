@@ -8,6 +8,7 @@ the paired, subject-level summary against declared expectations.
 """
 
 import numpy as np
+import polars as pl
 import pytest
 import torch
 from torch import nn
@@ -30,6 +31,7 @@ from odyssey.inference.steering import (
     stream_injection,
     summarize_push,
     suppress_logits,
+    token_descriptions,
 )
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
 from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
@@ -218,9 +220,46 @@ def _readouts(risk_death: float, k_shock: float) -> dict[int, SubjectReadout]:
         risk = torch.zeros(2, len(EVENTS), len(HORIZONS_HOURS))
         risk[:, 0, :] = risk_death
         risk[:, 1, :] = 0.3
-        r.add(probs, torch.full((2,), 0.05), risk)
+        at_risk = torch.ones(2, len(EVENTS), dtype=torch.bool)
+        r.add(probs, torch.full((2,), 0.05), risk, at_risk)
         out[sid] = r
     return out
+
+
+def test_readout_counts_risk_only_where_the_patient_is_at_risk() -> None:
+    """A patient already on pressors is not asked whether pressors will start."""
+    r = SubjectReadout()
+    probs = torch.zeros(3, K)
+    risk = torch.tensor(
+        [[[0.9], [0.1]], [[0.9], [0.1]], [[0.1], [0.1]]]
+    )  # (N=3,E=2,H=1)
+    at_risk = torch.tensor([[True, True], [False, True], [False, True]])
+    r.add(probs, torch.zeros(3), risk, at_risk)
+    means = r.risk_means()
+    assert means[0, 0] == pytest.approx(0.9)  # only the first position counted
+    assert means[1, 0] == pytest.approx(0.1)
+    never = SubjectReadout()
+    never.add(probs, torch.zeros(3), risk, torch.zeros(3, 2, dtype=torch.bool))
+    assert np.isnan(never.risk_means()).all()
+    # Subjects never at risk drop out of the paired delta rather than poisoning it.
+    d = paired_delta(np.array([0.2, np.nan, 0.4]), np.array([0.1, 0.5, 0.3]), n_boot=20)
+    assert d.n_subjects == 2 and d.point == pytest.approx(0.1)
+
+
+def test_token_descriptions_use_meds_metadata_and_keep_the_bin(tmp_path) -> None:
+    (tmp_path / "codes.parquet").touch()
+    pl.DataFrame(
+        {
+            "code": ["LAB//50813//mmol/L", "MEDICATION//norepinephrine"],
+            "description": ["Lactate", None],
+        }
+    ).write_parquet(tmp_path / "codes.parquet")
+    tokens = ["LAB//50813//mmol/L::Q5", "MEDICATION//norepinephrine", "OTHER//x"]
+    names = token_descriptions(tokens, tmp_path)
+    assert names["LAB//50813//mmol/L::Q5"] == "Lactate (Q5)"
+    assert names["MEDICATION//norepinephrine"] == "MEDICATION//norepinephrine"
+    assert names["OTHER//x"] == "OTHER//x"
+    assert token_descriptions(tokens, None) == {t: t for t in tokens}
 
 
 def test_summary_scores_outcomes_against_the_declared_direction() -> None:
@@ -272,3 +311,7 @@ def test_rank_by_lift_applies_support_and_threshold() -> None:
     # token 1 has 10 < 15 occurrences and is below support.
     got = rank_by_lift(total, per_concept, top_k=3, min_count=15)
     assert got == {0: [0]}
+    # A share floor of 60% of the concept's 100 positions excludes token 0 too.
+    assert rank_by_lift(total, per_concept, top_k=3, min_count=15, min_share=0.6) == {
+        0: []
+    }

@@ -71,6 +71,7 @@ import polars as pl
 import torch
 import torch.nn.functional as F  # noqa: N812
 
+from odyssey.data.alert_events import all_event_times, hazard_events_for
 from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.concepts import concepts_for_source
 from odyssey.data.history_recap import maybe_history_recap
@@ -97,6 +98,7 @@ from odyssey.training.data import (
     iter_patient_sequences,
     load_meds_shards,
 )
+from odyssey.training.event_targets import EventTimeTables, event_hazard_targets
 from odyssey.training.running_labels import position_running_labels
 from odyssey.training.train import _move_chunk_to_device
 
@@ -305,24 +307,53 @@ def stream_injection(
 
 @dataclass
 class SubjectReadout:
-    """Sums over one subject's real positions; divide by ``n`` for means."""
+    """Sums over one subject's real positions; divide by the counts for means."""
 
     n: int = 0
     concept_probs: np.ndarray = field(default_factory=lambda: np.zeros(0))
-    """(num_concepts,) summed activations."""
+    """(num_concepts,) summed activations over all real positions."""
     lifted_mass: float = 0.0
     """Summed next-event probability on the concept's lifted tokens."""
     risk: np.ndarray = field(default_factory=lambda: np.zeros((0, 0)))
-    """(num_events, num_horizons) summed P(event within horizon)."""
+    """(num_events, num_horizons) summed P(event within horizon), at-risk only."""
+    risk_n: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    """(num_events,) how many positions were at risk of each event.
 
-    def add(self, probs: torch.Tensor, mass: torch.Tensor, risk: torch.Tensor) -> None:
-        """Accumulate one batch of positions belonging to this subject."""
+    A position at or after an event's onset is not at risk: asking "will
+    vasopressors start?" of a patient already on them is not a question,
+    and averaging it in is what made shock lower the start hazard.
+    """
+
+    def add(
+        self,
+        probs: torch.Tensor,
+        mass: torch.Tensor,
+        risk: torch.Tensor,
+        at_risk: torch.Tensor,
+    ) -> None:
+        """Accumulate one batch of positions belonging to this subject.
+
+        ``risk`` is ``(N, E, H)`` and ``at_risk`` is ``(N, E)``; only at-risk
+        positions count toward an event's risk sum and its denominator.
+        """
         p = probs.sum(dim=0).double().cpu().numpy()
-        r = risk.sum(dim=0).double().cpu().numpy()
-        self.concept_probs = p if self.n == 0 else self.concept_probs + p
-        self.risk = r if self.n == 0 else self.risk + r
+        gate = at_risk.to(risk.dtype).unsqueeze(-1)
+        r = (risk * gate).sum(dim=0).double().cpu().numpy()
+        rn = at_risk.sum(dim=0).double().cpu().numpy()
+        if self.n == 0:
+            self.concept_probs, self.risk, self.risk_n = p, r, rn
+        else:
+            self.concept_probs = self.concept_probs + p
+            self.risk = self.risk + r
+            self.risk_n = self.risk_n + rn
         self.lifted_mass += float(mass.sum().item())
         self.n += int(probs.shape[0])
+
+    def risk_means(self) -> np.ndarray:
+        """(num_events, num_horizons) mean at-risk risk; NaN where never at risk."""
+        with np.errstate(divide="ignore", invalid="ignore"):
+            means: np.ndarray = self.risk / self.risk_n[:, None]
+        return means
 
 
 @dataclass(frozen=True)
@@ -403,6 +434,7 @@ def run_steering_pass(
     *,
     push: SteeringPush | None,
     lifted_ids: torch.Tensor,
+    tables: EventTimeTables | None,
     num_lanes: int = 8,
     chunk_size: int = 256,
     device: str = "cuda",
@@ -412,7 +444,9 @@ def run_steering_pass(
 
     The same sampler and state carrying as every other scorer, so a pushed
     pass and the unsteered pass visit identical positions and their
-    per-subject means are paired.
+    per-subject means are paired. ``tables`` supplies each event's onset so
+    risk is read only where the patient is still at risk of it; ``None``
+    treats every position as at risk.
     """
     model.eval()
     sampler = PackedLaneSampler(
@@ -433,12 +467,17 @@ def run_steering_pass(
                 continue
             mass = F.softmax(logits[real].float(), dim=-1)[:, lifted].sum(dim=-1)
             risk = _outcome_risk(model, features[real])
+            at_risk = (
+                event_hazard_targets(chunk, tables).at_risk[real]
+                if tables is not None
+                else torch.ones(risk.shape[:2], dtype=torch.bool, device=risk.device)
+            )
             sids = chunk.subject_ids[real]
             probs_real = probs[real]
             for sid in torch.unique(sids).tolist():
                 sel = sids == sid
                 readouts.setdefault(int(sid), SubjectReadout()).add(
-                    probs_real[sel], mass[sel], risk[sel]
+                    probs_real[sel], mass[sel], risk[sel], at_risk[sel]
                 )
     return readouts
 
@@ -459,6 +498,7 @@ def lifted_token_sets(
     supervision: ConceptSupervision,
     top_k: int = 25,
     min_count: int = 20,
+    min_share: float = 0.005,
     num_lanes: int = 8,
     chunk_size: int = 256,
     device: str = "cuda",
@@ -470,8 +510,11 @@ def lifted_token_sets(
     triggered by this position"; Steerling defines the express target the
     same way over its chunk tags, with a minimum-support filter. Tokens
     seen fewer than ``min_count`` times under the concept are ignored so a
-    rare code cannot top the list on two occurrences; only tokens with
-    lift above 1 are kept.
+    rare code cannot top the list on two occurrences, and the floor rises
+    with prevalence: a token must also account for at least ``min_share``
+    of the concept's positions. Without that, the highest-lift tokens for
+    shock on MIMIC-IV were pressure-ulcer measurements seen a few dozen
+    times. Only tokens with lift above 1 are kept.
     """
     num_concepts = model.bottleneck.num_concepts
     vocab_size = len(vocab.token_to_id)
@@ -501,32 +544,70 @@ def lifted_token_sets(
         one_hot = F.one_hot(targets, num_classes=vocab_size).to(torch.float64)
         total += one_hot.sum(dim=0).cpu()
         per_concept += (active.T @ one_hot).cpu()
-    return rank_by_lift(total, per_concept, top_k=top_k, min_count=min_count)
+    return rank_by_lift(
+        total, per_concept, top_k=top_k, min_count=min_count, min_share=min_share
+    )
 
 
 def rank_by_lift(
-    total: torch.Tensor, per_concept: torch.Tensor, *, top_k: int, min_count: int
+    total: torch.Tensor,
+    per_concept: torch.Tensor,
+    *,
+    top_k: int,
+    min_count: int,
+    min_share: float = 0.0,
 ) -> dict[int, list[int]]:
     """Top-``top_k`` tokens by ``P(token | c) / P(token)`` per concept.
 
     ``total`` is ``(vocab,)`` target counts over the stream and
     ``per_concept`` is ``(num_concepts, vocab)`` counts at positions where
-    each concept is active. Tokens under ``min_count`` occurrences for a
-    concept, and tokens with lift at or below 1, are excluded.
+    each concept is active. A token needs at least ``min_count``
+    occurrences under the concept and at least ``min_share`` of the
+    concept's positions; tokens with lift at or below 1 are excluded.
     """
     base = total / total.sum().clamp_min(1.0)
     sets: dict[int, list[int]] = {}
     for c in range(per_concept.shape[0]):
         counts = per_concept[c]
+        support = max(float(min_count), min_share * float(counts.sum()))
         cond = counts / counts.sum().clamp_min(1.0)
         lift = torch.where(
-            counts >= min_count, cond / base.clamp_min(1e-12), torch.zeros_like(cond)
+            counts >= support, cond / base.clamp_min(1e-12), torch.zeros_like(cond)
         )
         keep = int(min(top_k, int((lift > 1.0).sum().item())))
         sets[c] = (
             [int(i) for i in torch.topk(lift, k=keep).indices.tolist()] if keep else []
         )
     return sets
+
+
+def token_descriptions(
+    tokens: Sequence[str], metadata_dir: str | Path | None
+) -> dict[str, str]:
+    """Human-readable names for vocabulary tokens from MEDS ``codes.parquet``.
+
+    A token is a MEDS code plus an optional value-bin suffix (``::Q3``);
+    the code's ``description`` is looked up and the bin kept, so
+    ``LAB//50813//mmol/L::Q5`` reads as ``Lactate (Q5)``. Tokens without a
+    description, or when no metadata is given, map to themselves.
+    """
+    names: dict[str, str] = {t: t for t in tokens}
+    if metadata_dir is None:
+        return names
+    path = Path(metadata_dir) / "codes.parquet"
+    if not path.exists():
+        logger.warning("[steering] no %s; tokens stay as codes", path)
+        return names
+    codes = pl.read_parquet(path, columns=["code", "description"])
+    lookup = dict(
+        zip(codes["code"].to_list(), codes["description"].to_list(), strict=True)
+    )
+    for token in tokens:
+        code, _, suffix = token.partition("::")
+        description = lookup.get(code)
+        if description:
+            names[token] = f"{description} ({suffix})" if suffix else str(description)
+    return names
 
 
 # ---------------------------------------------------------------------------
@@ -556,6 +637,7 @@ def paired_delta(
     diff = np.asarray(steered, dtype=np.float64) - np.asarray(
         baseline, dtype=np.float64
     )
+    diff = diff[np.isfinite(diff)]  # subjects never at risk of this event drop out
     n = int(diff.shape[0])
     if n == 0:
         return PairedDelta(float("nan"), float("nan"), float("nan"), 0)
@@ -576,7 +658,7 @@ def _subject_means(
     """``(concept_probs (S,k), lifted_mass (S,), risk (S,E,H))`` per-subject means."""
     probs = np.stack([readouts[s].concept_probs / readouts[s].n for s in subjects])
     mass = np.array([readouts[s].lifted_mass / readouts[s].n for s in subjects])
-    risk = np.stack([readouts[s].risk / readouts[s].n for s in subjects])
+    risk = np.stack([readouts[s].risk_means() for s in subjects])
     return probs, mass, risk
 
 
@@ -660,15 +742,16 @@ def summarize_push(
             declared = expected.get(event)
             sign = None if declared is None else declared * flip
             agreement = None
-            if sign is not None:
-                moved = (r1[:, e, h] - r0[:, e, h]) * sign
+            finite = np.isfinite(r0[:, e, h]) & np.isfinite(r1[:, e, h])
+            if sign is not None and finite.any():
+                moved = (r1[finite, e, h] - r0[finite, e, h]) * sign
                 agreement = float((moved > 0).mean())
             outcomes.append(
                 OutcomeShift(
                     event=event,
                     horizon_hours=horizon,
-                    baseline_risk=float(r0[:, e, h].mean()),
-                    steered_risk=float(r1[:, e, h].mean()),
+                    baseline_risk=float(np.nanmean(r0[:, e, h])),
+                    steered_risk=float(np.nanmean(r1[:, e, h])),
                     delta=delta,
                     expected_sign=sign,
                     agreement=agreement,
@@ -731,6 +814,9 @@ class SteeringPrepared:
     gammas: list[float]
     """Per-concept calibrated strengths, Eq. 19 on the unit directions."""
     supervision: ConceptSupervision
+    tables: EventTimeTables | None
+    """Event onsets on the held-out split, for the at-risk restriction."""
+    token_names: dict[str, str]
 
 
 def _labels_for(
@@ -756,6 +842,8 @@ def prepare(
     checkpoint_path: str | Path | None,
     num_lanes: int,
     chunk_size: int,
+    metadata_dir: str | Path | None = None,
+    min_share: float = 0.005,
 ) -> SteeringPrepared:
     """Load the run, bin the held-out split, and build the lifted token sets."""
     model, vocab, binner, config = load_run(
@@ -796,20 +884,40 @@ def prepare(
         concept_mask=mask,
         concept_first_times=first_times,
         supervision=supervision,
+        min_share=min_share,
         num_lanes=num_lanes,
         chunk_size=chunk_size,
         device=device,
     )
     del lift_binned
+    token_names = token_descriptions(
+        sorted({vocab.id_to_token[i] for ids in lifted.values() for i in ids}),
+        metadata_dir,
+    )
     for c, ids in lifted.items():
         logger.info(
             "[steering] lifted tokens for %s: %s",
             concept_names[c],
-            [vocab.id_to_token[i] for i in ids[:8]],
+            [token_names[vocab.id_to_token[i]] for i in ids[:8]],
         )
 
-    _raw, events_binned = binned(held_out_shard_dir, max_shards)
-    del _raw
+    held_raw, events_binned = binned(held_out_shard_dir, max_shards)
+    tables: EventTimeTables | None = None
+    if getattr(config, "event_hazards", False):
+        alerts = hazard_events_for(
+            config.task_set, config.auxiliary_event_names, source=source
+        )
+        names = [a.name for a in alerts]
+        if names != list(model.event_heads.event_names):
+            raise ValueError(
+                f"event heads {list(model.event_heads.event_names)} do not match "
+                f"the alert events {names}; the at-risk masks would be misaligned"
+            )
+        tables = EventTimeTables(
+            all_event_times(held_raw, alerts, source, task_set=config.task_set),
+            names,
+        )
+    del held_raw
     return SteeringPrepared(
         model=model,
         vocab=vocab,
@@ -822,6 +930,8 @@ def prepare(
             for c in range(len(concept_names))
         ],
         supervision=supervision,
+        tables=tables,
+        token_names=token_names,
     )
 
 
@@ -857,6 +967,7 @@ def evaluate_steering(
             prepared.vocab,
             push=None,
             lifted_ids=lifted,
+            tables=prepared.tables,
             num_lanes=num_lanes,
             chunk_size=chunk_size,
             device=device,
@@ -880,6 +991,7 @@ def evaluate_steering(
                 prepared.vocab,
                 push=push,
                 lifted_ids=lifted,
+                tables=prepared.tables,
                 num_lanes=num_lanes,
                 chunk_size=chunk_size,
                 device=device,
@@ -952,6 +1064,18 @@ def _main() -> None:
     )
     parser.add_argument("--max-shards", type=int, default=None)
     parser.add_argument("--lift-shards", type=int, default=4)
+    parser.add_argument(
+        "--min-share",
+        type=float,
+        default=0.005,
+        help="lifted-set support: share of a concept's positions a token needs",
+    )
+    parser.add_argument(
+        "--metadata-dir",
+        default=None,
+        help="MEDS metadata dir with codes.parquet, for readable token names "
+        "(default: <shard dir>/../../metadata when it exists)",
+    )
     parser.add_argument("--num-lanes", type=int, default=8)
     parser.add_argument("--chunk-size", type=int, default=256)
     parser.add_argument("--n-boot", type=int, default=1000)
@@ -965,6 +1089,10 @@ def _main() -> None:
         Path(args.output_json), overwrite=args.overwrite, kind="steering"
     )
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    metadata_dir = args.metadata_dir
+    if metadata_dir is None:
+        candidate = Path(args.held_out_shard_dir).resolve().parent.parent / "metadata"
+        metadata_dir = str(candidate) if candidate.exists() else None
     prepared = prepare(
         args.run_dir,
         args.held_out_shard_dir,
@@ -978,6 +1106,8 @@ def _main() -> None:
         else None,
         num_lanes=args.num_lanes,
         chunk_size=args.chunk_size,
+        metadata_dir=metadata_dir,
+        min_share=args.min_share,
     )
     layer_index = args.layer_index
     if args.site == "stream" and layer_index is None:
@@ -1005,9 +1135,12 @@ def _main() -> None:
         "event_names": prepared.event_names,
         "gammas": dict(zip(prepared.concept_names, prepared.gammas, strict=True)),
         "lifted_tokens": {
-            prepared.concept_names[c]: [prepared.vocab.id_to_token[i] for i in ids]
+            prepared.concept_names[c]: [
+                prepared.token_names[prepared.vocab.id_to_token[i]] for i in ids
+            ]
             for c, ids in prepared.lifted.items()
         },
+        "at_risk_restricted": prepared.tables is not None,
         "summaries": _to_json(summaries),
     }
     Path(args.output_json).write_text(json.dumps(payload, indent=1))
