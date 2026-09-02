@@ -933,7 +933,8 @@ JSON
 import json
 import sys
 
-config_path, max_train_shards, bottleneck_kind = sys.argv[1:4]
+config_path, max_train_shards = sys.argv[1:3]
+bottleneck_kind = sys.argv[3] if len(sys.argv) > 3 else "mixture"
 overrides = {
     "model_kind": "bottleneck",
     "source": "gemini",

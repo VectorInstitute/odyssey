@@ -64,14 +64,12 @@ def rows_for(
         cells = []
         for e in events:
             o = by_event.get((e, horizon))
-            declared = o is not None and o.get("expected_sign") is not None
-            cells.append(
-                _cell(o)
-                if declared
-                else "\\textcolor{gray}{--}"
-                if o is None
-                else f"\\textcolor{{gray}}{{{o['relative_change']:.2f}}}"
-            )
+            if o is None:
+                cells.append("\\textcolor{gray}{--}")
+            elif o.get("expected_sign") is None:
+                cells.append(f"\\textcolor{{gray}}{{{o['relative_change']:.2f}}}")
+            else:
+                cells.append(_cell(o))
         respond = f"{s['respond_baseline']:.2f}$\\to${s['respond_steered']:.2f}"
         arrow = "$\\uparrow$" if s["direction"] == "amplify" else "$\\downarrow$"
         out.append((s["concept"].replace("_", " "), arrow, respond, cells))
