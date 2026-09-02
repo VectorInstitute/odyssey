@@ -119,6 +119,65 @@ def test_sofa_vasopressor_rates_and_ventilation_and_window_decay() -> None:
     assert by_time[T0 + 43 * H] == 4  # ventilated PF < 100
 
 
+def test_sofa_eicu_vasopressor_tiers_are_fixed_not_rate_based() -> None:
+    """EICU's SofaSourceConfig scores vasopressors at a fixed tier.
+
+    No eICU numeric field is confirmed to be mcg/kg/min (see
+    SofaSourceConfig.cardiovascular_fixed_tier's docstring), so the START
+    row's ``value`` is never read for eICU -- 999.0 below would score
+    norepinephrine/epinephrine at tier 4 (> 0.1) on MIMIC-IV's rate-based
+    path; on eICU it is ignored entirely and the fixed tier (3) applies
+    regardless of the charted number. Codes are post-normalization
+    ingredient-level (odyssey.data.code_normalization), matching what
+    SOFA actually sees once normalize_medications has run -- not the raw
+    MEDICATION//STARTED//{name}//{hicl} shape.
+    """
+    rows = [
+        (1, 10, T0, "MEDICATION//STARTED//norepinephrine", 999.0),
+        (1, 10, T0 + 3 * H, "MEDICATION//STOPPED//norepinephrine", None),
+        (2, 20, T0, "MEDICATION//STARTED//dobutamine", 999.0),
+        (2, 20, T0 + 3 * H, "MEDICATION//STOPPED//dobutamine", None),
+    ]
+    obs = component_observations(_frame(rows), key="subject_id", source="eicu")
+    cardio = obs.filter(pl.col("component") == "cardiovascular")
+    scores = dict(zip(cardio["subject_id"].to_list(), cardio["score"].to_list()))
+    assert scores == {1: 3, 2: 2}
+
+
+def test_sofa_eicu_ventilation_from_careplan_general_tolerates_recharting() -> None:
+    """EICU ventilation status comes from carePlanGeneral, recharted or not.
+
+    Nursing re-enters "Ventilated" at every assessment rather than a
+    single discrete start the way MIMIC-IV's procedure events work;
+    _intervals_to_points must give the same result whether it sees one
+    start or several redundant ones before the same end (see that
+    function's own docstring on this).
+    """
+    vent_start = (
+        "CAREPLAN_GENERAL//Ventilation//Ventilated - with daily extubation evaluation"
+    )
+    vent_end = "CAREPLAN_GENERAL//Ventilation//Spontaneous - adequate"
+    pao2, fio2 = "LAB//paO2//mmHg", "LAB//FiO2//UNK"
+    single = [
+        (1, 10, T0, vent_start, None),
+        (1, 10, T0 + H, fio2, 100.0),
+        (1, 10, T0 + 2 * H, pao2, 90.0),  # PF 90, ventilated -> 4
+        (1, 10, T0 + 5 * H, vent_end, None),
+    ]
+    recharted = [
+        (2, 20, T0, vent_start, None),
+        (2, 20, T0 + H, vent_start, None),  # same status, recharted
+        (2, 20, T0 + 2 * H, vent_start, None),  # recharted again
+        (2, 20, T0 + 3 * H, fio2, 100.0),
+        (2, 20, T0 + 4 * H, pao2, 90.0),
+        (2, 20, T0 + 5 * H, vent_end, None),
+    ]
+    single_ts = sofa_timeseries(_frame(single), key="subject_id", source="eicu")
+    recharted_ts = sofa_timeseries(_frame(recharted), key="subject_id", source="eicu")
+    assert single_ts["sofa"].to_list()[-1] == 4
+    assert recharted_ts["sofa"].to_list()[-1] == 4
+
+
 def test_sofa_urine_output_needs_24h_of_record() -> None:
     rows = [(1, 10, T0, CREAT, 0.8)] + [
         (1, 10, T0 + k * H, URINE, 10.0) for k in range(1, 30)
@@ -256,9 +315,11 @@ def test_task_sets_are_versioned_and_backward_compatible() -> None:
     assert v1 == list(TASK_SETS["v1"]) and len(v1) == 15
     v2 = [c.name for c in concepts_for_source("mimic_iv", task_set="v2")]
     assert v2 == v1 + ["sepsis3"]
-    assert [c.name for c in concepts_for_source("eicu", task_set="v2")] == [
-        c.name for c in concepts_for_source("eicu")
-    ]  # no SOFA ingredients on eICU: sepsis3 dropped, v2 == v1 there
+    eicu_v1 = [c.name for c in concepts_for_source("eicu")]
+    eicu_v2 = [c.name for c in concepts_for_source("eicu", task_set="v2")]
+    assert eicu_v2 == eicu_v1 + [
+        "sepsis3"
+    ]  # eICU has a SOFA_SOURCE_CONFIG entry now, same v1->v2 shape as MIMIC-IV
     with pytest.raises(ValueError, match="unknown task_set"):
         concepts_for_source("mimic_iv", task_set="v9")
     assert ALERT_EVENTS is ALERT_EVENTS_V1 and alert_events_for("v1") is ALERT_EVENTS_V1
@@ -410,5 +471,11 @@ def test_oliguria_needs_a_full_day_of_record_and_sums_the_window() -> None:
 def test_derived_signal_concepts_are_dropped_where_sofa_is_unsupported() -> None:
     v3 = [c.name for c in concepts_for_source("mimic_iv", task_set="v3")]
     assert {"hypoxemic_respiratory_failure", "oliguria"} <= set(v3)
+    # eICU has a SOFA_SOURCE_CONFIG entry, so it is a second positive case
+    # here, not the negative one -- GEMINI still lacks SOFA ingredients
+    # (docs/gemini_extraction.md), so it is the source that still drops
+    # these two.
     eicu = [c.name for c in concepts_for_source("eicu", task_set="v3")]
-    assert not ({"hypoxemic_respiratory_failure", "oliguria"} & set(eicu))
+    assert {"hypoxemic_respiratory_failure", "oliguria"} <= set(eicu)
+    gemini = [c.name for c in concepts_for_source("gemini", task_set="v3")]
+    assert not ({"hypoxemic_respiratory_failure", "oliguria"} & set(gemini))

@@ -822,9 +822,14 @@ def test_batch_config_fields_excludes_non_resume_relevant_hyperparameters() -> N
 def test_sidecar_gate_is_source_resolved(tmp_path: Path) -> None:
     """The sepsis3/microbiology sidecar guard follows source resolution.
 
-    task_set v3 supervises sepsis3 on MIMIC-IV (sidecar required) but
-    sepsis3 drops on eICU, where the same task_set must train without
-    the sidecar (the R6 launch failure of 2026-08-30).
+    task_set v3 supervises sepsis3 on MIMIC-IV and, since
+    SOFA_SOURCE_CONFIG gained an eicu entry, on eICU too -- both need the
+    sidecar now (originally the R6 launch failure of 2026-08-30 was
+    exactly this guard catching MIMIC-IV missing one; eICU used to be the
+    source where the same task_set trained without it, before this fix).
+    GEMINI still lacks the SOFA ingredients sepsis3 needs
+    (docs/gemini_extraction.md), so it is the new control case: same
+    task_set, guard correctly does not fire.
     """
     base = {
         "train_shard_dir": str(tmp_path),
@@ -834,11 +839,12 @@ def test_sidecar_gate_is_source_resolved(tmp_path: Path) -> None:
     }
     try:
         train_module._activate_run_sidecars(
-            TrainingConfig(source="eicu", **base)  # type: ignore[arg-type]
+            TrainingConfig(source="gemini", **base)  # type: ignore[arg-type]
         )
-        with pytest.raises(FileNotFoundError, match="microbiology"):
-            train_module._activate_run_sidecars(
-                TrainingConfig(source="mimic_iv", **base)  # type: ignore[arg-type]
-            )
+        for source in ("mimic_iv", "eicu"):
+            with pytest.raises(FileNotFoundError, match="microbiology"):
+                train_module._activate_run_sidecars(
+                    TrainingConfig(source=source, **base)  # type: ignore[arg-type]
+                )
     finally:
         activate_sidecars(None)

@@ -30,7 +30,7 @@ from odyssey.data.concepts import (
     concepts_for_source,
     label_concepts,
 )
-from odyssey.data.sofa import urine_output_24h, urine_output_rate
+from odyssey.data.sofa import SOFA_SOURCE_CONFIG, urine_output_24h, urine_output_rate
 
 
 T0 = datetime(2024, 1, 1, 0, 0)
@@ -270,14 +270,19 @@ def test_urine_output_24h_is_the_absolute_volume_special_case() -> None:
     )
 
 
-def test_only_the_weighted_form_needs_a_source_weight_config() -> None:
+def test_only_the_weighted_form_needs_a_source_weight_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The absolute-volume form must keep working where weights are unknown.
 
-    eICU has no :data:`~odyssey.data.sofa.SOFA_SOURCE_CONFIG` entry, and
-    ``urine_output_24h`` delegates here with ``weight_normalized=False``:
-    that path must not reach for a config it has no need of. Asking for
-    the weighted form on such a source is a programming error and says
-    so, the same way every other SOFA entry point does.
+    Every source ``odyssey`` ships today has a
+    :data:`~odyssey.data.sofa.SOFA_SOURCE_CONFIG` entry now that eICU's
+    SOFA support was added, so this test removes one to keep exercising
+    the invariant the code actually encodes: the absolute-volume path
+    (what ``urine_output_24h`` and, by extension, the ``oliguria``
+    concept use) must not reach for a config it has no need of, while
+    asking for the weighted form on such a source is a programming error
+    and says so, the same way every other SOFA entry point does.
     """
     rows: list[_Row] = [(1, "URINE_OUTPUT//mL", 10.0, T0 + k * H) for k in range(0, 30)]
     absolute = urine_output_rate(
@@ -290,6 +295,8 @@ def test_only_the_weighted_form_needs_a_source_weight_config() -> None:
     # Hours 24-29 are the assessable ones; each 24 h window is left-open,
     # so it holds 24 of the hourly 10 mL readings, not 25.
     assert absolute["value"].to_list() == [240.0] * 6
+
+    monkeypatch.delitem(SOFA_SOURCE_CONFIG, "eicu")
     with pytest.raises(KeyError):
         urine_output_rate(_events(rows), source="eicu", key="subject_id")
 
@@ -527,10 +534,13 @@ def test_all_three_legs_compose_as_an_or_across_a_mixed_cohort() -> None:
 def test_urine_legs_expand_only_where_the_weight_item_ids_are_known() -> None:
     """Like sepsis3: the derived legs need a source config, the rest travels.
 
-    eICU has no :data:`~odyssey.data.sofa.SOFA_SOURCE_CONFIG` entry, so
+    GEMINI has no :data:`~odyssey.data.sofa.SOFA_SOURCE_CONFIG` entry, so
     its AKI concepts keep the creatinine legs (and the harmless
     occurrence rule, which is source-agnostic) but not the urine ones,
-    and the concept is never dropped for want of them.
+    and the concept is never dropped for want of them. eICU now has a
+    config (see :data:`~odyssey.data.sofa.SOFA_SOURCE_CONFIG`), so its
+    urine legs expand exactly like MIMIC's -- the KDIGO thresholds
+    themselves are source-independent.
     """
     stages = {
         source: {
@@ -546,17 +556,17 @@ def test_urine_legs_expand_only_where_the_weight_item_ids_are_known() -> None:
         assert isinstance(concept, ConceptDefinition)
         return [r for r in concept.rules if isinstance(r, DerivedUrineRateRule)]
 
-    assert [
-        (r.threshold, r.window_hours, r.weight_normalized)
-        for r in _urine_rules("mimic_iv", "aki_stage_3")
-    ] == [(0.3, 24.0, True), (0.0, 12.0, False)]
-    assert [
-        (r.threshold, r.window_hours) for r in _urine_rules("mimic_iv", "aki_stage_2")
-    ] == [(0.5, 12.0)]
-    assert [
-        (r.threshold, r.window_hours)
-        for r in _urine_rules("mimic_iv", "acute_kidney_injury")
-    ] == [(0.5, 6.0)]
+    for source in ("mimic_iv", "eicu"):
+        assert [
+            (r.threshold, r.window_hours, r.weight_normalized)
+            for r in _urine_rules(source, "aki_stage_3")
+        ] == [(0.3, 24.0, True), (0.0, 12.0, False)]
+        assert [
+            (r.threshold, r.window_hours) for r in _urine_rules(source, "aki_stage_2")
+        ] == [(0.5, 12.0)]
+        assert [
+            (r.threshold, r.window_hours)
+            for r in _urine_rules(source, "acute_kidney_injury")
+        ] == [(0.5, 6.0)]
     for name in _ALL_STAGES:
-        assert _urine_rules("eicu", name) == []
         assert _urine_rules("gemini", name) == []
