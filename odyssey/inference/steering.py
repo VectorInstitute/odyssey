@@ -807,8 +807,8 @@ def prepare(
         )
     strata: PositionStrata | None = None
     if stratify_concept is not None:
-        strat_name = canonical_concept_name(stratify_concept)
-        if strat_name not in concept_names:
+        stratum_name = canonical_concept_name(stratify_concept)
+        if stratum_name not in concept_names:
             raise ValueError(
                 f"stratify concept {stratify_concept!r} is not in this run's registry"
             )
@@ -816,8 +816,8 @@ def prepare(
             held_raw, concepts, supervision
         )
         strata = PositionStrata(
-            name=strat_name,
-            concept_index=concept_names.index(strat_name),
+            name=stratum_name,
+            concept_index=concept_names.index(stratum_name),
             labels=held_labels,
             mask=held_mask,
             first_times=held_first,
