@@ -34,9 +34,12 @@ def test_concept_resolution_matches_the_source_expansion() -> None:
     # Vitals-threshold concepts resolve through the LOINC layer.
     assert resolution["tachycardia"] is True
     assert resolution["acute_kidney_injury"] is True
-    # v3 lab-severity concepts have no GEMINI lab mapping yet.
-    assert resolution["hyperkalemia"] is False
-    assert resolution["shock"] is False
+    # v3 lab-severity concepts resolve through the electrolyte/CBC/INR
+    # mapping; the four that need signals the datacut lacks do not.
+    assert resolution["hyperkalemia"] is True
+    assert resolution["anemia"] is True
+    assert resolution["shock"] is False  # no mean arterial pressure
+    assert resolution["oliguria"] is False  # no urine output anywhere
     assert result["n_concepts_resolving"] == sum(resolution.values())
 
 

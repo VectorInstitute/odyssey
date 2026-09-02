@@ -10,6 +10,7 @@ import pytest
 
 from odyssey.data import code_mapping
 from odyssey.data.concepts import (
+    _GLUCOSE,
     ANTIBIOTIC_ROUTE_EXCLUDE,
     CANONICAL_CONCEPTS,
     CONCEPTS,
@@ -21,6 +22,7 @@ from odyssey.data.concepts import (
     ConceptRule,
     DerivedGcsTotalRule,
     LoincBaselineRelative,
+    LoincThreshold,
     SustainedRule,
     _expand_rule,
     concepts_for_source,
@@ -1152,6 +1154,88 @@ def test_gemini_source_resolves_all_but_gcs_dependent_concepts() -> None:
     assert len(names) == 15
 
 
+def test_gemini_v3_resolves_the_lab_panel_concepts() -> None:
+    """25 of 29 v3 concepts resolve once the electrolyte/CBC/INR ids are mapped.
+
+    The four that stay out need signals the datacut does not chart:
+    urine output (oliguria; none anywhere in the datacut), FiO2/PaO2
+    (hypoxemic respiratory failure; FiO2 is unmapped free text), mean
+    arterial pressure (shock; only systolic and diastolic are charted),
+    and sepsis3's SOFA components.
+    """
+    names = {c.name for c in concepts_for_source("gemini", task_set="v3")}
+    assert len(names) == 25
+    assert {
+        "hyperkalemia",
+        "hypokalemia",
+        "hyponatremia",
+        "hypernatremia",
+        "hypoglycemia",
+        "hyperglycemia",
+        "anemia",
+        "thrombocytopenia",
+        "coagulopathy",
+        "metabolic_acidosis",
+    } <= names
+    assert names.isdisjoint(
+        {"oliguria", "hypoxemic_respiratory_failure", "shock", "sepsis3"}
+    )
+    # metabolic acidosis keeps its bicarbonate criterion; the pH one drops
+    acidosis = next(
+        c
+        for c in concepts_for_source("gemini", task_set="v3")
+        if c.name == "metabolic_acidosis"
+    )
+    prefixes = {r.code_prefix for r in acidosis.rules}
+    assert prefixes == {"LAB//3016293//"}
+
+
+def test_gemini_shaped_events_label_the_si_lab_concepts() -> None:
+    """SI values cross the SI cutoffs (mmol/L glucose, g/L hemoglobin)."""
+    wanted = (
+        "hyponatremia",
+        "hyperkalemia",
+        "hypoglycemia",
+        "anemia",
+        "thrombocytopenia",
+        "coagulopathy",
+    )
+    concepts = [
+        c for c in concepts_for_source("gemini", task_set="v3") if c.name in wanted
+    ]
+    events = _events(
+        [
+            (1, "LAB//3019550//mmol/l", 125.0),  # sodium 125 -> hyponatremia
+            (1, "LAB//3023103//mmol/l", 6.1),  # potassium 6.1 -> hyperkalemia
+            (
+                1,
+                "LAB//3013826//mmol/l",
+                3.0,
+            ),  # glucose 3.0 mmol/L (54 mg/dL) -> hypoglycemia
+            (1, "LAB//3000963//g/l", 65.0),  # hemoglobin 65 g/L (6.5 g/dL) -> anemia
+            (1, "LAB//3007461//x10e9/l", 80.0),  # platelets 80 -> thrombocytopenia
+            (1, "LAB//3032080//inr", 2.1),  # INR 2.1 -> coagulopathy
+            (2, "LAB//3019550//mmol/l", 140.0),
+            (2, "LAB//3023103//mmol/l", 4.0),
+            (
+                2,
+                "LAB//3013826//mmol/l",
+                6.0,
+            ),  # 108 mg/dL: would be hypoglycemic under the mg/dL cutoff
+            (
+                2,
+                "LAB//3000963//g/l",
+                130.0,
+            ),  # 13 g/dL: would be anemic under the g/dL cutoff
+            (2, "LAB//3007461//x10e9/l", 250.0),
+            (2, "LAB//3032080//inr", 1.0),
+        ]
+    )
+    labels = label_concepts(events, concepts).sort("subject_id")
+    for name in wanted:
+        assert labels[name].to_list() == [1, 0], name
+
+
 def test_aki_delta_is_unit_converted_per_source() -> None:
     """KDIGO's 0.3 mg/dL rise becomes 26.5 umol/L on GEMINI, unchanged elsewhere.
 
@@ -1486,3 +1570,68 @@ def test_antibiotic_route_exclude_misses_real_mimic_route_abbreviations() -> Non
     # not overcorrect and start dropping real IV/PO antibiotic starts).
     assert not pattern.search("IV")
     assert not pattern.search("PO")
+
+
+# ---------------------------------------------------------------------------
+# Per-unit thresholds: a conventional-unit default plus SI overrides
+# ---------------------------------------------------------------------------
+
+
+def test_loinc_threshold_needs_a_default_or_per_unit_thresholds() -> None:
+    with pytest.raises(ValueError, match="threshold, unit_thresholds, or both"):
+        LoincThreshold(("2345-7",), "below")
+    # either alone is fine, and so are both together
+    LoincThreshold(("2345-7",), "below", 70.0)
+    LoincThreshold(("8310-5",), "above", unit_thresholds=(("C", 38.0),))
+    LoincThreshold(("2345-7",), "below", 70.0, unit_thresholds=(("mmol/L", 3.9),))
+
+
+def test_untagged_prefix_takes_the_default_and_tagged_prefix_its_own_unit() -> None:
+    """Glucose: mg/dL on the US sources, mmol/L wherever the prefix is tagged."""
+    rule = LoincThreshold(_GLUCOSE, "below", 70.0, unit_thresholds=(("mmol/L", 3.9),))
+    assert {r.threshold for r in _expand_rule(rule, "mimic_iv")} == {70.0}
+    assert {r.threshold for r in _expand_rule(rule, "eicu")} == {70.0}
+
+
+def test_tagged_prefix_without_an_entry_is_an_error_not_a_fallthrough() -> None:
+    """Creatinine is tagged umol/L on GEMINI; a mg/dL-only rule must refuse it."""
+    rule = LoincThreshold(("2160-0",), "above", 4.0)
+    with pytest.raises(ValueError, match="umol/L"):
+        _expand_rule(rule, "gemini")
+    # the temperature form (per-unit only) still refuses an untagged prefix
+    only_c = LoincThreshold(("8310-5",), "above", unit_thresholds=(("C", 38.0),))
+    with pytest.raises(ValueError, match="unit tag 'F'"):
+        _expand_rule(only_c, "mimic_iv")
+
+
+def test_hypoglycemia_hyperglycemia_and_anemia_carry_si_cutoffs() -> None:
+    by_name = {c.name: c for c in CANONICAL_CONCEPTS}
+    glucose_low = by_name["hypoglycemia"].rules[0]
+    glucose_high = by_name["hyperglycemia"].rules[0]
+    hemoglobin = by_name["anemia"].rules[0]
+    assert (glucose_low.threshold, glucose_low.unit_thresholds) == (
+        70.0,
+        (("mmol/L", 3.9),),
+    )
+    assert (glucose_high.threshold, glucose_high.unit_thresholds) == (
+        250.0,
+        (("mmol/L", 13.9),),
+    )
+    assert (hemoglobin.threshold, hemoglobin.unit_thresholds) == (7.0, (("g/L", 70.0),))
+
+
+def test_stage_3_creatinine_cutoff_is_unit_converted_on_gemini() -> None:
+    """KDIGO's absolute 4.0 mg/dL is 353.7 umol/L where creatinine is SI.
+
+    Before per-unit thresholds this rule compared GEMINI's umol/L values
+    against 4.0 and was true for essentially every creatinine result.
+    """
+    by_name = {c.name: c for c in CANONICAL_CONCEPTS}
+    absolute = [
+        r
+        for r in by_name["aki_stage_3"].rules
+        if isinstance(r, LoincThreshold) and r.threshold == 4.0
+    ]
+    assert len(absolute) == 1
+    assert [e.threshold for e in _expand_rule(absolute[0], "mimic_iv")] == [4.0]
+    assert [e.threshold for e in _expand_rule(absolute[0], "gemini")] == [353.7]
