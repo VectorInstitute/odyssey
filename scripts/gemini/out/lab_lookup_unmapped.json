@@ -1,0 +1,80 @@
+{
+  "lab_concept_names": {
+    "3019550": "Sodium [Moles/volume] in Serum or Plasma",
+    "3023103": "Potassium [Moles/volume] in Serum or Plasma",
+    "3014576": "Chloride [Moles/volume] in Serum or Plasma",
+    "3000963": "Hemoglobin [Mass/volume] in Blood",
+    "3040151": "Glucose [Moles/volume] in Capillary blood",
+    "3024731": "MCV [Entitic volume]",
+    "3007461": "Platelets [#/volume] in Blood",
+    "3016293": "Bicarbonate [Moles/volume] in Serum or Plasma",
+    "3026361": "Erythrocytes [Presence] in Urine",
+    "3003338": "MCHC [Mass/volume]",
+    "3002385": "Erythrocyte distribution width [Ratio]",
+    "3009542": "Hematocrit [Volume Fraction] of Blood",
+    "3035941": "MCH [Entitic mass]",
+    "3045716": "Anion gap in Serum or Plasma",
+    "3001123": "Platelet mean volume [Entitic volume] in Blood",
+    "3017732": "Neutrophils [#/volume] in Blood",
+    "3019198": "Lymphocytes [#/volume] in Blood",
+    "3001604": "Monocytes [#/volume] in Blood",
+    "3013115": "Eosinophils [#/volume] in Blood",
+    "3013826": "Glucose [Moles/volume] in Serum or Plasma",
+    "3006315": "Basophils [#/volume] in Blood",
+    "3024641": "Urea nitrogen [Moles/volume] in Serum or Plasma",
+    "3012095": "Magnesium [Moles/volume] in Serum or Plasma",
+    "3003458": "Phosphate [Moles/volume] in Serum or Plasma",
+    "3015377": "Calcium [Moles/volume] in Serum or Plasma",
+    "3040168": "Immature granulocytes [#/volume] in Blood",
+    "3051611": "Lipemic index of Serum or Plasma",
+    "3052851": "Hemolysis index of Serum or Plasma",
+    "3028615": "Eosinophils [#/volume] in Blood by Automated count",
+    "3033575": "Monocytes [#/volume] in Blood by Automated count",
+    "3013429": "Basophils [#/volume] in Blood",
+    "3024561": "Albumin [Mass/volume] in Serum or Plasma",
+    "3013650": "Neutrophils/100 leukocytes in Blood",
+    "3004327": "Lymphocytes/100 leukocytes in Blood",
+    "3032080": "INR in Blood by Coagulation assay",
+    "3006140": "Bilirubin.total [Moles/volume] in Serum or Plasma",
+    "3006923": "Alanine aminotransferase [Enzymatic activity/volume] in Serum or Plasma",
+    "3013721": "Aspartate aminotransferase [Enzymatic activity/volume] in Serum or Plasma"
+  },
+  "vitals_concept_names": {
+    "36203185": "Blood pressure panel with all children optional",
+    "3012888": "Diastolic blood pressure",
+    "3034263": "Pain severity - Reported",
+    "3014080": "Oxygen gas flow Oxygen delivery system",
+    "3005629": "Inhaled oxygen flow rate"
+  },
+  "urine_output_search": [],
+  "fio2_pao2_search": [
+    {
+      "measurement_name": "VSFiO2",
+      "n": "3007000"
+    },
+    {
+      "measurement_name": "R FIO2",
+      "n": "2775000"
+    },
+    {
+      "measurement_name": "PFiO2",
+      "n": "787000"
+    },
+    {
+      "measurement_name": "FiO2",
+      "n": "526000"
+    },
+    {
+      "measurement_name": "FRACTION OF INSPIRED O2 - FiO2",
+      "n": "197000"
+    },
+    {
+      "measurement_name": "FiO2 %",
+      "n": "136000"
+    },
+    {
+      "measurement_name": "FRACTION OF INSPIRED O2 - PaO2/FiO2 Index",
+      "n": "0"
+    }
+  ]
+}
