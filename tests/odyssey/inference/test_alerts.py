@@ -43,6 +43,7 @@ from odyssey.inference.alerts import (
     outcome_at_horizon,
     score_alerts,
     sparse_columns,
+    stream_baseline_matrix,
     verify_packed_landmark_rows,
     verify_rows_match_dump,
 )
@@ -2446,3 +2447,51 @@ def test_scoring_at_the_clean_rows_on_a_degraded_record_keeps_the_row_set() -> N
         got[k].scores["next_mass"] != pytest.approx(want[k].scores["next_mass"])
         for k in got
     )
+
+
+def test_stream_baseline_matrix_row_fraction_thins_deterministically(
+    tmp_path: Path,
+) -> None:
+    """A row fraction keeps a seeded subset of each shard's landmark rows."""
+    shard_dir = tmp_path / "train"
+    _write_event_shards(shard_dir, n_shards=3, subjects_per_shard=20)
+    paths = shard_paths(shard_dir)
+    prepare = make_preparer(
+        normalize_medications=False, history_recap=False, source="mimic_iv"
+    )
+    x_full, rows_full, times_full = stream_baseline_matrix(
+        paths, prepare, None, alerts=ALERT_EVENTS, feature_set="basic"
+    )
+    x_half, rows_half, times_half = stream_baseline_matrix(
+        paths, prepare, None, alerts=ALERT_EVENTS, feature_set="basic", row_fraction=0.5
+    )
+    x_again, rows_again, _ = stream_baseline_matrix(
+        paths, prepare, None, alerts=ALERT_EVENTS, feature_set="basic", row_fraction=0.5
+    )
+    assert 0 < len(rows_half) < len(rows_full)
+    assert x_half.shape == (len(rows_half), x_full.shape[1])
+    keys_full = {(r.subject_id, r.visit_id, r.time_hours) for r in rows_full}
+    assert all((r.subject_id, r.visit_id, r.time_hours) in keys_full for r in rows_half)
+    # Selection depends on the row key, not its position, so two calls keep
+    # the same rows even though a shard's row order is not stable.
+    key = lambda r: (r.subject_id, r.visit_id, r.time_hours)  # noqa: E731
+    assert sorted(map(key, rows_half)) == sorted(map(key, rows_again))
+    order_half = np.argsort([key(r) for r in rows_half], axis=0)
+    by_key_half = {key(r): x_half[i] for i, r in enumerate(rows_half)}
+    by_key_again = {key(r): x_again[i] for i, r in enumerate(rows_again)}
+    del order_half
+    for k, row in by_key_half.items():
+        assert np.array_equal(row, by_key_again[k], equal_nan=True)
+    # Event times still come from every row, thinned or not.
+    assert times_half.keys() == times_full.keys()
+    for name in times_full:
+        assert times_half[name].onset == times_full[name].onset
+    with pytest.raises(ValueError):
+        stream_baseline_matrix(
+            paths,
+            prepare,
+            None,
+            alerts=ALERT_EVENTS,
+            feature_set="basic",
+            row_fraction=0.0,
+        )
