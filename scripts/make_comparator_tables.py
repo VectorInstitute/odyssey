@@ -12,6 +12,11 @@ has landed):
 
 * ``--alerts``  ``alerts.json`` from the eval chain -- hazard and GBM point
   estimates, ``n_at_risk``/``n_positive``, and the landmark protocol stamp.
+  Repeatable: readmission_30d is a ``next_visit`` event scored in a
+  separate ``--index-mode visit_end`` pass (the landmark grid structurally
+  cannot include it), so its file lands beside the main one and merges in
+  as ordinary extra rows -- pass both and it takes its place in
+  ``EVENT_ORDER`` like any other event, not a second table.
 * ``--cis``     ``alerts_cis.json`` from ``scripts/alerts_cis.py`` -- adds
   subject-clustered CIs and the paired hazard-vs-GBM delta. Bold means "best
   in the row"; with this file, bold is only applied when the paired delta
@@ -26,6 +31,8 @@ Usage::
 
     uv run python scripts/make_comparator_tables.py \\
         --alerts research_journal/figure_data/vm1/full_run_v10/alerts.json \\
+        --alerts \\
+            research_journal/figure_data/vm1/full_run_v10/alerts_readmission.json \\
         --tabicl research_journal/figure_data/vm1/full_run_v10/tabicl_strong_v4.json \\
         --cis research_journal/figure_data/vm1/full_run_v10/alerts_cis.json \\
         --output-tex paper/ml4h/tables/mimic_comparator.tex
@@ -51,7 +58,7 @@ EVENT_ORDER: tuple[tuple[str, str], ...] = (
     ("icu_admission", "ICU adm."),
     ("vasopressor_start", "Vasopressor"),
     ("sepsis3", "Sepsis-3"),
-    ("readmission_30d", "Readmission"),
+    ("readmission_30d", "Readmission (30d)"),
 )
 HAZARD = "hazard"
 GBM = "baseline_gbm"
@@ -93,6 +100,31 @@ def load_alerts(path: Path) -> tuple[dict[str, dict[str, Any]], set[int]]:
         cell["scores"][rec["scorer"]] = rec.get("auroc")
         if rec.get("landmark_protocol_version") is not None:
             protocols.add(int(rec["landmark_protocol_version"]))
+    return cells, protocols
+
+
+def load_alerts_multi(paths: list[Path]) -> tuple[dict[str, dict[str, Any]], set[int]]:
+    """Merge several ``alerts.json``-shaped files into one cell set.
+
+    E.g. the landmark grid plus a separate ``--index-mode visit_end`` pass
+    for ``next_visit`` events. Refuses a key present in more than one
+    file: alert files never legitimately overlap, since each event is
+    scored by exactly one index mode, so a collision means two files
+    describing different runs are being merged into one row by mistake.
+    """
+    cells: dict[str, dict[str, Any]] = {}
+    protocols: set[int] = set()
+    for path in paths:
+        file_cells, file_protocols = load_alerts(path)
+        overlap = set(file_cells) & set(cells)
+        if overlap:
+            raise SystemExit(
+                f"{path} repeats cell(s) already loaded from another --alerts "
+                f"file: {', '.join(sorted(overlap))}. Alert files must cover "
+                "disjoint events/horizons, not be merged as duplicates"
+            )
+        cells.update(file_cells)
+        protocols |= file_protocols
     return cells, protocols
 
 
@@ -293,7 +325,7 @@ def build_rows(
     # finished. tabicl_strong_compare.py in particular rewrites its output
     # after every cell, so pointing at a still-running job yields exactly
     # this. Warn on coverage, not just presence.
-    for label, supplied in (("TabICL", tabicl), ("CI", cis)):
+    for label, supplied in (("TabICLv2", tabicl), ("CI", cis)):
         if not supplied:
             continue
         missing = sorted(set(cells) - set(supplied))
@@ -310,7 +342,16 @@ def main() -> None:
     """Emit the comparator table body for one dataset arm."""
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument("--alerts", type=Path)
+    source.add_argument(
+        "--alerts",
+        type=Path,
+        action="append",
+        help=(
+            "alerts.json from the eval chain; repeat to merge in a separate "
+            "--index-mode visit_end pass (readmission_30d and other "
+            "next_visit events)"
+        ),
+    )
     source.add_argument(
         "--matched",
         type=Path,
@@ -337,7 +378,7 @@ def main() -> None:
             if "tabicl" in cell["scores"]
         }
     else:
-        cells, protocols = load_alerts(args.alerts)
+        cells, protocols = load_alerts_multi(args.alerts)
         tabicl = {}
         if args.tabicl:
             tabicl, tabicl_rows = load_tabicl(args.tabicl)
@@ -347,14 +388,15 @@ def main() -> None:
     rows, notes = build_rows(cells, tabicl, cis)
     if len(protocols) > 1:
         raise SystemExit(
-            f"alerts.json mixes landmark protocol versions {sorted(protocols)}; "
+            f"--alerts mixes landmark protocol versions {sorted(protocols)}; "
             "v4 and v1-v3 cells are not comparable and must not share a table"
         )
     protocol = next(iter(protocols), None)
 
+    source_paths = args.alerts or args.matched
     header = [
         "% GENERATED by scripts/make_comparator_tables.py -- do not hand-edit.",
-        f"% source: {args.alerts or ', '.join(str(p) for p in args.matched)}",
+        f"% source: {', '.join(str(p) for p in source_paths)}",
         f"% landmark protocol: {'unstamped' if protocol is None else f'v{protocol}'}",
         f"% events: {len({k.split('@')[0] for k in cells})}, cells: {len(cells)}",
     ]
@@ -369,7 +411,7 @@ def main() -> None:
     spec = "llrrrr" if has_tabicl else "llrrr"
     head_cells = ["Event", "$h$", "$n$ (pos)", "Hazard", "GBM"]
     if has_tabicl:
-        head_cells.append("TabICL")
+        head_cells.append("TabICLv2")
     table = [
         f"\\begin{{tabular}}{{{spec}}}",
         "\\toprule",

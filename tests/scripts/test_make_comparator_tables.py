@@ -12,6 +12,7 @@ from scripts.make_comparator_tables import (
     build_rows,
     check_row_sets,
     load_alerts,
+    load_alerts_multi,
     load_matched,
     load_tabicl,
 )
@@ -51,6 +52,51 @@ def test_load_alerts_keys_cells_and_collects_protocol(tmp_path: Path) -> None:
     assert protocols == {4}
     assert cells["death@8h"]["scores"]["hazard"] == 0.96
     assert cells["death@8h"]["n"] == 1000
+
+
+def _readmission_records(protocol: int = 4) -> list[dict]:
+    """Build a next_visit event, the kind a separate visit_end pass produces."""
+    out = []
+    for scorer, auroc in (("hazard", 0.59), ("baseline_gbm", 0.70)):
+        out.append(
+            {
+                "event": "readmission_30d",
+                "horizon_hours": 168.0,
+                "scorer": scorer,
+                "auroc": auroc,
+                "n_at_risk": 45053,
+                "n_positive": 4581,
+                "landmark_protocol_version": protocol,
+            }
+        )
+    return out
+
+
+def test_load_alerts_multi_merges_disjoint_files(tmp_path: Path) -> None:
+    """A landmark-grid file and a separate visit_end file merge as one table.
+
+    readmission_30d is a next_visit event scored in its own
+    --index-mode visit_end pass, so it lands in a second file rather than
+    alerts.json itself; the merge must fold it in as ordinary extra rows.
+    """
+    landmark = _write(tmp_path, "a.json", _alerts_records())
+    readmission = _write(tmp_path, "r.json", _readmission_records())
+    cells, protocols = load_alerts_multi([landmark, readmission])
+    assert set(cells) == {
+        "acute_kidney_injury@8h",
+        "death@8h",
+        "readmission_30d@168h",
+    }
+    assert protocols == {4}
+    assert cells["readmission_30d@168h"]["scores"]["hazard"] == 0.59
+
+
+def test_load_alerts_multi_refuses_an_overlapping_cell(tmp_path: Path) -> None:
+    """Two files describing the same event/horizon are not a merge."""
+    a = _write(tmp_path, "a.json", _alerts_records())
+    b = _write(tmp_path, "b.json", _alerts_records())
+    with pytest.raises(SystemExit, match="repeats cell"):
+        load_alerts_multi([a, b])
 
 
 def test_scorers_outside_hazard_and_gbm_are_ignored(tmp_path: Path) -> None:
@@ -218,6 +264,30 @@ def test_emits_a_complete_tabular_not_a_bare_row_body(tmp_path: Path) -> None:
     assert "\\toprule" in text and "\\bottomrule" in text
     assert text.rstrip().endswith("\\end{tabular}")
     assert "Event & $h$ & $n$ (pos) & Hazard & GBM" in text
+
+
+def test_cli_merges_a_second_alerts_file(tmp_path: Path) -> None:
+    """Repeating --alerts folds readmission_30d in as ordinary extra rows."""
+    landmark = _write(tmp_path, "a.json", _alerts_records())
+    readmission = _write(tmp_path, "r.json", _readmission_records())
+    out = tmp_path / "body.tex"
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/make_comparator_tables.py",
+            "--alerts",
+            str(landmark),
+            "--alerts",
+            str(readmission),
+            "--output-tex",
+            str(out),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    text = out.read_text()
+    assert "168h" in text
+    assert "0.590" in text  # readmission hazard, formatted to 3 places
 
 
 def test_tabicl_column_widens_the_preamble_and_header(tmp_path: Path) -> None:

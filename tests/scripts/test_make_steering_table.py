@@ -87,7 +87,7 @@ def test_bold_expected_dagger_wrong_way(tmp_path) -> None:
     tex = mod.render(_payload(), None, horizon=24.0)
     assert "\\textbf{1.35}" in tex
     assert "0.90$^\\dagger$" in tex
-    assert "aki stage 3 & $\\uparrow$ & 0.21$\\to$0.31" in tex
+    assert "AKI stage 3 & $\\uparrow$ & 0.21$\\to$0.31" in tex
     assert "Death" in tex and "ICU" in tex
 
 
