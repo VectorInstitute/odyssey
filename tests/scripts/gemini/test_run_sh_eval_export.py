@@ -47,7 +47,7 @@ def _validate(obj: dict) -> None:
 
 
 def _eval_shape() -> dict:
-    """What run_inference writes today: every InferenceResults field set."""
+    """Build the shape run_inference writes today: every InferenceResults field set."""
     value = {
         "crps": 0.31,
         "n_positions": 12345,
