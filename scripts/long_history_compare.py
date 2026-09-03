@@ -1,20 +1,20 @@
-"""Does unbounded history help? Two backbones on the same rows, split by history length.
+"""Does unbounded history help? Two backbones on the same rows, split by truncation.
 
 The hybrid backbone streams a record of any length at constant memory per
-step; a transformer sees at most ``--window`` tokens (its packed-context
-evaluation keeps the most recent ones). Both models' alert dumps
-(``alerts_rows.parquet``) are joined on (subject, visit, time, event), each
-row is tagged with how many events the patient had accumulated by that
-landmark, and the hazard heads' AUROC is compared per (event, horizon) on
-two strata: rows within the window (both backbones saw the whole history)
-and rows beyond it (only the hybrid did). A paired subject-clustered
-bootstrap of the AUROC difference is reported per cell and stratum. If the
-streaming property matters, the difference should appear in the long
-stratum and not in the short one.
+step; the transformer's packed-context evaluation keeps each subject's most
+recent ``max_context`` tokens, so a long record is scored only inside that
+tail window, with the window's start as the model's first visible token.
+Both models' alert dumps (``alerts_rows.parquet``) are joined on (subject,
+visit, time, event) and every subject is tagged from the dumps themselves:
+``truncated`` if the transformer's first scored row comes later than the
+hybrid's (the transformer never saw the record's start), else ``whole``.
+The hazard heads' AUROC is compared per (event, horizon) on the two strata
+with a paired subject-clustered bootstrap of the difference.
 
-History length is the number of timed events with time <= the landmark,
-counted from the held-out MEDS shards in the same hours-since-origin
-frame the dumps use; one token per event, so it is the token position.
+Read the truncated stratum with care: every one of its rows lies within
+``max_context`` tokens of the record's end, and a transformer trained with
+the same end-anchored truncation can read time-to-end off its position in
+the window. Only the whole stratum is a clean backbone comparison.
 
 Usage::
 
@@ -22,7 +22,6 @@ Usage::
         --dump-a ~/runs/full_run_DEC_v12/alerts_rows.parquet --label-a hybrid \\
         --dump-b ~/runs/full_run_DEC_v12_tfm/alerts_rows.parquet \\
         --label-b transformer \\
-        --held-out-shard-dir ~/data/mimiciv_3.1_v1/data/held_out --window 2048 \\
         --output-json ~/runs/full_run_DEC_v12_tfm/long_history_compare.json
 """
 
@@ -39,9 +38,7 @@ import numpy as np
 import polars as pl
 from sklearn.metrics import roc_auc_score
 
-from odyssey.data.alert_events import hours_since_origin, origin_hours
 from odyssey.inference.uncertainty import bootstrap_auroc_delta
-from odyssey.training.data import load_meds_shards
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -50,33 +47,13 @@ logger = logging.getLogger("long_history_compare")
 KEY = ["subject_id", "visit_id", "time_hours", "event"]
 
 
-def history_lengths(events: pl.DataFrame) -> dict[int, np.ndarray]:
-    """Per subject, the sorted hours-since-origin of every timed event.
-
-    ``events`` is a raw MEDS frame (``subject_id``, ``time``, ``code``);
-    the origin is each subject's first timed non-birth event, as in the
-    alerts protocol, so a dump's ``time_hours`` is on the same axis.
-    """
-    origins = origin_hours(events)
-    timed = events.filter(pl.col("time").is_not_null())
-    hours = hours_since_origin(timed, "time", origins).select("subject_id", "time")
-    out: dict[int, np.ndarray] = {}
-    for sid, group in hours.group_by("subject_id"):
-        key = int(sid[0]) if isinstance(sid, tuple) else int(sid)
-        out[key] = np.sort(group["time"].to_numpy().astype(float))
-    return out
-
-
-def tag_history(frame: pl.DataFrame, lengths: dict[int, np.ndarray]) -> pl.DataFrame:
-    """Add ``history_len``: events accumulated by each row's landmark time."""
-    subjects = frame["subject_id"].to_numpy().astype(int)
-    times = frame["time_hours"].to_numpy().astype(float)
-    counts = np.zeros(len(frame), dtype=np.int64)
-    for sid in np.unique(subjects):
-        mask = subjects == sid
-        t = lengths.get(int(sid))
-        counts[mask] = 0 if t is None else np.searchsorted(t, times[mask], side="right")
-    return frame.with_columns(pl.Series("history_len", counts))
+def tag_truncation(a: pl.DataFrame, b: pl.DataFrame) -> pl.DataFrame:
+    """Per subject, ``truncated`` = dump b's first scored row is later than dump a's."""
+    first_a = a.group_by("subject_id").agg(pl.col("time_hours").min().alias("_a0"))
+    first_b = b.group_by("subject_id").agg(pl.col("time_hours").min().alias("_b0"))
+    return first_a.join(first_b, on="subject_id", how="inner").select(
+        "subject_id", (pl.col("_b0") > pl.col("_a0")).alias("truncated")
+    )
 
 
 def join_dumps(
@@ -97,7 +74,6 @@ def compare(
     *,
     label_a: str,
     label_b: str,
-    window: int,
     n_boot: int,
     seed: int,
 ) -> list[dict[str, Any]]:
@@ -109,8 +85,8 @@ def compare(
     for event in sorted(joined["event"].unique().to_list()):
         for h in horizons:
             for stratum, cond in (
-                ("within_window", pl.col("history_len") <= window),
-                ("beyond_window", pl.col("history_len") > window),
+                ("whole", ~pl.col("truncated")),
+                ("truncated", pl.col("truncated")),
             ):
                 sub = joined.filter(
                     (pl.col("event") == event) & cond & pl.col(f"y@{h}").is_not_null()
@@ -141,7 +117,7 @@ def compare(
 
 
 def main() -> None:
-    """Join the two dumps, tag history length, and write the stratified comparison."""
+    """Join the two dumps, tag truncation, and write the stratified comparison."""
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -149,8 +125,6 @@ def main() -> None:
     parser.add_argument("--label-a", default="hybrid")
     parser.add_argument("--dump-b", required=True, type=Path)
     parser.add_argument("--label-b", default="transformer")
-    parser.add_argument("--held-out-shard-dir", required=True)
-    parser.add_argument("--window", type=int, default=2048)
     parser.add_argument("--n-boot", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--output-json", required=True, type=Path)
@@ -162,19 +136,21 @@ def main() -> None:
     logger.info(
         "dump a %d rows, dump b %d rows, joined %d", a.height, b.height, joined.height
     )
-    events = load_meds_shards(args.held_out_shard_dir)
-    lengths = history_lengths(events)
-    del events
-    joined = tag_history(joined, lengths)
-    beyond = int((joined["history_len"] > args.window).sum())
+    tags = tag_truncation(a, b)
+    joined = joined.join(tags, on="subject_id", how="inner")
+    n_trunc = int(tags["truncated"].sum())
+    rows_trunc = int(joined["truncated"].sum())
     logger.info(
-        "rows beyond the %d-token window: %d of %d", args.window, beyond, joined.height
+        "truncated subjects: %d of %d (%d of %d joined rows)",
+        n_trunc,
+        tags.height,
+        rows_trunc,
+        joined.height,
     )
     cells = compare(
         joined,
         label_a=args.label_a,
         label_b=args.label_b,
-        window=args.window,
         n_boot=args.n_boot,
         seed=args.seed,
     )
@@ -198,9 +174,10 @@ def main() -> None:
         "label_a": args.label_a,
         "dump_b": str(args.dump_b),
         "label_b": args.label_b,
-        "window": args.window,
+        "n_subjects": int(tags.height),
+        "n_truncated_subjects": n_trunc,
         "n_joined_rows": int(joined.height),
-        "n_beyond_window": beyond,
+        "n_truncated_rows": rows_trunc,
         "n_boot": args.n_boot,
         "seed": args.seed,
         "cells": cells,
