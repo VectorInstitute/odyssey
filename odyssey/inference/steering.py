@@ -60,7 +60,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -910,6 +910,7 @@ def evaluate_steering(
     control: str | None = None,
     control_seed: int = 0,
     tau: float = 1.0,
+    on_progress: Callable[[list[ConceptSteeringSummary]], None] | None = None,
 ) -> list[ConceptSteeringSummary]:
     """Unsteered pass once, then amplify and suppress each requested concept.
 
@@ -1007,6 +1008,10 @@ def evaluate_steering(
                 )
                 logger.info("[steering] %s", clinician_line(summary))
                 summaries.append(summary)
+        if on_progress is not None:
+            # A dial can take half an hour on a full held-out split; hand the
+            # summaries so far to the caller so a stopped run keeps its results.
+            on_progress(summaries)
     return summaries
 
 
@@ -1167,6 +1172,36 @@ def _main() -> None:
         if layers is None:
             raise TypeError("stream site needs a block-structured backbone")
         layer_index = len(layers) // 2
+
+    def _payload(done: list[ConceptSteeringSummary]) -> dict[str, Any]:
+        return {
+            "site": args.site,
+            "control": args.control,
+            "control_seed": args.control_seed if args.control else None,
+            "stratify_by": prepared.strata.name if prepared.strata else None,
+            "layer_index": layer_index,
+            "tau": args.tau,
+            "suppress_strength": args.suppress_strength,
+            "horizons_hours": list(HORIZONS_HOURS),
+            "event_names": prepared.event_names,
+            "gammas": dict(zip(prepared.concept_names, prepared.gammas, strict=True)),
+            "lifted_tokens": {
+                prepared.concept_names[c]: [
+                    prepared.token_names[prepared.vocab.id_to_token[i]] for i in ids
+                ]
+                for c, ids in prepared.lifted.items()
+            },
+            "at_risk_restricted": prepared.tables is not None,
+            "summaries": _to_json(done),
+        }
+
+    partial = Path(str(args.output_json) + ".partial.json")
+
+    def _write_partial(done: list[ConceptSteeringSummary]) -> None:
+        # Written after every dial so an interrupted run keeps what it has;
+        # removed once the final file is written.
+        partial.write_text(json.dumps(_payload(done), indent=1))
+
     summaries = evaluate_steering(
         prepared,
         concepts=args.concepts,
@@ -1181,28 +1216,11 @@ def _main() -> None:
         control=args.control,
         control_seed=args.control_seed,
         tau=args.tau,
+        on_progress=_write_partial,
     )
-    payload = {
-        "site": args.site,
-        "control": args.control,
-        "control_seed": args.control_seed if args.control else None,
-        "stratify_by": prepared.strata.name if prepared.strata else None,
-        "layer_index": layer_index,
-        "tau": args.tau,
-        "suppress_strength": args.suppress_strength,
-        "horizons_hours": list(HORIZONS_HOURS),
-        "event_names": prepared.event_names,
-        "gammas": dict(zip(prepared.concept_names, prepared.gammas, strict=True)),
-        "lifted_tokens": {
-            prepared.concept_names[c]: [
-                prepared.token_names[prepared.vocab.id_to_token[i]] for i in ids
-            ]
-            for c, ids in prepared.lifted.items()
-        },
-        "at_risk_restricted": prepared.tables is not None,
-        "summaries": _to_json(summaries),
-    }
+    payload = _payload(summaries)
     Path(args.output_json).write_text(json.dumps(payload, indent=1))
+    partial.unlink(missing_ok=True)
     logger.info("[steering] wrote %s (%d summaries)", args.output_json, len(summaries))
 
 

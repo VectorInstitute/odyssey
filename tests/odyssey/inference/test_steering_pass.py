@@ -195,6 +195,7 @@ def test_evaluate_steering_runs_every_expected_dial_both_ways_and_serializes() -
     vocab = _vocab()
     model = _model(len(vocab.token_to_id))
     prepared = _prepared(model, vocab)
+    progress: list[int] = []
     summaries = evaluate_steering(
         prepared,
         concepts=None,
@@ -205,9 +206,12 @@ def test_evaluate_steering_runs_every_expected_dial_both_ways_and_serializes() -
         chunk_size=8,
         device="cpu",
         n_boot=20,
+        on_progress=lambda done: progress.append(len(done)),
     )
     expected = [n for n in NAMES if n in CLINICAL_EXPECTATIONS]
     assert [s.concept for s in summaries] == [n for n in expected for _ in range(2)]
+    # Called once per dial with the summaries so far, so a stopped run keeps them.
+    assert progress == [2 * (i + 1) for i in range(len(expected))]
     assert [s.direction for s in summaries[:2]] == ["amplify", "suppress"]
     assert summaries[0].gamma > 0 > summaries[1].gamma
     assert summaries[0].n_subjects == 4
