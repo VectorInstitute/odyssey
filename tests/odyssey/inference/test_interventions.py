@@ -515,16 +515,16 @@ def test_evaluate_interventions_accepts_a_transformer_backbone(
         lambda *a, **k: (fake_model, object(), object(), fake_config),
     )
 
-    class _ReachedShards(Exception):
+    class _ReachedShardsError(Exception):
         pass
 
     def _reached(*_args: object, **_kwargs: object) -> None:
-        raise _ReachedShards
+        raise _ReachedShardsError
 
     monkeypatch.setattr(interventions_module, "load_meds_shards", _reached)
 
     # No backbone gate: the evaluation proceeds to the held-out shards.
-    with pytest.raises(_ReachedShards):
+    with pytest.raises(_ReachedShardsError):
         evaluate_interventions("/runs/x", "/data/held_out")
 
 
