@@ -1438,8 +1438,14 @@ def fit_baselines_streaming(
     tune: bool = True,
     task_set: str = "v1",
     index_mode: str = "landmark",
+    row_fraction: float = 1.0,
 ) -> dict[tuple[str, float], BaselineModel]:
     """Fit the same models as :func:`fit_baselines`, but shard by shard.
+
+    ``row_fraction`` thins each shard's landmark rows before the per-cell
+    row cap (see :func:`stream_baseline_matrix`), so the GBM can be fitted
+    on a sample of EVERY train shard when the full matrix would not fit in
+    memory; the cap then draws its million rows from all of them.
 
     The full-scale baseline shard set (hundreds of shards, hundreds of
     millions of events) does not fit in memory as one frame -- the same
@@ -1466,6 +1472,8 @@ def fit_baselines_streaming(
         feature_set=feature_set,
         task_set=task_set,
         index_mode=index_mode,
+        row_fraction=row_fraction,
+        seed=seed,
     )
     models: dict[tuple[str, float], BaselineModel] = {}
     if not all_rows:
@@ -2433,6 +2441,7 @@ def _fit_and_score_gbm_baselines(
     task_set: str = "v1",
     index_mode: str = "landmark",
     prefit_baselines: dict[tuple[str, float], BaselineModel] | None = None,
+    baseline_row_fraction: float = 1.0,
 ) -> tuple[dict[tuple[str, float], BaselineModel] | None, dict[str, np.ndarray] | None]:
     """Fit and score the GBM baselines for one alerts pass.
 
@@ -2480,8 +2489,11 @@ def _fit_and_score_gbm_baselines(
             tune=tune_baselines,
             task_set=task_set,
             index_mode=index_mode,
+            row_fraction=baseline_row_fraction,
         )
     else:
+        if baseline_row_fraction < 1.0:
+            raise ValueError("--baseline-row-fraction needs --stream-baseline-shards")
         logger.info("[alerts] fitting GBM baselines on %s", baseline_shard_dir)
         train_raw = _load_prepared_raw(
             baseline_shard_dir, max_baseline_shards, config, source
@@ -2607,6 +2619,7 @@ def evaluate_alerts(  # noqa: PLR0912, PLR0915
     index_mode: str = "landmark",
     unscoreable_out: set[tuple[int, int, float]] | None = None,
     zero_channel: str | None = None,
+    baseline_row_fraction: float = 1.0,
 ) -> list[AlertMetrics]:
     """End to end: model scores + optional GBM baselines, scored on held-out.
 
@@ -2794,6 +2807,7 @@ def evaluate_alerts(  # noqa: PLR0912, PLR0915
         task_set=task_set,
         index_mode=index_mode,
         prefit_baselines=prefit_baselines,
+        baseline_row_fraction=baseline_row_fraction,
     )
     if fitted_baselines_out is not None and baselines is not None:
         fitted_baselines_out.update(baselines)
@@ -2861,6 +2875,14 @@ def _main() -> None:
     )
     parser.add_argument("--max-shards", type=int, default=None)
     parser.add_argument("--max-baseline-shards", type=int, default=None)
+    parser.add_argument(
+        "--baseline-row-fraction",
+        type=float,
+        default=1.0,
+        help="with --stream-baseline-shards: keep this seeded fraction of each train "
+        "shard's landmark rows before the per-cell row cap, so the GBM can be fitted "
+        "on a sample of every train shard (the cap still draws 1M rows per cell)",
+    )
     parser.add_argument("--landmark-hours", type=float, default=4.0)
     parser.add_argument(
         "--index-mode",
@@ -2978,6 +3000,7 @@ def _main() -> None:
         stream_baseline=args.stream_baseline_shards,
         dump_rows_path=args.dump_rows,
         zero_channel=args.zero_channel,
+        baseline_row_fraction=args.baseline_row_fraction,
     )
     out.parent.mkdir(parents=True, exist_ok=True)
     # Per-record field, not a top-level wrapper: build_alert_finding (and
