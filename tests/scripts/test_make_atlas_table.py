@@ -58,3 +58,42 @@ def test_tables_render_rows() -> None:
     assert "unknown 3 & 0.50 & Calcium \\\\" in u
     # legacy JSON names map to the current registry name
     assert "sustained hypotension map & 0.70 & 0.30 & Heart Rhythm \\\\" in k
+
+
+def test_cross_table_lists_each_database_block_in_order() -> None:
+    mod = _load()
+    atlas = {
+        "run_dir": "x",
+        "unknown": [
+            {
+                "name": "unknown_59",
+                "mean_activation": 0.57,
+                "promotes": [
+                    {"name": "Lymphocytes", "shift": 1.0},
+                    {"name": "HDL", "shift": 0.9},
+                ],
+            },
+            {
+                "name": "unknown_63",
+                "mean_activation": 0.55,
+                "promotes": [{"name": "Calcium", "shift": 1.0}],
+            },
+            {
+                "name": "unknown_1",
+                "mean_activation": 0.40,
+                "promotes": [{"name": "Other", "shift": 0.1}],
+            },
+        ],
+    }
+    text = mod.cross_table(
+        [("MIMIC-IV", atlas), ("eICU-CRD", atlas)], top_concepts=2, top_events=2
+    )
+    rows = [
+        line
+        for line in text.splitlines()
+        if line.endswith("\\\\") and "Database" not in line
+    ]
+    assert len(rows) == 4
+    assert rows[0].startswith("MIMIC-IV & 59 & 0.57 & Lymphocytes, HDL")
+    assert rows[2].startswith("eICU-CRD & 59 & 0.57")
+    assert "unknown 1" not in text

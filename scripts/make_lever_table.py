@@ -36,7 +36,9 @@ ARMS: tuple[tuple[str, str], ...] = (
     ("Global-poles mixture, eICU", "vm2/eicu_full_L_v10"),
     ("Additive, eICU", "vm2/eicu_full_ADD_v10"),
     ("Decomposed, MIMIC-IV", "vm1/full_run_DEC_v12"),
-    ("Decomposed, eICU", "vm2/eicu_full_DEC_v12"),
+    ("Decomposed + steering training, MIMIC-IV", "vm1/full_run_DEC_v12_steer"),
+    ("Decomposed, transformer, MIMIC-IV", "vm1/full_run_DEC_v12_tfm"),
+    ("Decomposed, eICU", "vm2/eicu_full_DEC_v13"),
     ("Decomposed + steering training, eICU", "vm2/eicu_full_DEC_v12_steer"),
 )
 PAIRS: tuple[tuple[str, str], ...] = (
@@ -54,7 +56,10 @@ def _load(path: Path) -> Any:
 def _fmt(pair: dict[str, Any] | None) -> str:
     if pair is None:
         return "--"
-    text = f"${100 * pair['point']:+.2f}$ [{100 * pair['ci_low']:+.2f},{100 * pair['ci_high']:+.2f}]"
+    lo, hi = 100 * pair["ci_low"], 100 * pair["ci_high"]
+    # A separated interval whose bound rounds to 0.00 would contradict its bold.
+    d = 3 if min(abs(lo), abs(hi)) < 0.005 else 2
+    text = f"${100 * pair['point']:+.2f}$ [{lo:+.{d}f},{hi:+.{d}f}]"
     return f"\\textbf{{{text}}}" if pair.get("separated") else text
 
 

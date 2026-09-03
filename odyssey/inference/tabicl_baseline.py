@@ -3,7 +3,8 @@
 Alongside the tuned ``HistGradientBoostingClassifier`` baseline
 (:mod:`odyssey.inference.alerts`), this module fits
 `TabICLv2 <https://github.com/soda-inria/tabicl>`_
-(Ismail Fawaz et al., ICML 2025/2026), a pretrained tabular foundation
+(Qu, Holzmüller, Varoquaux and Le Morvan; ICML 2025's TabICL plus its
+2026 v2 follow-up, arXiv:2602.11139), a pretrained tabular foundation
 model that classifies via in-context learning: no gradient-descent
 training on our data at all, just one forward pass conditioned on the
 (subsampled) training rows as context, ``y_pred = model(X_train, y_train,
