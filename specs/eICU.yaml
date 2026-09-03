@@ -21,10 +21,14 @@
 #
 # Two eICU-specific realities this spec encodes, both taken from the reference ETL:
 #
-# 1. **Subjects are health-system stays.** eICU has no cross-stay patient identity
-#    reliable enough to link on (`uniquepid` is documented as unreliable across
-#    hospitals), so `patienthealthsystemstayid` is the subject id -- one subject per
-#    contiguous hospital stay. Every non-patient table only carries
+# 1. **Subjects are health-system stays.** eICU does carry a cross-stay patient id
+#    (`uniquepid`, 139,367 patients over 166,355 hospital stays; 27.6% of stays
+#    belong to patients with more than one), but each stay has its own offset
+#    clock and only a discharge year, so a patient's stays cannot be ordered in
+#    time. `patienthealthsystemstayid` is therefore the subject id -- one subject
+#    per contiguous hospital stay -- and the split is by stay: 24% of held-out
+#    stays have a training-set stay of the same patient (docs/experiments.md,
+#    'eICU patient identity check'). A uniquepid-keyed split is future work. Every non-patient table only carries
 #    `patientunitstayid`, so each joins `patient` to reach the subject id.
 #
 # 2. **All times are pseudotimes reconstructed from offsets.** eICU stores only
