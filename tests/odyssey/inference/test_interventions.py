@@ -456,7 +456,7 @@ def test_run_streaming_intervention_handles_an_unmasked_intervention(
 
 
 # ---------------------------------------------------------------------------
-# evaluate_interventions: backbone="transformer" gate
+# evaluate_interventions: backbone="transformer" streams like training
 # ---------------------------------------------------------------------------
 
 
@@ -487,9 +487,16 @@ def test_evaluate_interventions_rejects_a_non_bottleneck_model(
         evaluate_interventions("/runs/x", "/data/held_out")
 
 
-def test_evaluate_interventions_rejects_transformer_backbone_before_touching_shards(
+def test_evaluate_interventions_accepts_a_transformer_backbone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A transformer run streams the lever test like it trained: no gate.
+
+    Until 2026-09-03 this raised NotImplementedError; the full-scale
+    transformer arm (backbone portability of the decomposition) needs the
+    same label-override numbers as the hybrid, and the TBTT stream here is
+    the transformer's own training view (state ignored, chunk = context).
+    """
     fake_model = ConceptBottleneckSequenceModel(
         TinyGRUBackbone(vocab_size=10, hidden_size=4),
         vocab_size=10,
@@ -508,12 +515,16 @@ def test_evaluate_interventions_rejects_transformer_backbone_before_touching_sha
         lambda *a, **k: (fake_model, object(), object(), fake_config),
     )
 
-    def _boom(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("must not read shards before the backbone gate fires")
+    class _ReachedShardsError(Exception):
+        pass
 
-    monkeypatch.setattr(interventions_module, "load_meds_shards", _boom)
+    def _reached(*_args: object, **_kwargs: object) -> None:
+        raise _ReachedShardsError
 
-    with pytest.raises(NotImplementedError, match="backbone='transformer'"):
+    monkeypatch.setattr(interventions_module, "load_meds_shards", _reached)
+
+    # No backbone gate: the evaluation proceeds to the held-out shards.
+    with pytest.raises(_ReachedShardsError):
         evaluate_interventions("/runs/x", "/data/held_out")
 
 
