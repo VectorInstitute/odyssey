@@ -1198,8 +1198,14 @@ def _fit_baseline_grid(
     seed: int,
     tune: bool,
     event_name: str,
+    fixed: dict[float, tuple[dict[str, float], int]] | None = None,
 ) -> dict[float, BaselineModel]:
     """Fit one GBM per horizon for a single event, given a pre-built feature matrix.
+
+    ``fixed`` maps a horizon to ``(params, n_rounds)`` to fit with exactly
+    those hyperparameters and no tuning, so an ablation can hold the
+    paper's tuned values (alerts.json's ``baseline_params``) constant
+    across feature subsets; horizons absent from it fall back to ``tune``.
 
     ``x_all`` and ``rows`` are already aligned (row ``i`` of ``x_all`` is
     ``rows[i]``'s feature vector); everything upstream of this -- how the
@@ -1250,7 +1256,9 @@ def _fit_baseline_grid(
         fill_columns = sparse_columns(x_fit)
         x_prep = np.array(x_fit, dtype=np.float32, copy=True)
         x_prep[:, fill_columns] = np.nan_to_num(x_prep[:, fill_columns], nan=0.0)
-        if tune:
+        if fixed is not None and h in fixed:
+            params, n_rounds = dict(fixed[h][0]), int(fixed[h][1])
+        elif tune:
             params, n_rounds = _tune_gbm(x_prep, y_fit, groups_all[keep], seed=seed)
         else:
             params, n_rounds = {}, 200
@@ -1317,6 +1325,57 @@ def fit_baselines(
     return models
 
 
+def stream_baseline_matrix(
+    paths: Sequence[Path],
+    prepare: Preparer,
+    binner: QuantileBinner | None,
+    *,
+    alerts: Sequence[AlertEvent],
+    source: str = "mimic_iv",
+    landmark_hours: float = 4.0,
+    feature_set: str = "strong",
+    task_set: str = "v1",
+    index_mode: str = "landmark",
+) -> tuple[np.ndarray, list[IndexRow], dict[str, EventTimes]]:
+    """Build the baseline feature matrix shard by shard.
+
+    Returns ``(x_all, rows, event_times)``: one feature row per landmark
+    index row over every shard in ``paths``, the rows in the same order,
+    and the merged event onset/censoring times the outcomes come from.
+    This is the data half of :func:`fit_baselines_streaming`, split out so
+    a feature ablation (scripts/gbm_feature_ablation.py) can build the
+    matrix once and fit many column subsets from it. An empty ``paths``
+    or a split with no landmarks returns an empty matrix.
+    """
+    event_times: dict[str, EventTimes] = {}
+    all_rows: list[IndexRow] = []
+    feature_chunks: list[np.ndarray] = []
+    for path in paths:
+        raw = prepare(load_meds_shard(path))
+        binned = add_value_tokens(raw, binner, source=source)
+        merge_event_times(
+            event_times, all_event_times(raw, alerts, source, task_set=task_set)
+        )
+        shard_rows = _index_rows_from_events(
+            binned, alerts, landmark_hours=landmark_hours, index_mode=index_mode
+        )[alerts[0].name]
+        if not shard_rows:
+            continue
+        if feature_set == "strong":
+            feats = strong_baseline_features(binned, shard_rows, source=source)
+        elif feature_set == "strong_text":
+            feats = strong_text_baseline_features(binned, shard_rows, source=source)
+        else:
+            feats = baseline_features(binned, shard_rows, source=source)
+        all_rows.extend(shard_rows)
+        feature_chunks.append(feats)
+    if not all_rows:
+        return np.zeros((0, 0), dtype=np.float32), [], event_times
+    x_all = np.concatenate(feature_chunks, axis=0)
+    del feature_chunks  # concatenated: the per-shard copies are dead weight now
+    return x_all, all_rows, event_times
+
+
 def fit_baselines_streaming(
     paths: Sequence[Path],
     prepare: Preparer,
@@ -1349,33 +1408,20 @@ def fit_baselines_streaming(
     in-memory path. GBM fitting itself is unchanged, delegated to
     :func:`_fit_baseline_grid`.
     """
-    event_times: dict[str, EventTimes] = {}
-    all_rows: list[IndexRow] = []
-    feature_chunks: list[np.ndarray] = []
-    for path in paths:
-        raw = prepare(load_meds_shard(path))
-        binned = add_value_tokens(raw, binner, source=source)
-        merge_event_times(
-            event_times, all_event_times(raw, alerts, source, task_set=task_set)
-        )
-        shard_rows = _index_rows_from_events(
-            binned, alerts, landmark_hours=landmark_hours, index_mode=index_mode
-        )[alerts[0].name]
-        if not shard_rows:
-            continue
-        if feature_set == "strong":
-            feats = strong_baseline_features(binned, shard_rows, source=source)
-        elif feature_set == "strong_text":
-            feats = strong_text_baseline_features(binned, shard_rows, source=source)
-        else:
-            feats = baseline_features(binned, shard_rows, source=source)
-        all_rows.extend(shard_rows)
-        feature_chunks.append(feats)
+    x_all, all_rows, event_times = stream_baseline_matrix(
+        paths,
+        prepare,
+        binner,
+        alerts=alerts,
+        source=source,
+        landmark_hours=landmark_hours,
+        feature_set=feature_set,
+        task_set=task_set,
+        index_mode=index_mode,
+    )
     models: dict[tuple[str, float], BaselineModel] = {}
     if not all_rows:
         return models
-    x_all = np.concatenate(feature_chunks, axis=0)
-    del feature_chunks  # concatenated: the per-shard copies are dead weight now
     for alert in alerts:
         if alert.name not in event_times:
             continue
