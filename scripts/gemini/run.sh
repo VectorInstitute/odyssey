@@ -1184,12 +1184,16 @@ import sys
 
 # Mirrors odyssey/inference/run_inference.py's InferenceResults/
 # odyssey/training/metrics.py's TaskMetrics/ConceptMetrics/
-# ObservabilityMetrics/TimeMetrics dataclasses exactly -- keep in sync by
+# ObservabilityMetrics/TimeMetrics/ValueMetrics dataclasses exactly -- keep in sync by
 # hand if those ever gain a field; the whole point of a whitelist is that
 # an unrecognized field refuses instead of silently passing through.
 TASK_METRICS_KEYS = {
     "cross_entropy", "perplexity", "top1_accuracy", "top5_accuracy",
-    "n_predictions", "set_top1_accuracy",
+    "n_predictions", "set_top1_accuracy", "n_set_predictions",
+    "category_set_top1_accuracy", "n_category_predictions",
+}
+VALUE_METRICS_KEYS = {
+    "crps", "n_positions", "coverage", "median_absolute_error", "by_signal",
 }
 CONCEPT_METRICS_KEYS = {
     "name", "n_observed", "prevalence", "auroc", "auprc",
@@ -1206,7 +1210,7 @@ CALIBRATION_ENTRY_KEYS = {"predicted", "observed"}
 TOP_LEVEL_KEYS = {
     "task_metrics", "task_metrics_by_code_type", "concept_metrics",
     "observability_metrics", "orthogonality", "n_patient_ends_scored",
-    "time_metrics", "tail_slice",
+    "time_metrics", "value_metrics", "tail_slice",
 }
 
 
@@ -1249,9 +1253,31 @@ def _check_time_metrics(obj, label):
     )
 
 
+def _check_value_metrics(obj, label, nested=False):
+    # ValueMetrics: aggregate CRPS / coverage-by-quantile-level / MAE, with
+    # by_signal one level deep keyed by curated panel signal name.
+    if obj is None:
+        return
+    _check_no_extra_keys(obj, VALUE_METRICS_KEYS, label)
+    coverage = obj.get("coverage")
+    if coverage is not None:
+        _require_dict(coverage, f"{label}.coverage")
+        for level, value in coverage.items():
+            if not isinstance(value, (int, float)):
+                raise ValueError(f"{label}.coverage[{level!r}]: expected a number")
+    by_signal = obj.get("by_signal")
+    if by_signal:
+        if nested:
+            raise ValueError(f"{label}.by_signal: must be empty one level down")
+        _require_dict(by_signal, f"{label}.by_signal")
+        for signal, entry in by_signal.items():
+            _check_value_metrics(entry, f"{label}.by_signal[{signal!r}]", nested=True)
+
+
 def validate(obj, label="root"):
     _check_no_extra_keys(obj, TOP_LEVEL_KEYS, label)
     _check_task_metrics(obj.get("task_metrics"), f"{label}.task_metrics")
+    _check_value_metrics(obj.get("value_metrics"), f"{label}.value_metrics")
 
     by_code_type = obj.get("task_metrics_by_code_type")
     if by_code_type is not None:
