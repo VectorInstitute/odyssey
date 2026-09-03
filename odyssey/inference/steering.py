@@ -79,7 +79,10 @@ from odyssey.data.streaming import PackedLaneSampler, StreamingChunk, move_to_de
 from odyssey.data.value_binning import add_value_tokens
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.run_inference import load_run, refuse_existing_output
-from odyssey.models.concept_bottleneck import BottleneckIntervention
+from odyssey.models.concept_bottleneck import (
+    BottleneckIntervention,
+    DecomposedConceptBottleneck,
+)
 from odyssey.models.sequence_model import (
     ConceptBottleneckSequenceModel,
     ConceptLabelDict,
@@ -276,6 +279,11 @@ class SteeringPush:
     suppress_strength: float | None = None
     """``s`` for the ReLU-gated logit mask, applied when ``gamma < 0``;
     ``None`` means ``|gamma|``."""
+    direction_override: torch.Tensor | None = None
+    """A unit vector to push along instead of ``e_c``: the control arms
+    (a seeded random direction, or an unnamed slot's ``U_j``) that ask
+    whether the concept direction carries more than a generic severity
+    axis. Stream site only."""
 
 
 def _outcome_risk(
@@ -303,7 +311,16 @@ def _forward_pushed(
             chunk.batch, state=state, reset_mask=chunk.reset_mask
         )
         return logits, out.concept_probs, out.bottleneck, new_state
-    direction = steering_direction(model, push.concept_index)
+    if push.direction_override is not None:
+        if push.site == "bottleneck":
+            raise ValueError(
+                "a control direction can only be pushed at the stream site"
+            )
+        direction = push.direction_override.to(
+            _known_embedding(model, push.concept_index)
+        )
+    else:
+        direction = steering_direction(model, push.concept_index)
     if push.site == "bottleneck":
         hidden, new_state = model.backbone(
             chunk.batch, state=state, reset_mask=chunk.reset_mask
@@ -581,6 +598,8 @@ class ConceptSteeringSummary:
     outcomes: list[OutcomeShift] = field(default_factory=list)
     stratum: str | None = None
     """``name=0``/``name=1`` when the pass was split by a concept's running label."""
+    direction_source: str = "concept"
+    """``concept`` for e_c; ``random`` or ``unknown:<slot>`` for a control push."""
 
     @property
     def sign_agreement(self) -> float | None:
@@ -843,6 +862,39 @@ def prepare(
     )
 
 
+def control_direction(
+    model: ConceptBottleneckSequenceModel,
+    concept_index: int,
+    *,
+    control: str,
+    seed: int = 0,
+) -> tuple[torch.Tensor, int | None]:
+    """Return a unit direction that is not the concept's own: ``random`` or ``unknown``.
+
+    ``random`` draws a fresh Gaussian unit vector per concept (seeded by
+    ``seed + concept_index``, so the two directions of a dial share it);
+    ``unknown`` takes the decomposed bottleneck's unnamed slot
+    ``U_j``, ``j = concept_index mod n_unknown``, normalized. Returns the
+    direction and the slot used (``None`` for random). The caller
+    calibrates gamma on it with :func:`steering_gamma`, exactly as for
+    ``e_c``, so a control push moves the output by the same peak logit.
+    """
+    known = _known_embedding(model, concept_index)
+    if control == "random":
+        gen = torch.Generator().manual_seed(seed + concept_index)
+        vec = torch.randn(known.shape[0], generator=gen).to(known)
+        return vec / vec.norm().clamp_min(1e-12), None
+    if control == "unknown":
+        bottleneck = model.bottleneck
+        if not isinstance(bottleneck, DecomposedConceptBottleneck):
+            raise ValueError("the unknown-slot control needs the decomposed bottleneck")
+        u = bottleneck.unknown_embeddings().detach()
+        slot = concept_index % int(u.shape[0])
+        vec = u[slot]
+        return vec / vec.norm().clamp_min(1e-12), slot
+    raise ValueError(f"unknown control {control!r}; expected 'random' or 'unknown'")
+
+
 def evaluate_steering(
     prepared: SteeringPrepared,
     *,
@@ -855,6 +907,9 @@ def evaluate_steering(
     device: str,
     n_boot: int,
     stratify: PositionStrata | None = None,
+    control: str | None = None,
+    control_seed: int = 0,
+    tau: float = 1.0,
 ) -> list[ConceptSteeringSummary]:
     """Unsteered pass once, then amplify and suppress each requested concept.
 
@@ -893,6 +948,15 @@ def evaluate_steering(
     summaries: list[ConceptSteeringSummary] = []
     for column, (concept, c) in enumerate(zip(chosen, indices, strict=True)):
         gamma = prepared.gammas[c]
+        override: torch.Tensor | None = None
+        control_slot: int | None = None
+        if control is not None:
+            # A control push replaces e_c but keeps the dial's calibration
+            # rule: gamma = tau / peak(direction), Eq. 19 on the control.
+            override, control_slot = control_direction(
+                prepared.model, c, control=control, seed=control_seed
+            )
+            gamma = steering_gamma(prepared.model, override, tau=tau)
         directions: tuple[tuple[Direction, float], ...] = (
             ("amplify", gamma),
             ("suppress", -gamma),
@@ -904,6 +968,7 @@ def evaluate_steering(
                 site=site,
                 layer_index=layer_index,
                 suppress_strength=suppress_strength,
+                direction_override=override,
             )
             steered = run_steering_pass(
                 prepared.model,
@@ -933,6 +998,13 @@ def evaluate_steering(
                     n_boot=n_boot,
                 )
                 summary.stratum = stratum
+                summary.direction_source = (
+                    "concept"
+                    if control is None
+                    else f"{control}:{control_slot}"
+                    if control_slot is not None
+                    else control
+                )
                 logger.info("[steering] %s", clinician_line(summary))
                 summaries.append(summary)
     return summaries
@@ -1050,6 +1122,14 @@ def _main() -> None:
         default=None,
         help="registry concept whose running label splits every dial into two strata",
     )
+    parser.add_argument(
+        "--control",
+        choices=("random", "unknown"),
+        default=None,
+        help="push a control direction instead of e_c (same gamma calibration): "
+        "a seeded random unit vector, or the unnamed slot U_j, j = c mod n_unknown",
+    )
+    parser.add_argument("--control-seed", type=int, default=0)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
     logging.basicConfig(
@@ -1098,9 +1178,14 @@ def _main() -> None:
         device=device,
         n_boot=args.n_boot,
         stratify=prepared.strata,
+        control=args.control,
+        control_seed=args.control_seed,
+        tau=args.tau,
     )
     payload = {
         "site": args.site,
+        "control": args.control,
+        "control_seed": args.control_seed if args.control else None,
         "stratify_by": prepared.strata.name if prepared.strata else None,
         "layer_index": layer_index,
         "tau": args.tau,
