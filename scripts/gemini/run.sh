@@ -1532,16 +1532,22 @@ PY
         # shards, TabICL 4), n differed 8.8x, and the two could never share a
         # table -- see tab:tabicl's separate existence. One knob feeds both.
         local alert_shards="${GEMINI_ALERT_SHARDS:-4}"
-        local baseline_shards="${GEMINI_BASELINE_SHARDS:-30}"
+        local baseline_shards="${GEMINI_BASELINE_SHARDS:-1000}"
+        local baseline_row_fraction="${GEMINI_BASELINE_ROW_FRACTION:-0.1}"
+        local alerts_tag="${GEMINI_ALERTS_TAG:-}"
         local num_lanes="${GEMINI_EVAL_NUM_LANES:-16}"
         local chunk="${GEMINI_EVAL_CHUNK:-512}"
         local checkpoint="${GEMINI_ALERT_CHECKPOINT:-checkpoint_best.pt}"
 
         echo "=== alerts ($run_name) ==="
         echo "Hazard heads vs the strong tuned per-event GBM on the landmark rows."
-        echo "alert_shards=$alert_shards (held-out), baseline_shards=$baseline_shards (train),"
+        echo "alert_shards=$alert_shards (held-out), baseline_shards=$baseline_shards (train,"
+        echo "1000 = every shard), baseline_row_fraction=$baseline_row_fraction (seeded thinning"
+        echo "of each train shard's landmark rows before the 1M-row per-cell cap: the MIMIC-IV"
+        echo "and eICU GBMs were fitted on every train shard and GEMINI's must be too),"
         echo "num_lanes=$num_lanes, chunk=$chunk, checkpoint=$checkpoint."
-        echo "Override via GEMINI_ALERT_SHARDS / GEMINI_BASELINE_SHARDS /"
+        echo "Override via GEMINI_ALERT_SHARDS / GEMINI_BASELINE_SHARDS / GEMINI_BASELINE_ROW_FRACTION /"
+        echo "GEMINI_ALERTS_TAG (suffix for alerts<tag>.json, to keep an earlier pass) /"
         echo "GEMINI_EVAL_NUM_LANES / GEMINI_EVAL_CHUNK / GEMINI_ALERT_CHECKPOINT."
         if [[ -z "${TMUX:-}" && -z "${STY:-}" ]]; then
             echo "WARNING: this doesn't look like a tmux or screen session --" >&2
@@ -1574,8 +1580,8 @@ PY
             fi
         done
 
-        OUTPUT_JSON="$RUN_DIR/alerts.json"
-        DUMP_ROWS="$RUN_DIR/alerts_rows.parquet"
+        OUTPUT_JSON="$RUN_DIR/alerts${alerts_tag}.json"
+        DUMP_ROWS="$RUN_DIR/alerts_rows${alerts_tag}.parquet"
         echo "Run dir: $RUN_DIR"
         echo "Held-out: $HELD_OUT_SHARD_DIR"
         echo "Train (GBM fit): $TRAIN_SHARD_DIR"
@@ -1597,13 +1603,14 @@ PY
             --output-json "$OUTPUT_JSON" \
             --dump-rows "$DUMP_ROWS" \
             --checkpoint "$checkpoint" \
+            --baseline-row-fraction "$baseline_row_fraction" \
             --stream-baseline-shards
         deactivate
         source "$VENV/bin/activate"
 
         echo "$STEP complete. Results at $OUTPUT_JSON"
 
-        if ! _export_alerts_summary "$run_name" "$OUTPUT_JSON"; then
+        if ! _export_alerts_summary "$run_name$alerts_tag" "$OUTPUT_JSON"; then
             echo "WARNING: this run's alerts summary was not exported (see above)." >&2
         fi
     }

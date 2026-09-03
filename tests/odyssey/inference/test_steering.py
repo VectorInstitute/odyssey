@@ -7,21 +7,26 @@ Eq. 21, the exact ``gamma e_c`` displacement at the bottleneck site, and
 the paired, subject-level summary against declared expectations.
 """
 
+import contextlib
+
 import numpy as np
 import polars as pl
 import pytest
 import torch
 from torch import nn
 
+import odyssey.inference.steering as steering_module
 from odyssey.data.concepts import concepts_for_source
 from odyssey.data.streaming import StreamingChunk
 from odyssey.data.types import AuxiliaryInputs, ClinicalSequenceBatch
+from odyssey.inference.alerts import _zero_intervention
 from odyssey.inference.steering import (
     CLINICAL_EXPECTATIONS,
     HORIZONS_HOURS,
     SteeringPush,
     SubjectReadout,
     _forward_pushed,
+    control_direction,
     expectations_for,
     paired_delta,
     summarize_push,
@@ -326,3 +331,90 @@ def test_rank_by_lift_applies_support_and_threshold() -> None:
     assert rank_by_lift(total, per_concept, top_k=3, min_count=15, min_share=0.6) == {
         0: []
     }
+
+
+# --- control directions (the "is it just a severity axis?" arms) -------------
+
+
+def test_control_directions_are_unit_seeded_and_not_the_concept() -> None:
+    model = _model()
+    rnd, slot = control_direction(model, 1, control="random", seed=7)
+    again, _ = control_direction(model, 1, control="random", seed=7)
+    other, _ = control_direction(model, 2, control="random", seed=7)
+    assert slot is None
+    assert torch.isclose(rnd.norm(), torch.tensor(1.0), atol=1e-5)
+    assert torch.allclose(rnd, again)  # same seed + concept -> same vector
+    assert not torch.allclose(rnd, other)  # a different concept draws afresh
+    e_c = steering_direction(model, 1)
+    assert abs(float(rnd @ e_c)) < 0.99
+    unk, uslot = control_direction(model, 1, control="unknown", seed=0)
+    n_unknown = model.bottleneck.unknown_embeddings().shape[0]
+    assert uslot == 1 % n_unknown
+    assert torch.isclose(unk.norm(), torch.tensor(1.0), atol=1e-5)
+    # The control keeps the dial's calibration rule: gamma = tau / peak(direction).
+    g = steering_gamma(model, rnd, tau=1.0)
+    assert g > 0
+    with pytest.raises(ValueError, match="random' or 'unknown"):
+        control_direction(model, 1, control="bogus")
+
+
+def test_direction_override_replaces_e_c_at_the_stream_site(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The control vector, scaled by gamma, is what reaches the injection hook."""
+    model = _model()
+    chunk = _chunk()
+    captured: list[torch.Tensor] = []
+
+    @contextlib.contextmanager
+    def _capture(_backbone, _layer, vector):  # noqa: ANN001, ANN202
+        captured.append(vector.detach().clone())
+        yield
+
+    monkeypatch.setattr(steering_module, "stream_injection", _capture)
+    vec = torch.nn.functional.normalize(torch.randn(HIDDEN), dim=0)
+    _forward_pushed(
+        model,
+        chunk,
+        None,
+        SteeringPush(concept_index=1, gamma=1.5, site="stream", layer_index=0),
+    )
+    _forward_pushed(
+        model,
+        chunk,
+        None,
+        SteeringPush(
+            concept_index=1,
+            gamma=1.5,
+            site="stream",
+            layer_index=0,
+            direction_override=vec,
+        ),
+    )
+    assert torch.allclose(captured[0], 1.5 * steering_direction(model, 1), atol=1e-6)
+    assert torch.allclose(captured[1], 1.5 * vec, atol=1e-6)
+    with pytest.raises(ValueError, match="stream site"):
+        _forward_pushed(
+            model,
+            chunk,
+            None,
+            SteeringPush(
+                concept_index=1, gamma=1.0, site="bottleneck", direction_override=vec
+            ),
+        )
+
+
+def test_hazard_heads_can_be_scored_with_a_channel_zeroed() -> None:
+    model = _model()
+    chunk = _chunk()
+    plain = model.forward_with_features(chunk.batch, reset_mask=chunk.reset_mask)
+    for channel in ("known", "unknown", "residual"):
+        zeroed = model.forward_with_features(
+            chunk.batch,
+            reset_mask=chunk.reset_mask,
+            intervention=_zero_intervention(channel),
+        )
+        assert not torch.allclose(zeroed.features, plain.features), channel
+    assert _zero_intervention(None) is None
+    with pytest.raises(ValueError, match="known, unknown or residual"):
+        _zero_intervention("bottleneck")

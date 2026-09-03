@@ -87,6 +87,7 @@ from odyssey.data.vocabulary import Vocabulary, code_type
 from odyssey.inference.baseline_features import StrongFeatureBuilder
 from odyssey.inference.baseline_features import feature_names as strong_feature_names
 from odyssey.inference.run_inference import load_run, refuse_existing_output
+from odyssey.models.concept_bottleneck import BottleneckIntervention
 from odyssey.models.sequence_model import SequenceModel
 from odyssey.models.time_to_event import probability_within
 from odyssey.training.data import (
@@ -381,8 +382,14 @@ def collect_model_scores(
     max_context: int = 4096,
     truncation_boundaries_out: dict[int, float] | None = None,
     index_mode: str = "landmark",
+    intervention: BottleneckIntervention | None = None,
 ) -> dict[str, list[IndexRow]]:
     """One streaming pass; per alert, index rows with model risk scores.
+
+    ``intervention`` (e.g. ``BottleneckIntervention(zero_known=True)``)
+    is applied inside the bottleneck on every forward, so the same
+    landmark rows are scored with a channel removed: the completeness
+    probe on the hazard heads themselves.
 
     ``index_mode="visit_end"`` selects each visit's last position instead
     of landmark buckets (see :data:`INDEX_MODES`); ``landmark_hours`` is
@@ -456,7 +463,10 @@ def collect_model_scores(
             if packed:
                 landmark_state = None  # see the docstring: never carried
             fwd = model.forward_with_features(
-                chunk.batch, state=state, reset_mask=chunk.reset_mask
+                chunk.batch,
+                state=state,
+                reset_mask=chunk.reset_mask,
+                intervention=intervention,
             )
             logits, state = fwd.logits, fwd.state
             sids = chunk.subject_ids
@@ -1198,8 +1208,14 @@ def _fit_baseline_grid(
     seed: int,
     tune: bool,
     event_name: str,
+    fixed: dict[float, tuple[dict[str, float], int]] | None = None,
 ) -> dict[float, BaselineModel]:
     """Fit one GBM per horizon for a single event, given a pre-built feature matrix.
+
+    ``fixed`` maps a horizon to ``(params, n_rounds)`` to fit with exactly
+    those hyperparameters and no tuning, so an ablation can hold the
+    paper's tuned values (alerts.json's ``baseline_params``) constant
+    across feature subsets; horizons absent from it fall back to ``tune``.
 
     ``x_all`` and ``rows`` are already aligned (row ``i`` of ``x_all`` is
     ``rows[i]``'s feature vector); everything upstream of this -- how the
@@ -1250,7 +1266,9 @@ def _fit_baseline_grid(
         fill_columns = sparse_columns(x_fit)
         x_prep = np.array(x_fit, dtype=np.float32, copy=True)
         x_prep[:, fill_columns] = np.nan_to_num(x_prep[:, fill_columns], nan=0.0)
-        if tune:
+        if fixed is not None and h in fixed:
+            params, n_rounds = dict(fixed[h][0]), int(fixed[h][1])
+        elif tune:
             params, n_rounds = _tune_gbm(x_prep, y_fit, groups_all[keep], seed=seed)
         else:
             params, n_rounds = {}, 200
@@ -1317,6 +1335,95 @@ def fit_baselines(
     return models
 
 
+def _row_keep_mask(rows: Sequence[IndexRow], fraction: float, seed: int) -> np.ndarray:
+    """Keep each row with probability ``fraction``, decided by its key alone.
+
+    A row's fate depends on ``(subject, visit, time, seed)`` through a
+    64-bit integer mix, not on its position, so the same rows are kept
+    whatever order a shard yields them in (index rows are grouped from a
+    frame, and that order is not stable across calls).
+    """
+    subj = np.array([r.subject_id for r in rows], dtype=np.uint64)
+    visit = np.array([r.visit_id for r in rows], dtype=np.uint64)
+    quarter_hours = np.array(
+        [int(round(r.time_hours * 4)) for r in rows], dtype=np.uint64
+    )
+    x = subj * np.uint64(0x9E3779B97F4A7C15)
+    x ^= visit * np.uint64(0xBF58476D1CE4E5B9)
+    x ^= quarter_hours * np.uint64(0x94D049BB133111EB)
+    x ^= np.uint64(seed) * np.uint64(0xD6E8FEB86659FD93)
+    x ^= x >> np.uint64(31)
+    x *= np.uint64(0x9E3779B97F4A7C15)
+    x ^= x >> np.uint64(29)
+    unit = (x >> np.uint64(11)).astype(np.float64) / float(1 << 53)
+    mask: np.ndarray = unit < fraction
+    return mask
+
+
+def stream_baseline_matrix(
+    paths: Sequence[Path],
+    prepare: Preparer,
+    binner: QuantileBinner | None,
+    *,
+    alerts: Sequence[AlertEvent],
+    source: str = "mimic_iv",
+    landmark_hours: float = 4.0,
+    feature_set: str = "strong",
+    task_set: str = "v1",
+    index_mode: str = "landmark",
+    row_fraction: float = 1.0,
+    seed: int = 0,
+) -> tuple[np.ndarray, list[IndexRow], dict[str, EventTimes]]:
+    """Build the baseline feature matrix shard by shard.
+
+    Returns ``(x_all, rows, event_times)``: one feature row per landmark
+    index row over every shard in ``paths``, the rows in the same order,
+    and the merged event onset/censoring times the outcomes come from.
+    This is the data half of :func:`fit_baselines_streaming`, split out so
+    a feature ablation (scripts/gbm_feature_ablation.py) can build the
+    matrix once and fit many column subsets from it. An empty ``paths``
+    or a split with no landmarks returns an empty matrix.
+
+    ``row_fraction`` < 1 keeps a seeded uniform sample of each shard's
+    landmark rows (event times are still merged from every row), so the
+    matrix over every train shard fits in memory beside a training job:
+    the fit set stays a sample of the same shards the paper's GBM was
+    fitted on, just thinner before the per-cell row cap applies.
+    """
+    if not 0.0 < row_fraction <= 1.0:
+        raise ValueError("row_fraction must be in (0, 1]")
+    event_times: dict[str, EventTimes] = {}
+    all_rows: list[IndexRow] = []
+    feature_chunks: list[np.ndarray] = []
+    for path in paths:
+        raw = prepare(load_meds_shard(path))
+        binned = add_value_tokens(raw, binner, source=source)
+        merge_event_times(
+            event_times, all_event_times(raw, alerts, source, task_set=task_set)
+        )
+        shard_rows = _index_rows_from_events(
+            binned, alerts, landmark_hours=landmark_hours, index_mode=index_mode
+        )[alerts[0].name]
+        if row_fraction < 1.0 and shard_rows:
+            keep = np.flatnonzero(_row_keep_mask(shard_rows, row_fraction, seed))
+            shard_rows = [shard_rows[i] for i in keep]
+        if not shard_rows:
+            continue
+        if feature_set == "strong":
+            feats = strong_baseline_features(binned, shard_rows, source=source)
+        elif feature_set == "strong_text":
+            feats = strong_text_baseline_features(binned, shard_rows, source=source)
+        else:
+            feats = baseline_features(binned, shard_rows, source=source)
+        all_rows.extend(shard_rows)
+        feature_chunks.append(feats)
+    if not all_rows:
+        return np.zeros((0, 0), dtype=np.float32), [], event_times
+    x_all = np.concatenate(feature_chunks, axis=0)
+    del feature_chunks  # concatenated: the per-shard copies are dead weight now
+    return x_all, all_rows, event_times
+
+
 def fit_baselines_streaming(
     paths: Sequence[Path],
     prepare: Preparer,
@@ -1331,8 +1438,14 @@ def fit_baselines_streaming(
     tune: bool = True,
     task_set: str = "v1",
     index_mode: str = "landmark",
+    row_fraction: float = 1.0,
 ) -> dict[tuple[str, float], BaselineModel]:
     """Fit the same models as :func:`fit_baselines`, but shard by shard.
+
+    ``row_fraction`` thins each shard's landmark rows before the per-cell
+    row cap (see :func:`stream_baseline_matrix`), so the GBM can be fitted
+    on a sample of EVERY train shard when the full matrix would not fit in
+    memory; the cap then draws its million rows from all of them.
 
     The full-scale baseline shard set (hundreds of shards, hundreds of
     millions of events) does not fit in memory as one frame -- the same
@@ -1349,33 +1462,22 @@ def fit_baselines_streaming(
     in-memory path. GBM fitting itself is unchanged, delegated to
     :func:`_fit_baseline_grid`.
     """
-    event_times: dict[str, EventTimes] = {}
-    all_rows: list[IndexRow] = []
-    feature_chunks: list[np.ndarray] = []
-    for path in paths:
-        raw = prepare(load_meds_shard(path))
-        binned = add_value_tokens(raw, binner, source=source)
-        merge_event_times(
-            event_times, all_event_times(raw, alerts, source, task_set=task_set)
-        )
-        shard_rows = _index_rows_from_events(
-            binned, alerts, landmark_hours=landmark_hours, index_mode=index_mode
-        )[alerts[0].name]
-        if not shard_rows:
-            continue
-        if feature_set == "strong":
-            feats = strong_baseline_features(binned, shard_rows, source=source)
-        elif feature_set == "strong_text":
-            feats = strong_text_baseline_features(binned, shard_rows, source=source)
-        else:
-            feats = baseline_features(binned, shard_rows, source=source)
-        all_rows.extend(shard_rows)
-        feature_chunks.append(feats)
+    x_all, all_rows, event_times = stream_baseline_matrix(
+        paths,
+        prepare,
+        binner,
+        alerts=alerts,
+        source=source,
+        landmark_hours=landmark_hours,
+        feature_set=feature_set,
+        task_set=task_set,
+        index_mode=index_mode,
+        row_fraction=row_fraction,
+        seed=seed,
+    )
     models: dict[tuple[str, float], BaselineModel] = {}
     if not all_rows:
         return models
-    x_all = np.concatenate(feature_chunks, axis=0)
-    del feature_chunks  # concatenated: the per-shard copies are dead weight now
     for alert in alerts:
         if alert.name not in event_times:
             continue
@@ -2339,6 +2441,7 @@ def _fit_and_score_gbm_baselines(
     task_set: str = "v1",
     index_mode: str = "landmark",
     prefit_baselines: dict[tuple[str, float], BaselineModel] | None = None,
+    baseline_row_fraction: float = 1.0,
 ) -> tuple[dict[tuple[str, float], BaselineModel] | None, dict[str, np.ndarray] | None]:
     """Fit and score the GBM baselines for one alerts pass.
 
@@ -2386,8 +2489,11 @@ def _fit_and_score_gbm_baselines(
             tune=tune_baselines,
             task_set=task_set,
             index_mode=index_mode,
+            row_fraction=baseline_row_fraction,
         )
     else:
+        if baseline_row_fraction < 1.0:
+            raise ValueError("--baseline-row-fraction needs --stream-baseline-shards")
         logger.info("[alerts] fitting GBM baselines on %s", baseline_shard_dir)
         train_raw = _load_prepared_raw(
             baseline_shard_dir, max_baseline_shards, config, source
@@ -2473,6 +2579,21 @@ def _score_degraded_at_clean_rows(
     return rows, set(unscoreable)
 
 
+def _zero_intervention(zero_channel: str | None) -> BottleneckIntervention | None:
+    """``--zero-channel`` -> the bottleneck intervention that removes it."""
+    if zero_channel is None:
+        return None
+    if zero_channel == "known":
+        return BottleneckIntervention(zero_known=True)
+    if zero_channel == "unknown":
+        return BottleneckIntervention(zero_unknown=True)
+    if zero_channel == "residual":
+        return BottleneckIntervention(zero_residual=True)
+    raise ValueError(
+        f"zero_channel must be known, unknown or residual, got {zero_channel!r}"
+    )
+
+
 def evaluate_alerts(  # noqa: PLR0912, PLR0915
     run_dir: str | Path,
     held_out_shard_dir: str | Path,
@@ -2497,6 +2618,8 @@ def evaluate_alerts(  # noqa: PLR0912, PLR0915
     dump_rows_path: str | Path | None = None,
     index_mode: str = "landmark",
     unscoreable_out: set[tuple[int, int, float]] | None = None,
+    zero_channel: str | None = None,
+    baseline_row_fraction: float = 1.0,
 ) -> list[AlertMetrics]:
     """End to end: model scores + optional GBM baselines, scored on held-out.
 
@@ -2635,6 +2758,7 @@ def evaluate_alerts(  # noqa: PLR0912, PLR0915
             max_context=getattr(config, "max_context", 4096),
             truncation_boundaries_out=truncation_boundaries,
             index_mode=index_mode,
+            intervention=_zero_intervention(zero_channel),
         )
     # Runs for every backbone, not just "transformer": collect_model_scores'
     # row-construction path is unconditional on `packed` (see its own
@@ -2683,6 +2807,7 @@ def evaluate_alerts(  # noqa: PLR0912, PLR0915
         task_set=task_set,
         index_mode=index_mode,
         prefit_baselines=prefit_baselines,
+        baseline_row_fraction=baseline_row_fraction,
     )
     if fitted_baselines_out is not None and baselines is not None:
         fitted_baselines_out.update(baselines)
@@ -2750,6 +2875,14 @@ def _main() -> None:
     )
     parser.add_argument("--max-shards", type=int, default=None)
     parser.add_argument("--max-baseline-shards", type=int, default=None)
+    parser.add_argument(
+        "--baseline-row-fraction",
+        type=float,
+        default=1.0,
+        help="with --stream-baseline-shards: keep this seeded fraction of each train "
+        "shard's landmark rows before the per-cell row cap, so the GBM can be fitted "
+        "on a sample of every train shard (the cap still draws 1M rows per cell)",
+    )
     parser.add_argument("--landmark-hours", type=float, default=4.0)
     parser.add_argument(
         "--index-mode",
@@ -2782,6 +2915,14 @@ def _main() -> None:
     parser.add_argument("--num-lanes", type=int, default=8)
     parser.add_argument("--chunk-size", type=int, default=256)
     parser.add_argument("--checkpoint", default=None)
+    parser.add_argument(
+        "--zero-channel",
+        choices=("known", "unknown", "residual"),
+        default=None,
+        help="score the hazard heads with this bottleneck channel zeroed on every "
+        "forward (the completeness probe on the heads the dials read); run without "
+        "--baseline-shard-dir and compare against the unzeroed alerts.json",
+    )
     parser.add_argument(
         "--baseline-features",
         choices=BASELINE_FEATURE_SETS,
@@ -2858,6 +2999,8 @@ def _main() -> None:
         tune_baselines=not args.no_tune_baselines,
         stream_baseline=args.stream_baseline_shards,
         dump_rows_path=args.dump_rows,
+        zero_channel=args.zero_channel,
+        baseline_row_fraction=args.baseline_row_fraction,
     )
     out.parent.mkdir(parents=True, exist_ok=True)
     # Per-record field, not a top-level wrapper: build_alert_finding (and

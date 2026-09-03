@@ -519,12 +519,16 @@ def evaluate_interventions(
             f"{getattr(config, 'model_kind', 'bottleneck')!r}"
         )
     if getattr(config, "backbone", "hybrid") == "transformer":
-        raise NotImplementedError(
-            "interventions is not yet wired for backbone='transformer': this "
-            "is concept-bottleneck-lever tooling, not needed for the backbone "
-            "control's own subset-scale comparison (unlike run_inference and "
-            "alerts, which are). Extend it only if the transformer backbone "
-            "earns longer-term status."
+        # The TBTT stream below is the same one the transformer trained on:
+        # its ``state`` is an inert sentinel and every chunk is its own
+        # context window, so a stateless backbone sees exactly the context
+        # it was optimized for. What differs from run_inference/alerts is
+        # only that those hand the transformer whole-patient context
+        # (PackedContextSampler); the lever test keeps training's view.
+        logger.info(
+            "[interventions] backbone='transformer': chunks of %d tokens are "
+            "independent context windows, as in training",
+            chunk_size,
         )
 
     logger.info("[interventions] loading held-out shards from %s", held_out_shard_dir)

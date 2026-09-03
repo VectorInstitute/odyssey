@@ -555,8 +555,11 @@ class BaselineSequenceModel(_SequenceModelBase):
         batch: ClinicalSequenceBatch,
         state: TimeAwareState | None = None,
         reset_mask: torch.Tensor | None = None,
+        intervention: "BottleneckIntervention | None" = None,
     ) -> ForwardWithFeatures:
         """Uniform forward (see :class:`ForwardWithFeatures`)."""
+        if intervention is not None:
+            raise ValueError("a baseline model has no bottleneck to intervene on")
         logits, hidden, new_state = self.forward_features(
             batch, state=state, reset_mask=reset_mask
         )
@@ -728,9 +731,17 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         batch: ClinicalSequenceBatch,
         state: TimeAwareState | None = None,
         reset_mask: torch.Tensor | None = None,
+        intervention: BottleneckIntervention | None = None,
     ) -> ForwardWithFeatures:
-        """Uniform forward (see :class:`ForwardWithFeatures`)."""
-        logits, out, new_state = self(batch, state=state, reset_mask=reset_mask)
+        """Uniform forward (see :class:`ForwardWithFeatures`).
+
+        ``intervention`` is applied inside the bottleneck, so the alert
+        heads can be scored with a channel zeroed (the hazard-head
+        completeness probe, odyssey.inference.alerts ``--zero-channel``).
+        """
+        logits, out, new_state = self(
+            batch, state=state, reset_mask=reset_mask, intervention=intervention
+        )
         return ForwardWithFeatures(logits, out.bottleneck, out, new_state)
 
     def compute_loss(
