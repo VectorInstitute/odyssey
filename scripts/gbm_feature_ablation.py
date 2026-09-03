@@ -6,10 +6,13 @@ GBM with each group dropped (its unique contribution) and with each group
 kept alone (its total contribution), and scores every refit on the exact
 held-out rows the paper's alerts table used, against the hazard head's
 own AUROC on those rows. Hyperparameters are held at the paper's tuned
-values per cell (alerts.json ``baseline_params``), the fit rows are the
-same seed-0 subsample of the same baseline shards, so the ``full`` refit
-reproduces the paper's GBM and every other number differs from it by the
-feature subset alone.
+values per cell (alerts.json ``baseline_params``) and the fit rows come
+from the same train shards the paper's legs used (all of them; thinned
+uniformly with ``--baseline-row-fraction`` so the matrix fits beside a
+training job), so the ``full`` refit stands in for the paper's GBM and
+every other number differs from it by the feature subset alone; the
+output records the full refit's AUROC next to the hazard head's so the
+reproduction can be checked against alerts.json.
 
 Groups (name pattern -> size on the 609-feature strong panel):
 
@@ -36,7 +39,7 @@ Usage::
         --dump ~/runs/<run>/alerts_rows.parquet \\
         --alerts-json ~/runs/<run>/alerts.json \\
         --held-out-shard-dir ~/data/<db>/data/held_out \\
-        --baseline-shard-dir ~/data/<db>/data/train --max-baseline-shards 30 \\
+        --baseline-shard-dir ~/data/<db>/data/train --baseline-row-fraction 0.3 \\
         --output-json ~/runs/<run>/gbm_feature_ablation.json
 """
 
@@ -272,7 +275,19 @@ def main() -> None:
     parser.add_argument(
         "--max-shards", type=int, default=None, help="held-out shards (None = all)"
     )
-    parser.add_argument("--max-baseline-shards", type=int, default=30)
+    parser.add_argument(
+        "--max-baseline-shards",
+        type=int,
+        default=None,
+        help="train shards the GBM is refit on (None = all, as the paper's legs)",
+    )
+    parser.add_argument(
+        "--baseline-row-fraction",
+        type=float,
+        default=1.0,
+        help="seeded uniform thinning of each train shard's landmark rows before "
+        "the per-cell 1M-row cap, to bound memory over every shard",
+    )
     parser.add_argument("--landmark-hours", type=float, default=4.0)
     parser.add_argument("--horizons", type=float, nargs="+", default=[8.0, 24.0, 72.0])
     parser.add_argument("--events", nargs="*", default=None)
@@ -317,6 +332,8 @@ def main() -> None:
         landmark_hours=args.landmark_hours,
         feature_set="strong",
         task_set=task_set,
+        row_fraction=args.baseline_row_fraction,
+        seed=args.seed,
     )
     logger.info("train matrix %s", x_train.shape)
 
@@ -352,6 +369,7 @@ def main() -> None:
         "dump": str(args.dump),
         "source": source,
         "max_baseline_shards": args.max_baseline_shards,
+        "baseline_row_fraction": args.baseline_row_fraction,
         "max_held_out_shards": args.max_shards,
         "n_train_rows": int(len(train_rows)),
         "groups": {g: len(c) for g, c in groups.items()},

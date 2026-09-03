@@ -1325,6 +1325,31 @@ def fit_baselines(
     return models
 
 
+def _row_keep_mask(rows: Sequence[IndexRow], fraction: float, seed: int) -> np.ndarray:
+    """Keep each row with probability ``fraction``, decided by its key alone.
+
+    A row's fate depends on ``(subject, visit, time, seed)`` through a
+    64-bit integer mix, not on its position, so the same rows are kept
+    whatever order a shard yields them in (index rows are grouped from a
+    frame, and that order is not stable across calls).
+    """
+    subj = np.array([r.subject_id for r in rows], dtype=np.uint64)
+    visit = np.array([r.visit_id for r in rows], dtype=np.uint64)
+    quarter_hours = np.array(
+        [int(round(r.time_hours * 4)) for r in rows], dtype=np.uint64
+    )
+    x = subj * np.uint64(0x9E3779B97F4A7C15)
+    x ^= visit * np.uint64(0xBF58476D1CE4E5B9)
+    x ^= quarter_hours * np.uint64(0x94D049BB133111EB)
+    x ^= np.uint64(seed) * np.uint64(0xD6E8FEB86659FD93)
+    x ^= x >> np.uint64(31)
+    x *= np.uint64(0x9E3779B97F4A7C15)
+    x ^= x >> np.uint64(29)
+    unit = (x >> np.uint64(11)).astype(np.float64) / float(1 << 53)
+    mask: np.ndarray = unit < fraction
+    return mask
+
+
 def stream_baseline_matrix(
     paths: Sequence[Path],
     prepare: Preparer,
@@ -1336,6 +1361,8 @@ def stream_baseline_matrix(
     feature_set: str = "strong",
     task_set: str = "v1",
     index_mode: str = "landmark",
+    row_fraction: float = 1.0,
+    seed: int = 0,
 ) -> tuple[np.ndarray, list[IndexRow], dict[str, EventTimes]]:
     """Build the baseline feature matrix shard by shard.
 
@@ -1346,7 +1373,15 @@ def stream_baseline_matrix(
     a feature ablation (scripts/gbm_feature_ablation.py) can build the
     matrix once and fit many column subsets from it. An empty ``paths``
     or a split with no landmarks returns an empty matrix.
+
+    ``row_fraction`` < 1 keeps a seeded uniform sample of each shard's
+    landmark rows (event times are still merged from every row), so the
+    matrix over every train shard fits in memory beside a training job:
+    the fit set stays a sample of the same shards the paper's GBM was
+    fitted on, just thinner before the per-cell row cap applies.
     """
+    if not 0.0 < row_fraction <= 1.0:
+        raise ValueError("row_fraction must be in (0, 1]")
     event_times: dict[str, EventTimes] = {}
     all_rows: list[IndexRow] = []
     feature_chunks: list[np.ndarray] = []
@@ -1359,6 +1394,9 @@ def stream_baseline_matrix(
         shard_rows = _index_rows_from_events(
             binned, alerts, landmark_hours=landmark_hours, index_mode=index_mode
         )[alerts[0].name]
+        if row_fraction < 1.0 and shard_rows:
+            keep = np.flatnonzero(_row_keep_mask(shard_rows, row_fraction, seed))
+            shard_rows = [shard_rows[i] for i in keep]
         if not shard_rows:
             continue
         if feature_set == "strong":
