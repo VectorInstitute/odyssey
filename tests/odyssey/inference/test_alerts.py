@@ -2495,3 +2495,36 @@ def test_stream_baseline_matrix_row_fraction_thins_deterministically(
             feature_set="basic",
             row_fraction=0.0,
         )
+
+
+def test_fit_baselines_streaming_row_fraction_fits_on_a_thinned_matrix(
+    tmp_path: Path,
+) -> None:
+    """The GBM fits from a seeded fraction of every shard's rows (GEMINI scale)."""
+    shard_dir = tmp_path / "train"
+    _write_event_shards(shard_dir, n_shards=3, subjects_per_shard=20)
+    paths = shard_paths(shard_dir)
+    prepare = make_preparer(
+        normalize_medications=False, history_recap=False, source="mimic_iv"
+    )
+    models = fit_baselines_streaming(
+        paths,
+        prepare,
+        None,
+        alerts=ALERT_EVENTS,
+        feature_set="basic",
+        tune=False,
+        row_fraction=0.6,
+    )
+    assert models, "no cell had enough rows after thinning"
+    for model in models.values():
+        assert model.n_features > 0
+    with pytest.raises(ValueError, match="row_fraction"):
+        fit_baselines_streaming(
+            paths,
+            prepare,
+            None,
+            alerts=ALERT_EVENTS,
+            feature_set="basic",
+            row_fraction=1.5,
+        )
