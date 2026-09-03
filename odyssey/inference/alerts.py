@@ -87,6 +87,7 @@ from odyssey.data.vocabulary import Vocabulary, code_type
 from odyssey.inference.baseline_features import StrongFeatureBuilder
 from odyssey.inference.baseline_features import feature_names as strong_feature_names
 from odyssey.inference.run_inference import load_run, refuse_existing_output
+from odyssey.models.concept_bottleneck import BottleneckIntervention
 from odyssey.models.sequence_model import SequenceModel
 from odyssey.models.time_to_event import probability_within
 from odyssey.training.data import (
@@ -381,8 +382,14 @@ def collect_model_scores(
     max_context: int = 4096,
     truncation_boundaries_out: dict[int, float] | None = None,
     index_mode: str = "landmark",
+    intervention: BottleneckIntervention | None = None,
 ) -> dict[str, list[IndexRow]]:
     """One streaming pass; per alert, index rows with model risk scores.
+
+    ``intervention`` (e.g. ``BottleneckIntervention(zero_known=True)``)
+    is applied inside the bottleneck on every forward, so the same
+    landmark rows are scored with a channel removed: the completeness
+    probe on the hazard heads themselves.
 
     ``index_mode="visit_end"`` selects each visit's last position instead
     of landmark buckets (see :data:`INDEX_MODES`); ``landmark_hours`` is
@@ -456,7 +463,10 @@ def collect_model_scores(
             if packed:
                 landmark_state = None  # see the docstring: never carried
             fwd = model.forward_with_features(
-                chunk.batch, state=state, reset_mask=chunk.reset_mask
+                chunk.batch,
+                state=state,
+                reset_mask=chunk.reset_mask,
+                intervention=intervention,
             )
             logits, state = fwd.logits, fwd.state
             sids = chunk.subject_ids
@@ -2557,6 +2567,21 @@ def _score_degraded_at_clean_rows(
     return rows, set(unscoreable)
 
 
+def _zero_intervention(zero_channel: str | None) -> BottleneckIntervention | None:
+    """``--zero-channel`` -> the bottleneck intervention that removes it."""
+    if zero_channel is None:
+        return None
+    if zero_channel == "known":
+        return BottleneckIntervention(zero_known=True)
+    if zero_channel == "unknown":
+        return BottleneckIntervention(zero_unknown=True)
+    if zero_channel == "residual":
+        return BottleneckIntervention(zero_residual=True)
+    raise ValueError(
+        f"zero_channel must be known, unknown or residual, got {zero_channel!r}"
+    )
+
+
 def evaluate_alerts(  # noqa: PLR0912, PLR0915
     run_dir: str | Path,
     held_out_shard_dir: str | Path,
@@ -2581,6 +2606,7 @@ def evaluate_alerts(  # noqa: PLR0912, PLR0915
     dump_rows_path: str | Path | None = None,
     index_mode: str = "landmark",
     unscoreable_out: set[tuple[int, int, float]] | None = None,
+    zero_channel: str | None = None,
 ) -> list[AlertMetrics]:
     """End to end: model scores + optional GBM baselines, scored on held-out.
 
@@ -2719,6 +2745,7 @@ def evaluate_alerts(  # noqa: PLR0912, PLR0915
             max_context=getattr(config, "max_context", 4096),
             truncation_boundaries_out=truncation_boundaries,
             index_mode=index_mode,
+            intervention=_zero_intervention(zero_channel),
         )
     # Runs for every backbone, not just "transformer": collect_model_scores'
     # row-construction path is unconditional on `packed` (see its own
@@ -2867,6 +2894,14 @@ def _main() -> None:
     parser.add_argument("--chunk-size", type=int, default=256)
     parser.add_argument("--checkpoint", default=None)
     parser.add_argument(
+        "--zero-channel",
+        choices=("known", "unknown", "residual"),
+        default=None,
+        help="score the hazard heads with this bottleneck channel zeroed on every "
+        "forward (the completeness probe on the heads the dials read); run without "
+        "--baseline-shard-dir and compare against the unzeroed alerts.json",
+    )
+    parser.add_argument(
         "--baseline-features",
         choices=BASELINE_FEATURE_SETS,
         default="strong",
@@ -2942,6 +2977,7 @@ def _main() -> None:
         tune_baselines=not args.no_tune_baselines,
         stream_baseline=args.stream_baseline_shards,
         dump_rows_path=args.dump_rows,
+        zero_channel=args.zero_channel,
     )
     out.parent.mkdir(parents=True, exist_ok=True)
     # Per-record field, not a top-level wrapper: build_alert_finding (and
