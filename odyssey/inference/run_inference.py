@@ -851,6 +851,7 @@ def _build_sampler(
     num_lanes: int,
     chunk_size: int,
     max_context: int,
+    window_stride: int | None = None,
 ) -> PackedLaneSampler | PackedContextSampler:
     """Dispatch on ``backbone``, matching :func:`odyssey.training.train.build_model`.
 
@@ -861,7 +862,10 @@ def _build_sampler(
     """
     if backbone == "transformer":
         return PackedContextSampler(
-            patients, batch_size=num_lanes, max_context=max_context
+            patients,
+            batch_size=num_lanes,
+            max_context=max_context,
+            window_stride=window_stride,
         )
     return PackedLaneSampler(
         patients, num_lanes=num_lanes, chunk_size=chunk_size, reset_prob=0.0
@@ -883,6 +887,7 @@ def run_streaming_inference(
     concepts: Sequence[AnyConceptDefinition] | None = None,
     backbone: str = "hybrid",
     max_context: int = 4096,
+    window_stride: int | None = None,
     source: str = "mimic_iv",
 ) -> InferenceResults:
     """Stream held-out patients through ``model`` and score every eval question.
@@ -917,6 +922,7 @@ def run_streaming_inference(
         num_lanes=num_lanes,
         chunk_size=chunk_size,
         max_context=max_context,
+        window_stride=window_stride,
     )
 
     time_head = getattr(model, "time_head", None)
@@ -1161,6 +1167,7 @@ def evaluate_run(
         concepts=concepts,
         backbone=getattr(config, "backbone", "hybrid"),
         max_context=getattr(config, "max_context", 4096),
+        window_stride=getattr(config, "window_stride", None),
         source=source,
     )
 

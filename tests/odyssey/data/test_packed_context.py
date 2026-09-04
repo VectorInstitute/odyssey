@@ -491,3 +491,16 @@ def test_window_stride_must_fit_the_window() -> None:
         PackedContextSampler(
             _patients([]), batch_size=1, max_context=4, window_stride=5
         )
+
+
+def test_window_stride_makes_context_only_positions_non_targets() -> None:
+    sampler = PackedContextSampler(
+        _patients([_seq(1, 7)]), batch_size=1, max_context=4, window_stride=2
+    )
+    chunks = list(sampler)
+    targets_seen: list[int] = []
+    for chunk in chunks:
+        assert chunk.score_mask is not None
+        targets_seen.extend(chunk.targets[chunk.real_mask].tolist())
+    # every token except the record's first is predicted exactly once
+    assert sorted(targets_seen) == [1001 + i for i in range(6)]
