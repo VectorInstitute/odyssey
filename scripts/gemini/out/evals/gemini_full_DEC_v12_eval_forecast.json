@@ -1,0 +1,546 @@
+{
+  "task_metrics": {
+    "cross_entropy": 6.339646809943723,
+    "perplexity": 566.59619140625,
+    "top1_accuracy": 0.2043203210242647,
+    "top5_accuracy": 0.4578829379619442,
+    "n_predictions": 120015850,
+    "set_top1_accuracy": 0.7469069899345234,
+    "n_set_predictions": 119601292,
+    "category_set_top1_accuracy": null,
+    "n_category_predictions": null
+  },
+  "task_metrics_by_code_type": {
+    "diagnosis": {
+      "cross_entropy": 6.0212818408506275,
+      "perplexity": 412.1064758300781,
+      "top1_accuracy": 0.08177641548065609,
+      "top5_accuracy": 0.2653887643892153,
+      "n_predictions": 1736283,
+      "set_top1_accuracy": 0.24243732221141695,
+      "n_set_predictions": 1730637,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    },
+    "medication": {
+      "cross_entropy": 4.730089523692456,
+      "perplexity": 113.30572509765625,
+      "top1_accuracy": 0.17212697703852725,
+      "top5_accuracy": 0.3682238261305537,
+      "n_predictions": 14125357,
+      "set_top1_accuracy": 0.3788795950477391,
+      "n_set_predictions": 14078499,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    },
+    "procedure": {
+      "cross_entropy": 3.452589173590351,
+      "perplexity": 31.582061767578125,
+      "top1_accuracy": 0.25871515664094163,
+      "top5_accuracy": 0.580553264968108,
+      "n_predictions": 1418850,
+      "set_top1_accuracy": 0.28930989179360006,
+      "n_set_predictions": 1414981,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    },
+    "lab": {
+      "cross_entropy": 6.755607444659305,
+      "perplexity": 858.8614501953125,
+      "top1_accuracy": 0.19929887164901092,
+      "top5_accuracy": 0.4601903452215782,
+      "n_predictions": 99382374,
+      "set_top1_accuracy": 0.819999792796939,
+      "n_set_predictions": 99033286,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    },
+    "visit": {
+      "cross_entropy": 1.7734083862537293,
+      "perplexity": 5.890897750854492,
+      "top1_accuracy": 0.564762613653766,
+      "top5_accuracy": 0.8739676338292015,
+      "n_predictions": 1123148,
+      "set_top1_accuracy": 0.6001858177005194,
+      "n_set_predictions": 1120453,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    },
+    "billing": {
+      "cross_entropy": 2.8432444683859077,
+      "perplexity": 17.171388626098633,
+      "top1_accuracy": 0.40212838107396476,
+      "top5_accuracy": 0.6555044682039416,
+      "n_predictions": 401056,
+      "set_top1_accuracy": 0.449998373523973,
+      "n_set_predictions": 399637,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    },
+    "other": {
+      "cross_entropy": 2.290610100825855,
+      "perplexity": 9.880964279174805,
+      "top1_accuracy": 0.5337167979928263,
+      "top5_accuracy": 0.8125532244863268,
+      "n_predictions": 1811901,
+      "set_top1_accuracy": 0.606907520640713,
+      "n_set_predictions": 1806987,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    },
+    "demographic": {
+      "cross_entropy": 1.171578589879951,
+      "perplexity": 3.2270829677581787,
+      "top1_accuracy": 0.7009063444108762,
+      "top5_accuracy": 0.9386292281262958,
+      "n_predictions": 16881,
+      "set_top1_accuracy": 0.7008089459909589,
+      "n_set_predictions": 16812,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    }
+  },
+  "concept_metrics": [
+    {
+      "name": "tachycardia",
+      "n_observed": 107558,
+      "prevalence": 0.45417356491088867,
+      "auroc": 0.9437638339713528,
+      "auprc": 0.9422986780841752,
+      "brier_score": 0.0942406877875328,
+      "accuracy_at_0_5": 0.8644359111785889
+    },
+    {
+      "name": "bradycardia",
+      "n_observed": 107558,
+      "prevalence": 0.3364231288433075,
+      "auroc": 0.9432903136349075,
+      "auprc": 0.916503769167975,
+      "brier_score": 0.08595703542232513,
+      "accuracy_at_0_5": 0.8765689134597778
+    },
+    {
+      "name": "hypotension",
+      "n_observed": 53789,
+      "prevalence": 0.19901838898658752,
+      "auroc": 0.9250141756253745,
+      "auprc": 0.8170698566723096,
+      "brier_score": 0.08089184015989304,
+      "accuracy_at_0_5": 0.886445164680481
+    },
+    {
+      "name": "hypertension",
+      "n_observed": 53789,
+      "prevalence": 0.6822584271430969,
+      "auroc": 0.9502468670883091,
+      "auprc": 0.9776372172887441,
+      "brier_score": 0.09821735322475433,
+      "accuracy_at_0_5": 0.855007529258728
+    },
+    {
+      "name": "hypoxia",
+      "n_observed": 116052,
+      "prevalence": 0.30835315585136414,
+      "auroc": 0.9536994425300055,
+      "auprc": 0.9190272289739688,
+      "brier_score": 0.0769977793097496,
+      "accuracy_at_0_5": 0.8913418054580688
+    },
+    {
+      "name": "fever",
+      "n_observed": 102029,
+      "prevalence": 0.2924266755580902,
+      "auroc": 0.976287661622551,
+      "auprc": 0.959511420145226,
+      "brier_score": 0.04762246087193489,
+      "accuracy_at_0_5": 0.9353222846984863
+    },
+    {
+      "name": "hypothermia",
+      "n_observed": 102029,
+      "prevalence": 0.2946319282054901,
+      "auroc": 0.9687234666715695,
+      "auprc": 0.9432982050461214,
+      "brier_score": 0.05983927100896835,
+      "accuracy_at_0_5": 0.9170823693275452
+    },
+    {
+      "name": "elevated_lactate",
+      "n_observed": 92218,
+      "prevalence": 0.4273460805416107,
+      "auroc": 0.8781980335418236,
+      "auprc": 0.8595481118002058,
+      "brier_score": 0.14777575433254242,
+      "accuracy_at_0_5": 0.7748379111289978
+    },
+    {
+      "name": "sustained_tachypnea",
+      "n_observed": 106663,
+      "prevalence": 0.295444518327713,
+      "auroc": 0.9763880755608703,
+      "auprc": 0.9501101147309472,
+      "brier_score": 0.056176602840423584,
+      "accuracy_at_0_5": 0.920600414276123
+    },
+    {
+      "name": "acute_kidney_injury",
+      "n_observed": 203418,
+      "prevalence": 0.16556057333946228,
+      "auroc": 0.9245223806134425,
+      "auprc": 0.7539093429727421,
+      "brier_score": 0.08960025757551193,
+      "accuracy_at_0_5": 0.873093843460083
+    },
+    {
+      "name": "aki_stage_2",
+      "n_observed": 203418,
+      "prevalence": 0.03905259072780609,
+      "auroc": 0.9471045755502407,
+      "auprc": 0.5537468954730119,
+      "brier_score": 0.03826833888888359,
+      "accuracy_at_0_5": 0.9476742744445801
+    },
+    {
+      "name": "aki_stage_3",
+      "n_observed": 219300,
+      "prevalence": 0.06440948694944382,
+      "auroc": 0.989464043709719,
+      "auprc": 0.915759910366027,
+      "brier_score": 0.018818192183971405,
+      "accuracy_at_0_5": 0.9748290181159973
+    },
+    {
+      "name": "sirs",
+      "n_observed": 118846,
+      "prevalence": 0.6264409422874451,
+      "auroc": 0.945164304276349,
+      "auprc": 0.9678460304622196,
+      "brier_score": 0.09783540666103363,
+      "accuracy_at_0_5": 0.860525369644165
+    },
+    {
+      "name": "qsofa",
+      "n_observed": 41993,
+      "prevalence": 0.2328721433877945,
+      "auroc": 0.9377968015219926,
+      "auprc": 0.8446416420213219,
+      "brier_score": 0.08236625045537949,
+      "accuracy_at_0_5": 0.8822422623634338
+    },
+    {
+      "name": "on_vasopressors",
+      "n_observed": 199776,
+      "prevalence": 0.0894952341914177,
+      "auroc": 0.9821517089887257,
+      "auprc": 0.8990347209229502,
+      "brier_score": 0.050701532512903214,
+      "accuracy_at_0_5": 0.9329849481582642
+    },
+    {
+      "name": "hyperkalemia",
+      "n_observed": 203577,
+      "prevalence": 0.08426786959171295,
+      "auroc": 0.9918094432478249,
+      "auprc": 0.9339869066768376,
+      "brier_score": 0.019710222259163857,
+      "accuracy_at_0_5": 0.9729242324829102
+    },
+    {
+      "name": "hypokalemia",
+      "n_observed": 203577,
+      "prevalence": 0.09620929509401321,
+      "auroc": 0.9569938396359222,
+      "auprc": 0.7821345457345876,
+      "brier_score": 0.04505855590105057,
+      "accuracy_at_0_5": 0.9372227787971497
+    },
+    {
+      "name": "hyponatremia",
+      "n_observed": 203700,
+      "prevalence": 0.1298723667860031,
+      "auroc": 0.978194126306626,
+      "auprc": 0.9047059604615157,
+      "brier_score": 0.037870798259973526,
+      "accuracy_at_0_5": 0.9472754001617432
+    },
+    {
+      "name": "hypernatremia",
+      "n_observed": 203700,
+      "prevalence": 0.02942071668803692,
+      "auroc": 0.9949431997403037,
+      "auprc": 0.9193605006223172,
+      "brier_score": 0.01740504801273346,
+      "accuracy_at_0_5": 0.9770987033843994
+    },
+    {
+      "name": "hypoglycemia",
+      "n_observed": 191330,
+      "prevalence": 0.041023362427949905,
+      "auroc": 0.9112699492420808,
+      "auprc": 0.5087921500929963,
+      "brier_score": 0.04533527418971062,
+      "accuracy_at_0_5": 0.9420007467269897
+    },
+    {
+      "name": "hyperglycemia",
+      "n_observed": 191330,
+      "prevalence": 0.11893586814403534,
+      "auroc": 0.9671420940337266,
+      "auprc": 0.8475752308748353,
+      "brier_score": 0.060336608439683914,
+      "accuracy_at_0_5": 0.914927065372467
+    },
+    {
+      "name": "anemia",
+      "n_observed": 203831,
+      "prevalence": 0.08666002750396729,
+      "auroc": 0.996769236893128,
+      "auprc": 0.9695067812046158,
+      "brier_score": 0.01620486006140709,
+      "accuracy_at_0_5": 0.9781780242919922
+    },
+    {
+      "name": "thrombocytopenia",
+      "n_observed": 198560,
+      "prevalence": 0.1110445186495781,
+      "auroc": 0.979173567248474,
+      "auprc": 0.9018478993215708,
+      "brier_score": 0.031677231192588806,
+      "accuracy_at_0_5": 0.9570809602737427
+    },
+    {
+      "name": "coagulopathy",
+      "n_observed": 136452,
+      "prevalence": 0.16509835422039032,
+      "auroc": 0.9520727355620578,
+      "auprc": 0.8510201074254697,
+      "brier_score": 0.07495851069688797,
+      "accuracy_at_0_5": 0.8925995826721191
+    },
+    {
+      "name": "metabolic_acidosis",
+      "n_observed": 160170,
+      "prevalence": 0.11980395764112473,
+      "auroc": 0.9735797191000631,
+      "auprc": 0.8766571537299614,
+      "brier_score": 0.04275224730372429,
+      "accuracy_at_0_5": 0.9410313963890076
+    }
+  ],
+  "observability_metrics": [
+    {
+      "name": "tachycardia",
+      "n_subjects": 223207,
+      "observed_rate": 0.48187556862831116,
+      "auroc": 0.9995472362927245,
+      "accuracy_at_0_5": 0.9925047159194946
+    },
+    {
+      "name": "bradycardia",
+      "n_subjects": 223207,
+      "observed_rate": 0.48187556862831116,
+      "auroc": 0.9995473846972335,
+      "accuracy_at_0_5": 0.9924912452697754
+    },
+    {
+      "name": "hypotension",
+      "n_subjects": 223207,
+      "observed_rate": 0.24098259210586548,
+      "auroc": 0.9991782959551295,
+      "accuracy_at_0_5": 0.9898256063461304
+    },
+    {
+      "name": "hypertension",
+      "n_subjects": 223207,
+      "observed_rate": 0.24098259210586548,
+      "auroc": 0.9991779153376946,
+      "accuracy_at_0_5": 0.9898031949996948
+    },
+    {
+      "name": "hypoxia",
+      "n_subjects": 223207,
+      "observed_rate": 0.5199299454689026,
+      "auroc": 0.9991739874956544,
+      "accuracy_at_0_5": 0.9897897243499756
+    },
+    {
+      "name": "fever",
+      "n_subjects": 223207,
+      "observed_rate": 0.4571048319339752,
+      "auroc": 0.9993815473965407,
+      "accuracy_at_0_5": 0.9903721809387207
+    },
+    {
+      "name": "hypothermia",
+      "n_subjects": 223207,
+      "observed_rate": 0.4571048319339752,
+      "auroc": 0.9993815339701068,
+      "accuracy_at_0_5": 0.9903631806373596
+    },
+    {
+      "name": "elevated_lactate",
+      "n_subjects": 223207,
+      "observed_rate": 0.4131501317024231,
+      "auroc": 0.9577952416666148,
+      "accuracy_at_0_5": 0.874426007270813
+    },
+    {
+      "name": "sustained_tachypnea",
+      "n_subjects": 223207,
+      "observed_rate": 0.4778658449649811,
+      "auroc": 0.9993887427274772,
+      "accuracy_at_0_5": 0.9893103837966919
+    },
+    {
+      "name": "acute_kidney_injury",
+      "n_subjects": 223207,
+      "observed_rate": 0.9113423824310303,
+      "auroc": 0.9985606318254988,
+      "accuracy_at_0_5": 0.9953092932701111
+    },
+    {
+      "name": "aki_stage_2",
+      "n_subjects": 223207,
+      "observed_rate": 0.9113423824310303,
+      "auroc": 0.9985696832610798,
+      "accuracy_at_0_5": 0.9953048229217529
+    },
+    {
+      "name": "aki_stage_3",
+      "n_subjects": 223207,
+      "observed_rate": 0.9824960827827454,
+      "auroc": 0.9957717315174712,
+      "accuracy_at_0_5": 0.9959051609039307
+    },
+    {
+      "name": "sirs",
+      "n_subjects": 223207,
+      "observed_rate": 0.5324474573135376,
+      "auroc": 0.9997251456142099,
+      "accuracy_at_0_5": 0.9931274652481079
+    },
+    {
+      "name": "qsofa",
+      "n_subjects": 223207,
+      "observed_rate": 0.18813477456569672,
+      "auroc": 0.998717363695543,
+      "accuracy_at_0_5": 0.9869986176490784
+    },
+    {
+      "name": "on_vasopressors",
+      "n_subjects": 223207,
+      "observed_rate": 0.8950256705284119,
+      "auroc": 0.9996110802435975,
+      "accuracy_at_0_5": 0.9966936707496643
+    },
+    {
+      "name": "hyperkalemia",
+      "n_subjects": 223207,
+      "observed_rate": 0.912054717540741,
+      "auroc": 0.9977755803576318,
+      "accuracy_at_0_5": 0.9952824115753174
+    },
+    {
+      "name": "hypokalemia",
+      "n_subjects": 223207,
+      "observed_rate": 0.912054717540741,
+      "auroc": 0.9977742699931941,
+      "accuracy_at_0_5": 0.9952913522720337
+    },
+    {
+      "name": "hyponatremia",
+      "n_subjects": 223207,
+      "observed_rate": 0.9126057624816895,
+      "auroc": 0.9990437054442576,
+      "accuracy_at_0_5": 0.9963710904121399
+    },
+    {
+      "name": "hypernatremia",
+      "n_subjects": 223207,
+      "observed_rate": 0.9126057624816895,
+      "auroc": 0.9990455238315694,
+      "accuracy_at_0_5": 0.9963800311088562
+    },
+    {
+      "name": "hypoglycemia",
+      "n_subjects": 223207,
+      "observed_rate": 0.8571863770484924,
+      "auroc": 0.9852669072964385,
+      "accuracy_at_0_5": 0.9695887565612793
+    },
+    {
+      "name": "hyperglycemia",
+      "n_subjects": 223207,
+      "observed_rate": 0.8571863770484924,
+      "auroc": 0.9852708282501107,
+      "accuracy_at_0_5": 0.9695977568626404
+    },
+    {
+      "name": "anemia",
+      "n_subjects": 223207,
+      "observed_rate": 0.9131926894187927,
+      "auroc": 0.9988843508792626,
+      "accuracy_at_0_5": 0.9956721663475037
+    },
+    {
+      "name": "thrombocytopenia",
+      "n_subjects": 223207,
+      "observed_rate": 0.8895778656005859,
+      "auroc": 0.9974611979449587,
+      "accuracy_at_0_5": 0.9944087862968445
+    },
+    {
+      "name": "coagulopathy",
+      "n_subjects": 223207,
+      "observed_rate": 0.6113249063491821,
+      "auroc": 0.9517484981529558,
+      "accuracy_at_0_5": 0.8781534433364868
+    },
+    {
+      "name": "metabolic_acidosis",
+      "n_subjects": 223207,
+      "observed_rate": 0.717585027217865,
+      "auroc": 0.996873292491355,
+      "accuracy_at_0_5": 0.9788088798522949
+    }
+  ],
+  "orthogonality": 0.0,
+  "n_patient_ends_scored": 223207,
+  "time_metrics": {
+    "nll": 0.4282285693634724,
+    "n_positions": 119601292,
+    "same_instant_accuracy": 0.9459058101144927,
+    "same_instant_rate": 0.8251930171456676,
+    "calibration": {
+      "1h": {
+        "predicted": 0.9218146551459514,
+        "observed": 0.9223158642801284
+      },
+      "8h": {
+        "predicted": 0.9841471891665782,
+        "observed": 0.984805849756205
+      },
+      "24h": {
+        "predicted": 0.9971177109863959,
+        "observed": 0.9970537191186865
+      }
+    },
+    "calibration_after_bundle": {
+      "1h": {
+        "predicted": 0.5571538432974953,
+        "observed": 0.5556005003266588
+      },
+      "8h": {
+        "predicted": 0.9101456802158853,
+        "observed": 0.9130804159210483
+      },
+      "24h": {
+        "predicted": 0.9836323449012155,
+        "observed": 0.983145519514122
+      }
+    },
+    "n_positive_gaps": 20907141
+  },
+  "value_metrics": null,
+  "tail_slice": null
+}
