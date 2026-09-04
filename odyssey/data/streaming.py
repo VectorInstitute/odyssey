@@ -91,6 +91,11 @@ class StreamingChunk(NamedTuple):
     patient_end: torch.Tensor
     visit_ids: torch.Tensor
     visit_end: torch.Tensor
+    score_mask: torch.Tensor | None = None
+    """Positions a scorer may emit rows for, or ``None`` for all real
+    positions. Only :class:`~odyssey.data.packed_context.PackedContextSampler`
+    in sliding-window mode sets it: an overlapping window's earlier
+    positions are context only, already scored by the window before."""
 
 
 @dataclass

@@ -410,3 +410,84 @@ def test_time_stamps_survive_real_data_magnitude_at_double_precision() -> None:
     assert round(recovered, 6) == real_data_hours, (
         f"time_stamps lost precision in packing: {real_data_hours} -> {recovered}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Sliding windows (window_stride)
+# ---------------------------------------------------------------------------
+
+
+def _scored_ids(sampler: PackedContextSampler) -> list[int]:
+    ids: list[int] = []
+    for chunk in sampler:
+        assert chunk.score_mask is not None
+        mask = chunk.score_mask & (chunk.subject_ids != NO_SUBJECT)
+        ids.extend(chunk.batch.concept_ids[mask].tolist())
+    return ids
+
+
+def test_window_stride_scores_every_position_of_a_long_patient_exactly_once() -> None:
+    long_patient = _seq(1, 10)
+    sampler = PackedContextSampler(
+        _patients([long_patient]), batch_size=1, max_context=4, window_stride=2
+    )
+
+    assert sorted(_scored_ids(sampler)) == [1000 + i for i in range(10)]
+    assert sampler.truncated_subject_ids == []
+    assert sampler.truncation_boundaries == {}
+
+
+def test_window_stride_later_windows_score_only_their_new_positions() -> None:
+    long_patient = _seq(1, 7)
+    sampler = PackedContextSampler(
+        _patients([long_patient]), batch_size=1, max_context=4, window_stride=2
+    )
+    chunks = list(sampler)
+    # windows [0,4) scoring all, [2,6) scoring 4..5, and the tail [3,7) scoring 6
+    windows = []
+    for chunk in chunks:
+        for row in range(chunk.batch.concept_ids.shape[0]):
+            real = chunk.subject_ids[row] != NO_SUBJECT
+            if not bool(real.any()):
+                continue
+            ids = chunk.batch.concept_ids[row][real].tolist()
+            assert chunk.score_mask is not None
+            scored = chunk.batch.concept_ids[row][chunk.score_mask[row] & real].tolist()
+            windows.append((ids, scored))
+    assert windows == [
+        ([1000, 1001, 1002, 1003], [1000, 1001, 1002, 1003]),
+        ([1002, 1003, 1004, 1005], [1004, 1005]),
+        ([1003, 1004, 1005, 1006], [1006]),
+    ]
+
+
+def test_window_stride_leaves_short_patients_and_targets_alone() -> None:
+    sampler = PackedContextSampler(
+        _patients([_seq(1, 3), _seq(2, 2)]),
+        batch_size=1,
+        max_context=8,
+        window_stride=4,
+    )
+    chunk = sampler.next_chunk()
+    assert chunk is not None
+    assert chunk.score_mask is not None
+    real = chunk.subject_ids != NO_SUBJECT
+    assert bool(chunk.score_mask[real].all())
+    assert not bool(chunk.score_mask[~real].any())
+
+
+def test_window_stride_is_none_by_default_and_score_mask_absent() -> None:
+    sampler = PackedContextSampler(
+        _patients([_seq(1, 10)]), batch_size=1, max_context=4
+    )
+    chunk = sampler.next_chunk()
+    assert chunk is not None
+    assert chunk.score_mask is None
+    assert sampler.truncated_subject_ids == [1]
+
+
+def test_window_stride_must_fit_the_window() -> None:
+    with pytest.raises(ValueError, match="window_stride"):
+        PackedContextSampler(
+            _patients([]), batch_size=1, max_context=4, window_stride=5
+        )
