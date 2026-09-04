@@ -383,6 +383,7 @@ def collect_model_scores(
     truncation_boundaries_out: dict[int, float] | None = None,
     index_mode: str = "landmark",
     intervention: BottleneckIntervention | None = None,
+    window_stride: int | None = None,
 ) -> dict[str, list[IndexRow]]:
     """One streaming pass; per alert, index rows with model risk scores.
 
@@ -448,7 +449,12 @@ def collect_model_scores(
     patients = iter_patient_sequences(events_binned, vocab)
     packed = backbone == "transformer"
     sampler: PackedLaneSampler | PackedContextSampler = (
-        PackedContextSampler(patients, batch_size=num_lanes, max_context=max_context)
+        PackedContextSampler(
+            patients,
+            batch_size=num_lanes,
+            max_context=max_context,
+            window_stride=window_stride,
+        )
         if packed
         else PackedLaneSampler(
             patients, num_lanes=num_lanes, chunk_size=chunk_size, reset_prob=0.0
@@ -512,6 +518,10 @@ def collect_model_scores(
                 starts=starts,
                 landmark_state=landmark_state,
             )
+            if chunk.score_mask is not None:
+                # sliding-window mode: a window's leading positions are
+                # context only, already scored by the window before it
+                keep = keep & chunk.score_mask.to(keep.device)
             if not keep.any():
                 continue
             probs = torch.softmax(logits[keep], dim=-1)
@@ -2620,6 +2630,7 @@ def evaluate_alerts(  # noqa: PLR0912, PLR0915
     unscoreable_out: set[tuple[int, int, float]] | None = None,
     zero_channel: str | None = None,
     baseline_row_fraction: float = 1.0,
+    window_stride: int | None = None,
 ) -> list[AlertMetrics]:
     """End to end: model scores + optional GBM baselines, scored on held-out.
 
@@ -2757,6 +2768,7 @@ def evaluate_alerts(  # noqa: PLR0912, PLR0915
             backbone=backbone,
             max_context=getattr(config, "max_context", 4096),
             truncation_boundaries_out=truncation_boundaries,
+            window_stride=window_stride,
             index_mode=index_mode,
             intervention=_zero_intervention(zero_channel),
         )
@@ -2916,6 +2928,18 @@ def _main() -> None:
     parser.add_argument("--chunk-size", type=int, default=256)
     parser.add_argument("--checkpoint", default=None)
     parser.add_argument(
+        "--window-stride",
+        type=int,
+        default=None,
+        help=(
+            "backbone='transformer' only: score too-long records with sliding "
+            "max_context windows every this many tokens, so every landmark is "
+            "scored with the tokens before it and no window is anchored to the "
+            "record's end (default: keep each long record's last max_context "
+            "tokens, the training-time truncation)"
+        ),
+    )
+    parser.add_argument(
         "--zero-channel",
         choices=("known", "unknown", "residual"),
         default=None,
@@ -3000,6 +3024,7 @@ def _main() -> None:
         stream_baseline=args.stream_baseline_shards,
         dump_rows_path=args.dump_rows,
         zero_channel=args.zero_channel,
+        window_stride=args.window_stride,
         baseline_row_fraction=args.baseline_row_fraction,
     )
     out.parent.mkdir(parents=True, exist_ok=True)

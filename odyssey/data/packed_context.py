@@ -106,13 +106,18 @@ class _RowBuilder:
     visit_end: list[bool] = field(default_factory=list)
     values: list[float] = field(default_factory=list)
     static: list[bool] = field(default_factory=list)
+    score: list[bool] = field(default_factory=list)
 
     def __len__(self) -> int:
         """Return the number of tokens packed into this row so far."""
         return len(self.concept_ids)
 
-    def append_patient(self, seq: PatientSequence) -> None:
-        """Append one (whole or already-truncated) patient's tokens, as-is.
+    def append_patient(self, seq: PatientSequence, *, score_from: int = 0) -> None:
+        """Append one (whole, truncated, or windowed) patient's tokens, as-is.
+
+        ``score_from`` marks where scoring may start inside this segment:
+        positions before it are context that an earlier overlapping
+        window already scored (sliding-window mode); 0 scores everything.
 
         No timestamp adjustment: ``time_stamps`` are each patient's own
         raw values, unchanged. The module docstring explains why that is
@@ -147,6 +152,7 @@ class _RowBuilder:
         patient_end = [False] * n
         patient_end[-1] = True
         self.patient_end.extend(patient_end)
+        self.score.extend([i >= score_from for i in range(n)])
 
     def pad_to(self, capacity: int) -> "_Row":
         """Return this row's content, right-padded to exactly ``capacity`` tokens."""
@@ -168,6 +174,7 @@ class _RowBuilder:
             visit_end=self.visit_end + [False] * pad,
             values=self.values + [_NAN] * pad,
             static=self.static + [False] * pad,
+            score=self.score + [False] * pad,
             n_real=n,
         )
 
@@ -189,6 +196,7 @@ class _Row:
     visit_end: list[bool]
     values: list[float]
     static: list[bool]
+    score: list[bool]
     n_real: int
 
 
@@ -211,10 +219,24 @@ class PackedContextSampler:
         *,
         batch_size: int,
         max_context: int,
+        window_stride: int | None = None,
     ) -> None:
-        """Initialize the sampler over an exhaustible iterator of patients."""
+        """Initialize the sampler over an exhaustible iterator of patients.
+
+        ``window_stride`` switches a too-long patient from tail truncation
+        to sliding windows: ``max_context``-token windows starting every
+        ``window_stride`` tokens, the last one ending at the record's end,
+        each scoring only the positions the previous window did not (the
+        first window scores all of its positions, every later window its
+        final positions). Every position of every patient is then scored
+        exactly once, each with at least ``max_context - window_stride``
+        tokens of context, and no window is anchored to the record's end
+        for the positions it scores. Nothing is recorded as truncated.
+        """
         if batch_size < 1:
             raise ValueError("batch_size must be >= 1")
+        if window_stride is not None and not 1 <= window_stride <= max_context:
+            raise ValueError("window_stride must be in [1, max_context]")
         if max_context < 2:
             raise ValueError(
                 "max_context must be >= 2 (need room for at least one "
@@ -223,7 +245,9 @@ class PackedContextSampler:
         self._patients = patients
         self.batch_size = batch_size
         self.max_context = max_context
-        self._held: PatientSequence | None = None
+        self.window_stride = window_stride
+        self._held: tuple[PatientSequence, int] | None = None
+        self._pending: list[tuple[PatientSequence, int]] = []
         self._exhausted = False
         self.truncated_subject_ids: list[int] = []
         self.truncation_boundaries: dict[int, float] = {}
@@ -236,25 +260,47 @@ class PackedContextSampler:
         needs to know which landmarks a truncated subject legitimately
         lost."""
 
-    def _next_patient(self) -> PatientSequence | None:
+    def _windows(self, patient: PatientSequence) -> list[tuple[PatientSequence, int]]:
+        """Split a too-long patient into overlapping windows with score offsets."""
+        assert self.window_stride is not None
+        n, width, stride = len(patient), self.max_context, self.window_stride
+        out: list[tuple[PatientSequence, int]] = []
+        scored_to = 0
+        start = 0
+        while True:
+            end = min(start + width, n)
+            if end == n:
+                start = max(0, n - width)
+            out.append((patient.window(start, start + width), scored_to - start))
+            scored_to = min(start + width, n)
+            if scored_to >= n:
+                return out
+            start += stride
+
+    def _next_patient(self) -> tuple[PatientSequence, int] | None:
         if self._held is not None:
-            patient = self._held
+            held = self._held
             self._held = None
-            return patient
+            return held
+        if self._pending:
+            return self._pending.pop(0)
         if self._exhausted:
             return None
         try:
-            patient = next(self._patients)
+            patient: PatientSequence = next(self._patients)
         except StopIteration:
             self._exhausted = True
             return None
         if len(patient) > self.max_context:
+            if self.window_stride is not None:
+                self._pending = self._windows(patient)
+                return self._pending.pop(0)
             self.truncated_subject_ids.append(patient.subject_id)
             self.truncation_boundaries[patient.subject_id] = patient.time_stamps[
                 -self.max_context
             ]
             patient = _truncate_head(patient, self.max_context)
-        return patient
+        return (patient, 0)
 
     def next_chunk(self) -> StreamingChunk | None:
         """Pack up to ``batch_size`` rows, each up to ``max_context`` tokens.
@@ -269,13 +315,14 @@ class PackedContextSampler:
         for _ in range(self.batch_size):
             row = _RowBuilder()
             while True:
-                patient = self._next_patient()
-                if patient is None:
+                item = self._next_patient()
+                if item is None:
                     break
+                patient, score_from = item
                 if len(row) == 0 or len(row) + len(patient) <= self.max_context:
-                    row.append_patient(patient)
+                    row.append_patient(patient, score_from=score_from)
                 else:
-                    self._held = patient
+                    self._held = item
                     break
             padded = row.pad_to(self.max_context)
             rows.append(padded)
@@ -312,6 +359,7 @@ class PackedContextSampler:
         visit_end_full = _stack("visit_end", torch.bool)
         values_full = _stack("values", torch.float)
         static_full = _stack("static", torch.bool)
+        score_full = _stack("score", torch.bool)
 
         # Same-window shift by one (not the +1-lookahead-token convention
         # PackedLaneSampler uses): max_context means exactly the window
@@ -344,6 +392,7 @@ class PackedContextSampler:
             patient_end=patient_end_full,
             visit_ids=visit_ids_full,
             visit_end=visit_end_full,
+            score_mask=score_full if self.window_stride is not None else None,
         )
 
     def __iter__(self) -> Iterator[StreamingChunk]:

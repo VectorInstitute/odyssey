@@ -109,6 +109,37 @@ class PatientSequence:
             values=_tail(list(self.values)),  # type: ignore[arg-type]
         )
 
+    def window(self, start: int, end: int) -> "PatientSequence":
+        """Return tokens ``[start, end)`` with their true time stamps.
+
+        The sliding-window counterpart of :meth:`tail`: a contiguous slice
+        anywhere in the record, times unchanged (the same true frame every
+        downstream consumer of ``time_hours`` uses). Optional per-token
+        fields that were never populated stay empty.
+        """
+        total = len(self)
+        start = max(0, start)
+        end = min(total, end)
+        if start == 0 and end == total:
+            return self
+
+        def _slice(values: list[object]) -> list[object]:
+            return values[start:end] if len(values) == total else []
+
+        return PatientSequence(
+            subject_id=self.subject_id,
+            concept_ids=self.concept_ids[start:end],
+            type_ids=self.type_ids[start:end],
+            time_stamps=self.time_stamps[start:end],
+            ages=self.ages[start:end],
+            visit_orders=self.visit_orders[start:end],
+            visit_segments=self.visit_segments[start:end],
+            visit_ids=_slice(list(self.visit_ids)),  # type: ignore[arg-type]
+            visit_ends=_slice(list(self.visit_ends)),  # type: ignore[arg-type]
+            static_mask=_slice(list(self.static_mask)),  # type: ignore[arg-type]
+            values=_slice(list(self.values)),  # type: ignore[arg-type]
+        )
+
     def head(self, n: int) -> "PatientSequence":
         """Return the EARLIEST ``n`` tokens (the whole sequence if shorter).
 
