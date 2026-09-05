@@ -107,17 +107,24 @@ class _RowBuilder:
     values: list[float] = field(default_factory=list)
     static: list[bool] = field(default_factory=list)
     score: list[bool] = field(default_factory=list)
+    target_ok: list[bool] = field(default_factory=list)
 
     def __len__(self) -> int:
         """Return the number of tokens packed into this row so far."""
         return len(self.concept_ids)
 
-    def append_patient(self, seq: PatientSequence, *, score_from: int = 0) -> None:
+    def append_patient(
+        self, seq: PatientSequence, *, score_from: int = 0, target_from: int = 0
+    ) -> None:
         """Append one (whole, truncated, or windowed) patient's tokens, as-is.
 
         ``score_from`` marks where scoring may start inside this segment:
         positions before it are context that an earlier overlapping
         window already scored (sliding-window mode); 0 scores everything.
+        ``target_from`` is the same boundary for next-token targets, one
+        position earlier for a non-first window, because a window's last
+        position never has an in-window target and the window before
+        stopped one short of it.
 
         No timestamp adjustment: ``time_stamps`` are each patient's own
         raw values, unchanged. The module docstring explains why that is
@@ -153,6 +160,7 @@ class _RowBuilder:
         patient_end[-1] = True
         self.patient_end.extend(patient_end)
         self.score.extend([i >= score_from for i in range(n)])
+        self.target_ok.extend([i >= target_from for i in range(n)])
 
     def pad_to(self, capacity: int) -> "_Row":
         """Return this row's content, right-padded to exactly ``capacity`` tokens."""
@@ -175,6 +183,7 @@ class _RowBuilder:
             values=self.values + [_NAN] * pad,
             static=self.static + [False] * pad,
             score=self.score + [False] * pad,
+            target_ok=self.target_ok + [False] * pad,
             n_real=n,
         )
 
@@ -197,6 +206,7 @@ class _Row:
     values: list[float]
     static: list[bool]
     score: list[bool]
+    target_ok: list[bool]
     n_real: int
 
 
@@ -246,8 +256,8 @@ class PackedContextSampler:
         self.batch_size = batch_size
         self.max_context = max_context
         self.window_stride = window_stride
-        self._held: tuple[PatientSequence, int] | None = None
-        self._pending: list[tuple[PatientSequence, int]] = []
+        self._held: tuple[PatientSequence, int, int] | None = None
+        self._pending: list[tuple[PatientSequence, int, int]] = []
         self._exhausted = False
         self.truncated_subject_ids: list[int] = []
         self.truncation_boundaries: dict[int, float] = {}
@@ -260,24 +270,34 @@ class PackedContextSampler:
         needs to know which landmarks a truncated subject legitimately
         lost."""
 
-    def _windows(self, patient: PatientSequence) -> list[tuple[PatientSequence, int]]:
-        """Split a too-long patient into overlapping windows with score offsets."""
+    def _windows(
+        self, patient: PatientSequence
+    ) -> list[tuple[PatientSequence, int, int]]:
+        """Split a too-long patient into overlapping windows.
+
+        Returns ``(window, score_from, target_from)`` triples: positions
+        from ``score_from`` are scored by this window, positions from
+        ``target_from`` carry its next-token targets (one earlier than
+        ``score_from`` for every window after the first, since a window's
+        last position has no in-window target).
+        """
         assert self.window_stride is not None
         n, width, stride = len(patient), self.max_context, self.window_stride
-        out: list[tuple[PatientSequence, int]] = []
+        out: list[tuple[PatientSequence, int, int]] = []
         scored_to = 0
         start = 0
         while True:
-            end = min(start + width, n)
-            if end == n:
+            if start + width >= n:
                 start = max(0, n - width)
-            out.append((patient.window(start, start + width), scored_to - start))
+            score_from = scored_to - start
+            target_from = max(0, scored_to - 1) - start if scored_to else 0
+            out.append((patient.window(start, start + width), score_from, target_from))
             scored_to = min(start + width, n)
             if scored_to >= n:
                 return out
             start += stride
 
-    def _next_patient(self) -> tuple[PatientSequence, int] | None:
+    def _next_patient(self) -> tuple[PatientSequence, int, int] | None:
         if self._held is not None:
             held = self._held
             self._held = None
@@ -300,7 +320,7 @@ class PackedContextSampler:
                 -self.max_context
             ]
             patient = _truncate_head(patient, self.max_context)
-        return (patient, 0)
+        return (patient, 0, 0)
 
     def next_chunk(self) -> StreamingChunk | None:
         """Pack up to ``batch_size`` rows, each up to ``max_context`` tokens.
@@ -318,9 +338,11 @@ class PackedContextSampler:
                 item = self._next_patient()
                 if item is None:
                     break
-                patient, score_from = item
+                patient, score_from, target_from = item
                 if len(row) == 0 or len(row) + len(patient) <= self.max_context:
-                    row.append_patient(patient, score_from=score_from)
+                    row.append_patient(
+                        patient, score_from=score_from, target_from=target_from
+                    )
                 else:
                     self._held = item
                     break
@@ -360,6 +382,7 @@ class PackedContextSampler:
         values_full = _stack("values", torch.float)
         static_full = _stack("static", torch.bool)
         score_full = _stack("score", torch.bool)
+        target_ok_full = _stack("target_ok", torch.bool)
 
         # Same-window shift by one (not the +1-lookahead-token convention
         # PackedLaneSampler uses): max_context means exactly the window
@@ -371,6 +394,10 @@ class PackedContextSampler:
         not_target[:, -1] = True
         targets = targets.masked_fill(not_target, PAD_ID)
         real_mask = (subject_ids_full != NO_SUBJECT) & ~not_target
+        if self.window_stride is not None:
+            # sliding windows: a window's leading positions are context only
+            # (the window before already trained/scored them), never targets
+            real_mask = real_mask & target_ok_full
 
         batch = ClinicalSequenceBatch(
             concept_ids=concept_ids_full,

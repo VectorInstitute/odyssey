@@ -163,6 +163,15 @@ class TrainingConfig:
     """Token budget per packed row for backbone="transformer" (see
     PackedContextSampler). Unused by the hybrid backbone."""
 
+    window_stride: int | None = None
+    """backbone="transformer" only: score and train too-long records with
+    sliding ``max_context`` windows every this many tokens instead of
+    keeping each record's last ``max_context`` tokens (see
+    PackedContextSampler). Each position is then a target exactly once,
+    with at least ``max_context - window_stride`` tokens of context, and
+    no window is anchored to the record's end. None keeps the tail
+    truncation. Saved with the run and honoured by every evaluation."""
+
     # Backbone (EHRHybridBackbone). Defaults are modest, not the paper-scale
     # numbers -- see the training run's own README note on why.
     hidden_size: int = 256
@@ -1550,7 +1559,10 @@ def _run_training(  # noqa: PLR0912, PLR0915
         patients = corpus.make_train_patients(epoch)
         if config.backbone == "transformer":
             return PackedContextSampler(
-                patients, batch_size=config.num_lanes, max_context=config.max_context
+                patients,
+                batch_size=config.num_lanes,
+                max_context=config.max_context,
+                window_stride=config.window_stride,
             )
         return PackedLaneSampler(
             patients,
@@ -1568,7 +1580,10 @@ def _run_training(  # noqa: PLR0912, PLR0915
         )
         if config.backbone == "transformer":
             return PackedContextSampler(
-                patients, batch_size=config.num_lanes, max_context=config.max_context
+                patients,
+                batch_size=config.num_lanes,
+                max_context=config.max_context,
+                window_stride=config.window_stride,
             )
         return PackedLaneSampler(
             patients, num_lanes=config.num_lanes, chunk_size=config.chunk_size

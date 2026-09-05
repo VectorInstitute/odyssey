@@ -2734,6 +2734,9 @@ def evaluate_alerts(  # noqa: PLR0912, PLR0915
         logger.info(
             "[alerts] collecting model scores at %.0fh landmarks", landmark_hours
         )
+    if window_stride is None:
+        # the run's own training-time choice, saved with its config
+        window_stride = getattr(config, "window_stride", None)
     truncation_boundaries: dict[int, float] = {}
     unscoreable_keys: set[tuple[int, int, float]] = set()
     if degraded_shard_dir is not None:
