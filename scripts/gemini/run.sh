@@ -1203,8 +1203,8 @@ OBSERVABILITY_METRICS_KEYS = {
     "name", "n_subjects", "observed_rate", "auroc", "accuracy_at_0_5",
 }
 TIME_METRICS_KEYS = {
-    "nll", "n_positions", "same_instant_accuracy", "same_instant_rate",
-    "calibration", "calibration_after_bundle",
+    "nll", "n_positions", "n_positive_gaps", "same_instant_accuracy",
+    "same_instant_rate", "calibration", "calibration_after_bundle",
 }
 CALIBRATION_ENTRY_KEYS = {"predicted", "observed"}
 TOP_LEVEL_KEYS = {
@@ -1834,7 +1834,7 @@ PY
         echo "$STEP complete. Results at $OUTPUT_JSON"
         _export_aggregate_json \
             "scripts/gemini/out/evals/${run_name}_steering_full.json" "$OUTPUT_JSON" \
-            "site layer_index tau suppress_strength horizons_hours event_names gammas lifted_tokens summaries" \
+            "site layer_index tau suppress_strength horizons_hours event_names gammas lifted_tokens summaries at_risk_restricted stratify_by" \
             || echo "WARNING: steering output not exported (see above)." >&2
     }
 
