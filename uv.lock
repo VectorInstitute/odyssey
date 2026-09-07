@@ -2525,7 +2525,7 @@ requires-dist = [
     { name = "sentencepiece", marker = "extra == 'text'", specifier = ">=0.2.0" },
     { name = "sqlalchemy", marker = "extra == 'gemini'", specifier = ">=2.0.0" },
     { name = "survivalpfn", marker = "extra == 'survivalpfn'", git = "https://github.com/rgklab/SurvivalPFN.git" },
-    { name = "tabicl", marker = "extra == 'tabicl'", specifier = ">=2.0.0" },
+    { name = "tabicl", marker = "extra == 'tabicl'", specifier = ">=2.2.0" },
     { name = "torch", marker = "sys_platform != 'linux'", specifier = ">=2.12.1" },
     { name = "torch", marker = "sys_platform == 'linux'", specifier = "==2.6.0", index = "https://download.pytorch.org/whl/cu124" },
     { name = "transformers", marker = "extra == 'text'", specifier = ">=5.16.1" },
@@ -3916,7 +3916,7 @@ wheels = [
 
 [[package]]
 name = "tabicl"
-version = "2.1.1"
+version = "2.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "einops" },
@@ -3929,9 +3929,9 @@ dependencies = [
     { name = "torch", version = "2.13.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e0/c3/ef8bcc7645bc1eedae4563df6429f6f5438aaea5e293682a9367bf2c2ddb/tabicl-2.1.1.tar.gz", hash = "sha256:7abdb1fa878e7a1edfa1c6606bf4189e9cccc20935e8011d7e690f4693c9c5c5", size = 224680, upload-time = "2026-04-29T15:57:46.302Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d4/81/ee11ac72b33c2b87f7337c99238fd2700128791edceb558b63bb30556b73/tabicl-2.2.0.tar.gz", hash = "sha256:dfc41f2acd9603e4402cedae9e42f9922cfb8cfc9fcf7901d773e26609e47e21", size = 268084, upload-time = "2026-09-02T15:13:38.59Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/60/d3/f6eadcef58322b1b0253df1c17d9230db9934274f52e0d952458f6c6ab41/tabicl-2.1.1-py3-none-any.whl", hash = "sha256:cb4405cc93335c688bc9bcb703c7944032fcf542b43ebb66820f1a5acb5651b1", size = 252909, upload-time = "2026-04-29T15:57:47.775Z" },
+    { url = "https://files.pythonhosted.org/packages/77/22/bbac2df399b8ed5a699bde38496ebb129a045c5d160fe52786727de932f3/tabicl-2.2.0-py3-none-any.whl", hash = "sha256:c80b8ec2719be26bc0bf1dd758a2361f58019d8f7877038b785529a425789ce4", size = 310448, upload-time = "2026-09-02T15:13:36.629Z" },
 ]
 
 [[package]]
