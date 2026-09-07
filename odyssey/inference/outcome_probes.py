@@ -278,7 +278,7 @@ def _embeddings_for_split(  # noqa: PLR0917
     return keys, post, times
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> None:
     """Fit the state-transition probes for one run and save them next to it."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", required=True)
@@ -291,7 +291,7 @@ def main() -> None:
     parser.add_argument("--chunk-size", type=int, default=512)
     parser.add_argument("--checkpoint", default=None)
     parser.add_argument("--output", required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
