@@ -262,6 +262,38 @@ COUNTING_AUXILIARY_EVENTS: tuple[AlertEvent, ...] = (
     AlertEvent("bicarbonate", code_regex=r"sodium bicarbonate|bicarb"),
 )
 
+# State-transition outcomes whose clinical expectation runs the OTHER way
+# for a sicker state (discharge and weaning are good news), so a steering
+# dial can be wrong in both directions. They are never trained as hazard
+# heads; odyssey.inference.outcome_probes fits frozen probes for them on a
+# run's bottleneck output and odyssey.inference.steering reads those probes
+# as extra outcomes. ``hospital_discharge_alive`` excludes the discharge
+# codes that record death (MIMIC-IV "DIED", eICU-CRD "Expired"); the MEDS
+# death event is a separate alert already.
+STATE_TRANSITION_EVENTS: tuple[AlertEvent, ...] = (
+    AlertEvent("icu_discharge", code_prefix="ICU_DISCHARGE//"),
+    AlertEvent(
+        "hospital_discharge_alive",
+        code_regex=r"^HOSPITAL_DISCHARGE//(?!DIED|EXPIRED)",
+    ),
+    AlertEvent(
+        "vasopressor_stop",
+        code_regex=(
+            r"MEDICATION//STOP//(norepinephrine|epinephrine|vasopressin"
+            r"|phenylephrine|dopamine|angiotensin)"
+        ),
+    ),
+)
+
+STATE_TRANSITION_REQUIRES: dict[str, str] = {
+    "icu_discharge": "icu_admission",
+    "vasopressor_stop": "vasopressor_start",
+}
+"""A transition is only at risk once its prior event has happened: a
+patient not in the ICU cannot leave it, a patient not on vasopressors
+cannot stop them. Hospital discharge needs no prior event."""
+
+
 COUNTING_AUXILIARY_EVENTS_BY_NAME: dict[str, AlertEvent] = {
     a.name: a for a in COUNTING_AUXILIARY_EVENTS
 }
