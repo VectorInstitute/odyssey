@@ -70,7 +70,11 @@ import polars as pl
 import torch
 import torch.nn.functional as F  # noqa: N812
 
-from odyssey.data.alert_events import all_event_times, hazard_events_for
+from odyssey.data.alert_events import (
+    STATE_TRANSITION_EVENTS,
+    all_event_times,
+    hazard_events_for,
+)
 from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.concepts import canonical_concept_name, concepts_for_source
 from odyssey.data.history_recap import maybe_history_recap
@@ -78,6 +82,7 @@ from odyssey.data.sidecars import activate_sidecars
 from odyssey.data.streaming import PackedLaneSampler, StreamingChunk, move_to_device
 from odyssey.data.value_binning import add_value_tokens
 from odyssey.data.vocabulary import Vocabulary
+from odyssey.inference.outcome_probes import OutcomeProbes
 from odyssey.inference.run_inference import load_run, refuse_existing_output
 from odyssey.models.concept_bottleneck import (
     BottleneckIntervention,
@@ -195,6 +200,94 @@ CLINICAL_EXPECTATIONS: dict[str, dict[str, int]] = {
     "hypertension": {"vasopressor_start": -1},
 }
 
+TRANSITION_EXPECTATIONS: dict[str, dict[str, int]] = {
+    # The other direction of the same clinical associations: a sicker state
+    # should make leaving the ICU, going home alive and coming off
+    # vasopressors LESS likely. Declared before any probe was scored.
+    "sustained_hypotension_map": {
+        "icu_discharge": -1,
+        "hospital_discharge_alive": -1,
+        "vasopressor_stop": -1,
+    },
+    "hypotension": {
+        "icu_discharge": -1,
+        "hospital_discharge_alive": -1,
+        "vasopressor_stop": -1,
+    },
+    "elevated_lactate": {
+        "icu_discharge": -1,
+        "hospital_discharge_alive": -1,
+        "vasopressor_stop": -1,
+    },
+    "metabolic_acidosis": {
+        "icu_discharge": -1,
+        "hospital_discharge_alive": -1,
+        "vasopressor_stop": -1,
+    },
+    "sepsis3": {
+        "icu_discharge": -1,
+        "hospital_discharge_alive": -1,
+        "vasopressor_stop": -1,
+    },
+    "qsofa": {
+        "icu_discharge": -1,
+        "hospital_discharge_alive": -1,
+        "vasopressor_stop": -1,
+    },
+    "on_vasopressors": {"icu_discharge": -1, "hospital_discharge_alive": -1},
+    "sirs": {"icu_discharge": -1, "hospital_discharge_alive": -1},
+    "aki_stage_3": {"icu_discharge": -1, "hospital_discharge_alive": -1},
+    "aki_stage_2": {"icu_discharge": -1, "hospital_discharge_alive": -1},
+    "acute_kidney_injury": {"icu_discharge": -1, "hospital_discharge_alive": -1},
+    "oliguria": {"icu_discharge": -1, "hospital_discharge_alive": -1},
+    "hyperkalemia": {"icu_discharge": -1, "hospital_discharge_alive": -1},
+    "anemia": {"icu_discharge": -1, "hospital_discharge_alive": -1},
+    "hypoxia": {"icu_discharge": -1, "hospital_discharge_alive": -1},
+    "hypoxemic_respiratory_failure": {
+        "icu_discharge": -1,
+        "hospital_discharge_alive": -1,
+    },
+    "tachycardia": {"icu_discharge": -1, "hospital_discharge_alive": -1},
+    "hypothermia": {"icu_discharge": -1, "hospital_discharge_alive": -1},
+    "fever": {"icu_discharge": -1, "hospital_discharge_alive": -1},
+    "hyponatremia": {"hospital_discharge_alive": -1},
+    "hypernatremia": {"hospital_discharge_alive": -1},
+    "hypoglycemia": {"hospital_discharge_alive": -1},
+    "thrombocytopenia": {"icu_discharge": -1, "hospital_discharge_alive": -1},
+    "coagulopathy": {"icu_discharge": -1, "hospital_discharge_alive": -1},
+    # the one dial whose state is not "sicker": pressors come off, the
+    # patient can leave the ICU
+    "hypertension": {"vasopressor_stop": +1, "icu_discharge": +1},
+}
+
+READOUT_EXPECTATIONS: dict[str, dict[str, int]] = {
+    # What a push should do to OTHER concepts' readouts: its own goes up
+    # (respond), its physiological opposite goes down. Everything else is
+    # reported without an expectation and feeds the specificity score.
+    "hypokalemia": {"hyperkalemia": -1},
+    "hyperkalemia": {"hypokalemia": -1},
+    "hyponatremia": {"hypernatremia": -1},
+    "hypernatremia": {"hyponatremia": -1},
+    "hypoglycemia": {"hyperglycemia": -1},
+    "hyperglycemia": {"hypoglycemia": -1},
+    "hypothermia": {"fever": -1},
+    "fever": {"hypothermia": -1},
+    "bradycardia": {"tachycardia": -1},
+    "tachycardia": {"bradycardia": -1},
+    "hypotension": {"hypertension": -1},
+    "sustained_hypotension_map": {"hypertension": -1},
+    "hypertension": {"hypotension": -1, "sustained_hypotension_map": -1},
+}
+
+
+def readout_expectations_for(
+    concept: str, concept_names: Sequence[str]
+) -> dict[str, int]:
+    """Return the expected sign of each concept's readout shift under amplify."""
+    known = set(concept_names)
+    declared = {concept: +1, **READOUT_EXPECTATIONS.get(concept, {})}
+    return {c: sign for c, sign in declared.items() if c in known}
+
 
 def expectations_for(concept: str, event_names: Sequence[str]) -> dict[str, int]:
     """Return the declared expectations for ``concept`` this model can score.
@@ -204,7 +297,10 @@ def expectations_for(concept: str, event_names: Sequence[str]) -> dict[str, int]
     source, not a failure.
     """
     known = set(event_names)
-    declared = CLINICAL_EXPECTATIONS.get(concept, {})
+    declared = {
+        **CLINICAL_EXPECTATIONS.get(concept, {}),
+        **TRANSITION_EXPECTATIONS.get(concept, {}),
+    }
     return {ev: sign for ev, sign in declared.items() if ev in known}
 
 
@@ -404,8 +500,16 @@ def run_steering_pass(
     device: str = "cuda",
     max_seq_len: int | None = None,
     strata: PositionStrata | None = None,
+    probes: OutcomeProbes | None = None,
+    probe_tables: EventTimeTables | None = None,
+    required_tables: EventTimeTables | None = None,
 ) -> dict[ReadoutKey, SubjectReadout]:
     """Stream every held-out patient once under ``push`` (``None`` = unsteered).
+
+    ``probes`` adds the frozen state-transition outcomes after the trained
+    heads' events, read from the same features; ``probe_tables`` gives
+    their onsets for the at-risk rule and ``required_tables`` the prior
+    events some of them need to have happened (in the ICU before leaving it).
 
     The same sampler and state carrying as every other scorer, so a pushed
     pass and the unsteered pass visit identical positions and their
@@ -446,6 +550,27 @@ def run_steering_pass(
                 if tables is not None
                 else torch.ones(risk.shape[:2], dtype=torch.bool, device=risk.device)
             )
+            if probes is not None:
+                extra_risk = probes.risk(features[real])
+                if probe_tables is not None:
+                    extra_at = event_hazard_targets(chunk, probe_tables).at_risk[real]
+                else:
+                    extra_at = torch.ones(
+                        extra_risk.shape[:2], dtype=torch.bool, device=risk.device
+                    )
+                if required_tables is not None:
+                    prior_at = event_hazard_targets(chunk, required_tables).at_risk[
+                        real
+                    ]
+                    for e, name in enumerate(probes.event_names):
+                        prior = probes.requires.get(name)
+                        if prior is not None:
+                            # at risk of the transition only once the prior
+                            # event has happened (no longer at risk of it)
+                            j = required_tables.event_names.index(prior)
+                            extra_at[:, e] &= ~prior_at[:, j]
+                risk = torch.cat([risk, extra_risk.to(risk.dtype)], dim=1)
+                at_risk = torch.cat([at_risk, extra_at], dim=1)
             sids = chunk.subject_ids[real]
             probs_real = probs[real]
             if strata is None:
@@ -581,6 +706,24 @@ class OutcomeShift:
 
 
 @dataclass
+class ConceptShift:
+    """One concept's readout under one push, with the sign it should have moved."""
+
+    concept: str
+    baseline: float
+    steered: float
+    delta: PairedDelta
+    expected_sign: int | None
+
+    @property
+    def as_expected(self) -> bool | None:
+        """Whether the paired delta has the declared sign (``None`` if undeclared)."""
+        if self.expected_sign is None:
+            return None
+        return self.delta.point * self.expected_sign > 0
+
+
+@dataclass
 class ConceptSteeringSummary:
     """Everything one dial did, in one direction."""
 
@@ -596,6 +739,8 @@ class ConceptSteeringSummary:
     express_steered: float
     express_delta: PairedDelta
     outcomes: list[OutcomeShift] = field(default_factory=list)
+    concept_shifts: list[ConceptShift] = field(default_factory=list)
+    """Every concept's readout under this push, the pushed one included."""
     stratum: str | None = None
     """``name=0``/``name=1`` when the pass was split by a concept's running label."""
     direction_source: str = "concept"
@@ -623,8 +768,13 @@ def summarize_push(
     event_names: Sequence[str],
     n_boot: int = 1000,
     seed: int = 0,
+    concept_names: Sequence[str] | None = None,
 ) -> ConceptSteeringSummary:
-    """Pair the two passes by subject and score respond, express and outcomes."""
+    """Pair the two passes by subject and score respond, express and outcomes.
+
+    With ``concept_names``, every concept's readout shift is scored too
+    (:class:`ConceptShift`), against :data:`READOUT_EXPECTATIONS`.
+    """
     subjects = sorted(set(baseline) & set(steered))
     p0, m0, r0 = _subject_means(baseline, subjects)
     p1, m1, r1 = _subject_means(steered, subjects)
@@ -652,6 +802,22 @@ def summarize_push(
                     agreement=agreement,
                 )
             )
+    shifts: list[ConceptShift] = []
+    if concept_names is not None:
+        readout_expected = readout_expectations_for(concept, concept_names)
+        for j, other in enumerate(concept_names):
+            declared_readout = readout_expected.get(other)
+            shifts.append(
+                ConceptShift(
+                    concept=other,
+                    baseline=float(p0[:, j].mean()),
+                    steered=float(p1[:, j].mean()),
+                    delta=paired_delta(p1[:, j], p0[:, j], n_boot=n_boot, seed=seed),
+                    expected_sign=None
+                    if declared_readout is None
+                    else declared_readout * flip,
+                )
+            )
     return ConceptSteeringSummary(
         concept=concept,
         direction=direction,
@@ -669,6 +835,7 @@ def summarize_push(
             m1[:, lifted_column], m0[:, lifted_column], n_boot=n_boot, seed=seed
         ),
         outcomes=outcomes,
+        concept_shifts=shifts,
     )
 
 
@@ -717,6 +884,19 @@ class SteeringPrepared:
     token_names: dict[str, str]
     strata: PositionStrata | None = None
     """Set when the benchmark is split by a concept's running label."""
+    probes: OutcomeProbes | None = None
+    """Frozen state-transition probes read as extra outcomes."""
+    probe_tables: EventTimeTables | None = None
+    """Onsets of the probe events on the held-out split (at-risk rule)."""
+    required_tables: EventTimeTables | None = None
+    """Onsets of the events the probe events require to have happened."""
+
+    @property
+    def outcome_names(self) -> list[str]:
+        """Trained hazard events followed by the probe events, in scoring order."""
+        return list(self.event_names) + (
+            list(self.probes.event_names) if self.probes is not None else []
+        )
 
 
 def _labels_for(
@@ -730,7 +910,7 @@ def _labels_for(
     return stay_labels, stay_mask, build_concept_first_times(raw_events, concepts)
 
 
-def prepare(
+def prepare(  # noqa: PLR0915
     run_dir: str | Path,
     held_out_shard_dir: str | Path,
     lift_shard_dir: str | Path,
@@ -746,6 +926,7 @@ def prepare(
     min_share: float = 0.005,
     min_lift: float = 2.0,
     stratify_concept: str | None = None,
+    outcome_probes: str | Path | None = None,
 ) -> SteeringPrepared:
     """Load the run, bin the held-out split, and build the lifted token sets.
 
@@ -824,6 +1005,33 @@ def prepare(
             all_event_times(held_raw, alerts, source, task_set=config.task_set),
             names,
         )
+    probes: OutcomeProbes | None = None
+    probe_tables: EventTimeTables | None = None
+    required_tables: EventTimeTables | None = None
+    if outcome_probes is not None:
+        probes = OutcomeProbes.load(outcome_probes, device=device)
+        probe_events = [
+            ev for ev in STATE_TRANSITION_EVENTS if ev.name in set(probes.event_names)
+        ]
+        if [ev.name for ev in probe_events] != list(probes.event_names):
+            raise ValueError(
+                f"probe events {probes.event_names} are not the registry's "
+                f"state-transition events {[ev.name for ev in STATE_TRANSITION_EVENTS]}"
+            )
+        required_names = sorted(set(probes.requires.values()))
+        required_events = [
+            a
+            for a in hazard_events_for(
+                config.task_set, config.auxiliary_event_names, source=source
+            )
+            if a.name in required_names
+        ]
+        times = all_event_times(
+            held_raw, probe_events + required_events, source, task_set=config.task_set
+        )
+        probe_tables = EventTimeTables(times, list(probes.event_names))
+        if required_events:
+            required_tables = EventTimeTables(times, [a.name for a in required_events])
     strata: PositionStrata | None = None
     if stratify_concept is not None:
         stratum_name = canonical_concept_name(stratify_concept)
@@ -858,6 +1066,9 @@ def prepare(
         supervision=supervision,
         tables=tables,
         token_names=token_names,
+        probes=probes,
+        probe_tables=probe_tables,
+        required_tables=required_tables,
         strata=strata,
     )
 
@@ -945,6 +1156,9 @@ def evaluate_steering(
         chunk_size=chunk_size,
         device=device,
         strata=stratify,
+        probes=prepared.probes,
+        probe_tables=prepared.probe_tables,
+        required_tables=prepared.required_tables,
     )
     summaries: list[ConceptSteeringSummary] = []
     for column, (concept, c) in enumerate(zip(chosen, indices, strict=True)):
@@ -982,6 +1196,9 @@ def evaluate_steering(
                 chunk_size=chunk_size,
                 device=device,
                 strata=stratify,
+                probes=prepared.probes,
+                probe_tables=prepared.probe_tables,
+                required_tables=prepared.required_tables,
             )
             for stratum, base_part, steer_part in _split_by_stratum(
                 baseline, steered, stratify
@@ -995,8 +1212,9 @@ def evaluate_steering(
                     direction=direction,
                     gamma=signed,
                     site=site,
-                    event_names=prepared.event_names,
+                    event_names=prepared.outcome_names,
                     n_boot=n_boot,
+                    concept_names=prepared.concept_names,
                 )
                 summary.stratum = stratum
                 summary.direction_source = (
@@ -1057,6 +1275,9 @@ def _to_json(summaries: Sequence[ConceptSteeringSummary]) -> list[dict[str, Any]
             od["relative_change"] = o.relative_change
             od["as_expected"] = o.as_expected
             od["separated"] = o.delta.separated
+        for c, cd in zip(s.concept_shifts, d["concept_shifts"], strict=True):
+            cd["as_expected"] = c.as_expected
+            cd["separated"] = c.delta.separated
         out.append(d)
     return out
 
@@ -1135,6 +1356,13 @@ def _main() -> None:
         "a seeded random unit vector, or the unnamed slot U_j, j = c mod n_unknown",
     )
     parser.add_argument("--control-seed", type=int, default=0)
+    parser.add_argument(
+        "--outcome-probes",
+        default=None,
+        help="outcome_probes.pt from odyssey.inference.outcome_probes: frozen "
+        "state-transition probes (ICU discharge, discharge alive, vasopressor "
+        "stop) scored as extra outcomes with their own declared expectations",
+    )
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
     logging.basicConfig(
@@ -1165,6 +1393,7 @@ def _main() -> None:
         min_share=args.min_share,
         min_lift=args.min_lift,
         stratify_concept=args.stratify_by,
+        outcome_probes=args.outcome_probes,
     )
     layer_index = args.layer_index
     if args.site == "stream" and layer_index is None:
@@ -1183,7 +1412,16 @@ def _main() -> None:
             "tau": args.tau,
             "suppress_strength": args.suppress_strength,
             "horizons_hours": list(HORIZONS_HOURS),
-            "event_names": prepared.event_names,
+            "event_names": prepared.outcome_names,
+            "trained_event_names": prepared.event_names,
+            "outcome_probes": None
+            if prepared.probes is None
+            else {
+                "path": str(args.outcome_probes),
+                "event_names": prepared.probes.event_names,
+                "requires": prepared.probes.requires,
+                "auroc": prepared.probes.auroc,
+            },
             "gammas": dict(zip(prepared.concept_names, prepared.gammas, strict=True)),
             "lifted_tokens": {
                 prepared.concept_names[c]: [

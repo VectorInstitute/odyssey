@@ -18,6 +18,7 @@ from odyssey.data.alert_events import (
     ALERT_EVENTS_V2,
     COUNTING_AUXILIARY_EVENTS,
     PROBE_EVENTS,
+    STATE_TRANSITION_EVENTS,
     AlertEvent,
     _next_visit_onsets,
     alert_events_for,
@@ -409,3 +410,69 @@ def test_gemini_bare_prefixes_are_unambiguous_in_the_real_inventory() -> None:
             "-- a prefix that catches more than its own token would "
             "silently mislabel onsets"
         )
+
+
+def test_code_exclude_regex_skips_the_discharge_that_records_a_death() -> None:
+    """``hospital_discharge_alive`` must not onset on a DIED/Expired discharge."""
+    rows: list[_EventRow] = [
+        (1, "LAB//220045//bpm", T0, 80.0, 1001),
+        (1, "HOSPITAL_DISCHARGE//DIED", T0 + timedelta(hours=5), None, 1001),
+        (2, "LAB//220045//bpm", T0, 80.0, 2002),
+        (2, "HOSPITAL_DISCHARGE//Expired//Home", T0 + timedelta(hours=3), None, 2002),
+        (3, "LAB//220045//bpm", T0, 80.0, 3003),
+        (3, "HOSPITAL_DISCHARGE//HOME", T0 + timedelta(hours=7), None, 3003),
+    ]
+    events = pl.DataFrame(
+        rows,
+        schema={
+            "subject_id": pl.Int64,
+            "code": pl.Utf8,
+            "time": pl.Datetime,
+            "numeric_value": pl.Float32,
+            "hadm_id": pl.Int64,
+        },
+        orient="row",
+    )
+    alert = next(
+        a for a in STATE_TRANSITION_EVENTS if a.name == "hospital_discharge_alive"
+    )
+
+    times = event_times(events, alert)
+
+    assert (1, 1001) not in times.onset
+    assert (2, 2002) not in times.onset
+    assert times.onset[(3, 3003)] == 7.0
+
+
+def test_infer_visit_attributes_orphan_rows_to_the_spanning_visit() -> None:
+    """MIMIC-IV infusion STOP rows carry no hadm_id; the stop must still onset."""
+    rows: list[_EventRow | tuple[int, str, datetime, float | None, None]] = [
+        (1, "LAB//220045//bpm", T0, 80.0, 1001),
+        (1, "MEDICATION//START//norepinephrine", T0 + timedelta(hours=2), None, 1001),
+        # the stop row has no admission id but falls inside visit 1001's span
+        (1, "MEDICATION//STOP//norepinephrine", T0 + timedelta(hours=6), None, None),
+        (1, "LAB//220045//bpm", T0 + timedelta(hours=9), 80.0, 1001),
+        # subject 2's stop row lies after its visit's last event: unattributed
+        (2, "LAB//220045//bpm", T0, 80.0, 2002),
+        (2, "MEDICATION//STOP//norepinephrine", T0 + timedelta(hours=30), None, None),
+    ]
+    events = pl.DataFrame(
+        rows,
+        schema={
+            "subject_id": pl.Int64,
+            "code": pl.Utf8,
+            "time": pl.Datetime,
+            "numeric_value": pl.Float32,
+            "hadm_id": pl.Int64,
+        },
+        orient="row",
+    )
+    stop = next(a for a in STATE_TRANSITION_EVENTS if a.name == "vasopressor_stop")
+    assert stop.infer_visit
+
+    times = event_times(events, stop)
+
+    assert times.onset == {(1, 1001): 6.0}
+    # without inference the same event never onsets: the row is dropped
+    plain = AlertEvent("stop_plain", code_regex=stop.code_regex)
+    assert event_times(events, plain).onset == {}
