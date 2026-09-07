@@ -61,6 +61,12 @@ class AlertEvent:
     Polars' regex engine has no look-around, so an exclusion is a field,
     not a ``(?!...)`` in the pattern (a discharge that records the death)."""
 
+    infer_visit: bool = False
+    """Rows matching this event that carry no ``hadm_id`` are attributed to
+    the subject's visit whose event span contains their time, the way
+    sidecar rows are attached to visits (MIMIC-IV infusion STOP rows come
+    without an admission id). Rows outside every span stay unattributed."""
+
     next_visit: bool = False
     """Onset is the first occurrence of ``code_prefix`` strictly AFTER the
     visit's last event (the next admission); follow-up runs to the end of
@@ -289,6 +295,7 @@ STATE_TRANSITION_EVENTS: tuple[AlertEvent, ...] = (
             r"MEDICATION//STOP//(norepinephrine|epinephrine|vasopressin"
             r"|phenylephrine|dopamine|angiotensin)"
         ),
+        infer_visit=True,
     ),
 )
 
@@ -486,6 +493,32 @@ def _next_visit_onsets(
     }
 
 
+def _infer_visits(hits: pl.DataFrame, timed: pl.DataFrame) -> pl.DataFrame:
+    """Give ``hits`` without an ``hadm_id`` the visit whose span contains their time.
+
+    A visit's span is the first to last timed event carrying that
+    ``hadm_id``. Hits inside no span are dropped, hits already carrying an
+    ``hadm_id`` pass through unchanged.
+    """
+    with_visit = hits.filter(pl.col("hadm_id").is_not_null())
+    orphans = hits.filter(pl.col("hadm_id").is_null()).drop("hadm_id")
+    if orphans.is_empty():
+        return with_visit
+    spans = (
+        timed.filter(pl.col("hadm_id").is_not_null())
+        .group_by("subject_id", "hadm_id")
+        .agg(pl.col("time").min().alias("_t0"), pl.col("time").max().alias("_t1"))
+    )
+    attributed = (
+        orphans.join(spans, on="subject_id", how="inner")
+        .filter((pl.col("time") >= pl.col("_t0")) & (pl.col("time") <= pl.col("_t1")))
+        .drop("_t0", "_t1")
+    )
+    return pl.concat(
+        [with_visit, attributed.select(with_visit.columns)], how="vertical"
+    )
+
+
 def event_times(
     events: pl.DataFrame,
     alert: AlertEvent,
@@ -551,6 +584,8 @@ def event_times(
             hits = hits.filter(
                 ~pl.col("code").str.contains(f"(?i){alert.code_exclude_regex}")
             )
+        if alert.infer_visit and not alert.subject_scoped:
+            hits = _infer_visits(hits, timed)
         if alert.subject_scoped:
             first = hits.group_by("subject_id").agg(pl.col("time").min().alias("_t"))
             first = hours_since_origin(first, "_t", origins)
