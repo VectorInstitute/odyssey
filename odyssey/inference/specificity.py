@@ -30,12 +30,12 @@ from odyssey.data.concepts import canonical_concept_name
 
 Summary = Mapping[str, Any]
 
+# outcomes whose declared direction runs against "sicker"
 GOOD_OUTCOMES: tuple[str, ...] = (
     "icu_discharge",
     "hospital_discharge_alive",
     "vasopressor_stop",
 )
-"""Outcomes whose declared direction runs against "sicker"."""
 
 
 @dataclass(frozen=True)

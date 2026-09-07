@@ -296,9 +296,9 @@ STATE_TRANSITION_REQUIRES: dict[str, str] = {
     "icu_discharge": "icu_admission",
     "vasopressor_stop": "vasopressor_start",
 }
-"""A transition is only at risk once its prior event has happened: a
-patient not in the ICU cannot leave it, a patient not on vasopressors
-cannot stop them. Hospital discharge needs no prior event."""
+# a transition is only at risk once its prior event has happened: a patient
+# not in the ICU cannot leave it, a patient not on vasopressors cannot stop
+# them; hospital discharge needs no prior event
 
 
 COUNTING_AUXILIARY_EVENTS_BY_NAME: dict[str, AlertEvent] = {

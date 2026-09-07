@@ -59,9 +59,9 @@ from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
 
 logger = logging.getLogger(__name__)
 
+# rows per (event, horizon) fit: a landmark pass over 40 MIMIC-IV train shards
+# yields millions, and a logistic probe saturates long before that
 MAX_FIT_ROWS = 400_000
-"""Rows per (event, horizon) fit; a landmark pass over 40 MIMIC-IV train
-shards yields millions, and a logistic probe saturates long before that."""
 
 
 def fold_scaler(

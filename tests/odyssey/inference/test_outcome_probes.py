@@ -8,11 +8,13 @@ from sklearn.preprocessing import StandardScaler
 from odyssey.data.alert_events import (
     STATE_TRANSITION_EVENTS,
     STATE_TRANSITION_REQUIRES,
+    AlertEvent,
     EventTimes,
 )
 from odyssey.data.concepts import concepts_for_source
 from odyssey.inference.outcome_probes import (
     OutcomeProbes,
+    fit_probes,
     fold_scaler,
     required_mask,
 )
@@ -93,3 +95,47 @@ def test_readout_expectations_name_registry_opposites() -> None:
         "hypokalemia", ["hypokalemia", "hyperkalemia", "fever"]
     )
     assert got == {"hypokalemia": +1, "hyperkalemia": -1}
+
+
+def test_fit_probes_learns_a_separable_transition_and_respects_the_requirement() -> (
+    None
+):
+    """Feature 0 predicts leaving the ICU; rows never admitted to it are dropped."""
+    rng = np.random.default_rng(1)
+    n = 600
+    keys = [(i, 100 + i, 10.0) for i in range(n)]  # every row at t = 10 h
+    post = rng.normal(size=(n, 4)).astype(np.float32)
+    leaves = post[:, 0] > 0.3  # onset at 20 h (within 24 h) when feature 0 is high
+    onset = {(i, 100 + i): 20.0 for i in range(n) if leaves[i]}
+    censor = {(i, 100 + i): 200.0 for i in range(n)}
+    times = {
+        "icu_discharge": EventTimes(onset=onset, censor=censor, subject_scoped=False),
+        # half the subjects were admitted to the ICU at 2 h, the rest never
+        "icu_admission": EventTimes(
+            onset={(i, 100 + i): 2.0 for i in range(0, n, 2)},
+            censor=censor,
+            subject_scoped=False,
+        ),
+    }
+    events = (AlertEvent("icu_discharge", code_prefix="ICU_DISCHARGE//"),)
+    probes = fit_probes(
+        keys,
+        post,
+        times,
+        keys,
+        post,
+        times,
+        events=events,
+        requires={"icu_discharge": "icu_admission"},
+        horizons=(24.0,),
+        max_rows=10_000,
+    )
+    assert probes.event_names == ["icu_discharge"]
+    assert probes.requires == {"icu_discharge": "icu_admission"}
+    stats = probes.auroc["icu_discharge"]
+    assert stats["train@24h"] > 0.95 and stats["held_out@24h"] > 0.95
+    # only the admitted half of the rows were eligible
+    assert stats["n_train@24h"] == n / 2
+    risk = probes.risk(torch.from_numpy(post))
+    assert risk.shape == (n, 1, 1)
+    assert risk[leaves, 0, 0].mean() > risk[~leaves, 0, 0].mean()
