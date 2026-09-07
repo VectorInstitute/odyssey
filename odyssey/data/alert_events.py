@@ -55,6 +55,12 @@ class AlertEvent:
     """Regex over vocabulary tokens naming this event's own next-event
     tokens, for the next-event-mass score. Defaults to ``^code_prefix``."""
 
+    code_exclude_regex: str | None = None
+    """Regex over the raw ``code`` string (case-insensitive); rows it matches
+    never count as onsets even when ``code_prefix``/``code_regex`` match.
+    Polars' regex engine has no look-around, so an exclusion is a field,
+    not a ``(?!...)`` in the pattern (a discharge that records the death)."""
+
     next_visit: bool = False
     """Onset is the first occurrence of ``code_prefix`` strictly AFTER the
     visit's last event (the next admission); follow-up runs to the end of
@@ -274,7 +280,8 @@ STATE_TRANSITION_EVENTS: tuple[AlertEvent, ...] = (
     AlertEvent("icu_discharge", code_prefix="ICU_DISCHARGE//"),
     AlertEvent(
         "hospital_discharge_alive",
-        code_regex=r"^HOSPITAL_DISCHARGE//(?!DIED|EXPIRED)",
+        code_prefix="HOSPITAL_DISCHARGE//",
+        code_exclude_regex=r"DIED|EXPIRED",
     ),
     AlertEvent(
         "vasopressor_stop",
@@ -540,6 +547,10 @@ def event_times(
             if alert.code_prefix is not None
             else timed.filter(pl.col("code").str.contains(f"(?i){alert.code_regex}"))
         )
+        if alert.code_exclude_regex is not None:
+            hits = hits.filter(
+                ~pl.col("code").str.contains(f"(?i){alert.code_exclude_regex}")
+            )
         if alert.subject_scoped:
             first = hits.group_by("subject_id").agg(pl.col("time").min().alias("_t"))
             first = hours_since_origin(first, "_t", origins)
