@@ -115,7 +115,7 @@ gemini = [
 # baseline module, whose own import of `tabicl` is itself deferred to call
 # time -- installing this extra is only needed to actually fit one.
 tabicl = [
-    "tabicl>=2.0.0",
+    "tabicl>=2.2.0",
 ]
 
 # InterpretML's ExplainableBoostingClassifier (odyssey/inference/ebm_baseline.py),
