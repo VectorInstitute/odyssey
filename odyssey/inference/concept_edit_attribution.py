@@ -31,6 +31,23 @@ prefix of a different, unrelated code -- a real risk for hierarchical
 coding schemes (ICD's ``E11`` is a prefix of ``E11.9``) -- prefix removal
 would silently occlude both and contaminate the attribution. Exact
 equality has no such collision.
+
+Discovery (occlusion) and the edit it produces are two different
+operations, deliberately. Removing a candidate's readings tells you
+whether the concept's prediction rests on it; it does not tell you which
+*direction* would make the concept more true, because a real patient's
+actual readings are usually reassuring (normal), so deleting them makes
+the record less informative and the prediction drifts toward the model's
+higher unconditional base rate -- the same "reacts to surprise, not
+meaning" effect the paper's label-override finding already documents,
+just reached by deletion instead of a label patch. :func:`worsen_edits_from_attribution`
+turns a discovered *code* into a discovered *signal* (via
+:class:`~odyssey.data.signal_panel.SignalPanelResolver`, already
+LOINC-keyed and per-source resolved, so this step is portable to eICU for
+free) and sets it to a clinically worse value with the existing,
+already-validated :class:`~odyssey.inference.counterfactual.ValueEdit`
+machinery -- the same operation the hand-specified edits use, just aimed
+automatically instead of by hand.
 """
 
 from __future__ import annotations
@@ -41,13 +58,45 @@ from dataclasses import dataclass
 
 import polars as pl
 
+from odyssey.data.signal_panel import NO_SIGNAL, SIGNAL_PANEL, SignalPanelResolver
 from odyssey.data.value_binning import QuantileBinner
 from odyssey.data.vocabulary import Vocabulary
-from odyssey.inference.counterfactual import ForecastReadout, score_record_at
+from odyssey.inference.counterfactual import (
+    ForecastReadout,
+    ValueEdit,
+    apply_value_edits,
+    score_record_at,
+)
 from odyssey.models.sequence_model import SequenceModel
 
 
 logger = logging.getLogger(__name__)
+
+# signal name (odyssey.data.signal_panel.SIGNAL_PANEL) -> the edit that
+# pushes it toward a clinically worse value. Representative abnormal
+# levels in the same spirit as counterfactual.py's STANDARD_EDITS
+# (hypotension_6h sets SBP to 80), not per-patient calibrated. window_hours
+# is filled in per call to match the attribution's own lookback window.
+# Covers every SOFA component (respiration, coagulation, liver,
+# cardiovascular, CNS, renal) plus lactate; a signal absent here is one
+# occlusion may point at but this module cannot yet act on.
+WORSEN_EDIT_FOR_SIGNAL: dict[str, ValueEdit] = {
+    "sbp_noninvasive": ValueEdit("sbp_noninvasive", "set", 80.0, None),
+    "dbp_noninvasive": ValueEdit("dbp_noninvasive", "set", 40.0, None),
+    "map_noninvasive": ValueEdit("map_noninvasive", "set", 55.0, None),
+    "sbp_arterial": ValueEdit("sbp_arterial", "set", 80.0, None),
+    "dbp_arterial": ValueEdit("dbp_arterial", "set", 40.0, None),
+    "map_arterial": ValueEdit("map_arterial", "set", 55.0, None),
+    "spo2": ValueEdit("spo2", "set", 85.0, None),
+    "fio2": ValueEdit("fio2", "set", 0.60, None),  # more O2 support needed
+    "gcs_eye": ValueEdit("gcs_eye", "set", 1.0, None),
+    "gcs_verbal": ValueEdit("gcs_verbal", "set", 1.0, None),
+    "gcs_motor": ValueEdit("gcs_motor", "set", 1.0, None),
+    "creatinine": ValueEdit("creatinine", "set", 3.0, None),
+    "bilirubin_total": ValueEdit("bilirubin_total", "set", 3.0, None),
+    "platelets": ValueEdit("platelets", "set", 50.0, None),
+    "lactate": ValueEdit("lactate", "scale", 3.0, None),
+}
 
 
 @dataclass(frozen=True)
@@ -269,3 +318,81 @@ def auto_edit_from_attribution(
     """
     chosen = [a for a in attributions[:top_k] if abs(a.delta) >= min_abs_delta]
     return [CodeEdit(code=a.code, window_hours=window_hours) for a in chosen]
+
+
+def worsen_edits_from_attribution(
+    attributions: Sequence[CodeAttribution],
+    *,
+    source: str = "mimic_iv",
+    top_k: int = 4,
+    min_abs_delta: float = 0.0,
+    window_hours: float = 24.0,
+) -> list[ValueEdit]:
+    """Turn attributed codes into worsen-the-signal edits, where possible.
+
+    Resolves each of the top ``top_k`` attributed codes to its named panel
+    signal (:data:`~odyssey.data.signal_panel.SIGNAL_PANEL`, LOINC-keyed
+    and resolved for ``source``) and looks up that signal's edit in
+    :data:`WORSEN_EDIT_FOR_SIGNAL`. A code that resolves to no panel
+    signal, or to one this module has no worsen direction for, is
+    dropped rather than guessed at. Assumes ``attributions`` is already
+    sorted by ``abs(delta)`` descending, as :func:`occlusion_attribution`
+    returns; does not re-sort. Two different attributed codes that
+    resolve to the same signal (e.g. two raw SBP item codes) collapse to
+    one edit.
+    """
+    resolver = SignalPanelResolver(source=source)
+    chosen = [a for a in attributions[:top_k] if abs(a.delta) >= min_abs_delta]
+    edits: dict[str, ValueEdit] = {}
+    for a in chosen:
+        idx = resolver.resolve(a.code)
+        if idx == NO_SIGNAL:
+            continue
+        signal_name = SIGNAL_PANEL[idx][0]
+        template = WORSEN_EDIT_FOR_SIGNAL.get(signal_name)
+        if template is None:
+            continue
+        edits[signal_name] = ValueEdit(
+            signal=template.signal,
+            mode=template.mode,
+            value=template.value,
+            window_hours=window_hours,
+        )
+    return list(edits.values())
+
+
+def score_with_worsen_edits(
+    model: SequenceModel,
+    vocab: Vocabulary,
+    binner: QuantileBinner | None,
+    raw_subject_events: pl.DataFrame,
+    edits: Sequence[ValueEdit],
+    *,
+    index_time: object,
+    concept_names: Sequence[str],
+    source: str = "mimic_iv",
+    device: str = "cpu",
+    chunk_size: int = 256,
+) -> tuple[ForecastReadout, int]:
+    """Apply the edits from :func:`worsen_edits_from_attribution` and re-score.
+
+    Thin wrapper over :func:`~odyssey.inference.counterfactual.apply_value_edits`
+    + :func:`~odyssey.inference.counterfactual.score_record_at`, kept here
+    so callers don't need to import the edit-application step separately
+    from the attribution step that produced the edits.
+    """
+    edited, touched = apply_value_edits(
+        raw_subject_events, edits, index_time=index_time, source=source
+    )
+    readout = score_record_at(
+        model,
+        vocab,
+        binner,
+        edited,
+        index_time=index_time,
+        concept_names=concept_names,
+        source=source,
+        device=device,
+        chunk_size=chunk_size,
+    )
+    return readout, touched

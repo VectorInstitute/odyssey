@@ -10,14 +10,21 @@ from odyssey.data.concepts import concepts_for_source
 from odyssey.data.value_binning import add_value_tokens
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.concept_edit_attribution import (
+    WORSEN_EDIT_FOR_SIGNAL,
     CodeAttribution,
     CodeEdit,
     auto_edit_from_attribution,
     occlusion_attribution,
     remove_code_exact,
     score_with_codes_removed,
+    score_with_worsen_edits,
+    worsen_edits_from_attribution,
 )
-from odyssey.inference.counterfactual import score_record_at
+from odyssey.inference.counterfactual import (
+    ValueEdit,
+    apply_value_edits,
+    score_record_at,
+)
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
 from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
 from odyssey.models.time_to_event import DEFAULT_TIME_BIN_EDGES_HOURS
@@ -420,3 +427,121 @@ def test_auto_edit_from_attribution_min_abs_delta_can_exclude_everything() -> No
         CodeAttribution(code="A", n_rows=3, baseline=0.5, occluded=0.51),
     ]
     assert auto_edit_from_attribution(attributions, top_k=3, min_abs_delta=1.0) == []
+
+
+# ---------------------------------------------------------------------------
+# worsen_edits_from_attribution / score_with_worsen_edits
+# ---------------------------------------------------------------------------
+
+
+def test_worsen_edits_from_attribution_resolves_known_signals() -> None:
+    attributions = [
+        CodeAttribution(code=SBP, n_rows=5, baseline=0.5, occluded=0.9),
+        CodeAttribution(code=CREAT, n_rows=1, baseline=0.5, occluded=0.6),
+    ]
+    edits = worsen_edits_from_attribution(
+        attributions, source="mimic_iv", top_k=2, window_hours=12.0
+    )
+    by_signal = {e.signal: e for e in edits}
+    assert set(by_signal) == {"sbp_noninvasive", "creatinine"}
+    assert (
+        by_signal["sbp_noninvasive"].mode
+        == WORSEN_EDIT_FOR_SIGNAL["sbp_noninvasive"].mode
+    )
+    assert (
+        by_signal["sbp_noninvasive"].value
+        == WORSEN_EDIT_FOR_SIGNAL["sbp_noninvasive"].value
+    )
+    assert by_signal["sbp_noninvasive"].window_hours == 12.0
+
+
+def test_worsen_edits_from_attribution_drops_unresolvable_codes() -> None:
+    attributions = [
+        CodeAttribution(
+            code="NOT//A//REAL//SIGNAL", n_rows=1, baseline=0.5, occluded=0.6
+        ),
+    ]
+    edits = worsen_edits_from_attribution(attributions, source="mimic_iv", top_k=1)
+    assert edits == []
+
+
+def test_worsen_edits_from_attribution_deduplicates_same_signal() -> None:
+    # two distinct raw codes that both resolve to sbp_noninvasive (the
+    # panel resolves by LOINC-derived prefix, and MIMIC has more than one
+    # chartevents itemid family per signal in general -- here we just
+    # attribute the same code twice to exercise the collapse path)
+    attributions = [
+        CodeAttribution(code=SBP, n_rows=5, baseline=0.5, occluded=0.9),
+        CodeAttribution(code=SBP, n_rows=5, baseline=0.5, occluded=0.9),
+    ]
+    edits = worsen_edits_from_attribution(attributions, source="mimic_iv", top_k=2)
+    assert len(edits) == 1
+    assert edits[0].signal == "sbp_noninvasive"
+
+
+def test_worsen_edits_from_attribution_respects_top_k_and_min_delta() -> None:
+    attributions = [
+        CodeAttribution(code=SBP, n_rows=5, baseline=0.5, occluded=0.9),  # delta 0.4
+        CodeAttribution(
+            code=CREAT, n_rows=1, baseline=0.5, occluded=0.51
+        ),  # delta 0.01
+    ]
+    only_top1 = worsen_edits_from_attribution(attributions, source="mimic_iv", top_k=1)
+    assert [e.signal for e in only_top1] == ["sbp_noninvasive"]
+
+    filtered = worsen_edits_from_attribution(
+        attributions, source="mimic_iv", top_k=2, min_abs_delta=0.05
+    )
+    assert [e.signal for e in filtered] == ["sbp_noninvasive"]
+
+
+def test_score_with_worsen_edits_matches_manual_apply_and_score() -> None:
+    events = _events()
+    vocab, model, concepts = _vocab_and_model(events)
+    index = T0 + timedelta(hours=24)
+    edits = [ValueEdit("sbp_noninvasive", "set", 80.0, 24.0)]
+
+    manual_edited, manual_touched = apply_value_edits(
+        events, edits, index_time=index, source="mimic_iv"
+    )
+    expected = score_record_at(
+        model,
+        vocab,
+        None,
+        manual_edited,
+        index_time=index,
+        concept_names=concepts,
+        chunk_size=16,
+    )
+    readout, touched = score_with_worsen_edits(
+        model,
+        vocab,
+        None,
+        events,
+        edits,
+        index_time=index,
+        concept_names=concepts,
+        source="mimic_iv",
+        chunk_size=16,
+    )
+    assert touched == manual_touched
+    assert readout.concept_probs == pytest.approx(expected.concept_probs)
+
+
+def test_worsen_edit_for_signal_covers_every_sofa_component() -> None:
+    # respiration, coagulation, liver, cardiovascular, CNS, renal -- the
+    # six components Sepsis-3's SOFA score is built from, plus lactate.
+    required = {
+        "spo2",
+        "fio2",  # respiration
+        "platelets",  # coagulation
+        "bilirubin_total",  # liver
+        "sbp_noninvasive",
+        "dbp_noninvasive",  # cardiovascular
+        "gcs_eye",
+        "gcs_verbal",
+        "gcs_motor",  # CNS
+        "creatinine",  # renal
+        "lactate",
+    }
+    assert required <= set(WORSEN_EDIT_FOR_SIGNAL)
