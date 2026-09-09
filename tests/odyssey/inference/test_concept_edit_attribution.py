@@ -545,3 +545,11 @@ def test_worsen_edit_for_signal_covers_every_sofa_component() -> None:
         "lactate",
     }
     assert required <= set(WORSEN_EDIT_FOR_SIGNAL)
+
+
+def test_worsen_edit_for_signal_covers_qsofa_resp_rate() -> None:
+    # qSOFA = altered mentation (GCS, already in the SOFA set above) + SBP
+    # <=100 (also already covered) + respiratory rate >=22/min.
+    edit = WORSEN_EDIT_FOR_SIGNAL["resp_rate"]
+    assert edit.mode == "set"
+    assert edit.value >= 22.0

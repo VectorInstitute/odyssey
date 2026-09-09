@@ -78,8 +78,10 @@ logger = logging.getLogger(__name__)
 # (hypotension_6h sets SBP to 80), not per-patient calibrated. window_hours
 # is filled in per call to match the attribution's own lookback window.
 # Covers every SOFA component (respiration, coagulation, liver,
-# cardiovascular, CNS, renal) plus lactate; a signal absent here is one
-# occlusion may point at but this module cannot yet act on.
+# cardiovascular, CNS, renal) plus lactate and respiratory rate (the
+# third qSOFA criterion, alongside GCS and SBP already above); a signal
+# absent here is one occlusion may point at but this module cannot yet
+# act on.
 WORSEN_EDIT_FOR_SIGNAL: dict[str, ValueEdit] = {
     "sbp_noninvasive": ValueEdit("sbp_noninvasive", "set", 80.0, None),
     "dbp_noninvasive": ValueEdit("dbp_noninvasive", "set", 40.0, None),
@@ -89,6 +91,7 @@ WORSEN_EDIT_FOR_SIGNAL: dict[str, ValueEdit] = {
     "map_arterial": ValueEdit("map_arterial", "set", 55.0, None),
     "spo2": ValueEdit("spo2", "set", 85.0, None),
     "fio2": ValueEdit("fio2", "set", 0.60, None),  # more O2 support needed
+    "resp_rate": ValueEdit("resp_rate", "set", 28.0, None),  # qSOFA: >=22/min
     "gcs_eye": ValueEdit("gcs_eye", "set", 1.0, None),
     "gcs_verbal": ValueEdit("gcs_verbal", "set", 1.0, None),
     "gcs_motor": ValueEdit("gcs_motor", "set", 1.0, None),
