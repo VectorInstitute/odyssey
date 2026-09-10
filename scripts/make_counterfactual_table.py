@@ -32,6 +32,7 @@ from scripts.make_edit_attribution_ci_table import wilson_interval
 
 
 HORIZONS = ("8h", "24h", "72h")
+TABLE_WIDTH = 0.78  # of \textwidth; see the tabular* comment in render()
 EVENT_LABELS = {
     "death": "Death",
     "vasopressor_start": "Vasopressor",
@@ -86,7 +87,16 @@ def render(results: dict[str, Any]) -> str:
         "% Sign agreement in percent per horizon, with a Wilson 95% interval.",
         "% Arms with no expected direction (the lab-removal arm) are omitted:",
         "% they have no sign agreement to report.",
-        "\\begin{tabular}{l" + "r" * len(HORIZONS) + "}",
+        # tabular* + extracolsep spreads the columns to a set width. A plain
+        # tabular sizes to its numeric columns and leaves them crammed into
+        # the left of a two-column-wide float; the full \textwidth flings
+        # them to the margins instead. TABLE_WIDTH is the middle.
+        # arraystretch gives the rows vertical air: at \scriptsize the
+        # default leading packs the group headers against their own data.
+        "\\renewcommand{\\arraystretch}{1.2}%",
+        f"\\begin{{tabular*}}{{{TABLE_WIDTH}\\textwidth}}{{@{{\\extracolsep{{\\fill}}}}l"
+        + "r" * len(HORIZONS)
+        + "}",
         "\\toprule",
         "Event & " + " & ".join(f"{h[:-1]}\\,h" for h in HORIZONS) + " \\\\",
     ]
@@ -100,11 +110,13 @@ def render(results: dict[str, Any]) -> str:
         n_edited = arm["n_edited"]
         expected = _expected(arm)
         lines += [
+            "\\addlinespace[3pt]",
             "\\midrule",
-            # \rlap keeps this wide spanning label from dumping its excess
-            # width into the last horizon column and skewing the alignment.
-            f"\\multicolumn{{{1 + len(HORIZONS)}}}{{l}}{{\\rlap{{\\emph{{{name}}}:"
-            f" {change} ($n={n_edited}$ edited)}}}} \\\\",
+            # \rlap so the label contributes no width: inside a fixed-width
+            # tabular*, a wide spanning row otherwise dumps its excess into
+            # the gap before the last column and unbalances the spacing.
+            f"\\multicolumn{{{1 + len(HORIZONS)}}}{{@{{}}l}}{{\\rlap{{\\emph{{{name}}}:"
+            f" {change} ($n={n_edited}$ edited)}}}} \\\\[2pt]",
         ]
         for event, per_horizon in sorted(agreement.items()):
             cells = []
@@ -121,7 +133,7 @@ def render(results: dict[str, Any]) -> str:
             elif expected.get(event, 0) < 0:
                 label += " $\\downarrow$"
             lines.append(f"{label} & " + " & ".join(cells) + " \\\\")
-    lines += ["\\bottomrule", "\\end{tabular}"]
+    lines += ["\\bottomrule", "\\end{tabular*}"]
     return "\n".join(lines) + "\n"
 
 

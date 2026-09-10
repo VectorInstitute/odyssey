@@ -478,6 +478,15 @@ STANDARD_EDITS: dict[str, ValueEdit] = {
     "creatinine_plus_1": ValueEdit(
         "creatinine", "add", 1.0, 24.0, {"acute_kidney_injury": +1}
     ),
+    # Inert control for sources where the blood-pressure panel does not
+    # resolve, so normotension_6h cannot run: same device, a different
+    # signal. Setting creatinine to a normal value adds no information the
+    # record did not already carry, so agreement with a declared direction
+    # should sit at chance, and a cohort that lands well above chance here
+    # is measuring the edit machinery rather than the evidence.
+    "creatinine_normal": ValueEdit(
+        "creatinine", "set", 1.0, 24.0, {"acute_kidney_injury": -1}
+    ),
     "lactate_x3": ValueEdit(
         "lactate", "scale", 3.0, 12.0, {"death": +1, "vasopressor_start": +1}
     ),
@@ -486,7 +495,9 @@ STANDARD_EDITS: dict[str, ValueEdit] = {
 
 
 def _main() -> None:
-    from odyssey.data.concepts import concepts_for_source  # noqa: PLC0415
+    from odyssey.inference.legacy_concept_pins import (  # noqa: PLC0415
+        resolve_concepts_for_run,
+    )
     from odyssey.inference.run_inference import load_run  # noqa: PLC0415
 
     parser = argparse.ArgumentParser(
@@ -519,7 +530,9 @@ def _main() -> None:
     source = getattr(config, "source", "mimic_iv")
     concept_names = [
         c.name
-        for c in concepts_for_source(source, task_set=getattr(config, "task_set", "v1"))
+        for c in resolve_concepts_for_run(
+            str(run_dir), source, getattr(config, "task_set", "v1")
+        )
     ]
     raw = load_meds_shards(args.held_out_shard_dir, max_shards=args.max_shards)
     raw = maybe_normalize(

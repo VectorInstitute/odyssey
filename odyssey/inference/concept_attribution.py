@@ -44,12 +44,12 @@ import polars as pl
 import torch
 
 from odyssey.data.code_normalization import maybe_normalize
-from odyssey.data.concepts import concepts_for_source
 from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.sidecars import activate_sidecars
 from odyssey.data.streaming import PackedLaneSampler
 from odyssey.data.value_binning import add_value_tokens
 from odyssey.data.vocabulary import Vocabulary
+from odyssey.inference.legacy_concept_pins import resolve_concepts_for_run
 from odyssey.inference.run_inference import load_run, refuse_existing_output
 from odyssey.models.concept_bottleneck import ConceptBottleneck
 from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
@@ -418,7 +418,9 @@ def evaluate_attribution(
         )
 
     source = getattr(config, "source", "mimic_iv")
-    concepts = concepts_for_source(source, task_set=getattr(config, "task_set", "v1"))
+    concepts = resolve_concepts_for_run(
+        str(run_dir), source, getattr(config, "task_set", "v1")
+    )
     concept_names = [c.name for c in concepts]
 
     logger.info("[attribution] loading held-out shards from %s", held_out_shard_dir)
