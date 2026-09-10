@@ -219,6 +219,10 @@ url = "https://download.pytorch.org/whl/cu124"
 explicit = true
 
 [tool.mypy]
+# Same reason as the ruff exclude above: these two ran on the VMs and
+# are committed verbatim, so they cannot be annotated without editing
+# the code that produced the published table.
+exclude = "^scripts/cohort/cohort_check_(mimic|eicu)\\.py$"
 ignore_missing_imports = true
 install_types = true
 pretty = true
