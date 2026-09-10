@@ -217,3 +217,73 @@ def test_an_inert_control_exists_for_sources_without_blood_pressure() -> None:
     # chance, exactly as normotension_6h does for blood pressure.
     assert inert.expected_direction == {"acute_kidney_injury": -1}
     assert STANDARD_EDITS["normotension_6h"].signal == "sbp_noninvasive"
+
+
+def test_an_absolute_edit_uses_the_unit_the_prefix_reports_in() -> None:
+    """Regression for 2026-09-10: 1.0 mg/dL was applied as 1.0 umol/L.
+
+    GEMINI charts creatinine in SI. ``ValueEdit`` had a bare float and
+    never consulted the prefix's unit tag, so "set creatinine to a normal
+    1.0" became 1.0 umol/L -- about 0.011 mg/dL, a physiologically
+    impossible reading. The control meant to sit at chance was instead
+    the most extreme edit in the set, and it raised every risk it
+    touched; "add 1.0" was the mirror error, a 1% nudge instead of a
+    doubling. Both are silent: the edit applies, the run completes, the
+    numbers look like findings.
+    """
+    for name in ("creatinine_normal", "creatinine_plus_1"):
+        edit = STANDARD_EDITS[name]
+        (mimic,) = edit.prefixes("mimic_iv")
+        (gemini,) = edit.prefixes("gemini")
+        assert edit.value_for(mimic, "mimic_iv") == 1.0
+        assert edit.value_for(gemini, "gemini") == pytest.approx(88.4)
+
+
+def test_scale_and_remove_need_no_unit_because_they_are_unit_free() -> None:
+    """A ratio means the same thing in every unit; an absolute value does not.
+
+    This is why lactate_x3 was the one GEMINI arm that survived the bug
+    above: it multiplies.
+    """
+    scale = STANDARD_EDITS["lactate_x3"]
+    assert scale.unit_values is None
+    for prefix in scale.prefixes("gemini"):
+        assert scale.value_for(prefix, "gemini") == 3.0
+    drop = STANDARD_EDITS["remove_labs_24h"]
+    assert drop.value_for("LAB//RESULT//", "gemini") == 0.0
+
+
+def test_an_absolute_edit_refuses_a_unit_it_has_no_value_for() -> None:
+    """Refuse rather than fall back: the fallback is what caused the bug."""
+    edit = ValueEdit("creatinine", "set", 1.0, 24.0, {"acute_kidney_injury": -1})
+    (gemini,) = edit.prefixes("gemini")
+    with pytest.raises(ValueError, match="umol/L"):
+        edit.value_for(gemini, "gemini")
+    # The same edit is fine where the prefix is untagged.
+    (mimic,) = edit.prefixes("mimic_iv")
+    assert edit.value_for(mimic, "mimic_iv") == 1.0
+
+
+def test_apply_value_edits_writes_the_per_source_value() -> None:
+    """End to end: the same edit lands as 1.0 on MIMIC-IV and 88.4 on GEMINI."""
+    index = datetime(2020, 1, 2, 12, 0)
+    edit = STANDARD_EDITS["creatinine_normal"]
+    for source, code, expected in (
+        ("mimic_iv", "LAB//RESULT//50912//", 1.0),
+        ("gemini", "LAB//3020564//", 88.4),
+    ):
+        events = pl.DataFrame(
+            {
+                "subject_id": [1, 1],
+                "time": [index - timedelta(hours=2), index - timedelta(hours=1)],
+                "code": [code, "LAB//OTHER//"],
+                "numeric_value": [250.0, 7.0],
+            }
+        )
+        out, touched = apply_value_edits(
+            events, [edit], index_time=index, source=source
+        )
+        assert touched == 1
+        values = out["numeric_value"].to_list()
+        assert values[0] == pytest.approx(expected)
+        assert values[1] == 7.0, "an unrelated code must not move"

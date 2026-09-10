@@ -40,7 +40,7 @@ from typing import Literal
 import polars as pl
 import torch
 
-from odyssey.data.code_mapping import prefixes_for_loinc
+from odyssey.data.code_mapping import prefixes_for_loinc, unit_for
 from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.sequences import BIRTH_CODE, build_patient_sequence
@@ -79,6 +79,41 @@ class ValueEdit:
     """Optional: event name -> +1/-1, the clinically expected sign of the
     hazard shift (e.g. hypotension edit -> vasopressor_start +1). Used
     for the sign-agreement summary only."""
+    unit_values: tuple[tuple[str, float], ...] | None = None
+    """``value`` in other units, the way
+    :class:`~odyssey.data.concepts.LoincThreshold.unit_thresholds`
+    overrides a threshold. ``set`` and ``add`` are absolute and therefore
+    unit-sensitive: "creatinine 1.0" is a normal reading in mg/dL and a
+    physiologically impossible one in the umol/L GEMINI charts. ``scale``
+    and ``remove`` are unit-free and never need this."""
+
+    def value_for(self, prefix: str, source: str) -> float:
+        """``value`` in the unit ``prefix`` reports in.
+
+        Mirrors :func:`~odyssey.data.concepts._prefix_threshold`, including
+        its refusal: a tagged prefix with no entry raises rather than
+        falling back to the canonical number. Falling back is what
+        produced the 2026-09-10 GEMINI result, where ``set`` 1.0 mg/dL was
+        applied as 1.0 umol/L -- about 0.011 mg/dL, an impossible value --
+        so the "restore to normal" control was the most extreme edit in
+        the set and raised every risk it touched.
+        """
+        if self.mode in ("scale", "remove"):
+            return self.value
+        unit = unit_for(prefix, source=source)
+        if unit is None:
+            return self.value
+        for tagged_unit, value in self.unit_values or ():
+            if tagged_unit == unit:
+                return value
+        listed = [u for u, _ in self.unit_values or ()]
+        raise ValueError(
+            f"edit {self.signal!r} ({self.mode} {self.value}) hits prefix "
+            f"{prefix!r} in source {source!r}, which reports in {unit!r}, but "
+            f"the edit defines values for {listed!r} only. An absolute edit "
+            "in the wrong unit is silently meaningless: add the unit to "
+            "unit_values, or use a scale edit, which is unit-free."
+        )
 
     def prefixes(self, source: str) -> list[str]:
         """Code prefixes this edit touches in ``source``."""
@@ -126,33 +161,38 @@ def apply_value_edits(
     out = raw_events
     touched = 0
     for edit in edits:
-        prefix_expr = pl.lit(False)
-        for p in edit.prefixes(source):
-            prefix_expr = prefix_expr | pl.col(code_col).str.starts_with(p)
         in_window = pl.col(time_col) <= pl.lit(index_time)
         if edit.window_hours is not None:
             in_window = in_window & (
                 pl.col(time_col)
                 > pl.lit(index_time) - pl.duration(hours=edit.window_hours)
             )
-        hit = prefix_expr & in_window & pl.col(value_col).is_not_null()
-        n_hit = int(out.select(hit.sum()).item())
-        touched += n_hit
-        if edit.mode == "remove":
-            out = out.filter(~hit)
-            continue
-        if edit.mode == "set":
-            new_value = pl.lit(edit.value)
-        elif edit.mode == "add":
-            new_value = pl.col(value_col) + edit.value
-        else:
-            new_value = pl.col(value_col) * edit.value
-        out = out.with_columns(
-            pl.when(hit)
-            .then(new_value.cast(out.schema[value_col]))
-            .otherwise(pl.col(value_col))
-            .alias(value_col)
-        )
+        # One prefix at a time: two prefixes of the same signal can report
+        # in different units, so an absolute edit's value is per-prefix.
+        for p in edit.prefixes(source):
+            hit = (
+                pl.col(code_col).str.starts_with(p)
+                & in_window
+                & pl.col(value_col).is_not_null()
+            )
+            n_hit = int(out.select(hit.sum()).item())
+            touched += n_hit
+            if edit.mode == "remove":
+                out = out.filter(~hit)
+                continue
+            value = edit.value_for(p, source)
+            if edit.mode == "set":
+                new_value = pl.lit(value)
+            elif edit.mode == "add":
+                new_value = pl.col(value_col) + value
+            else:
+                new_value = pl.col(value_col) * value
+            out = out.with_columns(
+                pl.when(hit)
+                .then(new_value.cast(out.schema[value_col]))
+                .otherwise(pl.col(value_col))
+                .alias(value_col)
+            )
     return out, touched
 
 
@@ -476,7 +516,13 @@ STANDARD_EDITS: dict[str, ValueEdit] = {
         "sbp_noninvasive", "set", 120.0, 6.0, {"vasopressor_start": -1}
     ),
     "creatinine_plus_1": ValueEdit(
-        "creatinine", "add", 1.0, 24.0, {"acute_kidney_injury": +1}
+        "creatinine",
+        "add",
+        1.0,
+        24.0,
+        {"acute_kidney_injury": +1},
+        # +1.0 mg/dL is +88.4 umol/L; see creatinine_normal below.
+        unit_values=(("umol/L", 88.4),),
     ),
     # Inert control for sources where the blood-pressure panel does not
     # resolve, so normotension_6h cannot run: same device, a different
@@ -485,7 +531,13 @@ STANDARD_EDITS: dict[str, ValueEdit] = {
     # should sit at chance, and a cohort that lands well above chance here
     # is measuring the edit machinery rather than the evidence.
     "creatinine_normal": ValueEdit(
-        "creatinine", "set", 1.0, 24.0, {"acute_kidney_injury": -1}
+        "creatinine",
+        "set",
+        1.0,
+        24.0,
+        {"acute_kidney_injury": -1},
+        # 1.0 mg/dL is 88.4 umol/L; GEMINI charts creatinine in SI.
+        unit_values=(("umol/L", 88.4),),
     ),
     "lactate_x3": ValueEdit(
         "lactate", "scale", 3.0, 12.0, {"death": +1, "vasopressor_start": +1}
