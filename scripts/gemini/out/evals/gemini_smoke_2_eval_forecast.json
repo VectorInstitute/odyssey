@@ -1,0 +1,132 @@
+{
+  "task_metrics": {
+    "cross_entropy": 5.857884836326109,
+    "perplexity": 349.98309326171875,
+    "top1_accuracy": 0.2200623536864666,
+    "top5_accuracy": 0.3908578252631549,
+    "n_predictions": 20884090,
+    "set_top1_accuracy": 0.5658757571086627,
+    "n_set_predictions": 20812072,
+    "category_set_top1_accuracy": null,
+    "n_category_predictions": null
+  },
+  "task_metrics_by_code_type": {
+    "diagnosis": {
+      "cross_entropy": 7.0346390863954635,
+      "perplexity": 1135.284912109375,
+      "top1_accuracy": 0.03433727578511387,
+      "top5_accuracy": 0.16056647822647552,
+      "n_predictions": 310974,
+      "set_top1_accuracy": 0.16036981122337063,
+      "n_set_predictions": 309996,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    },
+    "medication": {
+      "cross_entropy": 5.413133466768731,
+      "perplexity": 224.33346557617188,
+      "top1_accuracy": 0.11298472806129234,
+      "top5_accuracy": 0.2888583067181895,
+      "n_predictions": 2541786,
+      "set_top1_accuracy": 0.30214033769211096,
+      "n_set_predictions": 2533432,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    },
+    "procedure": {
+      "cross_entropy": 4.526049409894885,
+      "perplexity": 92.39285278320312,
+      "top1_accuracy": 0.1630250002014196,
+      "top5_accuracy": 0.4428814283067057,
+      "n_predictions": 248238,
+      "set_top1_accuracy": 0.19144956633796956,
+      "n_set_predictions": 247543,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    },
+    "lab": {
+      "cross_entropy": 7.334773895417091,
+      "perplexity": 1532.681396484375,
+      "top1_accuracy": 0.08646335906507988,
+      "top5_accuracy": 0.2517776943878584,
+      "n_predictions": 13430880,
+      "set_top1_accuracy": 0.5830664066235679,
+      "n_set_predictions": 13384448,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    },
+    "visit": {
+      "cross_entropy": 2.1191372835363995,
+      "perplexity": 8.323953628540039,
+      "top1_accuracy": 0.5510049998322204,
+      "top5_accuracy": 0.8392615460331309,
+      "n_predictions": 178806,
+      "set_top1_accuracy": 0.5924946049718337,
+      "n_set_predictions": 178405,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    },
+    "billing": {
+      "cross_entropy": 4.0350980944669415,
+      "perplexity": 56.548465728759766,
+      "top1_accuracy": 0.33707349628764494,
+      "top5_accuracy": 0.5092322237980034,
+      "n_predictions": 71922,
+      "set_top1_accuracy": 0.36319866024701697,
+      "n_set_predictions": 71655,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    },
+    "other": {
+      "cross_entropy": 1.4835715443296549,
+      "perplexity": 4.408663272857666,
+      "top1_accuracy": 0.7249636960670821,
+      "top5_accuracy": 0.9021944252373043,
+      "n_predictions": 4101484,
+      "set_top1_accuracy": 0.7289049827080896,
+      "n_set_predictions": 4086593,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    }
+  },
+  "concept_metrics": [],
+  "observability_metrics": [],
+  "orthogonality": null,
+  "n_patient_ends_scored": 0,
+  "time_metrics": {
+    "nll": 0.6358448964747897,
+    "n_positions": 20812072,
+    "same_instant_accuracy": 0.8496246313197455,
+    "same_instant_rate": 0.8251327883163195,
+    "calibration": {
+      "1h": {
+        "predicted": 0.9143151139291179,
+        "observed": 0.9221989045588541
+      },
+      "8h": {
+        "predicted": 0.9854656671568307,
+        "observed": 0.984829525863643
+      },
+      "24h": {
+        "predicted": 0.9968219949205839,
+        "observed": 0.9970560836037854
+      }
+    },
+    "calibration_after_bundle": {
+      "1h": {
+        "predicted": 0.5710603238964536,
+        "observed": 0.5550847143266556
+      },
+      "8h": {
+        "predicted": 0.9235323105765642,
+        "observed": 0.9132457480719766
+      },
+      "24h": {
+        "predicted": 0.982439696740981,
+        "observed": 0.9831648462403578
+      }
+    },
+    "n_positive_gaps": 3639349
+  },
+  "tail_slice": null
+}

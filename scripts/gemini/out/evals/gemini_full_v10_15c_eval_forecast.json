@@ -1,0 +1,386 @@
+{
+  "task_metrics": {
+    "cross_entropy": 6.447290883568934,
+    "perplexity": 630.9905395507812,
+    "top1_accuracy": 0.2020621844609955,
+    "top5_accuracy": 0.44669140640309063,
+    "n_predictions": 8522322,
+    "set_top1_accuracy": 0.7424886851934579,
+    "n_set_predictions": 8492854,
+    "category_set_top1_accuracy": null,
+    "n_category_predictions": null
+  },
+  "task_metrics_by_code_type": {
+    "diagnosis": {
+      "cross_entropy": 6.098342544601712,
+      "perplexity": 445.11932373046875,
+      "top1_accuracy": 0.07868588963031513,
+      "top5_accuracy": 0.2575211468835744,
+      "n_predictions": 123186,
+      "set_top1_accuracy": 0.24481554156930116,
+      "n_set_predictions": 122819,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    },
+    "medication": {
+      "cross_entropy": 4.744303144005614,
+      "perplexity": 114.92769622802734,
+      "top1_accuracy": 0.1685265188349886,
+      "top5_accuracy": 0.3568694304069888,
+      "n_predictions": 1003664,
+      "set_top1_accuracy": 0.37607812481256525,
+      "n_set_predictions": 1000348,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    },
+    "procedure": {
+      "cross_entropy": 3.5083525693353126,
+      "perplexity": 33.39320755004883,
+      "top1_accuracy": 0.2615730871811142,
+      "top5_accuracy": 0.5675447902517375,
+      "n_predictions": 100859,
+      "set_top1_accuracy": 0.2911878156440132,
+      "n_set_predictions": 100588,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    },
+    "lab": {
+      "cross_entropy": 6.878559602752223,
+      "perplexity": 971.2263793945312,
+      "top1_accuracy": 0.19735092414218672,
+      "top5_accuracy": 0.4488622624197477,
+      "n_predictions": 7059141,
+      "set_top1_accuracy": 0.8150104758501019,
+      "n_set_predictions": 7034274,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    },
+    "visit": {
+      "cross_entropy": 1.8887618692958075,
+      "perplexity": 6.611178398132324,
+      "top1_accuracy": 0.5310935573947825,
+      "top5_accuracy": 0.8700410052577293,
+      "n_predictions": 79502,
+      "set_top1_accuracy": 0.5603005888212228,
+      "n_set_predictions": 79311,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    },
+    "billing": {
+      "cross_entropy": 2.7269616388197413,
+      "perplexity": 15.286370277404785,
+      "top1_accuracy": 0.4509260558439736,
+      "top5_accuracy": 0.6631471867545952,
+      "n_predictions": 28508,
+      "set_top1_accuracy": 0.5031878544506675,
+      "n_set_predictions": 28389,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    },
+    "other": {
+      "cross_entropy": 2.3178568243368574,
+      "perplexity": 10.153888702392578,
+      "top1_accuracy": 0.5380813585096946,
+      "top5_accuracy": 0.8074071727284248,
+      "n_predictions": 126256,
+      "set_top1_accuracy": 0.6184255457700341,
+      "n_set_predictions": 125923,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    },
+    "demographic": {
+      "cross_entropy": 1.5399766254855032,
+      "perplexity": 4.664481163024902,
+      "top1_accuracy": 0.5621890547263682,
+      "top5_accuracy": 0.9195688225538972,
+      "n_predictions": 1206,
+      "set_top1_accuracy": 0.5632279534109818,
+      "n_set_predictions": 1202,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    }
+  },
+  "concept_metrics": [
+    {
+      "name": "tachycardia",
+      "n_observed": 7680,
+      "prevalence": 0.4417968690395355,
+      "auroc": 0.9611688700875739,
+      "auprc": 0.957232688751468,
+      "brier_score": 0.08643200993537903,
+      "accuracy_at_0_5": 0.8744791746139526
+    },
+    {
+      "name": "bradycardia",
+      "n_observed": 7680,
+      "prevalence": 0.3270833194255829,
+      "auroc": 0.9595461136390526,
+      "auprc": 0.9371999749023228,
+      "brier_score": 0.07176829874515533,
+      "accuracy_at_0_5": 0.8993489742279053
+    },
+    {
+      "name": "hypotension",
+      "n_observed": 3751,
+      "prevalence": 0.19621434807777405,
+      "auroc": 0.9198779652462326,
+      "auprc": 0.8097870558804794,
+      "brier_score": 0.10552957653999329,
+      "accuracy_at_0_5": 0.8480405211448669
+    },
+    {
+      "name": "hypertension",
+      "n_observed": 3751,
+      "prevalence": 0.6792855262756348,
+      "auroc": 0.9440951519683263,
+      "auprc": 0.9747030428722528,
+      "brier_score": 0.11453597992658615,
+      "accuracy_at_0_5": 0.8272460699081421
+    },
+    {
+      "name": "hypoxia",
+      "n_observed": 8248,
+      "prevalence": 0.3125606179237366,
+      "auroc": 0.9541442103376421,
+      "auprc": 0.9218332772596356,
+      "brier_score": 0.08108212798833847,
+      "accuracy_at_0_5": 0.8857904672622681
+    },
+    {
+      "name": "fever",
+      "n_observed": 7286,
+      "prevalence": 0.2933022379875183,
+      "auroc": 0.9790361408773806,
+      "auprc": 0.9639367938263604,
+      "brier_score": 0.04780227690935135,
+      "accuracy_at_0_5": 0.9374142289161682
+    },
+    {
+      "name": "hypothermia",
+      "n_observed": 7286,
+      "prevalence": 0.2912434935569763,
+      "auroc": 0.9694223621665543,
+      "auprc": 0.9430045262277468,
+      "brier_score": 0.06994078308343887,
+      "accuracy_at_0_5": 0.9021410942077637
+    },
+    {
+      "name": "elevated_lactate",
+      "n_observed": 6684,
+      "prevalence": 0.42983242869377136,
+      "auroc": 0.8643356842627588,
+      "auprc": 0.8482227456529321,
+      "brier_score": 0.14797045290470123,
+      "accuracy_at_0_5": 0.7745361924171448
+    },
+    {
+      "name": "sustained_tachypnea",
+      "n_observed": 7583,
+      "prevalence": 0.29711195826530457,
+      "auroc": 0.9831332665472512,
+      "auprc": 0.9637253081720877,
+      "brier_score": 0.05383279174566269,
+      "accuracy_at_0_5": 0.921007513999939
+    },
+    {
+      "name": "acute_kidney_injury",
+      "n_observed": 14425,
+      "prevalence": 0.16644714772701263,
+      "auroc": 0.9825444037650092,
+      "auprc": 0.927361171512473,
+      "brier_score": 0.04609460383653641,
+      "accuracy_at_0_5": 0.9356672167778015
+    },
+    {
+      "name": "aki_stage_2",
+      "n_observed": 14425,
+      "prevalence": 0.038266897201538086,
+      "auroc": 0.9941338978748209,
+      "auprc": 0.897413415219244,
+      "brier_score": 0.015290334820747375,
+      "accuracy_at_0_5": 0.9783015847206116
+    },
+    {
+      "name": "aki_stage_3",
+      "n_observed": 15526,
+      "prevalence": 0.0671132281422615,
+      "auroc": 0.38835721699130843,
+      "auprc": 0.050159677728280824,
+      "brier_score": 0.8370386362075806,
+      "accuracy_at_0_5": 0.14485380053520203
+    },
+    {
+      "name": "sirs",
+      "n_observed": 8457,
+      "prevalence": 0.6244531273841858,
+      "auroc": 0.9561351658934147,
+      "auprc": 0.974204524530104,
+      "brier_score": 0.0874590277671814,
+      "accuracy_at_0_5": 0.8726498484611511
+    },
+    {
+      "name": "qsofa",
+      "n_observed": 2916,
+      "prevalence": 0.243484228849411,
+      "auroc": 0.9443974818995569,
+      "auprc": 0.8563687893741679,
+      "brier_score": 0.08659341186285019,
+      "accuracy_at_0_5": 0.8741426467895508
+    },
+    {
+      "name": "on_vasopressors",
+      "n_observed": 14070,
+      "prevalence": 0.08770433813333511,
+      "auroc": 0.9775390501693726,
+      "auprc": 0.8843860800132358,
+      "brier_score": 0.037451598793268204,
+      "accuracy_at_0_5": 0.9530916810035706
+    }
+  ],
+  "observability_metrics": [
+    {
+      "name": "tachycardia",
+      "n_subjects": 15827,
+      "observed_rate": 0.4852467179298401,
+      "auroc": 0.9994970988809788,
+      "accuracy_at_0_5": 0.9910911917686462
+    },
+    {
+      "name": "bradycardia",
+      "n_subjects": 15827,
+      "observed_rate": 0.4852467179298401,
+      "auroc": 0.9994983295231372,
+      "accuracy_at_0_5": 0.9910911917686462
+    },
+    {
+      "name": "hypotension",
+      "n_subjects": 15827,
+      "observed_rate": 0.23700006306171417,
+      "auroc": 0.9989781901154062,
+      "accuracy_at_0_5": 0.9917861819267273
+    },
+    {
+      "name": "hypertension",
+      "n_subjects": 15827,
+      "observed_rate": 0.23700006306171417,
+      "auroc": 0.9989790290216526,
+      "accuracy_at_0_5": 0.9917230010032654
+    },
+    {
+      "name": "hypoxia",
+      "n_subjects": 15827,
+      "observed_rate": 0.5211347937583923,
+      "auroc": 0.9995011325259481,
+      "accuracy_at_0_5": 0.991280734539032
+    },
+    {
+      "name": "fever",
+      "n_subjects": 15827,
+      "observed_rate": 0.4603525698184967,
+      "auroc": 0.9995493150652793,
+      "accuracy_at_0_5": 0.9897643327713013
+    },
+    {
+      "name": "hypothermia",
+      "n_subjects": 15827,
+      "observed_rate": 0.4603525698184967,
+      "auroc": 0.9995492829262979,
+      "accuracy_at_0_5": 0.9898275136947632
+    },
+    {
+      "name": "elevated_lactate",
+      "n_subjects": 15827,
+      "observed_rate": 0.4223162829875946,
+      "auroc": 0.9464383333945325,
+      "accuracy_at_0_5": 0.8555632829666138
+    },
+    {
+      "name": "sustained_tachypnea",
+      "n_subjects": 15827,
+      "observed_rate": 0.4791179597377777,
+      "auroc": 0.9994952990879583,
+      "accuracy_at_0_5": 0.9907752871513367
+    },
+    {
+      "name": "acute_kidney_injury",
+      "n_subjects": 15827,
+      "observed_rate": 0.9114171862602234,
+      "auroc": 0.9993996692024516,
+      "accuracy_at_0_5": 0.9960194826126099
+    },
+    {
+      "name": "aki_stage_2",
+      "n_subjects": 15827,
+      "observed_rate": 0.9114171862602234,
+      "auroc": 0.9993975924465421,
+      "accuracy_at_0_5": 0.995956301689148
+    },
+    {
+      "name": "aki_stage_3",
+      "n_subjects": 15827,
+      "observed_rate": 0.9809818863868713,
+      "auroc": 0.9943074803683714,
+      "accuracy_at_0_5": 0.9949453473091125
+    },
+    {
+      "name": "sirs",
+      "n_subjects": 15827,
+      "observed_rate": 0.5343400239944458,
+      "auroc": 0.9997133315010938,
+      "accuracy_at_0_5": 0.9924179911613464
+    },
+    {
+      "name": "qsofa",
+      "n_subjects": 15827,
+      "observed_rate": 0.1842421144247055,
+      "auroc": 0.998842742001031,
+      "accuracy_at_0_5": 0.9900802373886108
+    },
+    {
+      "name": "on_vasopressors",
+      "n_subjects": 15827,
+      "observed_rate": 0.8889871835708618,
+      "auroc": 0.9997601228753378,
+      "accuracy_at_0_5": 0.9955771565437317
+    }
+  ],
+  "orthogonality": 0.002494510030373931,
+  "n_patient_ends_scored": 15827,
+  "time_metrics": {
+    "nll": 0.43528130303464857,
+    "n_positions": 8492854,
+    "same_instant_accuracy": 0.9433569681051859,
+    "same_instant_rate": 0.8241985556327708,
+    "calibration": {
+      "1h": {
+        "predicted": 0.9213194831600616,
+        "observed": 0.922207187360103
+      },
+      "8h": {
+        "predicted": 0.9855748710109917,
+        "observed": 0.9849215587598703
+      },
+      "24h": {
+        "predicted": 0.9970790345615488,
+        "observed": 0.9970855498045769
+      }
+    },
+    "calibration_after_bundle": {
+      "1h": {
+        "predicted": 0.5599638398292313,
+        "observed": 0.557496168931373
+      },
+      "8h": {
+        "predicted": 0.918951702832542,
+        "observed": 0.9142302766942432
+      },
+      "24h": {
+        "predicted": 0.9833563283169497,
+        "observed": 0.9834219212139398
+      }
+    },
+    "n_positive_gaps": 1493056
+  },
+  "value_metrics": null,
+  "tail_slice": null
+}

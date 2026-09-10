@@ -1,0 +1,132 @@
+{
+  "task_metrics": {
+    "cross_entropy": 6.321685210837815,
+    "perplexity": 556.5100708007812,
+    "top1_accuracy": 0.2099985682881083,
+    "top5_accuracy": 0.4773080368835798,
+    "n_predictions": 20884090,
+    "set_top1_accuracy": 0.7601998493951011,
+    "n_set_predictions": 20812072,
+    "category_set_top1_accuracy": null,
+    "n_category_predictions": null
+  },
+  "task_metrics_by_code_type": {
+    "diagnosis": {
+      "cross_entropy": 6.139883675093306,
+      "perplexity": 463.99951171875,
+      "top1_accuracy": 0.09381044177222092,
+      "top5_accuracy": 0.281617361683565,
+      "n_predictions": 311767,
+      "set_top1_accuracy": 0.27436418863261947,
+      "n_set_predictions": 310784,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    },
+    "medication": {
+      "cross_entropy": 4.455892874371683,
+      "perplexity": 86.1330337524414,
+      "top1_accuracy": 0.20785831515006697,
+      "top5_accuracy": 0.42598087455747063,
+      "n_predictions": 2544464,
+      "set_top1_accuracy": 0.4368417296341583,
+      "n_set_predictions": 2536097,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    },
+    "procedure": {
+      "cross_entropy": 3.387139273956964,
+      "perplexity": 29.581209182739258,
+      "top1_accuracy": 0.2774612295484359,
+      "top5_accuracy": 0.5889285915481622,
+      "n_predictions": 248514,
+      "set_top1_accuracy": 0.3105290554800076,
+      "n_set_predictions": 247819,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    },
+    "lab": {
+      "cross_entropy": 6.746984019042828,
+      "perplexity": 851.48681640625,
+      "top1_accuracy": 0.2038187933298544,
+      "top5_accuracy": 0.4791169110479313,
+      "n_predictions": 17307928,
+      "set_top1_accuracy": 0.8285332706833181,
+      "n_set_predictions": 17247136,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    },
+    "visit": {
+      "cross_entropy": 1.7248447491384935,
+      "perplexity": 5.611649513244629,
+      "top1_accuracy": 0.5918035534696614,
+      "top5_accuracy": 0.8888646776176109,
+      "n_predictions": 178980,
+      "set_top1_accuracy": 0.6293293164369831,
+      "n_set_predictions": 178579,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    },
+    "billing": {
+      "cross_entropy": 2.6273521000740496,
+      "perplexity": 13.837080955505371,
+      "top1_accuracy": 0.43853802144087095,
+      "top5_accuracy": 0.6858995722935066,
+      "n_predictions": 72012,
+      "set_top1_accuracy": 0.49349780472506793,
+      "n_set_predictions": 71745,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    },
+    "other": {
+      "cross_entropy": 2.9696819277914037,
+      "perplexity": 19.485721588134766,
+      "top1_accuracy": 0.4235408869229897,
+      "top5_accuracy": 0.6763842576840196,
+      "n_predictions": 220425,
+      "set_top1_accuracy": 0.5166657572119757,
+      "n_set_predictions": 219912,
+      "category_set_top1_accuracy": null,
+      "n_category_predictions": null
+    }
+  },
+  "concept_metrics": [],
+  "observability_metrics": [],
+  "orthogonality": null,
+  "n_patient_ends_scored": 0,
+  "time_metrics": {
+    "nll": 0.41584158089388157,
+    "n_positions": 20812072,
+    "same_instant_accuracy": 0.9493896138741015,
+    "same_instant_rate": 0.8251327883163195,
+    "calibration": {
+      "1h": {
+        "predicted": 0.9214858707448816,
+        "observed": 0.922198568215601
+      },
+      "8h": {
+        "predicted": 0.9851316679358223,
+        "observed": 0.9848299102559323
+      },
+      "24h": {
+        "predicted": 0.9971074792704124,
+        "observed": 0.9970552667701706
+      }
+    },
+    "calibration_after_bundle": {
+      "1h": {
+        "predicted": 0.5536478130298097,
+        "observed": 0.5550827909057362
+      },
+      "8h": {
+        "predicted": 0.9154869700274545,
+        "observed": 0.9132479462673132
+      },
+      "24h": {
+        "predicted": 0.9836464471400646,
+        "observed": 0.9831601750752675
+      }
+    },
+    "n_positive_gaps": 3639349
+  },
+  "tail_slice": null
+}
