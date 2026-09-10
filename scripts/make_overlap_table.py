@@ -52,8 +52,8 @@ def render(cells: dict[str, dict[str, Any]], arm: str = "") -> str:
             if not c or "overlap" not in c or "clean" not in c:
                 continue
             row = [EVENT_NAMES[event] if first else "", h[:-1]]
-            for strat in ("overlap", "clean"):
-                s = c[strat]
+            for stratum in ("overlap", "clean"):
+                s = c[stratum]
                 row += [
                     f"{s['n']:,}",
                     f"{s['hazard']:.3f}",
