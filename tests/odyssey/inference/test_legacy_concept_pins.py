@@ -28,6 +28,15 @@ def test_pin_lookup_ignores_path_and_trailing_slash() -> None:
     assert pinned_concept_names("runs/never_trained") is None
 
 
+def test_a_renamed_run_directory_keeps_its_pin() -> None:
+    # Pins key on the directory name, so moving a run aside (as happens when
+    # a retrain is attempted against the original path) would otherwise drop
+    # the pin and make the checkpoint refuse to load.
+    assert pinned_concept_names("gemini_full_v10_15c") == pinned_concept_names(
+        "gemini_full_v10"
+    )
+
+
 def test_pinned_lists_match_the_widths_they_were_recovered_from() -> None:
     # The pins exist to match a frozen bottleneck width. GEMINI trained with
     # 15 concepts and eICU-CRD with 26; if either list is edited to a
