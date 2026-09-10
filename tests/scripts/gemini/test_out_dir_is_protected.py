@@ -19,6 +19,12 @@ OUT = REPO / "scripts" / "gemini" / "out"
 
 
 def _load(name: str) -> ModuleType:
+    # These scripts pull in the optional gemini extra at import time; the
+    # unit-test job does not install it. The source-level guard below runs
+    # everywhere and covers the same regression without importing anything.
+    reason = "gemini extra not installed (uv sync --extra gemini)"
+    for dependency in ("sqlalchemy", "pandas", "pyarrow", "polars"):
+        pytest.importorskip(dependency, reason=reason)
     spec = importlib.util.spec_from_file_location(
         name, REPO / "scripts" / "gemini" / f"{name}.py"
     )
@@ -74,3 +80,17 @@ def test_the_banked_extraction_summary_still_holds_full_scale_counts() -> None:
     assert int(summary["n_subjects"]) > 1_000_000
     assert int(summary["n_shards"]) > 1000
     assert len(summary["rows_per_table"]) > 10
+
+
+@pytest.mark.parametrize("module_name", ["extract_meds", "finalize_meds"])
+def test_the_path_is_built_from_an_overridable_out_dir(module_name: str) -> None:
+    """Source-level twin of the two tests above, for environments without the extra.
+
+    The unit-test job does not install the gemini extra, so the tests that
+    import these modules skip there -- and this regression is exactly the
+    kind that would then reach main unnoticed.
+    """
+    source = (REPO / "scripts" / "gemini" / f"{module_name}.py").read_text()
+    assert 'os.environ.get("GEMINI_OUT_DIR")' in source
+    assert "SUMMARY_PATH = OUT_DIR /" in source
+    assert "SUMMARY_PATH = Path(__file__)" not in source
