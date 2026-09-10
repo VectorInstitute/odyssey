@@ -34,6 +34,28 @@ LEGACY_CONCEPT_PINS: dict[str, tuple[str, ...]] = {
     # haematology concepts plus hypoxemic_respiratory_failure, oliguria,
     # sepsis3 and shock gained GEMINI code mappings afterwards, taking
     # today's registry to 25. Recovered at training commit c1dadb9.
+    # gemini_full_v10_15c is the same checkpoint under the name it was moved
+    # to when a 25-concept retrain was attempted against the original path.
+    # Pins key on the directory name, so a renamed run silently loses its
+    # pin and refuses to load; alias rather than rename the canonical entry,
+    # since either directory may hold the checkpoint on a given node.
+    "gemini_full_v10_15c": (
+        "tachycardia",
+        "bradycardia",
+        "hypotension",
+        "hypertension",
+        "hypoxia",
+        "fever",
+        "hypothermia",
+        "elevated_lactate",
+        "sustained_tachypnea",
+        "acute_kidney_injury",
+        "aki_stage_2",
+        "aki_stage_3",
+        "sirs",
+        "qsofa",
+        "on_vasopressors",
+    ),
     "gemini_full_v10": (
         "tachycardia",
         "bradycardia",
