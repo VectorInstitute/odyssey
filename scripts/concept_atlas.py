@@ -27,11 +27,11 @@ import polars as pl
 import torch
 
 from odyssey.data.code_normalization import maybe_normalize
-from odyssey.data.concepts import concepts_for_source
 from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.sidecars import activate_sidecars
 from odyssey.data.streaming import PackedLaneSampler, move_to_device
 from odyssey.data.value_binning import add_value_tokens
+from odyssey.inference.legacy_concept_pins import resolve_concepts_for_run
 from odyssey.inference.run_inference import load_run, refuse_existing_output
 from odyssey.inference.steering import token_descriptions
 from odyssey.models.concept_bottleneck import DecomposedConceptBottleneck
@@ -190,7 +190,9 @@ def main() -> None:
     source = getattr(config, "source", "mimic_iv")
     names = [
         c.name
-        for c in concepts_for_source(source, task_set=getattr(config, "task_set", "v1"))
+        for c in resolve_concepts_for_run(
+            args.run_dir, source, getattr(config, "task_set", "v1")
+        )
     ]
     metadata_dir = args.metadata_dir
     if metadata_dir is None:

@@ -44,6 +44,7 @@ from odyssey.data.vocabulary import Vocabulary, code_type
 from odyssey.inference.legacy_concept_pins import (
     check_concept_count,
     pinned_concept_names,
+    resolve_concepts_for_run,
 )
 from odyssey.models.concept_bottleneck import ConceptBottleneckOutput
 from odyssey.models.embeddings import N_FOURIER_FEATURES
@@ -1150,7 +1151,12 @@ def evaluate_run(
     )
     source = getattr(config, "source", "mimic_iv")
     activate_sidecars(held_out_shard_dir)
-    concepts = concepts_for_source(source, task_set=getattr(config, "task_set", "v1"))
+    # The run's own concept set: the model has as many bottleneck slots
+    # as it trained with, and compute_concept_metrics indexes the two
+    # together.
+    concepts = resolve_concepts_for_run(
+        str(run_dir), source, getattr(config, "task_set", "v1")
+    )
     events_binned = add_value_tokens(raw_events, binner, source=source)
 
     supervision = getattr(config, "concept_supervision", "stay")
