@@ -1,0 +1,707 @@
+{
+ "scorers": [
+  "hazard",
+  "gbm"
+ ],
+ "n_boot": 1000,
+ "seed": 0,
+ "variance_scope": "finite-sample only (single fitted model); refit variance requires seed replicates",
+ "cells": {
+  "acute_kidney_injury@8h": {
+   "n": 5701714,
+   "n_positive": 42494,
+   "scorers": {
+    "hazard": {
+     "auroc": {
+      "point": 0.8725926064210497,
+      "ci_low": 0.8703045524936843,
+      "ci_high": 0.8747625451566222,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     },
+     "auprc": {
+      "point": 0.09052775598716878,
+      "ci_low": 0.08766288031972633,
+      "ci_high": 0.09369845507983195,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     }
+    },
+    "gbm": {
+     "auroc": {
+      "point": 0.8951721336499008,
+      "ci_low": 0.8932331054326217,
+      "ci_high": 0.897112992344873,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     },
+     "auprc": {
+      "point": 0.10656904090510394,
+      "ci_low": 0.10336979107880258,
+      "ci_high": 0.1099655336612407,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     }
+    }
+   },
+   "paired_deltas": {
+    "hazard_minus_gbm": {
+     "auroc": {
+      "point": -0.022579527228851037,
+      "ci_low": -0.024334296076805678,
+      "ci_high": -0.020694396071566028,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0,
+      "separated": true
+     },
+     "auprc": {
+      "point": -0.01604128491793516,
+      "ci_low": -0.01889131573045007,
+      "ci_high": -0.012857462787374211,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0,
+      "separated": true
+     }
+    }
+   }
+  },
+  "acute_kidney_injury@24h": {
+   "n": 5415121,
+   "n_positive": 139199,
+   "scorers": {
+    "hazard": {
+     "auroc": {
+      "point": 0.8205280999218861,
+      "ci_low": 0.817895097260054,
+      "ci_high": 0.8229927575925228,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     },
+     "auprc": {
+      "point": 0.16189473487592815,
+      "ci_low": 0.1578222815790095,
+      "ci_high": 0.16611812925146846,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     }
+    },
+    "gbm": {
+     "auroc": {
+      "point": 0.8409538454173938,
+      "ci_low": 0.8387745732779138,
+      "ci_high": 0.8431950116408795,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     },
+     "auprc": {
+      "point": 0.18830840941152505,
+      "ci_low": 0.18403099988965552,
+      "ci_high": 0.19265905220588317,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     }
+    }
+   },
+   "paired_deltas": {
+    "hazard_minus_gbm": {
+     "auroc": {
+      "point": -0.020425745495507686,
+      "ci_low": -0.022314093054373936,
+      "ci_high": -0.018614226571914833,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0,
+      "separated": true
+     },
+     "auprc": {
+      "point": -0.026413674535596898,
+      "ci_low": -0.029974664307388058,
+      "ci_high": -0.022978385757220877,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0,
+      "separated": true
+     }
+    }
+   }
+  },
+  "acute_kidney_injury@72h": {
+   "n": 4563290,
+   "n_positive": 322227,
+   "scorers": {
+    "hazard": {
+     "auroc": {
+      "point": 0.7924574539295164,
+      "ci_low": 0.7896064190963992,
+      "ci_high": 0.7953006231755255,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     },
+     "auprc": {
+      "point": 0.2733645826432259,
+      "ci_low": 0.2672976228654588,
+      "ci_high": 0.27959219564826754,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     }
+    },
+    "gbm": {
+     "auroc": {
+      "point": 0.7940444067055337,
+      "ci_low": 0.791200290959851,
+      "ci_high": 0.7967966264880504,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     },
+     "auprc": {
+      "point": 0.2711290776173105,
+      "ci_low": 0.265159080411079,
+      "ci_high": 0.2763360443353706,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     }
+    }
+   },
+   "paired_deltas": {
+    "hazard_minus_gbm": {
+     "auroc": {
+      "point": -0.0015869527760172808,
+      "ci_low": -0.0035308996304753426,
+      "ci_high": 0.0002694662702395145,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0,
+      "separated": false
+     },
+     "auprc": {
+      "point": 0.0022355050259154075,
+      "ci_low": -0.0011398339344722507,
+      "ci_high": 0.0054326112455944054,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0,
+      "separated": false
+     }
+    }
+   }
+  },
+  "death@8h": {
+   "n": 7641127,
+   "n_positive": 19458,
+   "scorers": {
+    "hazard": {
+     "auroc": {
+      "point": 0.9747002064643817,
+      "ci_low": 0.9737629269822717,
+      "ci_high": 0.9756250440555692,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     },
+     "auprc": {
+      "point": 0.17741460249041371,
+      "ci_low": 0.17209325472020884,
+      "ci_high": 0.183320326259202,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     }
+    },
+    "gbm": {
+     "auroc": {
+      "point": 0.9088250499133903,
+      "ci_low": 0.9060084476985786,
+      "ci_high": 0.9114054678604449,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     },
+     "auprc": {
+      "point": 0.06773442366525452,
+      "ci_low": 0.06450709527240858,
+      "ci_high": 0.0711119992939295,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     }
+    }
+   },
+   "paired_deltas": {
+    "hazard_minus_gbm": {
+     "auroc": {
+      "point": 0.06587515655099141,
+      "ci_low": 0.06358462604864631,
+      "ci_high": 0.06830018273756483,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0,
+      "separated": true
+     },
+     "auprc": {
+      "point": 0.1096801788251592,
+      "ci_low": 0.10428023909809232,
+      "ci_high": 0.11523039722013272,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0,
+      "separated": true
+     }
+    }
+   }
+  },
+  "death@24h": {
+   "n": 7495543,
+   "n_positive": 58722,
+   "scorers": {
+    "hazard": {
+     "auroc": {
+      "point": 0.9664194462468932,
+      "ci_low": 0.9654365973751236,
+      "ci_high": 0.9673433718712532,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     },
+     "auprc": {
+      "point": 0.3048213992897527,
+      "ci_low": 0.2982731938905224,
+      "ci_high": 0.3107211466285771,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     }
+    },
+    "gbm": {
+     "auroc": {
+      "point": 0.9105700065593607,
+      "ci_low": 0.9084702804482604,
+      "ci_high": 0.9127251224026666,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     },
+     "auprc": {
+      "point": 0.15373392965911306,
+      "ci_low": 0.14844185023413287,
+      "ci_high": 0.15912625645248527,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     }
+    }
+   },
+   "paired_deltas": {
+    "hazard_minus_gbm": {
+     "auroc": {
+      "point": 0.05584943968753253,
+      "ci_low": 0.05398673425081268,
+      "ci_high": 0.05773846736089766,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0,
+      "separated": true
+     },
+     "auprc": {
+      "point": 0.15108746963063965,
+      "ci_low": 0.14485184865006318,
+      "ci_high": 0.15664592806940206,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0,
+      "separated": true
+     }
+    }
+   }
+  },
+  "death@72h": {
+   "n": 7057289,
+   "n_positive": 162141,
+   "scorers": {
+    "hazard": {
+     "auroc": {
+      "point": 0.9558350609451625,
+      "ci_low": 0.9546233492244056,
+      "ci_high": 0.957033534875382,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     },
+     "auprc": {
+      "point": 0.4346076461760392,
+      "ci_low": 0.42826839132189665,
+      "ci_high": 0.44105665698568447,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     }
+    },
+    "gbm": {
+     "auroc": {
+      "point": 0.8967430388146242,
+      "ci_low": 0.8944208205524475,
+      "ci_high": 0.8990812659945251,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     },
+     "auprc": {
+      "point": 0.2510397099130371,
+      "ci_low": 0.24227364694645934,
+      "ci_high": 0.25993929158570167,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     }
+    }
+   },
+   "paired_deltas": {
+    "hazard_minus_gbm": {
+     "auroc": {
+      "point": 0.05909202213053821,
+      "ci_low": 0.05717879714446129,
+      "ci_high": 0.06109836717049821,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0,
+      "separated": true
+     },
+     "auprc": {
+      "point": 0.1835679362630021,
+      "ci_low": 0.17525472799051342,
+      "ci_high": 0.19122234664116924,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0,
+      "separated": true
+     }
+    }
+   }
+  },
+  "icu_admission@8h": {
+   "n": 5435863,
+   "n_positive": 72633,
+   "scorers": {
+    "hazard": {
+     "auroc": {
+      "point": 0.9603912589918541,
+      "ci_low": 0.9595402980262713,
+      "ci_high": 0.961230852217382,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     },
+     "auprc": {
+      "point": 0.5173620795931126,
+      "ci_low": 0.5130485327314034,
+      "ci_high": 0.5219730072348581,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     }
+    },
+    "gbm": {
+     "auroc": {
+      "point": 0.9236772220958059,
+      "ci_low": 0.9223904852758923,
+      "ci_high": 0.9249891358922905,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     },
+     "auprc": {
+      "point": 0.32351547297116556,
+      "ci_low": 0.31882203498864925,
+      "ci_high": 0.3281467993029816,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     }
+    }
+   },
+   "paired_deltas": {
+    "hazard_minus_gbm": {
+     "auroc": {
+      "point": 0.03671403689604813,
+      "ci_low": 0.03580760137789632,
+      "ci_high": 0.037674973968255476,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0,
+      "separated": true
+     },
+     "auprc": {
+      "point": 0.19384660662194708,
+      "ci_low": 0.1902912387852147,
+      "ci_high": 0.19756936718612,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0,
+      "separated": true
+     }
+    }
+   }
+  },
+  "icu_admission@24h": {
+   "n": 5164833,
+   "n_positive": 136682,
+   "scorers": {
+    "hazard": {
+     "auroc": {
+      "point": 0.9452579251690992,
+      "ci_low": 0.9440290288319451,
+      "ci_high": 0.9464778954910672,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     },
+     "auprc": {
+      "point": 0.5664449975403935,
+      "ci_low": 0.5620542227098718,
+      "ci_high": 0.5708048305957328,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     }
+    },
+    "gbm": {
+     "auroc": {
+      "point": 0.9042641327118373,
+      "ci_low": 0.9025446227259457,
+      "ci_high": 0.9061009017482959,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     },
+     "auprc": {
+      "point": 0.3851100955073701,
+      "ci_low": 0.3804309551889625,
+      "ci_high": 0.39016184865350817,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     }
+    }
+   },
+   "paired_deltas": {
+    "hazard_minus_gbm": {
+     "auroc": {
+      "point": 0.04099379245726198,
+      "ci_low": 0.03973827513852494,
+      "ci_high": 0.042143808455624876,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0,
+      "separated": true
+     },
+     "auprc": {
+      "point": 0.18133490203302338,
+      "ci_low": 0.17784207030450674,
+      "ci_high": 0.18492873971996124,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0,
+      "separated": true
+     }
+    }
+   }
+  },
+  "icu_admission@72h": {
+   "n": 4357396,
+   "n_positive": 199641,
+   "scorers": {
+    "hazard": {
+     "auroc": {
+      "point": 0.9179523263118439,
+      "ci_low": 0.9159166052322502,
+      "ci_high": 0.9198953450498067,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     },
+     "auprc": {
+      "point": 0.5655340256465636,
+      "ci_low": 0.5605734429734095,
+      "ci_high": 0.5704829877698626,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     }
+    },
+    "gbm": {
+     "auroc": {
+      "point": 0.8685617853041256,
+      "ci_low": 0.8658093690592662,
+      "ci_high": 0.8711058398003735,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     },
+     "auprc": {
+      "point": 0.3995807321484975,
+      "ci_low": 0.3945834532673634,
+      "ci_high": 0.40406194098863735,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     }
+    }
+   },
+   "paired_deltas": {
+    "hazard_minus_gbm": {
+     "auroc": {
+      "point": 0.049390541007718225,
+      "ci_low": 0.04760437805990758,
+      "ci_high": 0.051110209726948276,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0,
+      "separated": true
+     },
+     "auprc": {
+      "point": 0.16595329349806615,
+      "ci_low": 0.16242911700233703,
+      "ci_high": 0.16974694885217181,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0,
+      "separated": true
+     }
+    }
+   }
+  },
+  "vasopressor_start@8h": {
+   "n": 6380044,
+   "n_positive": 30399,
+   "scorers": {
+    "hazard": {
+     "auroc": {
+      "point": 0.9473531986672252,
+      "ci_low": 0.945614672549753,
+      "ci_high": 0.9491358109093107,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     },
+     "auprc": {
+      "point": 0.34132635859521837,
+      "ci_low": 0.33390546196541193,
+      "ci_high": 0.3492086454295869,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     }
+    },
+    "gbm": {
+     "auroc": {
+      "point": 0.8945492051357721,
+      "ci_low": 0.8918558239948204,
+      "ci_high": 0.8970844822619605,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     },
+     "auprc": {
+      "point": 0.1376134000099986,
+      "ci_low": 0.13247945871950376,
+      "ci_high": 0.1429207842336266,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     }
+    }
+   },
+   "paired_deltas": {
+    "hazard_minus_gbm": {
+     "auroc": {
+      "point": 0.05280399353145315,
+      "ci_low": 0.05096526628668346,
+      "ci_high": 0.05467046146354147,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0,
+      "separated": true
+     },
+     "auprc": {
+      "point": 0.20371295858521976,
+      "ci_low": 0.19768546561183437,
+      "ci_high": 0.20971072497337626,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0,
+      "separated": true
+     }
+    }
+   }
+  },
+  "vasopressor_start@24h": {
+   "n": 6069458,
+   "n_positive": 63475,
+   "scorers": {
+    "hazard": {
+     "auroc": {
+      "point": 0.924866221318442,
+      "ci_low": 0.9228084929186597,
+      "ci_high": 0.9271834098867335,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     },
+     "auprc": {
+      "point": 0.3542473531062351,
+      "ci_low": 0.3470785674909658,
+      "ci_high": 0.36155350380822066,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     }
+    },
+    "gbm": {
+     "auroc": {
+      "point": 0.8717773590244695,
+      "ci_low": 0.8688147970448461,
+      "ci_high": 0.8746844294819915,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     },
+     "auprc": {
+      "point": 0.16336384941362225,
+      "ci_low": 0.15840850501684134,
+      "ci_high": 0.16877721500658757,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     }
+    }
+   },
+   "paired_deltas": {
+    "hazard_minus_gbm": {
+     "auroc": {
+      "point": 0.05308886229397247,
+      "ci_low": 0.05092280197228508,
+      "ci_high": 0.05530277649196164,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0,
+      "separated": true
+     },
+     "auprc": {
+      "point": 0.19088350369261287,
+      "ci_low": 0.1851753124826236,
+      "ci_high": 0.19668808785128303,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0,
+      "separated": true
+     }
+    }
+   }
+  },
+  "vasopressor_start@72h": {
+   "n": 5130747,
+   "n_positive": 113579,
+   "scorers": {
+    "hazard": {
+     "auroc": {
+      "point": 0.8937105938578314,
+      "ci_low": 0.8908391703349509,
+      "ci_high": 0.8963938151372213,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     },
+     "auprc": {
+      "point": 0.3349966597766856,
+      "ci_low": 0.32809584142802867,
+      "ci_high": 0.3416222334382139,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     }
+    },
+    "gbm": {
+     "auroc": {
+      "point": 0.8279187843547521,
+      "ci_low": 0.8243159729721292,
+      "ci_high": 0.8314764467097677,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     },
+     "auprc": {
+      "point": 0.15427113756968716,
+      "ci_low": 0.14943838541926038,
+      "ci_high": 0.1588897309251013,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0
+     }
+    }
+   },
+   "paired_deltas": {
+    "hazard_minus_gbm": {
+     "auroc": {
+      "point": 0.06579180950307928,
+      "ci_low": 0.06299468425942882,
+      "ci_high": 0.06861054742030685,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0,
+      "separated": true
+     },
+     "auprc": {
+      "point": 0.18072552220699842,
+      "ci_low": 0.17523917506995407,
+      "ci_high": 0.1861279562053513,
+      "n_boot_used": 1000,
+      "n_boot_skipped": 0,
+      "separated": true
+     }
+    }
+   }
+  }
+ }
+}

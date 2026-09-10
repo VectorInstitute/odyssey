@@ -1,0 +1,114 @@
+{
+ "n_boot": 2000,
+ "seed": 0,
+ "pairs": {
+  "truth_minus_flip": {
+   "point": 0.00011264535651200891,
+   "ci_low": 2.8278499372944715e-05,
+   "ci_high": 0.00020245645911875845,
+   "separated": true,
+   "n_subjects": 7936,
+   "n_predictions": 8522322,
+   "n_boot": 2000
+  },
+  "truth_minus_none": {
+   "point": -7.544892108041212e-05,
+   "ci_low": -0.00013120252873554533,
+   "ci_high": -1.5278306088801368e-05,
+   "separated": true,
+   "n_subjects": 7936,
+   "n_predictions": 8522322,
+   "n_boot": 2000
+  },
+  "flip_minus_none": {
+   "point": -0.00018809427759242103,
+   "ci_low": -0.00025051357840164267,
+   "ci_high": -0.00012917711162267146,
+   "separated": true,
+   "n_subjects": 7936,
+   "n_predictions": 8522322,
+   "n_boot": 2000
+  },
+  "flip_gated_minus_none": {
+   "point": -9.844734803496347e-05,
+   "ci_low": -0.00013943244737029542,
+   "ci_high": -5.598369346461051e-05,
+   "separated": true,
+   "n_subjects": 7936,
+   "n_predictions": 8522322,
+   "n_boot": 2000
+  },
+  "random_minus_none": {
+   "point": -0.0001363478169447152,
+   "ci_low": -0.0001944338154954525,
+   "ci_high": -7.589451322647587e-05,
+   "separated": true,
+   "n_subjects": 7936,
+   "n_predictions": 8522322,
+   "n_boot": 2000
+  },
+  "zero_known_minus_none": {
+   "point": -0.18642337147082683,
+   "ci_low": -0.19067593392387952,
+   "ci_high": -0.18255627267331723,
+   "separated": true,
+   "n_subjects": 7936,
+   "n_predictions": 8522322,
+   "n_boot": 2000
+  },
+  "zero_unknown_minus_none": {
+   "point": -0.0010121654638254596,
+   "ci_low": -0.0011333880815271064,
+   "ci_high": -0.000886829210104926,
+   "separated": true,
+   "n_subjects": 7936,
+   "n_predictions": 8522322,
+   "n_boot": 2000
+  },
+  "zero_residual_minus_none": {
+   "point": 0.0,
+   "ci_low": 0.0,
+   "ci_high": 0.0,
+   "separated": false,
+   "n_subjects": 7936,
+   "n_predictions": 8522322,
+   "n_boot": 2000
+  },
+  "zero_residual_minus_zero_known": {
+   "point": 0.18642337147082683,
+   "ci_low": 0.18255627267331723,
+   "ci_high": 0.19067593392387952,
+   "separated": true,
+   "n_subjects": 7936,
+   "n_predictions": 8522322,
+   "n_boot": 2000
+  },
+  "truth_calibrated_minus_flip_calibrated": {
+   "point": 0.005681902185812715,
+   "ci_low": 0.005438749262094095,
+   "ci_high": 0.005943568304786001,
+   "separated": true,
+   "n_subjects": 7936,
+   "n_predictions": 8522322,
+   "n_boot": 2000
+  },
+  "truth_calibrated_minus_none": {
+   "point": -0.0007283226331978587,
+   "ci_low": -0.0008266104286686532,
+   "ci_high": -0.0006285255101443442,
+   "separated": true,
+   "n_subjects": 7936,
+   "n_predictions": 8522322,
+   "n_boot": 2000
+  },
+  "flip_calibrated_minus_none": {
+   "point": -0.006410224819010574,
+   "ci_low": -0.006656212409624898,
+   "ci_high": -0.006174223223396366,
+   "separated": true,
+   "n_subjects": 7936,
+   "n_predictions": 8522322,
+   "n_boot": 2000
+  }
+ }
+}
