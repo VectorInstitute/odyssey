@@ -157,6 +157,9 @@ def render(results: dict[str, Any], horizon: str = "24h") -> str:
         f"% Horizon {horizon}. monotone = share of subjects non-decreasing across",
         "% every rung; top step = median largest single step as a share of the",
         "% subject's full range (1/k = even ramp, 1 = pure threshold).",
+        # Same vertical treatment as the counterfactual table: the group
+        # headers otherwise sit hard against their own rows at \scriptsize.
+        "\\renewcommand{\\arraystretch}{1.2}%",
         "\\begin{tabular}{lrrrr}",
         "\\toprule",
         "Event & $n$ & monotone & flat & top step \\\\",
@@ -168,9 +171,10 @@ def render(results: dict[str, Any], horizon: str = "24h") -> str:
         rungs = ", ".join(f"{v:g}" for v, _ in arms)
         even = 1.0 / (len(arms) - 1)
         lines += [
+            "\\addlinespace[3pt]",
             "\\midrule",
             f"\\multicolumn{{5}}{{l}}{{\\rlap{{\\emph{{{label}}} set to {rungs} {unit}"
-            f" over 6 h; an even ramp gives {even:.2f}}}}} \\\\",
+            f" over 6 h; an even ramp gives {even:.2f}}}}} \\\\[2pt]",
         ]
         first = next(
             (dose_response(results, signal, e, horizon) for e in EVENT_LABELS), None
