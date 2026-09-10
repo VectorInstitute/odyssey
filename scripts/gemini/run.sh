@@ -962,14 +962,46 @@ JSON
         mkdir -p "$OUTPUT_DIR"
         CONFIG_JSON="$OUTPUT_DIR/train_cbm_config.json"
 
-        # Shard count and bottleneck kind passed as argv, never interpolated
-        # into the source.
-        python3 - "$CONFIG_JSON" "$max_train_shards" "$bottleneck_kind" <<'PY'
+        # GEMINI_RESUME_FROM: continue an interrupted run instead of starting
+        # over. The h200 partition preempts (a full-scale run is many hours
+        # and shares the node with other users' sweeps), and without this a
+        # preemption costs the whole run rather than one checkpoint interval.
+        # "auto" picks the newest periodic checkpoint; an explicit path is
+        # used as given. train.py fast-forwards the resumed epoch's seeded
+        # sampler to the checkpoint's position, which is only correct while
+        # num_lanes/chunk_size/reset_prob/seed are unchanged -- they are
+        # fixed in this recipe, and train.py re-checks them against the
+        # values saved beside the checkpoint.
+        RESUME_FROM="${GEMINI_RESUME_FROM:-}"
+        if [[ "$RESUME_FROM" == "auto" || "$RESUME_FROM" == "latest" ]]; then
+            # Highest global_step wins, NOT newest mtime: resuming rewrites
+            # earlier checkpoints' mtimes, so mtime order can hand back a
+            # checkpoint from before the interruption and silently lose work.
+            RESUME_FROM=$(ls "$OUTPUT_DIR"/checkpoint_[0-9]*.pt 2>/dev/null \
+                | sed 's#.*/checkpoint_\([0-9]*\)\.pt#\1 &#' \
+                | sort -n -k1,1 | tail -1 | cut -d' ' -f2-)
+            if [[ -z "$RESUME_FROM" ]]; then
+                echo "GEMINI_RESUME_FROM=auto, but $OUTPUT_DIR has no" >&2
+                echo "checkpoint_<step>.pt yet -- starting from scratch." >&2
+            fi
+        fi
+        if [[ -n "$RESUME_FROM" ]]; then
+            if [[ ! -f "$RESUME_FROM" ]]; then
+                echo "GEMINI_RESUME_FROM=$RESUME_FROM does not exist." >&2
+                exit 1
+            fi
+            echo "RESUMING from $RESUME_FROM (checkpoint_every=2000 steps)."
+        fi
+
+        # Shard count, bottleneck kind and resume path passed as argv, never
+        # interpolated into the source.
+        python3 - "$CONFIG_JSON" "$max_train_shards" "$bottleneck_kind" "$RESUME_FROM" <<'PY'
 import json
 import sys
 
 config_path, max_train_shards = sys.argv[1:3]
 bottleneck_kind = sys.argv[3] if len(sys.argv) > 3 else "mixture"
+resume_from = sys.argv[4] if len(sys.argv) > 4 else ""
 overrides = {
     "model_kind": "bottleneck",
     "source": "gemini",
@@ -992,6 +1024,8 @@ overrides = {
 }
 if max_train_shards:
     overrides["max_train_shards"] = int(max_train_shards)
+if resume_from:
+    overrides["resume_from"] = resume_from
 if bottleneck_kind == "decomposed":
     # Verbatim from ~/runs/full_run_DEC_v12/config.json on the MIMIC VM
     # (commit 69c8cb0 and later); the eICU run used the same block.
