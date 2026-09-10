@@ -39,7 +39,6 @@ from sklearn.metrics import roc_auc_score
 from sklearn.preprocessing import StandardScaler
 
 from odyssey.data.alert_events import EventTimes, alert_events_for, all_event_times
-from odyssey.data.concepts import concepts_for_source
 from odyssey.data.sidecars import activate_sidecars
 from odyssey.data.value_binning import add_value_tokens
 from odyssey.inference.alerts import HORIZONS_HOURS, _load_prepared_raw, _visit_starts
@@ -90,9 +89,6 @@ def main() -> None:  # noqa: PLR0915
         )
     source = getattr(config, "source", "mimic_iv")
     task_set = getattr(config, "task_set", "v1")
-    concept_names = [c.name for c in concepts_for_source(source, task_set=task_set)]
-    del concept_names  # not needed here; kept for parity with alerts.py setup
-
     all_alerts = alert_events_for(task_set)
     landmark_alerts = [a for a in all_alerts if not a.next_visit]
     visit_end_alerts = [a for a in all_alerts if a.next_visit]

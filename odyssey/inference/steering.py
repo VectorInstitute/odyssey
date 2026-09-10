@@ -76,12 +76,13 @@ from odyssey.data.alert_events import (
     hazard_events_for,
 )
 from odyssey.data.code_normalization import maybe_normalize
-from odyssey.data.concepts import canonical_concept_name, concepts_for_source
+from odyssey.data.concepts import canonical_concept_name
 from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.sidecars import activate_sidecars
 from odyssey.data.streaming import PackedLaneSampler, StreamingChunk, move_to_device
 from odyssey.data.value_binning import add_value_tokens
 from odyssey.data.vocabulary import Vocabulary
+from odyssey.inference.legacy_concept_pins import resolve_concepts_for_run
 from odyssey.inference.outcome_probes import OutcomeProbes
 from odyssey.inference.run_inference import load_run, refuse_existing_output
 from odyssey.models.concept_bottleneck import (
@@ -944,7 +945,9 @@ def prepare(  # noqa: PLR0915
     supervision = cast(
         "ConceptSupervision", getattr(config, "concept_supervision", "stay")
     )
-    concepts = concepts_for_source(source, task_set=getattr(config, "task_set", "v1"))
+    concepts = resolve_concepts_for_run(
+        str(run_dir), source, getattr(config, "task_set", "v1")
+    )
     concept_names = [c.name for c in concepts]
 
     def binned(

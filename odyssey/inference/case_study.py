@@ -36,13 +36,13 @@ import polars as pl
 import torch
 
 from odyssey.data.code_normalization import maybe_normalize
-from odyssey.data.concepts import concepts_for_source
 from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.sequences import PatientSequence, build_patient_sequence
 from odyssey.data.sidecars import activate_sidecars
 from odyssey.data.streaming import NO_SUBJECT, PackedLaneSampler
 from odyssey.data.value_binning import add_value_tokens
 from odyssey.data.vocabulary import Vocabulary
+from odyssey.inference.legacy_concept_pins import resolve_concepts_for_run
 from odyssey.inference.run_inference import load_run
 from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
 from odyssey.models.time_to_event import probability_within
@@ -338,7 +338,9 @@ def build_case_studies(
 
     source = getattr(config, "source", "mimic_iv")
     activate_sidecars(held_out_shard_dir)
-    concepts = concepts_for_source(source, task_set=getattr(config, "task_set", "v1"))
+    concepts = resolve_concepts_for_run(
+        str(run_dir), source, getattr(config, "task_set", "v1")
+    )
     logger.info("[case_study] labeling concepts (source=%s)", source)
     concept_labels, concept_mask = build_concept_label_dicts(raw_events, concepts)
 

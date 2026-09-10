@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import torch
 
@@ -96,3 +98,61 @@ def test_resolve_concepts_follows_a_rename() -> None:
 def test_resolve_concepts_is_the_full_registry_when_unpinned() -> None:
     got = resolve_concepts_for_run("runs/not_pinned", "mimic_iv", "v3")
     assert len(got) == len(concepts_for_source("mimic_iv", task_set="v3"))
+
+
+def test_no_checkpoint_caller_pairs_the_registry_with_a_loaded_model() -> None:
+    """A module that loads a checkpoint must not build concepts from the registry.
+
+    The bug this guards has now shipped three times (``interventions``,
+    ``eval-forecast``, and the callers fixed alongside them): a run trained
+    with N bottleneck slots is scored against a registry that has since
+    grown to M > N concepts, and the two get zipped or indexed together.
+    The failure is an ``IndexError`` deep in scoring, or -- worse -- a
+    silent mislabelling when M < N.
+
+    Any module that calls ``load_run`` must therefore go through
+    :func:`resolve_concepts_for_run`, which reads the run's own pinned
+    concept list. Legitimate exceptions are listed explicitly.
+    """
+    import ast  # noqa: PLC0415
+
+    repo_root = Path(__file__).resolve().parents[3]
+    # run_inference defines load_run; its own two uses are the pin lookup
+    # inside load_run and a documented default on a helper that every real
+    # caller passes concepts to explicitly.
+    allowed = {
+        # Defines load_run. Its own two uses are the pin lookup inside
+        # load_run and a documented default on a helper that every real
+        # caller passes concepts to explicitly.
+        "odyssey/inference/run_inference.py",
+        # The resolver itself: this is where the registry is looked up.
+        "odyssey/inference/legacy_concept_pins.py",
+        # Training DEFINES a run's concept set rather than reading one
+        # back, so there is nothing to pin against.
+        "odyssey/training/train.py",
+    }
+
+    offenders: list[str] = []
+    for path in sorted(repo_root.glob("odyssey/**/*.py")) + sorted(
+        repo_root.glob("scripts/**/*.py")
+    ):
+        rel = path.relative_to(repo_root).as_posix()
+        if rel in allowed:
+            continue
+        source = path.read_text()
+        if "load_run" not in source:
+            continue
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "concepts_for_source"
+            ):
+                offenders.append(f"{rel}:{node.lineno}")
+
+    assert offenders == [], (
+        "these modules load a checkpoint but build concepts from the live "
+        "registry; use resolve_concepts_for_run(run_dir, source, task_set) "
+        f"instead: {offenders}"
+    )

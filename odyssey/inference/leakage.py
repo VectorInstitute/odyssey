@@ -851,6 +851,7 @@ def _leakage_bank_from_shards(
     config: object,
     shard_dir: str | Path,
     *,
+    run_dir: str | Path,
     max_shards: int | None,
     sample_rate: float,
     seed: int,
@@ -859,8 +860,10 @@ def _leakage_bank_from_shards(
     device: str,
     max_positions: int | None,
 ) -> LeakageBank:
-    from odyssey.data.concepts import concepts_for_source  # noqa: PLC0415
     from odyssey.data.sidecars import activate_sidecars  # noqa: PLC0415
+    from odyssey.inference.legacy_concept_pins import (  # noqa: PLC0415
+        resolve_concepts_for_run,
+    )
     from odyssey.training.data import (  # noqa: PLC0415
         build_concept_first_times,
         build_concept_label_dicts,
@@ -874,7 +877,7 @@ def _leakage_bank_from_shards(
     task_set = getattr(config, "task_set", "v1")
     supervision: ConceptSupervision = getattr(config, "concept_supervision", "visit")
     activate_sidecars(shard_dir)
-    concepts = concepts_for_source(source, task_set=task_set)
+    concepts = resolve_concepts_for_run(str(run_dir), source, task_set)
     concept_names = [c.name for c in concepts]
 
     banks: list[LeakageBank] = []
@@ -974,6 +977,7 @@ def _main() -> None:
             f"{getattr(config, 'model_kind', 'bottleneck')!r}"
         )
     common = {
+        "run_dir": run_dir,
         "num_lanes": args.num_lanes,
         "chunk_size": args.chunk_size,
         "device": device,

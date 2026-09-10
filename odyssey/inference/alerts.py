@@ -71,7 +71,6 @@ from odyssey.data.alert_events import (
     origin_hours,
 )
 from odyssey.data.code_normalization import maybe_normalize
-from odyssey.data.concepts import concepts_for_source
 from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.packed_context import PackedContextSampler
 from odyssey.data.sequences import BIRTH_CODE
@@ -86,6 +85,7 @@ from odyssey.data.value_binning import (
 from odyssey.data.vocabulary import Vocabulary, code_type
 from odyssey.inference.baseline_features import StrongFeatureBuilder
 from odyssey.inference.baseline_features import feature_names as strong_feature_names
+from odyssey.inference.legacy_concept_pins import resolve_concepts_for_run
 from odyssey.inference.run_inference import load_run, refuse_existing_output
 from odyssey.models.concept_bottleneck import BottleneckIntervention
 from odyssey.models.sequence_model import SequenceModel
@@ -2685,7 +2685,9 @@ def evaluate_alerts(  # noqa: PLR0912, PLR0915
     source = getattr(config, "source", "mimic_iv")
     task_set = getattr(config, "task_set", "v1")
     activate_sidecars(held_out_shard_dir)
-    concept_names = [c.name for c in concepts_for_source(source, task_set=task_set)]
+    concept_names = [
+        c.name for c in resolve_concepts_for_run(str(run_dir), source, task_set)
+    ]
     _check_index_mode(index_mode)
     if alerts is None:
         # The run's own task set: landmark mode scores the within-visit
