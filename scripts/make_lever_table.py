@@ -36,11 +36,6 @@ ARMS: tuple[tuple[str, str], ...] = (
     ("Global-poles mixture, MIMIC-IV", "vm1/full_run_L_v10"),
     ("Global-poles mixture, eICU", "vm2/eicu_full_L_v10"),
     ("Additive, eICU", "vm2/eicu_full_ADD_v10"),
-    ("Decomposed, MIMIC-IV", "vm1/full_run_DEC_v12"),
-    ("Decomposed + steering training, MIMIC-IV", "vm1/full_run_DEC_v12_steer"),
-    ("Decomposed, transformer, MIMIC-IV", "vm1/full_run_DEC_v12_tfm"),
-    ("Decomposed, eICU", "vm2/eicu_full_DEC_v13"),
-    ("Decomposed + steering training, eICU", "vm2/eicu_full_DEC_v12_steer"),
 )
 PAIRS: tuple[tuple[str, str], ...] = (
     ("truth$-$flip", "truth_minus_flip"),

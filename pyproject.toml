@@ -242,7 +242,13 @@ extra_checks = true
 
 [tool.ruff]
 include = ["*.py", "pyproject.toml", "*.ipynb"]
-exclude = []
+exclude = [
+    # Committed verbatim as they ran on the VMs: their marker regexes
+    # define the paper's published cohort groups, so reformatting them
+    # would silently redefine what that table measures.
+    "scripts/cohort/cohort_check_mimic.py",
+    "scripts/cohort/cohort_check_eicu.py",
+]
 line-length = 88
 
 [tool.ruff.format]
