@@ -12,6 +12,7 @@ from scripts.make_comparator_tables import (
     build_rows,
     check_row_sets,
     load_alerts,
+    load_alerts_multi,
     load_matched,
     load_tabicl,
 )
@@ -53,6 +54,51 @@ def test_load_alerts_keys_cells_and_collects_protocol(tmp_path: Path) -> None:
     assert cells["death@8h"]["n"] == 1000
 
 
+def _readmission_records(protocol: int = 4) -> list[dict]:
+    """Build a next_visit event, the kind a separate visit_end pass produces."""
+    out = []
+    for scorer, auroc in (("hazard", 0.59), ("baseline_gbm", 0.70)):
+        out.append(
+            {
+                "event": "readmission_30d",
+                "horizon_hours": 168.0,
+                "scorer": scorer,
+                "auroc": auroc,
+                "n_at_risk": 45053,
+                "n_positive": 4581,
+                "landmark_protocol_version": protocol,
+            }
+        )
+    return out
+
+
+def test_load_alerts_multi_merges_disjoint_files(tmp_path: Path) -> None:
+    """A landmark-grid file and a separate visit_end file merge as one table.
+
+    readmission_30d is a next_visit event scored in its own
+    --index-mode visit_end pass, so it lands in a second file rather than
+    alerts.json itself; the merge must fold it in as ordinary extra rows.
+    """
+    landmark = _write(tmp_path, "a.json", _alerts_records())
+    readmission = _write(tmp_path, "r.json", _readmission_records())
+    cells, protocols = load_alerts_multi([landmark, readmission])
+    assert set(cells) == {
+        "acute_kidney_injury@8h",
+        "death@8h",
+        "readmission_30d@168h",
+    }
+    assert protocols == {4}
+    assert cells["readmission_30d@168h"]["scores"]["hazard"] == 0.59
+
+
+def test_load_alerts_multi_refuses_an_overlapping_cell(tmp_path: Path) -> None:
+    """Two files describing the same event/horizon are not a merge."""
+    a = _write(tmp_path, "a.json", _alerts_records())
+    b = _write(tmp_path, "b.json", _alerts_records())
+    with pytest.raises(SystemExit, match="repeats cell"):
+        load_alerts_multi([a, b])
+
+
 def test_scorers_outside_hazard_and_gbm_are_ignored(tmp_path: Path) -> None:
     """alerts.json also carries `concept` and `next_mass` proxy scorers."""
     records = _alerts_records() + [
@@ -70,8 +116,16 @@ def test_scorers_outside_hazard_and_gbm_are_ignored(tmp_path: Path) -> None:
     assert set(cells["death@8h"]["scores"]) == {"hazard", "baseline_gbm"}
 
 
-def test_bold_goes_to_the_max_without_cis() -> None:
-    assert _bold_targets({"hazard": 0.9, "baseline_gbm": 0.8}, None) == {"hazard"}
+def test_bold_is_withheld_entirely_when_there_is_no_interval() -> None:
+    """No interval, no bold: an arg-max would read as a separation.
+
+    Superseded the earlier rule (bold the larger value whenever no CI was
+    available), which put bold on cells the captions promise are separated.
+    A single scorer is still bolded, since there is nothing to separate it
+    from and no claim of separation is implied.
+    """
+    assert _bold_targets({"hazard": 0.9, "baseline_gbm": 0.8}, None) == set()
+    assert _bold_targets({"hazard": 0.9}, None) == {"hazard"}
 
 
 def test_bold_is_withheld_when_the_paired_delta_does_not_separate() -> None:
@@ -117,8 +171,10 @@ def test_tabicl_column_is_added_when_supplied(tmp_path: Path) -> None:
     # here and is asserted separately: this fixture covers one of two cells.)
     assert not any("column absent" in n for n in notes)
     death_row = next(r for r in rows if "Death" in r)
-    # TabICL leads this cell, so it takes the bold
-    assert "\\textbf{0.970}" in death_row
+    # TabICL leads this cell, but the fixture carries no paired interval,
+    # so the value appears unbolded rather than claiming a separation.
+    assert "0.970" in death_row
+    assert "\\textbf{0.970}" not in death_row
 
 
 def test_partial_tabicl_coverage_is_reported(tmp_path: Path) -> None:
@@ -214,10 +270,34 @@ def test_emits_a_complete_tabular_not_a_bare_row_body(tmp_path: Path) -> None:
         capture_output=True,
     )
     text = out.read_text()
-    assert "\\begin{tabular}{llrrr}" in text
+    assert "\\begin{tabular}[t]{llrrr}" in text
     assert "\\toprule" in text and "\\bottomrule" in text
     assert text.rstrip().endswith("\\end{tabular}")
     assert "Event & $h$ & $n$ (pos) & Hazard & GBM" in text
+
+
+def test_cli_merges_a_second_alerts_file(tmp_path: Path) -> None:
+    """Repeating --alerts folds readmission_30d in as ordinary extra rows."""
+    landmark = _write(tmp_path, "a.json", _alerts_records())
+    readmission = _write(tmp_path, "r.json", _readmission_records())
+    out = tmp_path / "body.tex"
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/make_comparator_tables.py",
+            "--alerts",
+            str(landmark),
+            "--alerts",
+            str(readmission),
+            "--output-tex",
+            str(out),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    text = out.read_text()
+    assert "168h" in text
+    assert "0.590" in text  # readmission hazard, formatted to 3 places
 
 
 def test_tabicl_column_widens_the_preamble_and_header(tmp_path: Path) -> None:
@@ -240,7 +320,7 @@ def test_tabicl_column_widens_the_preamble_and_header(tmp_path: Path) -> None:
         capture_output=True,
     )
     text = out.read_text()
-    assert "\\begin{tabular}{llrrrr}" in text
+    assert "\\begin{tabular}[t]{llrrrr}" in text
     assert "TabICL" in text
 
 

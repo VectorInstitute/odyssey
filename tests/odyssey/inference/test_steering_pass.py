@@ -13,8 +13,10 @@ import pytest
 import torch
 from torch import nn
 
+from odyssey.data.alert_events import EventTimes
 from odyssey.data.concepts import concepts_for_source
 from odyssey.data.vocabulary import Vocabulary
+from odyssey.inference.outcome_probes import OutcomeProbes
 from odyssey.inference.steering import (
     CLINICAL_EXPECTATIONS,
     HORIZONS_HOURS,
@@ -28,10 +30,12 @@ from odyssey.inference.steering import (
     clinician_line,
     evaluate_steering,
     run_steering_pass,
+    summarize_push,
 )
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
 from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
 from odyssey.models.steering import steering_direction, steering_gamma
+from odyssey.training.event_targets import EventTimeTables
 
 
 T0 = datetime(2024, 1, 1)
@@ -195,6 +199,7 @@ def test_evaluate_steering_runs_every_expected_dial_both_ways_and_serializes() -
     vocab = _vocab()
     model = _model(len(vocab.token_to_id))
     prepared = _prepared(model, vocab)
+    progress: list[int] = []
     summaries = evaluate_steering(
         prepared,
         concepts=None,
@@ -205,9 +210,12 @@ def test_evaluate_steering_runs_every_expected_dial_both_ways_and_serializes() -
         chunk_size=8,
         device="cpu",
         n_boot=20,
+        on_progress=lambda done: progress.append(len(done)),
     )
     expected = [n for n in NAMES if n in CLINICAL_EXPECTATIONS]
     assert [s.concept for s in summaries] == [n for n in expected for _ in range(2)]
+    # Called once per dial with the summaries so far, so a stopped run keeps them.
+    assert progress == [2 * (i + 1) for i in range(len(expected))]
     assert [s.direction for s in summaries[:2]] == ["amplify", "suppress"]
     assert summaries[0].gamma > 0 > summaries[1].gamma
     assert summaries[0].n_subjects == 4
@@ -334,3 +342,178 @@ def test_evaluate_steering_reports_one_summary_per_stratum() -> None:
     assert summaries[0].n_subjects == 4 and summaries[1].n_subjects == 2
     assert "[tachycardia=1]" in clinician_line(summaries[1])
     assert _to_json(summaries)[1]["stratum"] == "tachycardia=1"
+
+
+def _probes(model: ConceptBottleneckSequenceModel) -> OutcomeProbes:
+    """Two state-transition probes on the tiny model's bottleneck width."""
+    dim = model.bottleneck.output_dim
+    torch.manual_seed(1)
+    return OutcomeProbes(
+        event_names=["icu_discharge", "hospital_discharge_alive"],
+        horizons_hours=list(HORIZONS_HOURS),
+        weight=torch.randn(2, len(HORIZONS_HOURS), dim) * 0.1,
+        bias=torch.zeros(2, len(HORIZONS_HOURS)),
+        requires={"icu_discharge": "icu_admission"},
+        auroc={},
+    )
+
+
+def _transition_tables() -> tuple[EventTimeTables, EventTimeTables]:
+    """Subjects 1 and 2 were admitted to the ICU at 2 h; 3 and 4 never were.
+
+    Every subject leaves the hospital at 8 h; ICU discharge at 6 h for the
+    admitted two. Times are hours on each subject's own origin (T0).
+    """
+    censor = {(sid, 100 + sid): 9.0 for sid in (1, 2, 3, 4)}
+    probe_times = {
+        "icu_discharge": EventTimes(
+            onset={(1, 101): 6.0, (2, 102): 6.0}, censor=censor, subject_scoped=False
+        ),
+        "hospital_discharge_alive": EventTimes(
+            onset={(sid, 100 + sid): 8.0 for sid in (1, 2, 3, 4)},
+            censor=censor,
+            subject_scoped=False,
+        ),
+    }
+    required_times = {
+        "icu_admission": EventTimes(
+            onset={(1, 101): 2.0, (2, 102): 2.0}, censor=censor, subject_scoped=False
+        )
+    }
+    return (
+        EventTimeTables(probe_times, ["icu_discharge", "hospital_discharge_alive"]),
+        EventTimeTables(required_times, ["icu_admission"]),
+    )
+
+
+def test_pass_with_probes_appends_their_outcomes_and_applies_the_prior_event_rule() -> (
+    None
+):
+    vocab = _vocab()
+    model = _model(len(vocab.token_to_id))
+    probes = _probes(model)
+    probe_tables, required_tables = _transition_tables()
+    readouts = run_steering_pass(
+        model,
+        _events(),
+        vocab,
+        push=None,
+        lifted_sets=[torch.tensor([2, 3])],
+        tables=None,
+        num_lanes=2,
+        chunk_size=8,
+        device="cpu",
+        probes=probes,
+        probe_tables=probe_tables,
+        required_tables=required_tables,
+    )
+    n_events = len(EVENTS) + 2
+    for sid in (1, 2, 3, 4):
+        assert readouts[sid].risk_means().shape == (n_events, len(HORIZONS_HOURS))
+    icu, home = len(EVENTS), len(EVENTS) + 1
+    # subjects 1 and 2: at risk of leaving the ICU between admission (2 h) and
+    # discharge (6 h), i.e. positions at 2, 3, 4, 5 h
+    assert readouts[1].risk_n[icu] == 4
+    # subjects 3 and 4 were never admitted: never at risk of leaving
+    assert readouts[3].risk_n[icu] == 0
+    assert np.isnan(readouts[3].risk_means()[icu]).all()
+    # everyone is at risk of going home until 8 h (positions 0..7)
+    assert readouts[3].risk_n[home] == 8
+    means = readouts[1].risk_means()
+    assert np.all((means[icu] >= 0) & (means[icu] <= 1))
+
+
+def _readouts(probs_by_subject: dict[int, list[float]]) -> dict[int, SubjectReadout]:
+    """Hand-built per-subject readouts: one position each, no mass, no risk."""
+    out: dict[int, SubjectReadout] = {}
+    for sid, probs in probs_by_subject.items():
+        r = SubjectReadout()
+        r.add(
+            torch.tensor([probs]),
+            torch.zeros(1, 1),
+            torch.zeros(1, len(EVENTS), len(HORIZONS_HOURS)),
+            torch.ones(1, len(EVENTS), dtype=torch.bool),
+        )
+        out[sid] = r
+    return out
+
+
+def test_summarize_push_scores_every_concept_readout_against_the_opposites() -> None:
+    # NAMES = tachycardia, hypotension, fever; push hypotension (index 1):
+    # its own readout rises, tachycardia drifts up a little, fever is flat
+    base = _readouts({1: [0.2, 0.3, 0.5], 2: [0.4, 0.2, 0.5], 3: [0.3, 0.4, 0.5]})
+    steered = _readouts({1: [0.25, 0.6, 0.5], 2: [0.45, 0.5, 0.5], 3: [0.35, 0.7, 0.5]})
+    kwargs = {
+        "concept": "hypotension",
+        "concept_index": 1,
+        "site": "stream",
+        "event_names": EVENTS,
+        "n_boot": 50,
+        "concept_names": NAMES,
+    }
+    summary = summarize_push(base, steered, direction="amplify", gamma=2.0, **kwargs)
+    shifts = {c.concept: c for c in summary.concept_shifts}
+    assert set(shifts) == set(NAMES)
+    own = shifts["hypotension"]
+    assert own.expected_sign == +1
+    assert own.delta.point == pytest.approx(0.3)
+    assert own.as_expected is True
+    assert own.steered - own.baseline == pytest.approx(own.delta.point)
+    assert summary.respond_delta.point == pytest.approx(own.delta.point)
+    # no declared opposite of hypotension in this tiny registry: reported,
+    # not scored
+    assert shifts["tachycardia"].expected_sign is None
+    assert shifts["tachycardia"].as_expected is None
+    assert shifts["tachycardia"].delta.point == pytest.approx(0.05)
+    assert shifts["fever"].delta.point == pytest.approx(0.0)
+    # suppress flips the declared sign, so the same movement is now wrong
+    down = summarize_push(base, steered, direction="suppress", gamma=-2.0, **kwargs)
+    own_down = {c.concept: c for c in down.concept_shifts}["hypotension"]
+    assert own_down.expected_sign == -1
+    assert own_down.as_expected is False
+    payload = _to_json([summary])[0]
+    assert {"as_expected", "separated"} <= set(payload["concept_shifts"][0])
+    # without concept names nothing is scored, and the JSON stays valid
+    bare = summarize_push(
+        base,
+        steered,
+        direction="amplify",
+        gamma=2.0,
+        **{k: v for k, v in kwargs.items() if k != "concept_names"},
+    )
+    assert bare.concept_shifts == []
+    assert _to_json([bare])[0]["concept_shifts"] == []
+
+
+def test_evaluate_steering_with_probes_reports_transition_outcomes_with_expectations() -> (
+    None
+):
+    vocab = _vocab()
+    model = _model(len(vocab.token_to_id))
+    prepared = _prepared(model, vocab)
+    prepared.probes = _probes(model)
+    prepared.probe_tables, prepared.required_tables = _transition_tables()
+    assert prepared.outcome_names == EVENTS + [
+        "icu_discharge",
+        "hospital_discharge_alive",
+    ]
+    summaries = evaluate_steering(
+        prepared,
+        concepts=["hypotension"],
+        site="bottleneck",
+        layer_index=None,
+        suppress_strength=None,
+        num_lanes=2,
+        chunk_size=8,
+        device="cpu",
+        n_boot=20,
+    )
+    up = next(s for s in summaries if s.direction == "amplify")
+    events_seen = {o.event for o in up.outcomes}
+    assert {"icu_discharge", "hospital_discharge_alive"} <= events_seen
+    icu = next(
+        o for o in up.outcomes if o.event == "icu_discharge" and o.horizon_hours == 24.0
+    )
+    # a sicker state is declared to make leaving the ICU LESS likely
+    assert icu.expected_sign == -1
+    assert len(up.concept_shifts) == len(NAMES)

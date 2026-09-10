@@ -55,6 +55,18 @@ class AlertEvent:
     """Regex over vocabulary tokens naming this event's own next-event
     tokens, for the next-event-mass score. Defaults to ``^code_prefix``."""
 
+    code_exclude_regex: str | None = None
+    """Regex over the raw ``code`` string (case-insensitive); rows it matches
+    never count as onsets even when ``code_prefix``/``code_regex`` match.
+    Polars' regex engine has no look-around, so an exclusion is a field,
+    not a ``(?!...)`` in the pattern (a discharge that records the death)."""
+
+    infer_visit: bool = False
+    """Rows matching this event that carry no ``hadm_id`` are attributed to
+    the subject's visit whose event span contains their time, the way
+    sidecar rows are attached to visits (MIMIC-IV infusion STOP rows come
+    without an admission id). Rows outside every span stay unattributed."""
+
     next_visit: bool = False
     """Onset is the first occurrence of ``code_prefix`` strictly AFTER the
     visit's last event (the next admission); follow-up runs to the end of
@@ -262,6 +274,40 @@ COUNTING_AUXILIARY_EVENTS: tuple[AlertEvent, ...] = (
     AlertEvent("bicarbonate", code_regex=r"sodium bicarbonate|bicarb"),
 )
 
+# State-transition outcomes whose clinical expectation runs the OTHER way
+# for a sicker state (discharge and weaning are good news), so a steering
+# dial can be wrong in both directions. They are never trained as hazard
+# heads; odyssey.inference.outcome_probes fits frozen probes for them on a
+# run's bottleneck output and odyssey.inference.steering reads those probes
+# as extra outcomes. ``hospital_discharge_alive`` excludes the discharge
+# codes that record death (MIMIC-IV "DIED", eICU-CRD "Expired"); the MEDS
+# death event is a separate alert already.
+STATE_TRANSITION_EVENTS: tuple[AlertEvent, ...] = (
+    AlertEvent("icu_discharge", code_prefix="ICU_DISCHARGE//"),
+    AlertEvent(
+        "hospital_discharge_alive",
+        code_prefix="HOSPITAL_DISCHARGE//",
+        code_exclude_regex=r"DIED|EXPIRED",
+    ),
+    AlertEvent(
+        "vasopressor_stop",
+        code_regex=(
+            r"MEDICATION//STOP//(norepinephrine|epinephrine|vasopressin"
+            r"|phenylephrine|dopamine|angiotensin)"
+        ),
+        infer_visit=True,
+    ),
+)
+
+STATE_TRANSITION_REQUIRES: dict[str, str] = {
+    "icu_discharge": "icu_admission",
+    "vasopressor_stop": "vasopressor_start",
+}
+# a transition is only at risk once its prior event has happened: a patient
+# not in the ICU cannot leave it, a patient not on vasopressors cannot stop
+# them; hospital discharge needs no prior event
+
+
 COUNTING_AUXILIARY_EVENTS_BY_NAME: dict[str, AlertEvent] = {
     a.name: a for a in COUNTING_AUXILIARY_EVENTS
 }
@@ -447,6 +493,32 @@ def _next_visit_onsets(
     }
 
 
+def _infer_visits(hits: pl.DataFrame, timed: pl.DataFrame) -> pl.DataFrame:
+    """Give ``hits`` without an ``hadm_id`` the visit whose span contains their time.
+
+    A visit's span is the first to last timed event carrying that
+    ``hadm_id``. Hits inside no span are dropped, hits already carrying an
+    ``hadm_id`` pass through unchanged.
+    """
+    with_visit = hits.filter(pl.col("hadm_id").is_not_null())
+    orphans = hits.filter(pl.col("hadm_id").is_null()).drop("hadm_id")
+    if orphans.is_empty():
+        return with_visit
+    spans = (
+        timed.filter(pl.col("hadm_id").is_not_null())
+        .group_by("subject_id", "hadm_id")
+        .agg(pl.col("time").min().alias("_t0"), pl.col("time").max().alias("_t1"))
+    )
+    attributed = (
+        orphans.join(spans, on="subject_id", how="inner")
+        .filter((pl.col("time") >= pl.col("_t0")) & (pl.col("time") <= pl.col("_t1")))
+        .drop("_t0", "_t1")
+    )
+    return pl.concat(
+        [with_visit, attributed.select(with_visit.columns)], how="vertical"
+    )
+
+
 def event_times(
     events: pl.DataFrame,
     alert: AlertEvent,
@@ -508,6 +580,12 @@ def event_times(
             if alert.code_prefix is not None
             else timed.filter(pl.col("code").str.contains(f"(?i){alert.code_regex}"))
         )
+        if alert.code_exclude_regex is not None:
+            hits = hits.filter(
+                ~pl.col("code").str.contains(f"(?i){alert.code_exclude_regex}")
+            )
+        if alert.infer_visit and not alert.subject_scoped:
+            hits = _infer_visits(hits, timed)
         if alert.subject_scoped:
             first = hits.group_by("subject_id").agg(pl.col("time").min().alias("_t"))
             first = hours_since_origin(first, "_t", origins)

@@ -31,7 +31,7 @@ def test_steering_table_main_writes_before_and_after_blocks(
     )
     text = out.read_text()
     assert "before" in text and "after steering training" in text
-    assert text.count("aki stage 3") == 2
+    assert text.count("AKI stage 3") == 2
 
 
 def test_steering_table_main_refuses_mismatched_event_heads(

@@ -41,6 +41,10 @@ from odyssey.data.signal_panel import SIGNAL_PANEL, SignalPanelResolver
 from odyssey.data.streaming import PackedLaneSampler, StreamingChunk
 from odyssey.data.value_binning import QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import Vocabulary, code_type
+from odyssey.inference.legacy_concept_pins import (
+    check_concept_count,
+    pinned_concept_names,
+)
 from odyssey.models.concept_bottleneck import ConceptBottleneckOutput
 from odyssey.models.embeddings import N_FOURIER_FEATURES
 from odyssey.models.sequence_model import (
@@ -410,7 +414,17 @@ def load_run(
         getattr(config, "source", "mimic_iv"),
         task_set=getattr(config, "task_set", "v1"),
     )
-    model = build_model(config, vocab_size=len(vocab), num_concepts=len(concepts))
+    # A checkpoint is the authority on its own concept set. Today's registry
+    # resolves more concepts than older runs trained with, every time a
+    # source gains code mappings, so prefer the run's pinned list where one
+    # exists and refuse loudly where the counts disagree and none does.
+    pinned = pinned_concept_names(str(run_dir))
+    concept_names = list(pinned) if pinned is not None else [c.name for c in concepts]
+    model = build_model(config, vocab_size=len(vocab), num_concepts=len(concept_names))
+    # After build_model, before load_state_dict: still ahead of the shape
+    # errors this exists to replace, without pre-empting callers that stub
+    # build_model out to inspect the reconstructed config.
+    check_concept_count(str(run_dir), state, concept_names)
     model.load_state_dict(checkpoint["model"])
     model = model.to(device)
     model.eval()
@@ -851,6 +865,7 @@ def _build_sampler(
     num_lanes: int,
     chunk_size: int,
     max_context: int,
+    window_stride: int | None = None,
 ) -> PackedLaneSampler | PackedContextSampler:
     """Dispatch on ``backbone``, matching :func:`odyssey.training.train.build_model`.
 
@@ -861,7 +876,10 @@ def _build_sampler(
     """
     if backbone == "transformer":
         return PackedContextSampler(
-            patients, batch_size=num_lanes, max_context=max_context
+            patients,
+            batch_size=num_lanes,
+            max_context=max_context,
+            window_stride=window_stride,
         )
     return PackedLaneSampler(
         patients, num_lanes=num_lanes, chunk_size=chunk_size, reset_prob=0.0
@@ -883,6 +901,7 @@ def run_streaming_inference(
     concepts: Sequence[AnyConceptDefinition] | None = None,
     backbone: str = "hybrid",
     max_context: int = 4096,
+    window_stride: int | None = None,
     source: str = "mimic_iv",
 ) -> InferenceResults:
     """Stream held-out patients through ``model`` and score every eval question.
@@ -917,6 +936,7 @@ def run_streaming_inference(
         num_lanes=num_lanes,
         chunk_size=chunk_size,
         max_context=max_context,
+        window_stride=window_stride,
     )
 
     time_head = getattr(model, "time_head", None)
@@ -1161,6 +1181,7 @@ def evaluate_run(
         concepts=concepts,
         backbone=getattr(config, "backbone", "hybrid"),
         max_context=getattr(config, "max_context", 4096),
+        window_stride=getattr(config, "window_stride", None),
         source=source,
     )
 

@@ -4,7 +4,7 @@
 # nobody can log into the node directly, so this is what actually runs there.
 #
 # Usage (on the GEMINI node, from the repo root):
-#   scripts/gemini/run.sh [probe|schema|env-gpu|extract-dry|extract|finalize|export-codes|pipeline|train-smoke|train-smoke-2|train-full|train-smoke-cbm|train-full-cbm|train-smoke-dec|train-full-dec|train-rung2|eval-forecast <run-name>|alerts <run-name>|tabicl <run-name>|steering <run-name>|atlas <run-name>|train|eval|all]
+#   scripts/gemini/run.sh [probe|schema|env-gpu|extract-dry|extract|finalize|export-codes|pipeline|train-smoke|train-smoke-2|train-full|train-smoke-cbm|train-full-cbm|train-smoke-dec|train-full-dec|train-rung2|eval-forecast <run-name>|interventions <run-name>|alerts <run-name>|tabicl <run-name>|steering <run-name>|outcome-probes <run-name>|steering-twosided <run-name>|atlas <run-name>|train|eval|all]
 #
 # Steps:
 #   probe        scripts/gemini/probe_env.sh -> scripts/gemini/out/env_probe.txt
@@ -145,6 +145,24 @@
 #                default (GEMINI_STEERING_MAX_SHARDS caps it), 16 lanes.
 #                Writes ~/runs/<run-name>/steering_full.json and exports it
 #                (aggregate-only) to scripts/gemini/out/evals/.
+#   outcome-probes <run-name>
+#                fits the frozen good-outcome probes (ICU discharge, hospital
+#                discharge alive, vasopressor stop) `steering-twosided` scores
+#                against (odyssey/inference/outcome_probes.py). Writes
+#                ~/runs/<run-name>/outcome_probes.pt, a checkpoint like any
+#                other, not committed. Skips if that file already exists.
+#                Run standalone only to inspect the fit; `steering-twosided`
+#                calls it itself if the file is missing.
+#   steering-twosided <run-name>
+#                the two-sided specificity test behind the paper's
+#                tab:specificity (Section 5.3, "Is the push specific, or just
+#                'sicker'?"): the same dials as `steering`, scored against
+#                the good-outcome probes above and against a random-direction
+#                control at the same strength, the exact MIMIC-IV/eICU-CRD
+#                recipe already in that table. Writes ~/runs/<run-name>/
+#                steering_twosided.json (real dials) and
+#                steering_twosided_control_random.json (control), and
+#                exports both (aggregate-only) to scripts/gemini/out/evals/.
 #   atlas <run-name>
 #                the concept atlas for the paper appendix: per known and
 #                unknown concept, the tokens its direction promotes and
@@ -178,6 +196,18 @@
 #                ~/runs/*/eval_forecast.json not yet exported (e.g. earlier
 #                runs evaluated before this existed), so results stop
 #                arriving in the shared record by manual paste.
+#   interventions <run-name>
+#                Q2's completeness (zero_known/zero_unknown/zero_residual)
+#                and Q3's label-override test (none/truth/flip/random/
+#                calibrated) in one pass -- odyssey/inference/
+#                interventions.py, band |p-0.5|<0.15, same recipe as the
+#                MIMIC-IV/eICU-CRD full_run_v10-style arms already in
+#                tab:decomp and tab:lever. Chains scripts/intervention_cis.py
+#                for paired subject-clustered 95% CIs. Writes ~/runs/
+#                <run-name>/interventions_band15.json (+ a _per_subject.json
+#                sidecar) and ~/runs/<run-name>/intervention_cis.json, and
+#                exports only the CI file (aggregate-only) to
+#                scripts/gemini/out/evals/.
 #   train        not built yet (a general, non-GEMINI-specific full run).
 #   eval         not built yet.
 #   all          probe, schema, extract-dry, in order (default; deliberately
@@ -219,6 +249,11 @@ main() {
 
     STEP="${1:-all}"
     VENV="${GEMINI_VENV:-$HOME/.venvs/odyssey-gemini}"
+    # steering.py's _payload() always writes these 15 top-level keys (steering.py
+    # ~line 1405-1434), null where a flag (--control/--outcome-probes) wasn't
+    # given -- the whitelist must match that exactly, not just the keys a
+    # particular invocation cares about, or _export_aggregate_json refuses.
+    STEERING_JSON_KEYS="site control control_seed stratify_by layer_index tau suppress_strength horizons_hours event_names trained_event_names outcome_probes gammas lifted_tokens at_risk_restricted summaries"
 
     # --- sync with the mirror (fetch + reset, never pull) ---------------------
     #
@@ -927,14 +962,46 @@ JSON
         mkdir -p "$OUTPUT_DIR"
         CONFIG_JSON="$OUTPUT_DIR/train_cbm_config.json"
 
-        # Shard count and bottleneck kind passed as argv, never interpolated
-        # into the source.
-        python3 - "$CONFIG_JSON" "$max_train_shards" "$bottleneck_kind" <<'PY'
+        # GEMINI_RESUME_FROM: continue an interrupted run instead of starting
+        # over. The h200 partition preempts (a full-scale run is many hours
+        # and shares the node with other users' sweeps), and without this a
+        # preemption costs the whole run rather than one checkpoint interval.
+        # "auto" picks the newest periodic checkpoint; an explicit path is
+        # used as given. train.py fast-forwards the resumed epoch's seeded
+        # sampler to the checkpoint's position, which is only correct while
+        # num_lanes/chunk_size/reset_prob/seed are unchanged -- they are
+        # fixed in this recipe, and train.py re-checks them against the
+        # values saved beside the checkpoint.
+        RESUME_FROM="${GEMINI_RESUME_FROM:-}"
+        if [[ "$RESUME_FROM" == "auto" || "$RESUME_FROM" == "latest" ]]; then
+            # Highest global_step wins, NOT newest mtime: resuming rewrites
+            # earlier checkpoints' mtimes, so mtime order can hand back a
+            # checkpoint from before the interruption and silently lose work.
+            RESUME_FROM=$(ls "$OUTPUT_DIR"/checkpoint_[0-9]*.pt 2>/dev/null \
+                | sed 's#.*/checkpoint_\([0-9]*\)\.pt#\1 &#' \
+                | sort -n -k1,1 | tail -1 | cut -d' ' -f2-)
+            if [[ -z "$RESUME_FROM" ]]; then
+                echo "GEMINI_RESUME_FROM=auto, but $OUTPUT_DIR has no" >&2
+                echo "checkpoint_<step>.pt yet -- starting from scratch." >&2
+            fi
+        fi
+        if [[ -n "$RESUME_FROM" ]]; then
+            if [[ ! -f "$RESUME_FROM" ]]; then
+                echo "GEMINI_RESUME_FROM=$RESUME_FROM does not exist." >&2
+                exit 1
+            fi
+            echo "RESUMING from $RESUME_FROM (checkpoint_every=2000 steps)."
+        fi
+
+        # Shard count, bottleneck kind and resume path passed as argv, never
+        # interpolated into the source.
+        python3 - "$CONFIG_JSON" "$max_train_shards" "$bottleneck_kind" "$RESUME_FROM" <<'PY'
 import json
 import sys
 
 config_path, max_train_shards = sys.argv[1:3]
 bottleneck_kind = sys.argv[3] if len(sys.argv) > 3 else "mixture"
+resume_from = sys.argv[4] if len(sys.argv) > 4 else ""
 overrides = {
     "model_kind": "bottleneck",
     "source": "gemini",
@@ -957,6 +1024,8 @@ overrides = {
 }
 if max_train_shards:
     overrides["max_train_shards"] = int(max_train_shards)
+if resume_from:
+    overrides["resume_from"] = resume_from
 if bottleneck_kind == "decomposed":
     # Verbatim from ~/runs/full_run_DEC_v12/config.json on the MIMIC VM
     # (commit 69c8cb0 and later); the eICU run used the same block.
@@ -1203,8 +1272,8 @@ OBSERVABILITY_METRICS_KEYS = {
     "name", "n_subjects", "observed_rate", "auroc", "accuracy_at_0_5",
 }
 TIME_METRICS_KEYS = {
-    "nll", "n_positions", "same_instant_accuracy", "same_instant_rate",
-    "calibration", "calibration_after_bundle",
+    "nll", "n_positions", "n_positive_gaps", "same_instant_accuracy",
+    "same_instant_rate", "calibration", "calibration_after_bundle",
 }
 CALIBRATION_ENTRY_KEYS = {"predicted", "observed"}
 TOP_LEVEL_KEYS = {
@@ -1432,6 +1501,72 @@ PY
             echo "WARNING: this run's own eval summary was not exported (see above)." >&2
         fi
         _backfill_eval_summaries
+    }
+
+    run_interventions() {
+        # Label-override intervention test: Q2's completeness (zero_known /
+        # zero_unknown / zero_residual) and Q3's label override (none /
+        # truth / flip / random / calibrated) in one pass --
+        # odyssey/inference/interventions.py, the same script and band
+        # (|p-0.5|<0.15) as the MIMIC-IV/eICU-CRD full_run_v10-style arms
+        # already in tab:decomp and tab:lever. Chains
+        # scripts/intervention_cis.py for paired subject-clustered 95% CIs
+        # on the mode-vs-mode deltas. Writes ~/runs/<run-name>/
+        # interventions_band15.json (+ a _per_subject.json sidecar, needed
+        # only to compute the CIs) and ~/runs/<run-name>/
+        # intervention_cis.json, exporting only the CI file (aggregate
+        # point/CI/n_subjects per mode pair) to scripts/gemini/out/evals/ --
+        # the per-subject sidecar and the raw mode dump never leave the node.
+        local run_name="$1"
+        if [[ -z "$run_name" ]]; then
+            echo "interventions needs a run name: scripts/gemini/run.sh interventions <run-name>" >&2
+            echo "e.g.: scripts/gemini/run.sh interventions gemini_full_v10" >&2
+            exit 1
+        fi
+        local num_lanes="${GEMINI_EVAL_NUM_LANES:-16}"
+        local chunk="${GEMINI_EVAL_CHUNK:-512}"
+        local max_shards="${GEMINI_INTERVENTIONS_MAX_SHARDS:-}"   # empty = every held-out shard
+        local band="${GEMINI_INTERVENTIONS_BAND:-0.15}"
+
+        echo "=== interventions ($run_name) ==="
+        echo "Label-override + zeroing-probe test: band=$band, num_lanes=$num_lanes,"
+        echo "chunk=$chunk, held-out shards=${max_shards:-all}."
+        echo "Override via GEMINI_EVAL_NUM_LANES / GEMINI_EVAL_CHUNK /"
+        echo "GEMINI_INTERVENTIONS_MAX_SHARDS / GEMINI_INTERVENTIONS_BAND."
+        if [[ -z "${TMUX:-}" && -z "${STY:-}" ]]; then
+            echo "WARNING: not a tmux/screen session; run detached, e.g.:" >&2
+            echo "  tmux new -s interventions-$run_name 'scripts/gemini/run.sh $STEP $run_name'" >&2
+        fi
+        _require_run_and_data "$run_name"
+
+        OUTPUT_JSON="$RUN_DIR/interventions_band15.json"
+        CI_JSON="$RUN_DIR/intervention_cis.json"
+        echo "Run dir: $RUN_DIR"
+        echo "Output: $OUTPUT_JSON (+ _per_subject.json), CIs: $CI_JSON"
+        local extra=()
+        if [[ -n "$max_shards" ]]; then extra+=(--max-shards "$max_shards"); fi
+
+        source "$GPU_VENV/bin/activate"
+        python -m odyssey.inference.interventions \
+            --run-dir "$RUN_DIR" \
+            --held-out-shard-dir "$HELD_OUT_SHARD_DIR" \
+            --output-json "$OUTPUT_JSON" \
+            --uncertain-band "$band" \
+            --num-lanes "$num_lanes" \
+            --chunk-size "$chunk" \
+            --dump-per-subject \
+            "${extra[@]}"
+        python scripts/intervention_cis.py \
+            --per-subject "${OUTPUT_JSON%.json}_per_subject.json" \
+            --output-json "$CI_JSON"
+        deactivate
+        source "$VENV/bin/activate"
+
+        echo "$STEP complete. Results at $OUTPUT_JSON and $CI_JSON"
+        _export_aggregate_json \
+            "scripts/gemini/out/evals/${run_name}_intervention_cis.json" "$CI_JSON" \
+            "n_boot pairs seed" \
+            || echo "WARNING: intervention CIs not exported (see above)." >&2
     }
 
     _export_alerts_summary() {
@@ -1834,8 +1969,135 @@ PY
         echo "$STEP complete. Results at $OUTPUT_JSON"
         _export_aggregate_json \
             "scripts/gemini/out/evals/${run_name}_steering_full.json" "$OUTPUT_JSON" \
-            "site layer_index tau suppress_strength horizons_hours event_names gammas lifted_tokens summaries" \
+            "$STEERING_JSON_KEYS" \
             || echo "WARNING: steering output not exported (see above)." >&2
+    }
+
+    run_outcome_probes() {
+        # Fits the frozen good-outcome probes (ICU discharge, hospital
+        # discharge alive, vasopressor stop -- odyssey/inference/
+        # outcome_probes.py) that `steering-twosided` scores against, same
+        # role as the MIMIC-IV/eICU-CRD probes already behind
+        # tab:specificity. One-time per run: writes $RUN_DIR/
+        # outcome_probes.pt, a checkpoint like any other under ~/runs/, not
+        # committed (same reasoning as every training checkpoint). Skips if
+        # that file already exists; delete it to refit.
+        local run_name="$1"
+        if [[ -z "$run_name" ]]; then
+            echo "outcome-probes needs a run name: scripts/gemini/run.sh outcome-probes <run-name>" >&2
+            exit 1
+        fi
+        _require_run_and_data "$run_name"
+
+        PROBES_PT="$RUN_DIR/outcome_probes.pt"
+        if [[ -f "$PROBES_PT" ]]; then
+            echo "outcome-probes: already fitted at $PROBES_PT, skipping (delete to refit)."
+            return 0
+        fi
+        echo "=== outcome-probes ($run_name) ==="
+        echo "Fitting good-outcome probes for the two-sided steering test."
+        echo "Output: $PROBES_PT"
+
+        source "$GPU_VENV/bin/activate"
+        python -m odyssey.inference.outcome_probes \
+            --run-dir "$RUN_DIR" \
+            --train-shard-dir "$TRAIN_SHARD_DIR" \
+            --held-out-shard-dir "$HELD_OUT_SHARD_DIR" \
+            --output "$PROBES_PT"
+        deactivate
+        source "$VENV/bin/activate"
+        echo "outcome-probes complete. Results at $PROBES_PT"
+    }
+
+    run_steering_twosided() {
+        # The two-sided specificity test (paper Section 5.3, "Is the push
+        # specific, or just sicker?"): the same dials as `steering`, scored
+        # against the good-outcome probes (fitted here if missing) and
+        # against a random-direction control at the same strength, exactly
+        # the MIMIC-IV/eICU-CRD recipe already in tab:specificity
+        # (odyssey/inference/specificity.py does the actual scoring, off
+        # these exported jsons -- no code runs here that isn't already
+        # exercised by that table). Two steering.py runs, real dials then
+        # the random-direction control, same tau and site, control-seed 0
+        # to match MIMIC-IV/eICU-CRD's own runs unless overridden.
+        local run_name="$1"
+        if [[ -z "$run_name" ]]; then
+            echo "steering-twosided needs a run name: scripts/gemini/run.sh steering-twosided <run-name>" >&2
+            echo "e.g.: scripts/gemini/run.sh steering-twosided gemini_full_DEC_v12" >&2
+            exit 1
+        fi
+        local num_lanes="${GEMINI_EVAL_NUM_LANES:-16}"
+        local chunk="${GEMINI_EVAL_CHUNK:-512}"
+        local max_shards="${GEMINI_STEERING_MAX_SHARDS:-}"
+        local tau="${GEMINI_STEERING_TAU:-1.0}"
+        local control_seed="${GEMINI_STEERING_CONTROL_SEED:-0}"
+
+        echo "=== steering-twosided ($run_name) ==="
+        echo "Real dials + random-direction control, both against the good-outcome"
+        echo "probes: stream site, tau=$tau, num_lanes=$num_lanes, chunk=$chunk,"
+        echo "held-out shards=${max_shards:-all}, control-seed=$control_seed."
+        if [[ -z "${TMUX:-}" && -z "${STY:-}" ]]; then
+            echo "WARNING: not a tmux/screen session; run detached, e.g.:" >&2
+            echo "  tmux new -s steering-twosided-$run_name 'scripts/gemini/run.sh $STEP $run_name'" >&2
+        fi
+        _require_run_and_data "$run_name"
+        if ! grep -q '"bottleneck_kind": "decomposed"' "$RUN_DIR/config.json" 2>/dev/null; then
+            echo "WARNING: $RUN_DIR/config.json is not a decomposed run; the dials" >&2
+            echo "are defined for the decomposition (train-full-dec). Continuing." >&2
+        fi
+
+        run_outcome_probes "$run_name"
+
+        local extra=()
+        if [[ -n "$max_shards" ]]; then extra+=(--max-shards "$max_shards"); fi
+
+        DIALS_JSON="$RUN_DIR/steering_twosided.json"
+        CONTROL_JSON="$RUN_DIR/steering_twosided_control_random.json"
+        echo "Run dir: $RUN_DIR"
+        echo "Real dials -> $DIALS_JSON"
+        echo "Random-direction control -> $CONTROL_JSON"
+
+        source "$GPU_VENV/bin/activate"
+        python -m odyssey.inference.steering \
+            --run-dir "$RUN_DIR" \
+            --held-out-shard-dir "$HELD_OUT_SHARD_DIR" \
+            --lift-shard-dir "$TRAIN_SHARD_DIR" \
+            --metadata-dir "$METADATA_DIR" \
+            --output-json "$DIALS_JSON" \
+            --site stream \
+            --tau "$tau" \
+            --lift-shards 4 \
+            --num-lanes "$num_lanes" \
+            --chunk-size "$chunk" \
+            --outcome-probes "$PROBES_PT" \
+            "${extra[@]}"
+        python -m odyssey.inference.steering \
+            --run-dir "$RUN_DIR" \
+            --held-out-shard-dir "$HELD_OUT_SHARD_DIR" \
+            --lift-shard-dir "$TRAIN_SHARD_DIR" \
+            --metadata-dir "$METADATA_DIR" \
+            --output-json "$CONTROL_JSON" \
+            --site stream \
+            --tau "$tau" \
+            --lift-shards 4 \
+            --num-lanes "$num_lanes" \
+            --chunk-size "$chunk" \
+            --outcome-probes "$PROBES_PT" \
+            --control random \
+            --control-seed "$control_seed" \
+            "${extra[@]}"
+        deactivate
+        source "$VENV/bin/activate"
+
+        echo "$STEP complete. Results at $DIALS_JSON and $CONTROL_JSON"
+        _export_aggregate_json \
+            "scripts/gemini/out/evals/${run_name}_steering_twosided.json" "$DIALS_JSON" \
+            "$STEERING_JSON_KEYS" \
+            || echo "WARNING: dials output not exported (see above)." >&2
+        _export_aggregate_json \
+            "scripts/gemini/out/evals/${run_name}_steering_twosided_control_random.json" "$CONTROL_JSON" \
+            "$STEERING_JSON_KEYS" \
+            || echo "WARNING: control output not exported (see above)." >&2
     }
 
     run_atlas() {
@@ -1902,15 +2164,18 @@ PY
         train-full-dec) run_train_cbm "" gemini_full_DEC_v12 decomposed ;;
         train-rung2) run_train_rung2 ;;
         eval-forecast) run_eval_forecast "${2:-}" ;;
+        interventions) run_interventions "${2:-}" ;;
         alerts) run_alerts "${2:-}" ;;
         tabicl) run_tabicl "${2:-}" ;;
         steering) run_steering "${2:-}" ;;
+        outcome-probes) run_outcome_probes "${2:-}" ;;
+        steering-twosided) run_steering_twosided "${2:-}" ;;
         atlas) run_atlas "${2:-}" ;;
         train) run_pending_stub train ;;
         eval) run_pending_stub eval ;;
         all) run_probe; run_schema; run_extract_dry ;;
         *)
-            echo "unknown step: $STEP (expected probe, schema, env-gpu, extract-dry, extract, finalize, export-codes, pipeline, train-smoke, train-smoke-2, train-full, train-smoke-cbm, train-full-cbm, train-smoke-dec, train-full-dec, train-rung2, eval-forecast, alerts, tabicl, steering, atlas, train, eval, or all)" >&2
+            echo "unknown step: $STEP (expected probe, schema, env-gpu, extract-dry, extract, finalize, export-codes, pipeline, train-smoke, train-smoke-2, train-full, train-smoke-cbm, train-full-cbm, train-smoke-dec, train-full-dec, train-rung2, eval-forecast, interventions, alerts, tabicl, steering, outcome-probes, steering-twosided, atlas, train, eval, or all)" >&2
             exit 1
             ;;
     esac

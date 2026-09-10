@@ -115,7 +115,7 @@ gemini = [
 # baseline module, whose own import of `tabicl` is itself deferred to call
 # time -- installing this extra is only needed to actually fit one.
 tabicl = [
-    "tabicl>=2.0.0",
+    "tabicl>=2.2.0",
 ]
 
 # InterpretML's ExplainableBoostingClassifier (odyssey/inference/ebm_baseline.py),
@@ -173,7 +173,7 @@ meds_tab = [
 text = [
     "transformers>=5.16.1",
     "sentencepiece>=0.2.0",
-    "protobuf>=4.25.0",
+    "protobuf>=7.36.1",
 ]
 
 # NOTE: lightning/etc. are intentionally omitted until the concept-
@@ -191,7 +191,7 @@ dev = [
     "codecov>=2.1.13",
     "nbstripout>=0.6.1",
     "mypy>=2.3.1",
-    "ruff>=0.16.5",
+    "ruff>=0.16.6",
     "nbqa[toolchain]>=1.9.1",
     # pip>=26.1.2 fixes PYSEC-2026-196
     "pip>=26.1.2",
