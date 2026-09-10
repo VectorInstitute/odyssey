@@ -68,4 +68,4 @@ def test_backbone_table_bolds_intervals_that_exclude_zero() -> None:
     assert "seen whole (70 subjects)" in tex and "truncated (30 subjects)" in tex
     assert "+0.004 [-0.004, +0.014]" in tex
     assert "\\textbf{-0.035 [-0.042, -0.028]}" in tex
-    assert tex.count("Death") == 1  # one event block, 8 h and 72 h rows absent
+    assert tex.count("Death") == 2  # one row per stratum tabular

@@ -23,6 +23,19 @@ from typing import Any
 from odyssey.data.concepts import canonical_concept_name
 
 
+# thresholds are severe-range (Hb < 7 g/dL, K < 3.0 mEq/L): the name says so
+SEVERE_NAMES = {
+    "anemia": "severe anemia",
+    "hypokalemia": "severe hypokalemia",
+    "sustained_hypotension_map": "sustained hypotension (MAP)",
+}
+
+
+def _display(name: str) -> str:
+    canon = canonical_concept_name(name)
+    return SEVERE_NAMES.get(canon, canon).replace("_", " ")
+
+
 _STRIP = [
     (r" \[Mass/volume\] in Serum or Plasma", ""),
     (r" \[Moles/volume\] in Serum or Plasma", ""),
@@ -53,6 +66,7 @@ def short_name(name: str, limit: int = 34) -> str:
         .replace("%", "\\%")
         .replace("_", "\\_")
         .replace("#", "\\#")
+        .replace("//", "//\\allowbreak{}")
     )
 
 
@@ -69,7 +83,7 @@ def unknown_table(atlas: dict[str, Any], *, top_concepts: int, top_events: int) 
     for row in atlas["unknown"][:top_concepts]:
         events = ", ".join(short_name(p["name"]) for p in row["promotes"][:top_events])
         lines.append(
-            f"{canonical_concept_name(row['name']).replace('_', ' ')} & {row['mean_activation']:.2f} & {events} \\\\"
+            f"{_display(row['name'])} & {row['mean_activation']:.2f} & {events} \\\\"
         )
     lines += ["\\bottomrule", "\\end{tabular}"]
     return "\n".join(lines) + "\n"
@@ -119,7 +133,7 @@ def known_table(atlas: dict[str, Any], *, top_events: int) -> str:
     for row in atlas["known"]:
         events = ", ".join(short_name(p["name"]) for p in row["promotes"][:top_events])
         lines.append(
-            f"{canonical_concept_name(row['name']).replace('_', ' ')} & {row['norm']:.2f} & {row['mean_activation']:.2f} & {events} \\\\"
+            f"{_display(row['name'])} & {row['norm']:.2f} & {row['mean_activation']:.2f} & {events} \\\\"
         )
     lines += ["\\bottomrule", "\\end{tabular}"]
     return "\n".join(lines) + "\n"

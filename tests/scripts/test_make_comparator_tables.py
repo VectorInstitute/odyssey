@@ -116,8 +116,16 @@ def test_scorers_outside_hazard_and_gbm_are_ignored(tmp_path: Path) -> None:
     assert set(cells["death@8h"]["scores"]) == {"hazard", "baseline_gbm"}
 
 
-def test_bold_goes_to_the_max_without_cis() -> None:
-    assert _bold_targets({"hazard": 0.9, "baseline_gbm": 0.8}, None) == {"hazard"}
+def test_bold_is_withheld_entirely_when_there_is_no_interval() -> None:
+    """No interval, no bold: an arg-max would read as a separation.
+
+    Superseded the earlier rule (bold the larger value whenever no CI was
+    available), which put bold on cells the captions promise are separated.
+    A single scorer is still bolded, since there is nothing to separate it
+    from and no claim of separation is implied.
+    """
+    assert _bold_targets({"hazard": 0.9, "baseline_gbm": 0.8}, None) == set()
+    assert _bold_targets({"hazard": 0.9}, None) == {"hazard"}
 
 
 def test_bold_is_withheld_when_the_paired_delta_does_not_separate() -> None:
@@ -163,8 +171,10 @@ def test_tabicl_column_is_added_when_supplied(tmp_path: Path) -> None:
     # here and is asserted separately: this fixture covers one of two cells.)
     assert not any("column absent" in n for n in notes)
     death_row = next(r for r in rows if "Death" in r)
-    # TabICL leads this cell, so it takes the bold
-    assert "\\textbf{0.970}" in death_row
+    # TabICL leads this cell, but the fixture carries no paired interval,
+    # so the value appears unbolded rather than claiming a separation.
+    assert "0.970" in death_row
+    assert "\\textbf{0.970}" not in death_row
 
 
 def test_partial_tabicl_coverage_is_reported(tmp_path: Path) -> None:
@@ -260,7 +270,7 @@ def test_emits_a_complete_tabular_not_a_bare_row_body(tmp_path: Path) -> None:
         capture_output=True,
     )
     text = out.read_text()
-    assert "\\begin{tabular}{llrrr}" in text
+    assert "\\begin{tabular}[t]{llrrr}" in text
     assert "\\toprule" in text and "\\bottomrule" in text
     assert text.rstrip().endswith("\\end{tabular}")
     assert "Event & $h$ & $n$ (pos) & Hazard & GBM" in text
@@ -310,7 +320,7 @@ def test_tabicl_column_widens_the_preamble_and_header(tmp_path: Path) -> None:
         capture_output=True,
     )
     text = out.read_text()
-    assert "\\begin{tabular}{llrrrr}" in text
+    assert "\\begin{tabular}[t]{llrrrr}" in text
     assert "TabICL" in text
 
 

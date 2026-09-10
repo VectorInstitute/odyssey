@@ -46,35 +46,48 @@ def _delta(cell: dict[str, Any]) -> str:
     return f"\\textbf{{{text}}}" if excludes_zero else text
 
 
-def render(result: dict[str, Any]) -> str:
-    """Return the LaTeX tabular for one long_history_compare result."""
+def _stratum_lines(result: dict[str, Any], stratum: str, label: str) -> list[str]:
     la, lb = result["label_a"], result["label_b"]
-    cells = {(c["event"], c["horizon"], c["stratum"]): c for c in result["cells"]}
+    cells = {
+        (c["event"], c["horizon"]): c
+        for c in result["cells"]
+        if c["stratum"] == stratum
+    }
     lines = [
-        "\\begin{tabular}{@{}llrrlrrl@{}}",
+        "\\begin{tabular}{@{}llrrl@{}}",
         "\\toprule",
-        f"& & \\multicolumn{{3}}{{c}}{{seen whole ({result['n_subjects'] - result['n_truncated_subjects']:,} subjects)}}"
-        f" & \\multicolumn{{3}}{{c}}{{truncated ({result['n_truncated_subjects']:,} subjects)}} \\\\",
-        "\\cmidrule(lr){3-5}\\cmidrule(lr){6-8}",
-        f"Event & $h$ & {la} & {lb} & $\\Delta$ [95\\% CI] & {la} & {lb} & $\\Delta$ [95\\% CI] \\\\",
+        f"\\multicolumn{{5}}{{l}}{{\\emph{{{label}}}}} \\\\",
+        f"Event & $h$ & {la} & {lb} & $\\Delta$ [95\\% CI] \\\\",
         "\\midrule",
     ]
     for event in EVENT_ORDER:
         first = True
         for h in HORIZONS:
+            c = cells.get((event, h))
+            if c is None:
+                continue
             row = [EVENT_NAMES[event] if first else "", h.replace("h", "")]
-            present = False
-            for stratum in STRATA:
-                c = cells.get((event, h, stratum))
-                if c is None:
-                    row += ["--", "--", "--"]
-                    continue
-                present = True
-                row += [f"{c[f'auroc_{la}']:.3f}", f"{c[f'auroc_{lb}']:.3f}", _delta(c)]
-            if present:
-                lines.append(" & ".join(row) + " \\\\")
-                first = False
+            row += [f"{c[f'auroc_{la}']:.3f}", f"{c[f'auroc_{lb}']:.3f}", _delta(c)]
+            lines.append(" & ".join(row) + " \\\\")
+            first = False
     lines += ["\\bottomrule", "\\end{tabular}"]
+    return lines
+
+
+def render(result: dict[str, Any]) -> str:
+    """Return two side-by-side tabulars: subjects seen whole, subjects truncated."""
+    n_whole = result["n_subjects"] - result["n_truncated_subjects"]
+    left = _stratum_lines(result, "whole", f"seen whole ({n_whole:,} subjects)")
+    right = _stratum_lines(
+        result, "truncated", f"truncated ({result['n_truncated_subjects']:,} subjects)"
+    )
+    lines = (
+        ["\\begin{minipage}[t]{0.49\\textwidth}\\centering"]
+        + left
+        + ["\\end{minipage}\\hfill", "\\begin{minipage}[t]{0.49\\textwidth}\\centering"]
+        + right
+        + ["\\end{minipage}"]
+    )
     return "\n".join(lines) + "\n"
 
 

@@ -41,6 +41,10 @@ from odyssey.data.signal_panel import SIGNAL_PANEL, SignalPanelResolver
 from odyssey.data.streaming import PackedLaneSampler, StreamingChunk
 from odyssey.data.value_binning import QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import Vocabulary, code_type
+from odyssey.inference.legacy_concept_pins import (
+    check_concept_count,
+    pinned_concept_names,
+)
 from odyssey.models.concept_bottleneck import ConceptBottleneckOutput
 from odyssey.models.embeddings import N_FOURIER_FEATURES
 from odyssey.models.sequence_model import (
@@ -410,7 +414,17 @@ def load_run(
         getattr(config, "source", "mimic_iv"),
         task_set=getattr(config, "task_set", "v1"),
     )
-    model = build_model(config, vocab_size=len(vocab), num_concepts=len(concepts))
+    # A checkpoint is the authority on its own concept set. Today's registry
+    # resolves more concepts than older runs trained with, every time a
+    # source gains code mappings, so prefer the run's pinned list where one
+    # exists and refuse loudly where the counts disagree and none does.
+    pinned = pinned_concept_names(str(run_dir))
+    concept_names = list(pinned) if pinned is not None else [c.name for c in concepts]
+    model = build_model(config, vocab_size=len(vocab), num_concepts=len(concept_names))
+    # After build_model, before load_state_dict: still ahead of the shape
+    # errors this exists to replace, without pre-empting callers that stub
+    # build_model out to inspect the reconstructed config.
+    check_concept_count(str(run_dir), state, concept_names)
     model.load_state_dict(checkpoint["model"])
     model = model.to(device)
     model.eval()
