@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 ARMS: tuple[tuple[str, str], ...] = (
     ("Joint mixture, MIMIC-IV", "vm1/full_run_v10"),
     ("Joint mixture, eICU", "vm2/eicu_full_v10"),
+    ("Joint mixture, GEMINI", "gemini/gemini_full_v10_15c"),
     ("Independent mixture, MIMIC-IV", "vm1/subset_run_indep_b"),
     ("Independent mixture, eICU", "vm2/eicu_subset_indep_b"),
     ("Global-poles mixture, MIMIC-IV", "vm1/full_run_L_v10"),
