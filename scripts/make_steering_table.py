@@ -31,7 +31,7 @@ from odyssey.data.concepts import canonical_concept_name
 logger = logging.getLogger(__name__)
 
 EVENT_LABELS = {
-    "vasopressor_start": "Pressors",
+    "vasopressor_start": "Vasopr.",
     "icu_admission": "ICU",
     "acute_kidney_injury": "AKI",
     "death": "Death",
@@ -46,6 +46,8 @@ def _cell(outcome: dict[str, Any]) -> str:
     if math.isnan(ratio):  # never at risk of this event
         return "--"
     text = f"{ratio:.2f}"
+    if text == "1.00" and ratio != 1.0:
+        text = f"{ratio:.3f}"  # a bolded 1.00 next to an unbolded 1.00 is unreadable
     if outcome.get("expected_sign") is None:
         return text
     if outcome["separated"] and outcome["as_expected"]:
@@ -57,7 +59,7 @@ def _cell(outcome: dict[str, Any]) -> str:
 
 # Long registry names that would not fit a half-width dial table.
 DISPLAY_NAMES = {
-    "sustained hypotension map": "sust.\\ hypotension (MAP)",
+    "sustained hypotension map": "sust.\\ hypotension",
     "sustained tachypnea": "sust.\\ tachypnea",
     "hypoxemic respiratory failure": "hypox.\\ resp.\\ failure",
     "sirs": "SIRS",

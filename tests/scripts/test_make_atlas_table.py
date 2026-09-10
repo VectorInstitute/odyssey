@@ -57,7 +57,9 @@ def test_tables_render_rows() -> None:
     k = mod.known_table(atlas, top_events=3)
     assert "unknown 3 & 0.50 & Calcium \\\\" in u
     # legacy JSON names map to the current registry name
-    assert "sustained hypotension map & 0.70 & 0.30 & Heart Rhythm \\\\" in k
+    # Display name: the concept is named for what it measures, and the
+    # registry/atlas tables spell it out rather than using the raw key.
+    assert "sustained hypotension (MAP) & 0.70 & 0.30 & Heart Rhythm \\\\" in k
 
 
 def test_cross_table_lists_each_database_block_in_order() -> None:

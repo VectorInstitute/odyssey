@@ -248,8 +248,13 @@ def _bold_targets(
     if not present:
         return set()
     best = max(present, key=lambda k: present[k])
-    if ci_cell is None or len(present) < 2:
+    if len(present) < 2:
         return {best}
+    if ci_cell is None:
+        # no paired interval for this cell: the caption's bold rule cannot be
+        # honoured, so nothing is bolded rather than an arg-max that reads as
+        # a separation
+        return set()
     runner = max((k for k in present if k != best), key=lambda k: present[k])
     deltas = ci_cell.get("paired_deltas", {})
     for a, b in ((best, runner), (runner, best)):
@@ -363,6 +368,13 @@ def main() -> None:
     )
     parser.add_argument("--tabicl", type=Path, default=None)
     parser.add_argument("--cis", type=Path, default=None)
+    parser.add_argument(
+        "--protocol",
+        type=int,
+        default=None,
+        help="landmark protocol version to stamp when the records carry none (a "
+        "matched TabICL file scores the alerts dump's own rows, which are stamped)",
+    )
     parser.add_argument("--output-tex", required=True, type=Path)
     args = parser.parse_args()
 
@@ -392,6 +404,8 @@ def main() -> None:
             "v4 and v1-v3 cells are not comparable and must not share a table"
         )
     protocol = next(iter(protocols), None)
+    if protocol is None and args.protocol is not None:
+        protocol = args.protocol
 
     source_paths = args.alerts or args.matched
     header = [
@@ -413,7 +427,7 @@ def main() -> None:
     if has_tabicl:
         head_cells.append("TabICLv2")
     table = [
-        f"\\begin{{tabular}}{{{spec}}}",
+        f"\\begin{{tabular}}[t]{{{spec}}}",
         "\\toprule",
         " & ".join(head_cells) + r" \\",
         "\\midrule",
