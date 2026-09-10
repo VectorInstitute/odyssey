@@ -42,7 +42,13 @@ def test_parse_log_extracts_all_cells() -> None:
     death_8h = next(
         c for c in result["cells"] if c["event"] == "death" and c["horizon"] == "8h"
     )
-    assert death_8h == {"event": "death", "horizon": "8h", "agree": 2, "total": 2, "pct": 100.0}
+    assert death_8h == {
+        "event": "death",
+        "horizon": "8h",
+        "agree": 2,
+        "total": 2,
+        "pct": 100.0,
+    }
 
 
 def test_parse_log_partial_agreement_cell() -> None:

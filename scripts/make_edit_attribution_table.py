@@ -67,7 +67,9 @@ def render(results: dict[str, Any]) -> str:
             mean_pct = _mean_pct(run, event)
             cells.append(f"{mean_pct:.0f}\\%" if mean_pct is not None else "--")
         lines.append(
-            f"{concept} & {source} & {run['n_subjects']} & " + " & ".join(cells) + " \\\\"
+            f"{concept} & {source} & {run['n_subjects']} & "
+            + " & ".join(cells)
+            + " \\\\"
         )
     lines += ["\\bottomrule", "\\end{tabular}"]
     return "\n".join(lines) + "\n"

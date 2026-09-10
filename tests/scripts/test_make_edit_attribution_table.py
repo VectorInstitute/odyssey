@@ -17,9 +17,27 @@ def test_render_averages_horizons_per_event() -> None:
                 "mimic_iv",
                 50,
                 [
-                    {"event": "death", "horizon": "8h", "agree": 47, "total": 50, "pct": 94.0},
-                    {"event": "death", "horizon": "24h", "agree": 49, "total": 50, "pct": 98.0},
-                    {"event": "death", "horizon": "72h", "agree": 50, "total": 50, "pct": 100.0},
+                    {
+                        "event": "death",
+                        "horizon": "8h",
+                        "agree": 47,
+                        "total": 50,
+                        "pct": 94.0,
+                    },
+                    {
+                        "event": "death",
+                        "horizon": "24h",
+                        "agree": 49,
+                        "total": 50,
+                        "pct": 98.0,
+                    },
+                    {
+                        "event": "death",
+                        "horizon": "72h",
+                        "agree": 50,
+                        "total": 50,
+                        "pct": 100.0,
+                    },
                 ],
             )
         ]
@@ -37,7 +55,13 @@ def test_render_marks_icu_admission_degenerate_on_eicu() -> None:
                 "eicu",
                 50,
                 [
-                    {"event": "icu_admission", "horizon": "24h", "agree": 12, "total": 50, "pct": 24.0},
+                    {
+                        "event": "icu_admission",
+                        "horizon": "24h",
+                        "agree": 12,
+                        "total": 50,
+                        "pct": 24.0,
+                    },
                 ],
             )
         ]
@@ -55,7 +79,13 @@ def test_render_does_not_mark_icu_admission_degenerate_on_mimic() -> None:
                 "mimic_iv",
                 50,
                 [
-                    {"event": "icu_admission", "horizon": "24h", "agree": 44, "total": 50, "pct": 88.0},
+                    {
+                        "event": "icu_admission",
+                        "horizon": "24h",
+                        "agree": 44,
+                        "total": 50,
+                        "pct": 88.0,
+                    },
                 ],
             )
         ]
