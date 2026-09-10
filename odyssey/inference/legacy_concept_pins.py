@@ -25,6 +25,13 @@ printed rather than sorting it.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
+
+from odyssey.data.concepts import canonical_concept_name, concepts_for_source
+
+
+if TYPE_CHECKING:
+    from odyssey.data.concepts import AnyConceptDefinition
 
 
 # run directory basename -> the concept names that run trained with, in slot
@@ -154,3 +161,44 @@ def check_concept_count(
         "(its env_fingerprint.json records the training commit); loading it "
         "against today's registry would build a model of the wrong width."
     )
+
+
+def resolve_concepts_for_run(
+    run_dir: str, source: str, task_set: str
+) -> list[AnyConceptDefinition]:
+    """Return the concept DEFINITIONS a run trained with, in its own slot order.
+
+    :func:`pinned_concept_names` gives names; callers that build concept
+    labels need the definitions behind them. Pinning only ``load_run`` is not
+    enough: every caller that separately calls ``concepts_for_source`` gets
+    today's larger list and then mismatches the model it was just handed. That
+    is a real failure, not a hypothetical one -- it surfaced as
+    ``zip() argument 2 is shorter than argument 1`` in interventions.py, where
+    25 registry concepts met a 15-slot bottleneck's calibration gammas.
+
+    Pinned names are resolved through :func:`canonical_concept_name`, since a
+    pin records the name a checkpoint trained under and concepts get renamed
+    (``shock`` is today's ``sustained_hypotension_map``).
+    """
+    definitions = {c.name: c for c in concepts_for_source(source, task_set=task_set)}
+    pinned = pinned_concept_names(run_dir)
+    if pinned is None:
+        return list(definitions.values())
+    resolved: list[AnyConceptDefinition] = []
+    missing: list[str] = []
+    for name in pinned:
+        definition = definitions.get(name) or definitions.get(
+            canonical_concept_name(name)
+        )
+        if definition is None:
+            missing.append(name)
+        else:
+            resolved.append(definition)
+    if missing:
+        raise ValueError(
+            f"{run_dir}: pinned concepts {missing} do not resolve for source "
+            f"{source!r} under task_set {task_set!r}. The pin records what the "
+            "checkpoint trained with; if the registry no longer defines those "
+            "concepts the pin cannot be honoured."
+        )
+    return resolved

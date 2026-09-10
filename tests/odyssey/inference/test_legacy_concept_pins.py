@@ -5,11 +5,13 @@ from __future__ import annotations
 import pytest
 import torch
 
+from odyssey.data.concepts import concepts_for_source
 from odyssey.inference.legacy_concept_pins import (
     LEGACY_CONCEPT_PINS,
     check_concept_count,
     checkpoint_num_concepts,
     pinned_concept_names,
+    resolve_concepts_for_run,
 )
 
 
@@ -73,3 +75,24 @@ def test_check_refuses_with_both_counts_named() -> None:
 
 def test_check_is_silent_for_a_model_with_no_bottleneck() -> None:
     check_concept_count("runs/baseline", {}, ["c"] * 25)
+
+
+def test_resolve_concepts_returns_the_runs_own_set_in_slot_order() -> None:
+    # The GEMINI checkpoint trained with 15 of the 25 its source resolves
+    # today. A caller that rebuilt the list from the registry would hand a
+    # 25-long list to a 15-slot bottleneck.
+    got = resolve_concepts_for_run("runs/gemini_full_v10", "gemini", "v3")
+    assert [c.name for c in got] == list(LEGACY_CONCEPT_PINS["gemini_full_v10"])
+
+
+def test_resolve_concepts_follows_a_rename() -> None:
+    # eICU's pin records "shock", which the registry now calls
+    # sustained_hypotension_map; the pin must still resolve.
+    got = resolve_concepts_for_run("runs/eicu_full_v10", "eicu", "v3")
+    assert len(got) == len(LEGACY_CONCEPT_PINS["eicu_full_v10"])
+    assert "sustained_hypotension_map" in {c.name for c in got}
+
+
+def test_resolve_concepts_is_the_full_registry_when_unpinned() -> None:
+    got = resolve_concepts_for_run("runs/not_pinned", "mimic_iv", "v3")
+    assert len(got) == len(concepts_for_source("mimic_iv", task_set="v3"))
