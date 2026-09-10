@@ -1569,6 +1569,102 @@ PY
             || echo "WARNING: intervention CIs not exported (see above)." >&2
     }
 
+    run_counterfactual() {
+        # Input-level counterfactuals: edit the record, re-bin, re-tokenize,
+        # re-score, and report the share of edited subjects whose hazard moved
+        # the clinically expected way -- odyssey/inference/counterfactual.py,
+        # the same machinery behind tab:counterfactual on MIMIC-IV.
+        #
+        # This is the paper's POSITIVE lever result, and the one the
+        # label-override test (`interventions`) does not give: overriding a
+        # concept's probability changes a summary the model computed, while
+        # this changes the evidence it computed the summary from.
+        #
+        # GEMINI edit set differs from MIMIC-IV's by what resolves here, not
+        # by choice: creatinine and lactate map, the blood-pressure panel does
+        # not, so hypotension_6h and its normotension_6h control cannot run.
+        # creatinine_normal is the stand-in control -- same device (set a
+        # signal to a normal value, declare a direction, expect chance) on a
+        # signal that resolves. Without a control the sign-agreement numbers
+        # have no floor.
+        local run_name="$1"
+        if [[ -z "$run_name" ]]; then
+            echo "counterfactual needs a run name: scripts/gemini/run.sh counterfactual <run-name>" >&2
+            echo "e.g.: scripts/gemini/run.sh counterfactual gemini_full_v10_15c" >&2
+            exit 1
+        fi
+        local edits="${GEMINI_COUNTERFACTUAL_EDITS:-creatinine_plus_1 creatinine_normal lactate_x3}"
+        local max_subjects="${GEMINI_COUNTERFACTUAL_MAX_SUBJECTS:-300}"
+        local max_shards="${GEMINI_COUNTERFACTUAL_MAX_SHARDS:-2}"
+        local index_hours="${GEMINI_COUNTERFACTUAL_INDEX_HOURS:-24}"
+        local chunk="${GEMINI_EVAL_CHUNK:-512}"
+
+        echo "=== counterfactual ($run_name) ==="
+        echo "Edits: $edits"
+        echo "max_subjects=$max_subjects, held-out shards=$max_shards,"
+        echo "index_hours=$index_hours, chunk=$chunk."
+        echo "Override via GEMINI_COUNTERFACTUAL_EDITS / _MAX_SUBJECTS /"
+        echo "_MAX_SHARDS / _INDEX_HOURS / GEMINI_EVAL_CHUNK."
+        echo "Shards are capped by default: this node OOMs when a step"
+        echo "materializes every held-out shard, and the paper's protocol"
+        echo "exempts interventions from full-shard coverage."
+        _require_run_and_data "$run_name"
+
+        OUTPUT_JSON="$RUN_DIR/counterfactual.json"
+        echo "Run dir: $RUN_DIR"
+        echo "Output: $OUTPUT_JSON"
+
+        source "$GPU_VENV/bin/activate"
+        # No --keep-per-subject: the per-subject records carry patient-level
+        # forecasts and must not reach the export.
+        # shellcheck disable=SC2086
+        python -m odyssey.inference.counterfactual \
+            --run-dir "$RUN_DIR" \
+            --held-out-shard-dir "$HELD_OUT_SHARD_DIR" \
+            --output-json "$OUTPUT_JSON" \
+            --max-shards "$max_shards" \
+            --max-subjects "$max_subjects" \
+            --index-hours "$index_hours" \
+            --chunk-size "$chunk" \
+            --edits $edits
+        deactivate
+        source "$VENV/bin/activate"
+
+        # Strip the run directory (a home-directory path) and refuse if any
+        # arm carries per-subject records, which the top-level key whitelist
+        # in _export_aggregate_json cannot see.
+        local export_json="$RUN_DIR/counterfactual_export.json"
+        if ! python3 - "$OUTPUT_JSON" "$export_json" <<'PY'
+import json
+import sys
+
+src, dest = sys.argv[1], sys.argv[2]
+with open(src) as f:
+    obj = json.load(f)
+for name, arm in obj.get("edits", {}).items():
+    if arm.get("per_subject"):
+        raise SystemExit(
+            f"{src}: arm {name!r} carries {len(arm['per_subject'])} per-subject "
+            "records; refusing to export patient-level forecasts"
+        )
+    arm.pop("per_subject", None)
+obj.pop("run_dir", None)
+with open(dest, "w") as f:
+    json.dump(obj, f, indent=2)
+print(f"sanitized -> {dest}")
+PY
+        then
+            echo "WARNING: counterfactual results not exported (see above)." >&2
+            return 0
+        fi
+
+        echo "$STEP complete. Results at $OUTPUT_JSON"
+        _export_aggregate_json \
+            "scripts/gemini/out/evals/${run_name}_counterfactual.json" "$export_json" \
+            "index_hours edits" \
+            || echo "WARNING: counterfactual results not exported (see above)." >&2
+    }
+
     _export_alerts_summary() {
         # Same mechanism and same reasoning as _export_eval_summary above:
         # validate against a whitelist, then copy verbatim into
@@ -2165,6 +2261,7 @@ PY
         train-rung2) run_train_rung2 ;;
         eval-forecast) run_eval_forecast "${2:-}" ;;
         interventions) run_interventions "${2:-}" ;;
+        counterfactual) run_counterfactual "${2:-}" ;;
         alerts) run_alerts "${2:-}" ;;
         tabicl) run_tabicl "${2:-}" ;;
         steering) run_steering "${2:-}" ;;

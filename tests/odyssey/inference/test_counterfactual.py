@@ -201,3 +201,19 @@ def test_cohort_summary_counts_edited_subjects_and_sign_agreement() -> None:
     )
     assert len(summary.per_subject) == 3
     assert len(summary.mean_delta_concepts) == len(concepts)
+
+
+def test_an_inert_control_exists_for_sources_without_blood_pressure() -> None:
+    """normotension_6h is SBP-based, so it cannot run where SBP does not map.
+
+    GEMINI is such a source: creatinine and lactate resolve there, the
+    blood-pressure panel does not. Without a control on a resolvable signal
+    a sign-agreement number on that source has no floor to sit against.
+    """
+    inert = STANDARD_EDITS["creatinine_normal"]
+    assert inert.signal == "creatinine"
+    assert inert.mode == "set"
+    # Declares a direction so agreement is scored and can be seen to sit at
+    # chance, exactly as normotension_6h does for blood pressure.
+    assert inert.expected_direction == {"acute_kidney_injury": -1}
+    assert STANDARD_EDITS["normotension_6h"].signal == "sbp_noninvasive"
