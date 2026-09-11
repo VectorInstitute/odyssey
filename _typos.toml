@@ -37,4 +37,10 @@ get_rolling_window_indicies = "get_rolling_window_indicies"
 # ours to rename and will keep showing up as new false positives every time
 # a fresh report is committed, so the whole directory is excluded rather
 # than growing an extend-words entry per column.
-extend-exclude = ["scripts/gemini/out/"]
+# scripts/cohort/cohort_check_*.py are committed verbatim as they ran
+# (scripts/cohort/README.md); their `evn` (eICU visit number) stays.
+extend-exclude = [
+    "scripts/gemini/out/",
+    "scripts/cohort/cohort_check_mimic.py",
+    "scripts/cohort/cohort_check_eicu.py",
+]

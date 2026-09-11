@@ -85,7 +85,7 @@ def visit_stats_from_alert_rows(
         pl.col("visit_id").cast(pl.Int64),
         pl.col("event")
         .replace_strict(thresholds, return_dtype=pl.Float64)
-        .alias("_thr"),
+        .alias("_threshold"),
     )
     if frame.height == 0:
         return empty_visit_stats()
@@ -93,7 +93,7 @@ def visit_stats_from_alert_rows(
     time = pl.col("time_hours")
     last_off = time.filter(~on).max().fill_null(_NEVER)
     return (
-        frame.with_columns((pl.col(hazard) >= pl.col("_thr")).alias("_on"))
+        frame.with_columns((pl.col(hazard) >= pl.col("_threshold")).alias("_on"))
         .sort("time_hours")
         .group_by("subject_id", "visit_id", "event", maintain_order=True)
         .agg(
@@ -106,7 +106,7 @@ def visit_stats_from_alert_rows(
             time.max().alias("end_hours"),
             time.min().alias("start_hours"),
             pl.col(hazard).max().alias("max_risk"),
-            pl.col("_thr").first().alias("threshold"),
+            pl.col("_threshold").first().alias("threshold"),
         )
         .with_columns(
             pl.col("positive").fill_null(value=False),

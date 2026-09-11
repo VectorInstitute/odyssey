@@ -32,7 +32,7 @@ def _row(  # noqa: PLR0913 -- one keyword per stats column
     end: float,
     start: float = 0.0,
     max_risk: float = 0.5,
-    thr: float = 0.2,
+    threshold: float = 0.2,
 ) -> dict[str, object]:
     return {
         "subject_id": sid,
@@ -44,7 +44,7 @@ def _row(  # noqa: PLR0913 -- one keyword per stats column
         "end_hours": end,
         "start_hours": start,
         "max_risk": max_risk,
-        "threshold": thr,
+        "threshold": threshold,
     }
 
 

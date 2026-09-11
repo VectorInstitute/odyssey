@@ -18,12 +18,12 @@ is deliberately strict:
 import json
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import unquote, urlsplit
+from urllib.parse import urlsplit
 
 from apps.clinician_demo.config import LOOPBACK_HOSTS
 from apps.clinician_demo.schemas import to_jsonable
@@ -152,24 +152,36 @@ ROUTES: list[tuple[str, re.Pattern[str], Handler]] = [
 ]
 
 
-def resolve_static(path: str, root: Path = STATIC_DIR) -> Path | None:
-    """Return the file under ``root`` a URL path names, or ``None`` if unservable.
+def static_files(root: Path = STATIC_DIR) -> dict[str, Path]:
+    """Map every servable URL path to its file, built once from ``root``.
 
-    ``/`` is ``index.html``; everything else must live under ``/static/``,
-    resolve inside ``root`` (no ``..`` or symlink escapes), exist, and have
-    an allowlisted extension.
+    ``/`` and ``/index.html`` are ``index.html``; every other file is
+    ``/static/<path relative to root>``. Only regular files with an
+    allowlisted extension that resolve inside ``root`` are included, so a
+    symlink pointing elsewhere is never served. Requests are answered by
+    looking a URL up in this map: no filesystem path is ever built from
+    request data.
     """
-    if path in ("/", "/index.html"):
-        relative = "index.html"
-    elif path.startswith("/static/"):
-        relative = unquote(path[len("/static/") :])
-    else:
-        return None
     root = root.resolve()
-    candidate = (root / relative).resolve()
-    if not candidate.is_relative_to(root) or not candidate.is_file():
-        return None
-    return candidate if candidate.suffix in CONTENT_TYPES else None
+    files: dict[str, Path] = {}
+    for file in sorted(root.rglob("*")):
+        resolved = file.resolve()
+        if (
+            not file.is_file()
+            or not resolved.is_relative_to(root)
+            or file.suffix not in CONTENT_TYPES
+        ):
+            continue
+        files[f"/static/{file.relative_to(root).as_posix()}"] = resolved
+    index = files.get("/static/index.html")
+    if index is not None:
+        files["/"] = files["/index.html"] = index
+    return files
+
+
+def resolve_static(path: str, files: Mapping[str, Path]) -> Path | None:
+    """Return the file a URL path names, or ``None`` if it is not servable."""
+    return files.get(path)
 
 
 def allowed_hosts(port: int) -> frozenset[str]:
@@ -184,7 +196,7 @@ class DemoRequestHandler(BaseHTTPRequestHandler):
     server_version = "OdysseyDemo"
     sys_version = ""
     api: DemoAPI
-    static_root: Path = STATIC_DIR
+    static_files: Mapping[str, Path]
 
     def do_GET(self) -> None:  # noqa: N802 -- stdlib hook name
         """Handle GET."""
@@ -274,7 +286,7 @@ class DemoRequestHandler(BaseHTTPRequestHandler):
         return body
 
     def _static(self, path: str) -> None:
-        file = resolve_static(path, self.static_root)
+        file = resolve_static(path, self.static_files)
         if file is None:
             raise HttpError(HTTPStatus.NOT_FOUND, "not found")
         data = file.read_bytes()
@@ -320,7 +332,7 @@ def make_server(
     handler = type(
         "BoundDemoHandler",
         (DemoRequestHandler,),
-        {"api": api, "static_root": static_root},
+        {"api": api, "static_files": static_files(static_root)},
     )
     server = ThreadingHTTPServer((host, port), handler)
     server.daemon_threads = True
@@ -339,4 +351,5 @@ __all__ = [
     "allowed_hosts",
     "make_server",
     "resolve_static",
+    "static_files",
 ]

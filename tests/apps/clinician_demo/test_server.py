@@ -17,6 +17,7 @@ from apps.clinician_demo.server import (
     allowed_hosts,
     make_server,
     resolve_static,
+    static_files,
 )
 from apps.clinician_demo.service import BadRequestError, NotFoundError
 
@@ -247,21 +248,29 @@ def test_static_files_are_served_with_the_right_types(
 
 
 def test_resolve_static_containment(static_root: Path) -> None:
-    assert resolve_static("/", static_root) == (static_root / "index.html").resolve()
-    assert (
-        resolve_static("/index.html", static_root)
-        == (static_root / "index.html").resolve()
-    )
-    assert resolve_static("/static/js/app.js", static_root) is not None
+    files = static_files(static_root)
+    index = (static_root / "index.html").resolve()
+    assert resolve_static("/", files) == index
+    assert resolve_static("/index.html", files) == index
+    assert resolve_static("/static/index.html", files) == index
+    assert resolve_static("/static/js/app.js", files) is not None
     for bad in (
         "/static/",
         "/static/js",
         "/static/../secret.json",
-        "/static/escape.json",
+        "/static/escape.json",  # symlink out of the root
+        "/static/notes.txt",  # extension not allowlisted
         "/other.js",
         "/static/missing.js",
     ):
-        assert resolve_static(bad, static_root) is None, bad
+        assert resolve_static(bad, files) is None, bad
+
+
+def test_static_map_is_empty_without_an_index(tmp_path: Path) -> None:
+    (tmp_path / "a.css").write_text("x")
+    files = static_files(tmp_path)
+    assert set(files) == {"/static/a.css"}
+    assert resolve_static("/", files) is None
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.10", "example.com"])
