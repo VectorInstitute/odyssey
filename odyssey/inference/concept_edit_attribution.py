@@ -53,7 +53,7 @@ automatically instead of by hand.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import polars as pl
@@ -62,6 +62,7 @@ from odyssey.data.signal_panel import NO_SIGNAL, SIGNAL_PANEL, SignalPanelResolv
 from odyssey.data.value_binning import QuantileBinner
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.counterfactual import (
+    HORIZONS_HOURS,
     ForecastReadout,
     ValueEdit,
     apply_value_edits,
@@ -112,21 +113,25 @@ class CodeEdit:
 
 @dataclass(frozen=True)
 class CodeAttribution:
-    """One candidate code's effect on a concept's probability when removed."""
+    """One candidate code's effect on a target readout when removed.
+
+    The target is a concept's probability (:func:`occlusion_attribution`)
+    or an event's risk at one horizon (:func:`event_occlusion_attribution`).
+    """
 
     code: str
     n_rows: int
     """Readings of this code removed from the window."""
     baseline: float
-    """The concept's probability with nothing removed."""
+    """The target's value with nothing removed."""
     occluded: float
-    """The concept's probability with this code's readings removed."""
+    """The target's value with this code's readings removed."""
 
     @property
     def delta(self) -> float:
         """``occluded - baseline``.
 
-        Negative means this code was pushing the concept up; positive
+        Negative means this code was pushing the target up; positive
         means it was suppressing it.
         """
         return self.occluded - self.baseline
@@ -229,6 +234,83 @@ def score_with_codes_removed(
     return readout, total_touched
 
 
+def occlude_codes(
+    model: SequenceModel,
+    vocab: Vocabulary,
+    binner: QuantileBinner | None,
+    raw_subject_events: pl.DataFrame,
+    *,
+    index_time: object,
+    value_of: Callable[[ForecastReadout], float],
+    concept_names: Sequence[str],
+    lookback_hours: float = 24.0,
+    candidate_codes: Sequence[str] | None = None,
+    source: str = "mimic_iv",
+    device: str = "cpu",
+    chunk_size: int = 256,
+    horizons: Sequence[float] = HORIZONS_HOURS,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> list[CodeAttribution]:
+    """Rank codes in the lookback window by their effect on ``value_of(readout)``.
+
+    The target-agnostic core of :func:`occlusion_attribution` and
+    :func:`event_occlusion_attribution`. ``candidate_codes`` restricts the
+    search (e.g. to a curated pool); by default every distinct code with a
+    reading in the window is tried, one at a time, by exact-match removal.
+    Returned sorted by ``abs(delta)`` descending; codes with zero readings
+    in the window (nothing removed) are silently excluded rather than
+    reported as a zero-effect result. ``on_progress(done, total)`` is
+    called after each candidate, for callers reporting progress on a long
+    search (one full re-score per candidate).
+    """
+
+    def _score(events: pl.DataFrame) -> float:
+        return value_of(
+            score_record_at(
+                model,
+                vocab,
+                binner,
+                events,
+                index_time=index_time,
+                concept_names=concept_names,
+                source=source,
+                device=device,
+                chunk_size=chunk_size,
+                horizons=horizons,
+            )
+        )
+
+    baseline = _score(raw_subject_events)
+    codes = (
+        list(candidate_codes)
+        if candidate_codes is not None
+        else _candidate_codes(
+            raw_subject_events, index_time=index_time, lookback_hours=lookback_hours
+        )
+    )
+    results: list[CodeAttribution] = []
+    for done, code in enumerate(codes, start=1):
+        edited, touched = remove_code_exact(
+            raw_subject_events,
+            code,
+            index_time=index_time,
+            window_hours=lookback_hours,
+        )
+        if touched > 0:
+            results.append(
+                CodeAttribution(
+                    code=code,
+                    n_rows=touched,
+                    baseline=baseline,
+                    occluded=_score(edited),
+                )
+            )
+        if on_progress is not None:
+            on_progress(done, len(codes))
+    results.sort(key=lambda r: abs(r.delta), reverse=True)
+    return results
+
+
 def occlusion_attribution(
     model: SequenceModel,
     vocab: Vocabulary,
@@ -246,63 +328,76 @@ def occlusion_attribution(
 ) -> list[CodeAttribution]:
     """Rank codes in the lookback window by their effect on one concept.
 
-    ``candidate_codes`` restricts the search (e.g. to a curated pool); by
-    default every distinct code with a reading in the window is tried, one
-    at a time, by exact-match removal. Returned sorted by ``abs(delta)``
-    descending; codes with zero readings in the window (nothing removed)
-    are silently excluded rather than reported as a zero-effect result.
+    See :func:`occlude_codes` for the search; the target is the concept's
+    probability at the index position.
     """
-    baseline_readout = score_record_at(
+    if concept_name not in concept_names:
+        raise ValueError(f"{concept_name!r} not in concept_names {list(concept_names)}")
+    return occlude_codes(
         model,
         vocab,
         binner,
         raw_subject_events,
         index_time=index_time,
+        value_of=lambda readout: readout.concept_probs[concept_name],
         concept_names=concept_names,
+        lookback_hours=lookback_hours,
+        candidate_codes=candidate_codes,
         source=source,
         device=device,
         chunk_size=chunk_size,
     )
-    if concept_name not in baseline_readout.concept_probs:
-        raise ValueError(f"{concept_name!r} not in concept_names {list(concept_names)}")
-    baseline = baseline_readout.concept_probs[concept_name]
 
-    codes = (
-        list(candidate_codes)
-        if candidate_codes is not None
-        else _candidate_codes(
-            raw_subject_events, index_time=index_time, lookback_hours=lookback_hours
-        )
+
+def event_occlusion_attribution(
+    model: SequenceModel,
+    vocab: Vocabulary,
+    binner: QuantileBinner | None,
+    raw_subject_events: pl.DataFrame,
+    *,
+    index_time: object,
+    event: str,
+    horizon_hours: float,
+    concept_names: Sequence[str],
+    lookback_hours: float = 24.0,
+    candidate_codes: Sequence[str] | None = None,
+    source: str = "mimic_iv",
+    device: str = "cpu",
+    chunk_size: int = 256,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> list[CodeAttribution]:
+    """Rank codes in the lookback window by their effect on one event's risk.
+
+    See :func:`occlude_codes` for the search; the target is the hazard
+    head's ``P(event within horizon_hours)`` at the index position.
+    ``horizon_hours`` should be a hazard bin edge (8, 24, 72, ...) for an
+    exact probability.
+
+    Raises
+    ------
+    ValueError
+        If the model has no hazard head named ``event``.
+    """
+    key = f"{horizon_hours:g}h"
+    event_names = list(getattr(getattr(model, "event_heads", None), "event_names", []))
+    if event not in event_names:
+        raise ValueError(f"{event!r} is not a hazard head of this model: {event_names}")
+    return occlude_codes(
+        model,
+        vocab,
+        binner,
+        raw_subject_events,
+        index_time=index_time,
+        value_of=lambda readout: readout.event_risk[event][key],
+        concept_names=concept_names,
+        lookback_hours=lookback_hours,
+        candidate_codes=candidate_codes,
+        source=source,
+        device=device,
+        chunk_size=chunk_size,
+        horizons=(horizon_hours,),
+        on_progress=on_progress,
     )
-    results: list[CodeAttribution] = []
-    for code in codes:
-        edited, touched = remove_code_exact(
-            raw_subject_events,
-            code,
-            index_time=index_time,
-            window_hours=lookback_hours,
-        )
-        if touched == 0:
-            continue
-        occluded_readout = score_record_at(
-            model,
-            vocab,
-            binner,
-            edited,
-            index_time=index_time,
-            concept_names=concept_names,
-            source=source,
-            device=device,
-            chunk_size=chunk_size,
-        )
-        occluded = occluded_readout.concept_probs.get(concept_name, baseline)
-        results.append(
-            CodeAttribution(
-                code=code, n_rows=touched, baseline=baseline, occluded=occluded
-            )
-        )
-    results.sort(key=lambda r: abs(r.delta), reverse=True)
-    return results
 
 
 def auto_edit_from_attribution(

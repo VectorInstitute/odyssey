@@ -38,22 +38,12 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from odyssey.data.concepts import canonical_concept_name
+from odyssey.data.concepts import canonical_concept_name, concept_display_name
 
 
 logger = logging.getLogger(__name__)
 
-#: Display names for concepts whose registry name understates a threshold.
-_DISPLAY = {
-    "sustained_hypotension_map": "sustained hypotension (MAP)",
-    "anemia": "severe anemia",
-    "hypokalemia": "severe hypokalemia",
-}
-
-
-def _display(name: str) -> str:
-    canon = canonical_concept_name(name)
-    return _DISPLAY.get(canon, canon.replace("_", " "))
+_display = concept_display_name
 
 
 def _readouts(path: Path) -> dict[str, float]:

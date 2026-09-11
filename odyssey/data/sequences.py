@@ -220,6 +220,56 @@ def _assign_visits(
     return visit_orders, visit_segments
 
 
+@dataclass(frozen=True)
+class OrderedRows:
+    """One subject's raw rows in the exact order they become tokens."""
+
+    rows: pl.DataFrame
+    """Row ``i`` is sequence position ``i``: static facts first (stamped with
+    the first timed event's time and visit), then timed events in a stable
+    time sort. ``MEDS_BIRTH`` is excluded. Every input column is kept, so a
+    caller can carry extra columns (a row index, units) through to the
+    positions they belong to."""
+    n_static: int
+    birth_time: object | None
+    """The ``MEDS_BIRTH`` timestamp, or ``None`` if the subject has none."""
+
+
+def ordered_sequence_rows(events: pl.DataFrame) -> OrderedRows:
+    """Return one subject's rows in the order they become tokens.
+
+    This is the order :func:`build_patient_sequence` uses, and the single
+    source of truth for which raw row sits at which sequence
+    position: :func:`build_patient_sequence` tokenizes exactly these rows,
+    so a reader that needs a position's raw value or unit reads it from
+    here instead of re-deriving the order.
+    """
+    static = events.filter(pl.col("time").is_null() & (pl.col("code") != BIRTH_CODE))
+    timed = events.filter(pl.col("time").is_not_null())
+    birth_rows = timed.filter(pl.col("code") == BIRTH_CODE)
+    birth_time = birth_rows["time"][0] if birth_rows.height > 0 else None
+    timed = timed.filter(pl.col("code") != BIRTH_CODE).sort("time", maintain_order=True)
+    if static.height == 0 or timed.height == 0:
+        # A static-only subject has no timeline and yields nothing.
+        return OrderedRows(rows=timed, n_static=0, birth_time=birth_time)
+    # Static facts lead the sequence at the first timed event's instant
+    # and visit.
+    first = timed.head(1)
+    static = static.with_columns(
+        pl.lit(first["time"][0]).alias("time"),
+        *(
+            [pl.lit(first["hadm_id"][0]).alias("hadm_id")]
+            if "hadm_id" in timed.columns
+            else []
+        ),
+    ).select(timed.columns)
+    return OrderedRows(
+        rows=pl.concat([static, timed], how="vertical_relaxed"),
+        n_static=static.height,
+        birth_time=birth_time,
+    )
+
+
 def build_patient_sequence(
     events: pl.DataFrame,
     vocabulary: Vocabulary,
@@ -264,28 +314,8 @@ def build_patient_sequence(
             f"{n_subjects} distinct subject_ids"
         )
 
-    static = events.filter(pl.col("time").is_null() & (pl.col("code") != BIRTH_CODE))
-    events = events.filter(pl.col("time").is_not_null())
-    birth_rows = events.filter(pl.col("code") == BIRTH_CODE)
-    birth_time = birth_rows["time"][0] if birth_rows.height > 0 else None
-    events = events.filter(pl.col("code") != BIRTH_CODE).sort(
-        "time", maintain_order=True
-    )
-    n_static = 0
-    if static.height > 0 and events.height > 0:
-        # Static facts lead the sequence at the first timed event's instant
-        # and visit; a static-only subject has no timeline and yields nothing.
-        first = events.head(1)
-        static = static.with_columns(
-            pl.lit(first["time"][0]).alias("time"),
-            *(
-                [pl.lit(first["hadm_id"][0]).alias("hadm_id")]
-                if "hadm_id" in events.columns
-                else []
-            ),
-        ).select(events.columns)
-        events = pl.concat([static, events], how="vertical_relaxed")
-        n_static = static.height
+    ordered = ordered_sequence_rows(events)
+    events, n_static, birth_time = ordered.rows, ordered.n_static, ordered.birth_time
 
     subject_id = int(events["subject_id"][0]) if events.height > 0 else -1
     codes = events["code"].to_list()

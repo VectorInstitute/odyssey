@@ -847,6 +847,25 @@ def canonical_concept_name(name: str) -> str:
     return LEGACY_CONCEPT_NAMES.get(name, name)
 
 
+#: Display names for concepts whose registry name understates a threshold.
+CONCEPT_DISPLAY_NAMES: dict[str, str] = {
+    "sustained_hypotension_map": "sustained hypotension (MAP)",
+    "anemia": "severe anemia",
+    "hypokalemia": "severe hypokalemia",
+}
+
+
+def concept_display_name(name: str) -> str:
+    """Human-readable name for a concept (legacy names mapped first).
+
+    Registry names read as prose with underscores replaced, except where
+    the bare name would understate the rule's threshold (``anemia`` is
+    Hb < 7 g/dL, i.e. severe anemia).
+    """
+    canon = canonical_concept_name(name)
+    return CONCEPT_DISPLAY_NAMES.get(canon, canon.replace("_", " "))
+
+
 # "v3" adds structurally-derived electrolyte/metabolic/hematologic concepts
 # (Track B item 11) -- see their CANONICAL_CONCEPTS entries for thresholds
 # and sources. v1/v2 are untouched by this addition (concepts_for_source
