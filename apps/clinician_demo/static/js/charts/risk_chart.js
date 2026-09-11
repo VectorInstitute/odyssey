@@ -1,15 +1,18 @@
 /**
- * Risk-over-time chart (SVG): one line per event, its dashed alert line,
- * onset markers, care-transition ticks, an optional GBM overlay, a scrub
- * cursor, a hover tooltip and click-to-scrub.
+ * Risk-over-time chart (SVG): one line per event with its dashed alert
+ * line, onset markers, care-transition ticks, an optional GBM overlay, a
+ * scrub cursor, a hover tooltip and click-to-scrub. What lies after the
+ * cursor is drawn faded, so the eye stays on "now" and what led to it.
  */
 
 import { el, svg } from '../dom.js';
 import { clock, pct, nearestIndex } from '../format.js';
 
-const HEIGHT = 300;
-const MARGIN = { left: 50, right: 18, top: 26, bottom: 30 };
+const HEIGHT = 280;
+const MARGIN = { left: 48, right: 16, top: 26, bottom: 28 };
 const Y_STEPS = [0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.25];
+const FUTURE_OPACITY = 0.22;
+let clipCounter = 0;
 
 function niceMax(maxValue) {
   const target = Math.min(1, Math.max(0.02, maxValue * 1.15));
@@ -60,11 +63,50 @@ export function createRiskChart(container, { onScrub, label = 'Risk over the adm
   const tip = el('div', { class: 'chart-tip', hidden: true });
   const wrap = el('div', { class: 'risk-chart' }, [root, tip]);
   container.append(wrap);
+  const clipId = `risk-clip-${++clipCounter}`;
 
   let data = null;
   let cursor = 0;
   let scale = null;
   let cursorLine = null;
+  let clipRect = null;
+
+  function drawSeries(group, x, y, times, series, onsets, width) {
+    // Onset labels are stacked in rows so events that begin close together
+    // never print on top of each other; a label near the right edge flips
+    // to the left of its line.
+    const placed = [];
+    for (const o of onsets) {
+      const px = x(o.t);
+      const text = `${o.label} began`;
+      const w = text.length * 6.6 + 10;
+      const flip = px + w > width - MARGIN.right;
+      const span = flip ? [px - w, px] : [px, px + w];
+      let row = 0;
+      while (placed.some((p) => p.row === row && span[0] < p.span[1] && span[1] > p.span[0])) row += 1;
+      placed.push({ row, span });
+      group.append(
+        svg('line', {
+          x1: px, x2: px, y1: MARGIN.top, y2: HEIGHT - MARGIN.bottom,
+          stroke: o.color, 'stroke-width': 2, 'stroke-dasharray': '1 3',
+        }),
+        svg('text', {
+          class: 'onset-label',
+          x: flip ? px - 4 : px + 4,
+          y: MARGIN.top + 12 + row * 14,
+          'text-anchor': flip ? 'end' : 'start',
+          fill: o.color,
+          text,
+        }),
+      );
+    }
+    for (const s of series) {
+      group.append(svg('path', {
+        d: linePath(times, s.values, x, y), fill: 'none', stroke: s.color,
+        'stroke-width': 2.2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round',
+      }));
+    }
+  }
 
   function draw() {
     root.replaceChildren();
@@ -88,6 +130,9 @@ export function createRiskChart(container, { onScrub, label = 'Risk over the adm
     const y = (v) => MARGIN.top + plotH - (Math.min(v, top) / top) * plotH;
     scale = { x, t0, t1, plotW };
 
+    clipRect = svg('rect', { x: MARGIN.left, y: 0, width: 0, height: HEIGHT });
+    root.append(svg('defs', {}, [svg('clipPath', { id: clipId }, [clipRect])]));
+
     const grid = svg('g', { class: 'grid' });
     const axis = svg('g', { class: 'axis' });
     for (let v = 0; v <= top + 1e-9; v += step) {
@@ -100,7 +145,7 @@ export function createRiskChart(container, { onScrub, label = 'Risk over the adm
       const nearRight = x(t) > width - MARGIN.right - 30;
       axis.append(svg('text', {
         x: nearRight ? width - MARGIN.right : x(t),
-        y: HEIGHT - 10,
+        y: HEIGHT - 8,
         'text-anchor': nearRight ? 'end' : 'middle',
         text: xTickLabel(t, xStep),
       }));
@@ -123,43 +168,10 @@ export function createRiskChart(container, { onScrub, label = 'Risk over the adm
       root.append(
         svg('line', {
           x1: MARGIN.left, x2: width - MARGIN.right, y1: y(s.threshold), y2: y(s.threshold),
-          stroke: s.color, 'stroke-width': 1, 'stroke-dasharray': '5 4', opacity: 0.55,
-        }, [svg('title', { text: `${s.label}: alert line ${pct(s.threshold)}` })]),
+          stroke: s.color, 'stroke-width': 1, 'stroke-dasharray': '5 4', opacity: 0.5,
+        }, [svg('title', { text: `${s.label}: alert line at ${pct(s.threshold)}` })]),
       );
     }
-
-    // Onset labels are stacked in rows so events that begin close together
-    // never print on top of each other; a label near the right edge flips
-    // to the left of its line.
-    const onsets = svg('g', { class: 'onset' });
-    const placed = [];
-    const visible = (data.onsets ?? [])
-      .filter((o) => o.t != null && o.t >= t0 && o.t <= t1)
-      .sort((a, b) => a.t - b.t);
-    for (const o of visible) {
-      const px = x(o.t);
-      const text = `${o.label} began`;
-      const w = text.length * 6.6 + 10;
-      const flip = px + w > width - MARGIN.right;
-      const span = flip ? [px - w, px] : [px, px + w];
-      let row = 0;
-      while (placed.some((p) => p.row === row && span[0] < p.span[1] && span[1] > p.span[0])) row += 1;
-      placed.push({ row, span });
-      onsets.append(
-        svg('line', {
-          x1: px, x2: px, y1: MARGIN.top, y2: MARGIN.top + plotH,
-          stroke: o.color, 'stroke-width': 2, 'stroke-dasharray': '1 3',
-        }),
-        svg('text', {
-          x: flip ? px - 4 : px + 4,
-          y: MARGIN.top + 12 + row * 14,
-          'text-anchor': flip ? 'end' : 'start',
-          fill: o.color,
-          text,
-        }),
-      );
-    }
-    root.append(onsets);
 
     if (data.overlay && data.overlay.points.length) {
       const pts = data.overlay.points.filter((p) => p.v != null && p.t >= t0 && p.t <= t1);
@@ -173,12 +185,14 @@ export function createRiskChart(container, { onScrub, label = 'Risk over the adm
       root.append(g);
     }
 
-    for (const s of series) {
-      root.append(svg('path', {
-        d: linePath(times, s.values, x, y), fill: 'none', stroke: s.color,
-        'stroke-width': 2.2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round',
-      }));
-    }
+    const onsets = (data.onsets ?? [])
+      .filter((o) => o.t != null && o.t >= t0 && o.t <= t1)
+      .sort((a, b) => a.t - b.t);
+    const future = svg('g', { class: 'onset', opacity: FUTURE_OPACITY });
+    const past = svg('g', { class: 'onset', 'clip-path': `url(#${clipId})` });
+    drawSeries(future, x, y, times, series, onsets, width);
+    drawSeries(past, x, y, times, series, onsets, width);
+    root.append(future, past);
 
     cursorLine = svg('line', { class: 'cursor', y1: MARGIN.top - 4, y2: MARGIN.top + plotH });
     root.append(cursorLine);
@@ -192,8 +206,10 @@ export function createRiskChart(container, { onScrub, label = 'Risk over the adm
   function positionCursor() {
     if (!cursorLine || !scale || !data) return;
     const t = data.times[Math.min(cursor, data.times.length - 1)];
-    cursorLine.setAttribute('x1', String(scale.x(t)));
-    cursorLine.setAttribute('x2', String(scale.x(t)));
+    const px = scale.x(t);
+    cursorLine.setAttribute('x1', String(px));
+    cursorLine.setAttribute('x2', String(px));
+    clipRect.setAttribute('width', String(Math.max(0, px - MARGIN.left + 1)));
   }
 
   function indexAt(event) {

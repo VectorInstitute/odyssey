@@ -34,16 +34,14 @@ function calibration(bins) {
 
 function cellView(cell) {
   const line = (who, value, ci) =>
-    el('div', { class: 'score-cell__line' }, [
+    el('div', { class: 'score-cell__line', title: ci ? `95% interval ${interval(ci)}` : '' }, [
       el('span', { class: 'score-cell__who', text: who }),
       el('span', { class: 'score-cell__auroc', text: auroc(value) }),
-      el('span', { class: 'score-cell__ci', text: interval(ci) }),
     ]);
   return el('div', { class: 'score-cell' }, [
     line('Model', cell.hazard_auroc, cell.hazard_ci),
     line('GBM', cell.gbm_auroc, cell.gbm_ci),
     verdict(cell),
-    el('div', { class: 'faint', text: `${pct(cell.base_rate)} of ${cell.n_at_risk.toLocaleString()} moments` }),
   ]);
 }
 
@@ -56,15 +54,16 @@ function table(meta, cells) {
       el('thead', {}, el('tr', {}, [
         el('th', { text: 'Event' }),
         ...horizons.map((h) => el('th', { text: `Within ${h} h` })),
-        el('th', { text: 'Calibration (24 h)' }),
+        el('th', { text: 'Calibration', title: 'Predicted against observed 24 h risk, by decile. On the dashed line means well calibrated.' }),
       ])),
       el('tbody', {}, events.map((e) => {
         const info = eventInfo(meta, e);
         const c24 = find(e, 24);
         return el('tr', {}, [
           el('td', {}, [
-            el('div', { class: 'risk-card__name' }, [el('span', { class: 'dot', style: { background: eventColor(e) } }), info.display]),
-            el('div', { class: 'faint', text: info.definition }),
+            el('div', { class: 'tile__name' }, [el('span', { class: 'dot', style: { background: eventColor(e) } }), info.display]),
+            el('div', { class: 'muted', text: info.definition }),
+            c24 ? el('div', { class: 'faint', text: `Happens within 24 h at ${pct(c24.base_rate)} of ${c24.n_at_risk.toLocaleString()} moments` }) : null,
           ]),
           ...horizons.map((h) => el('td', {}, find(e, h) ? cellView(find(e, h)) : '—')),
           el('td', {}, c24 ? calibration(c24.calibration) : '—'),
@@ -78,11 +77,11 @@ function conceptBars(concepts) {
   const scored = concepts.filter((c) => c.readout_auroc != null).sort((a, b) => b.readout_auroc - a.readout_auroc);
   if (!scored.length) return emptyBlock('No concept readouts are banked for this run.');
   return el('div', { class: 'auroc-bars' }, scored.map((c) => {
-    const fill = el('div', { class: 'auroc-bar__fill' });
+    const fill = el('div', { class: 'bar__fill' });
     fill.style.setProperty('width', `${Math.max(0, (c.readout_auroc - 0.5) / 0.5) * 100}%`);
     return el('div', { class: 'auroc-bar', title: c.description }, [
       el('span', { text: c.display }),
-      el('div', { class: 'auroc-bar__track' }, [fill]),
+      el('div', { class: 'bar' }, [fill]),
       el('span', { class: 'num', text: auroc(c.readout_auroc) }),
     ]);
   }));
@@ -107,15 +106,15 @@ export async function renderScorecard(root, { meta }) {
     el('div', { class: 'page-head' }, [
       el('div', {}, [
         el('h1', { text: 'How good is it?' }),
-        el('p', { text: 'Measured on held-out patients the model never trained on. Bars start at 0.5, which is chance.' }),
+        el('p', { text: 'How well the model ranks patients by risk (AUROC: 1.000 is perfect, 0.500 is chance), measured on held-out patients it never trained on, next to a tuned gradient-boosting model (GBM). Hover a number for its 95% interval.' }),
       ]),
     ]),
     el('div', { class: 'card headline-card', text: sc.headline }),
     el('div', { class: 'two-col' }, [
       el('div', {}, [sc.cells.length ? table(meta, sc.cells) : emptyBlock('No alert evaluation is banked for this run.')]),
-      el('div', { class: 'replay__main' }, [
-        card('Reading the chart: concept accuracy', conceptBars(sc.concepts), {
-          sub: 'AUROC of each named concept against its rule',
+      el('div', { class: 'replay__side' }, [
+        card('How well it reads the chart', conceptBars(sc.concepts), {
+          sub: 'Each condition the model names, scored against its clinical rule (bars start at chance)',
         }),
         card('How to read this', el('ul', { class: 'notes' }, sc.notes.map((n) => el('li', { text: n })))),
       ]),

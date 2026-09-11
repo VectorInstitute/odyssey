@@ -1,6 +1,6 @@
 /**
  * Formatting for clinicians: percentages, visit clock times, durations,
- * "times typical" wording and trend arrows. Pure functions, no DOM.
+ * "times the average patient" wording and trend arrows. Pure functions.
  */
 
 /**
@@ -28,7 +28,7 @@ export function points(d) {
 }
 
 /**
- * Visit-relative hours as a clock: 30.5 -> "Day 2 · 06:30" (hour 0 = admission).
+ * Visit-relative hours as a clock: 30.5 -> "Day 2, 06:30" (hour 0 = admission).
  * @param {number|null|undefined} h
  * @returns {string}
  */
@@ -43,7 +43,7 @@ export function clock(h) {
   }
   const hh = String(Math.floor(minutes / 60)).padStart(2, '0');
   const mm = String(minutes % 60).padStart(2, '0');
-  return `Day ${day + 1} · ${hh}:${mm}`;
+  return `Day ${day + 1}, ${hh}:${mm}`;
 }
 
 /**
@@ -59,7 +59,18 @@ export function duration(h) {
 }
 
 /**
- * How a risk compares with the typical at-risk patient: "3.4× typical".
+ * "57-year-old man" from age and sex, with graceful gaps.
+ * @param {number|null|undefined} age
+ * @param {string|null|undefined} sex
+ * @returns {string}
+ */
+export function ageSex(age, sex) {
+  const who = { M: 'man', F: 'woman' }[String(sex ?? '').toUpperCase()] ?? (sex ? `sex ${sex}` : 'patient');
+  return age != null ? `${Math.round(age)}-year-old ${who}` : who;
+}
+
+/**
+ * How a risk compares with the average at-risk patient: "3.4× the average patient".
  * @param {number|null|undefined} p
  * @param {number|null|undefined} base
  * @returns {string|null}
@@ -67,10 +78,9 @@ export function duration(h) {
 export function timesTypical(p, base) {
   if (p == null || !base) return null;
   const ratio = p / base;
-  if (ratio < 0.1) return 'far below typical';
-  if (ratio < 0.95) return `${ratio.toFixed(1)}× typical (lower)`;
-  if (ratio <= 1.05) return 'about typical';
-  return ratio >= 10 ? `${Math.round(ratio)}× typical` : `${ratio.toFixed(1)}× typical`;
+  if (ratio < 0.5) return 'below the average patient';
+  if (ratio <= 1.5) return 'about the average patient';
+  return `${ratio >= 10 ? Math.round(ratio) : ratio.toFixed(1)}× the average patient`;
 }
 
 /**
@@ -84,10 +94,10 @@ export function trend(now, before, hours) {
   if (now == null || before == null) return { arrow: '', label: '', dir: 0 };
   const d = now - before;
   const rel = before > 0 ? Math.abs(d) / before : Math.abs(d) > 0 ? Infinity : 0;
-  if (Math.abs(d) < 0.002 || rel < 0.1) return { arrow: '→', label: `steady over ${hours} h`, dir: 0 };
+  if (Math.abs(d) < 0.002 || rel < 0.1) return { arrow: '→', label: `Steady over the last ${hours} h`, dir: 0 };
   return d > 0
-    ? { arrow: '↑', label: `${points(d)} in ${hours} h`, dir: 1 }
-    : { arrow: '↓', label: `${points(d)} in ${hours} h`, dir: -1 };
+    ? { arrow: '↑', label: `Up ${points(d).slice(1)} in the last ${hours} h`, dir: 1 }
+    : { arrow: '↓', label: `Down ${points(d).slice(1)} in the last ${hours} h`, dir: -1 };
 }
 
 /**

@@ -55,7 +55,7 @@ function resultView(result, events, onsets) {
         .map((k) => `${k.replace('h', ' h')} ${points(result.delta.risk[e.name]?.[k])}`)
         .join(' · ');
       return el('div', { class: 'compare-row' }, [
-        el('div', {}, [el('strong', { text: e.display }), el('div', { class: 'faint', text: minor })]),
+        el('div', {}, [el('strong', { text: e.display }), el('div', { class: 'muted', text: minor })]),
         el('div', { class: 'compare-bars', 'aria-label': `${e.display}: ${pct(before)} now, ${pct(after)} with the change` }, [
           el('div', { class: 'compare-bar' }, [
             el('div', { class: 'compare-bar__fill compare-bar__fill--before', style: { width: `${(before / max) * 100}%` } }),
@@ -73,7 +73,7 @@ function resultView(result, events, onsets) {
   return el('div', { class: 'panel' }, [
     el('div', { class: 'muted' }, [
       `Forecast at ${clock(result.t_hours)} · ${result.rows_edited} reading${result.rows_edited === 1 ? '' : 's'} changed. `,
-      'Grey bar: the chart as recorded. Coloured bar: with your change. Risk within 24 h.',
+      'Grey bar: as charted. Coloured bar: with your change. Risk in the next 24 h.',
     ]),
     ...result.warnings.map((w) => el('div', { class: 'note', text: w })),
     result.rows_edited > 0 ? el('div', { class: 'compare' }, [...rows, ...done]) : null,
@@ -93,8 +93,8 @@ export function createWhatIfPanel(container, { meta, sid, vid, getT, events, ons
   const rowsBox = el('div', { class: 'panel' });
   const resultBox = el('div');
   const select = el('select', { 'aria-label': 'Choose a reading to change' });
-  const addBtn = el('button', { class: 'btn btn--ghost btn--small', type: 'button', text: 'Add change' });
-  const runBtn = el('button', { class: 'btn', type: 'button', text: 'Show the new forecast', disabled: true });
+  const addBtn = el('button', { class: 'btn btn--ghost btn--small', type: 'button', text: 'Add' });
+  const runBtn = el('button', { class: 'btn', type: 'button', text: 'Re-run the forecast', disabled: true });
   const controls = el('div', { class: 'panel__controls' }, [select, addBtn, el('span', { class: 'spacer' }), runBtn]);
   const panel = el('div', { class: 'panel' }, [
     el('div', { class: 'note', text: meta.disclaimers.whatif }),
@@ -131,7 +131,7 @@ export function createWhatIfPanel(container, { meta, sid, vid, getT, events, ons
         ]);
       }),
     );
-    if (!edits.length) rowsBox.append(el('div', { class: 'faint', text: 'Add a change to begin. Up to three.' }));
+    if (!edits.length) rowsBox.append(el('div', { class: 'muted', text: 'Pick a reading above and press Add. Up to three changes.' }));
     addBtn.disabled = edits.length >= MAX_EDITS || !presets.length;
     runBtn.disabled = !edits.length;
   }

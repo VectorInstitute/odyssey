@@ -11,6 +11,7 @@
 import { api } from './api.js';
 import { el, errorBlock, loadingBlock } from './dom.js';
 import { store } from './state.js';
+import { initTheme, isDark, toggleTheme } from './theme.js';
 import { renderGallery } from './views/gallery.js';
 import { renderPatient } from './views/patient.js';
 import { renderReplay } from './views/replay.js';
@@ -77,15 +78,14 @@ async function render() {
 
 function fillChrome(meta) {
   document.getElementById('provenance').textContent =
-    `Model ${meta.run_name} · ${meta.checkpoint} · forecasts ${meta.events.length} events at ${meta.horizons.join(' / ')} h`;
+    `Model ${meta.run_name} (${meta.checkpoint}), forecasting ${meta.events.length} events at ` +
+    `${meta.horizons.join(', ')} hours. Times are hours since the start of each admission; dates are never shown.`;
   const badge = document.getElementById('mode-badge');
   badge.hidden = false;
   badge.textContent = meta.data_mode === 'open' ? 'Open demo data' : 'Credentialed data · PhysioNet DUA';
   badge.className = `mode-badge mode-badge--${meta.data_mode}`;
   const banner = document.getElementById('banner');
   banner.textContent = [meta.disclaimers.banner, meta.disclaimers[meta.data_mode]].filter(Boolean).join(' ');
-  document.getElementById('footer').textContent =
-    'Times are hours since the start of each admission. Dates are never shown.';
   const search = document.getElementById('search');
   search.hidden = !meta.searchable;
   search.addEventListener('submit', (event) => {
@@ -95,7 +95,16 @@ function fillChrome(meta) {
   });
 }
 
+function wireTheme() {
+  const button = document.getElementById('theme-toggle');
+  const label = () => { button.textContent = isDark() ? 'Light mode' : 'Dark mode'; };
+  button.addEventListener('click', () => { toggleTheme(); label(); });
+  label();
+}
+
 async function start() {
+  initTheme();
+  wireTheme();
   main.replaceChildren(loadingBlock('Loading the model…'));
   try {
     const meta = await api.meta();

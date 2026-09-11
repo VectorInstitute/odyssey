@@ -1,10 +1,10 @@
 /**
- * Patient page: header facts and the list of admissions to replay.
+ * Patient page: who they are and the list of admissions to replay.
  */
 
 import { api } from '../api.js';
 import { el, loadingBlock, errorBlock, emptyBlock } from '../dom.js';
-import { duration } from '../format.js';
+import { ageSex, duration } from '../format.js';
 import { trainingBadge } from './gallery.js';
 
 /**
@@ -22,27 +22,21 @@ export async function renderPatient(root, { sid }) {
     root.replaceChildren(errorBlock(err));
     return () => {};
   }
-  const facts = [
-    patient.age_years != null ? `${Math.round(patient.age_years)} years` : null,
-    patient.sex ? `Sex ${patient.sex}` : null,
-    `${patient.visits.length} admission${patient.visits.length === 1 ? '' : 's'}`,
-  ].filter(Boolean);
+  const n = patient.visits.length;
   const rows = patient.visits.map((v) =>
-    el('a', { class: 'card visit-row', href: `#/p/${patient.subject_id}/v/${v.visit_id}` }, [
+    el('a', { class: 'visit-row', href: `#/p/${patient.subject_id}/v/${v.visit_id}` }, [
       el('div', { class: 'grow' }, [
-        el('div', { class: 'case-card__headline', text: v.admission }),
-        el('div', { class: 'muted', text: `Stay ${duration(v.end_hours - v.start_hours)} · ${v.n_events} recorded events` }),
+        el('div', { class: 'visit-row__title', text: v.admission }),
+        el('div', { class: 'muted', text: `${duration(v.end_hours - v.start_hours)} stay · ${v.n_events.toLocaleString()} chart entries` }),
       ]),
-      el('span', { class: 'btn btn--small btn--ghost', text: 'Replay →' }),
+      el('span', { class: 'btn btn--small btn--ghost', text: 'Replay' }),
     ]),
   );
   root.replaceChildren(
+    el('a', { href: '#/', class: 'backlink', text: '← All patients' }),
     el('div', { class: 'page-head' }, [
-      el('div', {}, [
-        el('h1', { text: `Patient ${patient.subject_id}` }),
-        el('p', { text: facts.join(' · ') }),
-      ]),
-      trainingBadge(patient.seen_in_training),
+      el('h1', {}, [`Patient ${patient.subject_id}`, ' ', trainingBadge(patient.seen_in_training)]),
+      el('p', { text: `${ageSex(patient.age_years, patient.sex)} · ${n} admission${n === 1 ? '' : 's'}` }),
     ]),
     rows.length ? el('div', { class: 'visit-list' }, rows) : emptyBlock('This patient has no admissions.'),
   );

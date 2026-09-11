@@ -1,6 +1,8 @@
 /**
- * Gallery: curated visits, grouped into early warnings, quiet stays,
- * misses and false alarms. Every section shows its honest summary line.
+ * Gallery: curated admissions grouped by what the model did (warned in
+ * time, stayed quiet, missed, or raised a false alarm), then the full
+ * patient list behind a disclosure. Every section says how often its
+ * pattern happens, so a hand-picked case is never mistaken for the norm.
  */
 
 import { api } from '../api.js';
@@ -10,11 +12,10 @@ import { eventInfo } from '../meta.js';
 import { eventColor } from '../theme.js';
 
 const INTRO = {
-  early_warning: 'The event happened, and the alert had already been on for hours when it began.',
-  quiet: 'No event happened, and the risk stayed low. The model does not flag everyone.',
-  miss: 'The event happened with no alert on at that moment.',
-  false_alarm: 'The alert came on, but the event never happened during the stay.',
-  other: 'Every patient in this dataset.',
+  early_warning: 'The event happened, and the alert had been on for hours before it began.',
+  quiet: 'Nothing happened, and the risk stayed low the whole stay.',
+  miss: 'The event happened while no alert was on.',
+  false_alarm: 'The alert came on, but the event never happened.',
 };
 
 /**
@@ -26,8 +27,8 @@ export function trainingBadge(seen) {
   return seen
     ? el('span', {
         class: 'pill pill--training',
-        title: 'The model saw this patient during training. Its forecasts here are not a fair test.',
-        text: 'Seen in training',
+        title: 'This patient was in the model’s training data, so its forecasts here are not a fair test.',
+        text: 'In training data',
       })
     : el('span', { class: 'pill pill--heldout', title: 'The model never saw this patient.', text: 'Unseen patient' });
 }
@@ -36,50 +37,75 @@ function caseHref(c) {
   return `#/p/${c.subject_id}/v/${c.visit_id}`;
 }
 
-function caseCard(meta, c) {
-  const color = c.event ? eventColor(c.event) : null;
-  const chips = [
-    c.event
-      ? el('span', { class: 'pill pill--event', style: { background: color }, text: eventInfo(meta, c.event).short })
-      : null,
-    c.lead_hours != null ? el('span', { class: 'pill', text: `${c.lead_approximate ? '≈' : ''}${Math.round(c.lead_hours)} h of warning` }) : null,
-    el('span', { text: `Stay ${duration(c.los_hours)}` }),
-    trainingBadge(c.seen_in_training),
-  ];
-  return el(
-    'a',
-    { class: 'card case-card', href: caseHref(c), style: color ? { '--case-color': color } : {} },
-    [
-      el('div', { class: 'case-card__headline', text: c.headline }),
-      el('div', { class: 'case-card__meta' }, chips),
-      el('div', { class: 'case-card__id', text: `Patient ${c.subject_id} · visit ${c.visit_id}` }),
-    ],
-  );
+function keyLine(c) {
+  const lead = c.lead_hours != null ? `${c.lead_approximate ? 'About ' : ''}${Math.round(c.lead_hours)} h of warning` : '';
+  switch (c.kind) {
+    case 'early_warning': return lead || 'Alert on before it began';
+    case 'quiet': return `Risk stayed low for ${duration(c.los_hours)}`;
+    case 'miss': return 'Began with no alert on';
+    case 'false_alarm': return 'Alert came on; it never happened';
+    default: return c.headline;
+  }
 }
 
-function compactList(c) {
-  return el('li', {}, [
-    el('a', { href: caseHref(c), text: `Patient ${c.subject_id}` }),
-    ' ',
-    el('span', { class: 'muted', text: `· ${c.headline} · ${duration(c.los_hours)}` }),
-    c.seen_in_training ? el('span', { class: 'faint', text: ' · seen in training' }) : null,
+function caseCard(meta, c) {
+  const info = c.event ? eventInfo(meta, c.event) : null;
+  return el('a', { class: 'case', href: caseHref(c), title: c.headline }, [
+    el('div', { class: 'case__event' }, [
+      info ? el('span', { class: 'dot', style: { background: eventColor(c.event) } }) : null,
+      info ? info.display : 'No event',
+    ]),
+    el('div', { class: 'case__key', text: keyLine(c) }),
+    el('div', { class: 'case__meta' }, [
+      `Patient ${c.subject_id} · ${duration(c.los_hours)} stay`,
+      c.seen_in_training ? null : el('span', { class: 'case__unseen', text: ' · unseen patient' }),
+    ]),
   ]);
 }
 
 function section(meta, s) {
   const body = !s.cases.length
-    ? emptyBlock('No visit matched this rule.')
-    : s.kind === 'other'
-      ? el('ul', { class: 'compact-list' }, s.cases.map(compactList))
-      : el('div', { class: 'case-grid' }, s.cases.map((c) => caseCard(meta, c)));
+    ? el('p', { class: 'muted', text: 'No admission in this data matched.' })
+    : el('div', { class: 'case-grid' }, s.cases.map((c) => caseCard(meta, c)));
   return el('section', { class: 'section', 'aria-labelledby': `sec-${s.kind}` }, [
     el('div', { class: 'section__head' }, [
       el('h2', { id: `sec-${s.kind}`, text: s.title }),
-      el('span', { class: 'section__kind', text: `${s.cases.length} shown` }),
+      el('span', { class: 'section__intro', text: INTRO[s.kind] ?? '' }),
     ]),
-    el('p', { class: 'section__summary' }, [INTRO[s.kind] ? `${INTRO[s.kind]} ` : '', el('strong', { text: s.summary })]),
     body,
+    el('p', { class: 'section__rate', text: `How often: ${s.summary}.` }),
   ]);
+}
+
+function allPatients(s) {
+  const byPatient = new Map();
+  for (const c of s.cases) {
+    const entry = byPatient.get(c.subject_id) ?? { sid: c.subject_id, n: 0, seen: c.seen_in_training };
+    entry.n += 1;
+    byPatient.set(c.subject_id, entry);
+  }
+  const rows = [...byPatient.values()].sort((a, b) => a.sid - b.sid);
+  return el('details', { class: 'section all-patients' }, [
+    el('summary', {}, [
+      el('span', { class: 'all-patients__title', text: `All ${rows.length} patients` }),
+      el('span', { class: 'muted', text: ` · ${s.cases.length} admissions` }),
+    ]),
+    el('ul', { class: 'patient-list' }, rows.map((r) => el('li', {}, [
+      el('a', { href: `#/p/${r.sid}`, text: `Patient ${r.sid}` }),
+      el('span', { class: 'muted', text: ` · ${r.n} admission${r.n === 1 ? '' : 's'}` }),
+      r.seen ? null : el('span', { class: 'case__unseen', text: ' · unseen' }),
+    ]))),
+  ]);
+}
+
+function trainingNote(other) {
+  if (!other) return null;
+  const subjects = new Map(other.cases.map((c) => [c.subject_id, c.seen_in_training]));
+  const seen = [...subjects.values()].filter(Boolean).length;
+  if (!seen) return null;
+  return el('p', { class: 'note', text:
+    `${seen} of the ${subjects.size} patients here were in the model’s training data. ` +
+    'Only the ones marked "unseen" are a fair test of the model.' });
 }
 
 /**
@@ -97,19 +123,21 @@ export async function renderGallery(root, { meta }) {
     root.replaceChildren(errorBlock(err));
     return () => {};
   }
+  const other = gallery.sections.find((s) => s.kind === 'other');
+  const curated = gallery.sections.filter((s) => s.kind !== 'other');
   const head = el('div', { class: 'page-head' }, [
-    el('div', {}, [
-      el('h1', { text: 'Replay a real admission' }),
-      el('p', {
-        text:
-          'Pick a stay. The model reads the chart one event at a time, as it was written, and forecasts ' +
-          'what happens next. It never sees the future. We show the hits and the misses.',
-      }),
-    ]),
+    el('h1', { text: 'Pick an admission to replay' }),
+    el('p', {
+      text:
+        'The model reads the chart one entry at a time, as it was written, and forecasts what happens next. ' +
+        'It never sees the future. Hits and misses are both shown.',
+    }),
+    trainingNote(other),
   ]);
-  const sections = gallery.sections.length
-    ? gallery.sections.map((s) => section(meta, s))
-    : [emptyBlock('No patients are available.')];
-  root.replaceChildren(head, ...sections);
+  root.replaceChildren(
+    head,
+    ...(curated.length ? curated.map((s) => section(meta, s)) : [emptyBlock('No patients are available.')]),
+    other ? allPatients(other) : null,
+  );
   return () => {};
 }

@@ -61,6 +61,25 @@ gcloud compute ssh odyssey-cbm-a100 --zone us-central1-f \
 
 Then open http://localhost:8765 (credentialed) or http://localhost:8766 (open).
 
+The server maps static URLs to files at start-up but reads each file on
+every request, so a changed `index.html`, `styles.css` or `js/**` file can
+be copied over the running deployment and takes effect on the next reload.
+Adding or removing a static file needs a restart.
+
+## What a clinician sees
+
+The pages are written around a clinician's questions, in order. The
+replay opens with the patient in one line (age, sex, admission type, length
+of stay), a sticky "now" bar (play, scrub, clock time since admission),
+then one tile per event with the risk in the chosen window, a one-word
+status against its alert line (Low, Watch, Alert on, Happened) and how that
+compares with the average patient. Below: the risk chart with what comes
+after "now" faded, what happened in the stay in plain words, the
+conditions the model believes are present right now, and the what-if and
+evidence tools. The 29-row concept heat strip, the alert-line statistics
+and the next-token forecast are behind disclosures. Light theme by default;
+a footer link switches to dark.
+
 ## What is shown, and what is deliberately not
 
 Shown: the hazard heads' risk (hidden at and after the event's onset), alert

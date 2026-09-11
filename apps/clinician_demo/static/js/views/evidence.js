@@ -32,14 +32,14 @@ function resultRow(item, maxAbs) {
 
 function doneView(job, targetLabel) {
   const items = job.result;
-  if (!items.length) return emptyBlock('No recent recorded event moved this forecast.');
+  if (!items.length) return emptyBlock('Nothing charted recently moved this forecast.');
   const maxAbs = Math.max(...items.map((i) => Math.abs(i.delta)));
   return el('div', { class: 'panel' }, [
     el('div', { class: 'muted' }, [
       `${targetLabel}: ${pct(items[0].baseline)} as recorded. `,
-      'Each bar shows how the forecast would change if that event had not been recorded.',
+      'Each bar shows how the forecast would change if that item had not been charted.',
     ]),
-    job.note ? el('div', { class: 'faint', text: job.note }) : null,
+    job.note ? el('div', { class: 'muted', text: job.note }) : null,
     el('ol', { class: 'evidence-list' }, items.map((i) => resultRow(i, maxAbs))),
   ]);
 }
@@ -55,14 +55,14 @@ export function createEvidencePanel(container, { meta, sid, vid, getT, events, o
   let destroyed = false;
   let timer = null;
   const select = el('select', { 'aria-label': 'What to explain' }, [
-    el('optgroup', { label: 'Risk within 24 h' }, events.map((e) => el('option', { value: `event:${e.name}`, text: e.display }))),
+    el('optgroup', { label: 'Risk in the next 24 h' }, events.map((e) => el('option', { value: `event:${e.name}`, text: e.display }))),
     el('optgroup', { label: 'What the model thinks is going on' }, meta.concepts.map((c) => el('option', { value: `concept:${c.name}`, text: c.display }))),
   ]);
-  const runBtn = el('button', { class: 'btn', type: 'button', text: 'Explain this moment' });
+  const runBtn = el('button', { class: 'btn', type: 'button', text: 'Explain' });
   const out = el('div');
   const panel = el('div', { class: 'panel' }, [
     el('div', { class: 'note', text: meta.disclaimers.evidence }),
-    el('div', { class: 'panel__controls' }, [select, runBtn, el('span', { class: 'faint', text: `Looks at the last ${LOOKBACK_HOURS} h.` })]),
+    el('div', { class: 'panel__controls' }, [select, runBtn, el('span', { class: 'muted', text: `Looks at what was charted in the last ${LOOKBACK_HOURS} h.` })]),
     out,
   ]);
   container.replaceChildren(panel);
@@ -119,7 +119,7 @@ export function createEvidencePanel(container, { meta, sid, vid, getT, events, o
     try {
       const job = await api.evidence(sid, vid, { t_hours: t, target, lookback_hours: LOOKBACK_HOURS });
       if (destroyed) return;
-      out.prepend(el('div', { class: 'faint', text: `Explaining ${label} at ${clock(t)}.` }));
+      out.prepend(el('div', { class: 'muted', text: `Explaining ${label} at ${clock(t)}.` }));
       poll(job.job_id, label);
     } catch (err) {
       if (!destroyed) {

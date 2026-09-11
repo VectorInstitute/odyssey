@@ -1,7 +1,11 @@
 /**
- * Read theme colours from CSS custom properties, so charts drawn in SVG
- * and canvas follow the light/dark palette defined in styles.css.
+ * Theme: light by default (the look clinicians know from the chart), dark
+ * on request. Charts drawn in SVG and canvas read their colours from the
+ * CSS custom properties defined in styles.css, so they follow the theme.
  */
+
+const STORAGE_KEY = 'odyssey-demo-theme';
+const EVENT = 'odyssey-themechange';
 
 /**
  * The current value of a CSS custom property on :root.
@@ -36,13 +40,45 @@ export function hexToRgb(hex) {
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
 
+/** @returns {boolean} whether the dark theme is on */
+export function isDark() {
+  return document.documentElement.dataset.theme === 'dark';
+}
+
+function apply(dark) {
+  if (dark) document.documentElement.dataset.theme = 'dark';
+  else delete document.documentElement.dataset.theme;
+  document.dispatchEvent(new CustomEvent(EVENT));
+}
+
+/** Restore the viewer's theme choice (only the choice is stored, never data). */
+export function initTheme() {
+  let stored = null;
+  try {
+    stored = localStorage.getItem(STORAGE_KEY);
+  } catch {
+    stored = null;
+  }
+  apply(stored === 'dark');
+}
+
+/** Switch between light and dark and remember the choice. */
+export function toggleTheme() {
+  const dark = !isDark();
+  apply(dark);
+  try {
+    localStorage.setItem(STORAGE_KEY, dark ? 'dark' : 'light');
+  } catch {
+    /* storage may be unavailable; the theme still switches for this page */
+  }
+}
+
 /**
- * Run fn whenever the OS light/dark preference changes.
+ * Run fn whenever the theme changes.
  * @param {() => void} fn
  * @returns {() => void} unsubscribe
  */
 export function onThemeChange(fn) {
-  const query = window.matchMedia('(prefers-color-scheme: dark)');
-  query.addEventListener('change', fn);
-  return () => query.removeEventListener('change', fn);
+  document.addEventListener(EVENT, fn);
+  return () => document.removeEventListener(EVENT, fn);
 }
