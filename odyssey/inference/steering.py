@@ -75,6 +75,7 @@ from odyssey.data.alert_events import (
     all_event_times,
     hazard_events_for,
 )
+from odyssey.data.code_metadata import load_code_descriptions
 from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.concepts import canonical_concept_name
 from odyssey.data.history_recap import maybe_history_recap
@@ -603,21 +604,7 @@ def token_descriptions(
     description, or when no metadata is given, map to themselves.
     """
     names: dict[str, str] = {t: t for t in tokens}
-    if metadata_dir is None:
-        return names
-    path = Path(metadata_dir) / "codes.parquet"
-    if not path.exists():
-        logger.warning("[steering] no %s; tokens stay as codes", path)
-        return names
-    codes = pl.read_parquet(path)
-    if "description" not in codes.columns:
-        logger.warning(
-            "[steering] %s has no description column; tokens stay as codes", path
-        )
-        return names
-    lookup = dict(
-        zip(codes["code"].to_list(), codes["description"].to_list(), strict=True)
-    )
+    lookup = load_code_descriptions(metadata_dir)
     for token in tokens:
         code, _, suffix = token.partition("::")
         description = lookup.get(code)

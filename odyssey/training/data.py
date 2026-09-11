@@ -106,6 +106,23 @@ def load_meds_shard(path: str | Path) -> pl.DataFrame:
     return _load_meds_paths([Path(path)])
 
 
+def load_meds_subject(path: str | Path, subject_id: int) -> pl.DataFrame:
+    """Load one subject's rows from one MEDS shard.
+
+    Columns are projected like :func:`load_meds_shards`. The subject
+    filter is pushed into the Parquet scan, so row groups that
+    cannot hold the subject are skipped rather than read and discarded --
+    what makes per-patient lookups cheap for interactive readers. Row order
+    within the subject is the shard's own, which is what
+    :func:`~odyssey.data.sequences.build_patient_sequence`'s stable sort
+    relies on for same-timestamp events.
+    """
+    lf = pl.scan_parquet(Path(path))
+    available = set(lf.collect_schema().names())
+    columns = [c for c in _MEDS_EVENT_COLUMNS if c in available]
+    return lf.select(columns).filter(pl.col("subject_id") == subject_id).collect()
+
+
 def _shuffle_buffered(
     items: Iterator[_T], *, buffer_size: int, rng: random.Random
 ) -> Iterator[_T]:

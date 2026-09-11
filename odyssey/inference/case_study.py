@@ -39,18 +39,19 @@ from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.sequences import PatientSequence, build_patient_sequence
 from odyssey.data.sidecars import activate_sidecars
-from odyssey.data.streaming import NO_SUBJECT, PackedLaneSampler
 from odyssey.data.value_binning import add_value_tokens
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.legacy_concept_pins import resolve_concepts_for_run
+from odyssey.inference.patient_stream import risk_within, stream_patient
 from odyssey.inference.run_inference import load_run
 from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
-from odyssey.models.time_to_event import probability_within
 from odyssey.training.data import build_concept_label_dicts, load_meds_shards
-from odyssey.training.train import _move_chunk_to_device
 
 
 logger = logging.getLogger(__name__)
+
+#: Alert horizons of :attr:`PatientCaseTrace.event_risk_by_horizon`.
+RISK_HORIZONS_HOURS: tuple[float, ...] = (8.0, 24.0, 72.0)
 
 
 @dataclass(frozen=True)
@@ -93,6 +94,11 @@ class PatientCaseTrace:
     """Per position, per alert event: the head's P(event within 24h) --
     the alert curve a clinician would watch over the stay."""
 
+    event_risk_by_horizon: dict[str, list[list[float]]] = field(default_factory=dict)
+    """Horizon key (``"8h"``, ``"24h"``, ``"72h"``) -> per position, per
+    alert event, the head's P(event within that horizon). The 24h entry
+    equals :attr:`event_risk_24h`; empty when the model has no hazard heads."""
+
 
 def extract_patient_case(
     model: ConceptBottleneckSequenceModel,
@@ -105,20 +111,19 @@ def extract_patient_case(
     device: str = "cuda",
     top_k: int = 5,
     chunk_size: int = 256,
+    horizons: Sequence[float] = RISK_HORIZONS_HOURS,
 ) -> PatientCaseTrace:
     """Trace one patient position-by-position under the streaming regime.
 
     Streams the sequence through the model exactly the way training and
     :func:`~odyssey.inference.run_inference.run_streaming_inference`
     do -- ``chunk_size``-token windows with carried recurrent state, one
-    lane, no synthetic resets -- so every per-position probability in
-    the trace comes from the operating regime the model was actually
-    trained in. Pass the training run's own ``chunk_size``.
+    lane, no synthetic resets (:func:`~odyssey.inference.patient_stream.stream_patient`)
+    -- so every per-position probability in the trace comes from the
+    operating regime the model was actually trained in. Pass the training
+    run's own ``chunk_size``.
     """
     model.eval()
-    sampler = PackedLaneSampler(
-        iter([seq]), num_lanes=1, chunk_size=chunk_size, reset_prob=0.0
-    )
 
     predicted_top_k: list[list[tuple[str, float]]] = []
     true_next_code: list[str | None] = []
@@ -127,32 +132,26 @@ def extract_patient_case(
     observability_probs: list[list[float]] = []
     event_heads = getattr(model, "event_heads", None)
     event_risk: list[list[float]] = []
+    risk_by_horizon: dict[str, list[list[float]]] = (
+        {f"{h:g}h": [] for h in horizons} if event_heads is not None else {}
+    )
 
-    state = None
     with torch.no_grad():
-        for chunk in sampler:
-            chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
-            fwd = model.forward_with_features(
-                chunk.batch, state=state, reset_mask=chunk.reset_mask
-            )
-            logits, bottleneck_out, state = fwd.logits, fwd.bottleneck, fwd.state
+        for span in stream_patient(model, seq, device=device, chunk_size=chunk_size):
+            fwd, n_real = span.fwd, span.n_real
+            bottleneck_out = fwd.bottleneck
             # Case traces read concept/observability probabilities, which
             # only the bottleneck variant produces (fwd.bottleneck is None
             # for the baseline model).
             assert bottleneck_out is not None, (  # noqa: S101
                 "extract_patient_case requires a concept-bottleneck model"
             )
-            # One lane, one patient, no resets: real input positions are a
-            # contiguous prefix (padding only where the lane runs out).
-            input_real = chunk.subject_ids[0] != NO_SUBJECT
-            n_real = int(input_real.sum().item())
-            assert bool(input_real[:n_real].all())  # noqa: S101
-            probs = torch.softmax(logits[0, :n_real], dim=-1)  # (n_real, vocab)
+            probs = torch.softmax(fwd.logits[0, :n_real], dim=-1)  # (n_real, vocab)
             top_k_probs, top_k_ids = probs.topk(top_k, dim=-1)
-            # real_mask means "has a valid next-token target": false only
-            # at the final position of the whole sequence.
-            has_target = chunk.real_mask[0, :n_real]
-            targets = chunk.targets[0, :n_real]
+            # has_target is false only at the final position of the whole
+            # sequence (no next token to predict there).
+            has_target = span.has_target
+            targets = span.targets
             for i in range(n_real):
                 if not bool(has_target[i]):
                     predicted_top_k.append([])
@@ -179,8 +178,11 @@ def extract_patient_case(
             if event_heads is not None:
                 hazards = event_heads(fwd.features[0, :n_real])
                 event_risk.extend(
-                    probability_within(hazards, event_heads.edges, 24.0).tolist()
+                    risk_within(hazards, event_heads.edges, (24.0,))[..., 0].tolist()
                 )
+                by_horizon = risk_within(hazards, event_heads.edges, horizons)
+                for j, key in enumerate(risk_by_horizon):
+                    risk_by_horizon[key].extend(by_horizon[..., j].tolist())
 
     assert len(concept_probs) == len(seq)  # noqa: S101 -- every position, once
 
@@ -203,6 +205,7 @@ def extract_patient_case(
             list(event_heads.event_names) if event_heads is not None else []
         ),
         event_risk_24h=event_risk,
+        event_risk_by_horizon=risk_by_horizon,
     )
 
 
