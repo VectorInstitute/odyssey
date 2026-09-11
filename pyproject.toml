@@ -329,7 +329,7 @@ markers = [
 
 [tool.coverage]
     [tool.coverage.run]
-    source=["odyssey"]
+    source=["odyssey", "apps"]
     omit=["tests/*", "*__init__.py"]
 
 [build-system]
