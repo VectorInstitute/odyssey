@@ -222,7 +222,7 @@ explicit = true
 # Same reason as the ruff exclude above: these two ran on the VMs and
 # are committed verbatim, so they cannot be annotated without editing
 # the code that produced the published table.
-exclude = "^scripts/cohort/cohort_check_(mimic|eicu)\\.py$"
+exclude = "cohort_check_(mimic|eicu)\\.py$"
 ignore_missing_imports = true
 install_types = true
 pretty = true
