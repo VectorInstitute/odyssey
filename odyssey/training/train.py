@@ -117,6 +117,7 @@ from odyssey.training.summary_targets import (
     SummaryTargetTables,
     load_summary_tables,
     summary_target_names,
+    summary_target_weights,
     summary_targets_for_chunk,
 )
 from odyssey.utils.env_fingerprint import write_run_provenance
@@ -484,6 +485,16 @@ class TrainingConfig:
     summary_num_targets: int = 0
     """Width of the summary head, recorded at training time so a checkpoint
     rebuilds the same head even if the target panel definition changes."""
+
+    summary_change_weight: float = 1.0
+    """Multiplier, inside the summary loss, on the change-from-baseline
+    (``delta_visit_first``) and occurrence-count targets relative to the
+    window-level targets. The first arm (weight 0.5, all targets equal)
+    tripled the readability of window levels but left changes and counts
+    almost where they were (creatinine change from admission R^2 0.00 ->
+    0.23 post-bottleneck, ~0 pre; vasopressor 6 h count unchanged); levels
+    are 241 of the 328 targets and won the average. > 1 shifts the gradient
+    to the targets the state does not hold."""
 
     randint_prob: float = 0.25
     """Intervention-aware training (CEM's RandInt): at every training
@@ -1017,6 +1028,13 @@ def build_objective(
             config.summary_weight
             if getattr(config, "summary_targets_dir", None)
             else 0.0
+        ),
+        summary_target_weights=(
+            summary_target_weights(
+                float(getattr(config, "summary_change_weight", 1.0))
+            ).to(device)
+            if getattr(config, "summary_targets_dir", None)
+            else None
         ),
     )
 

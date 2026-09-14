@@ -81,6 +81,23 @@ def summary_target_names() -> list[str]:
     return names
 
 
+def summary_target_weights(change_weight: float = 1.0) -> torch.Tensor:
+    """Return ``(K,)`` per-target loss weights.
+
+    ``change_weight`` on the ``delta_visit_first`` and count targets, 1 on
+    the window-level targets.
+    """
+    names = summary_target_names()
+    hard = [
+        n.rsplit(".", 1)[-1] == "delta_visit_first"
+        or n.rsplit(".", 1)[-1] in COUNT_STATS
+        for n in names
+    ]
+    return torch.where(
+        torch.tensor(hard), torch.tensor(float(change_weight)), torch.tensor(1.0)
+    )
+
+
 def count_target_mask(names: Sequence[str] | None = None) -> np.ndarray:
     """Boolean mask over the panel: which targets are occurrence counts."""
     names = list(names) if names is not None else summary_target_names()
@@ -391,5 +408,6 @@ __all__ = [
     "landmark_rows",
     "load_summary_tables",
     "summary_target_names",
+    "summary_target_weights",
     "summary_targets_for_chunk",
 ]

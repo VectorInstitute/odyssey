@@ -11,7 +11,11 @@ from odyssey.models.sequence_model import (
     ForecastObjective,
 )
 from odyssey.models.summary_head import SummaryHead, masked_huber_loss
-from odyssey.training.summary_targets import SummaryTargets
+from odyssey.training.summary_targets import (
+    SummaryTargets,
+    summary_target_names,
+    summary_target_weights,
+)
 
 
 VOCAB = 40
@@ -129,3 +133,29 @@ def test_baseline_model_accepts_summary_targets_too() -> None:
         chunk, objective=ForecastObjective(summary_weight=1.0), summary_targets=targets
     )
     assert "summary_loss" in components
+
+
+def test_masked_huber_loss_target_weights_reweight_inside_the_average() -> None:
+    pred = torch.zeros(1, 1, 2)
+    target = torch.tensor([[[1.0, 0.5]]])  # huber 0.5 and 0.125
+    mask = torch.ones(1, 1, 2, dtype=torch.bool)
+    plain = masked_huber_loss(pred, target, mask)
+    assert plain.item() == (0.5 + 0.125) / 2
+    weighted = masked_huber_loss(
+        pred, target, mask, target_weights=torch.tensor([3.0, 1.0])
+    )
+    assert abs(weighted.item() - (3 * 0.5 + 0.125) / 4) < 1e-6
+    # a weight of one everywhere is the plain average
+    same = masked_huber_loss(pred, target, mask, target_weights=torch.ones(2))
+    assert same.item() == plain.item()
+
+
+def test_summary_target_weights_mark_changes_and_counts() -> None:
+    names = summary_target_names()
+    w = summary_target_weights(4.0)
+    assert w.shape == (len(names),)
+    assert w[names.index("creatinine.delta_visit_first")].item() == 4.0
+    assert w[names.index("drug.vasopressor.n_6h")].item() == 4.0
+    assert w[names.index("family.lab.n_24h")].item() == 4.0
+    assert w[names.index("creatinine.min_6h")].item() == 1.0
+    assert summary_target_weights(1.0).eq(1.0).all()

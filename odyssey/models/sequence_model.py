@@ -128,6 +128,8 @@ class ForecastObjective:
     """Weight of the self-supervised window-summary loss
     (:mod:`odyssey.models.summary_head`), if the model has a summary head;
     the targets come per chunk from :mod:`odyssey.training.summary_targets`."""
+    summary_target_weights: torch.Tensor | None = None
+    """Optional ``(K,)`` per-target weights inside the summary loss."""
 
 
 class ForwardWithFeatures(NamedTuple):
@@ -432,12 +434,16 @@ class _SequenceModelBase(nn.Module):
         summary_head: SummaryHead | None,
         features: torch.Tensor,
         summary_targets: Optional["SummaryTargets"],
+        target_weights: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Masked Huber loss of the window-summary head (zero-graph if absent)."""
         if summary_head is None or summary_targets is None:
             return features.sum() * 0.0
         return masked_huber_loss(
-            summary_head(features), summary_targets.values, summary_targets.mask
+            summary_head(features),
+            summary_targets.values,
+            summary_targets.mask,
+            target_weights=target_weights,
         )
 
     def _streaming_time_loss(
@@ -618,7 +624,10 @@ class BaselineSequenceModel(_SequenceModelBase):
         event_loss = self._streaming_event_loss(self.event_heads, hidden, event_targets)
         value_loss, _ = self._streaming_value_loss(self.value_head, hidden, chunk)
         summary_loss = self._streaming_summary_loss(
-            self.summary_head, hidden, summary_targets
+            self.summary_head,
+            hidden,
+            summary_targets,
+            target_weights=objective.summary_target_weights,
         )
         total = (
             task_loss
@@ -910,7 +919,10 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         )
         value_loss, _ = self._streaming_value_loss(self.value_head, head_feats, scored)
         summary_loss = self._streaming_summary_loss(
-            self.summary_head, head_feats, summary_targets
+            self.summary_head,
+            head_feats,
+            summary_targets,
+            target_weights=objective.summary_target_weights,
         )
         forecast_loss = (
             next_token_loss
@@ -1090,7 +1102,10 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         )
         value_loss, _ = self._streaming_value_loss(self.value_head, head_feats, chunk)
         summary_loss = self._streaming_summary_loss(
-            self.summary_head, head_feats, summary_targets
+            self.summary_head,
+            head_feats,
+            summary_targets,
+            target_weights=objective.summary_target_weights,
         )
         forecast_loss = (
             next_token_loss

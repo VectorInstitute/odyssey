@@ -49,12 +49,16 @@ def masked_huber_loss(
     mask: torch.Tensor,
     *,
     delta: float = 1.0,
+    target_weights: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Huber loss averaged over the ``True`` entries of ``mask``.
 
-    ``prediction``/``target``/``mask`` share the shape ``(..., K)``. Returns
-    ``0 * prediction.sum()`` when the mask is empty, so the result always
-    carries a graph and can be added to other losses unconditionally.
+    ``prediction``/``target``/``mask`` share the shape ``(..., K)``.
+    ``target_weights`` (``(K,)``, optional) reweights the per-target terms
+    inside the average, so targets the state finds hardest (changes from
+    baseline, counts) can carry more of the gradient than the levels it
+    learns anyway. Returns ``0 * prediction.sum()`` when the mask is empty,
+    so the result always carries a graph and can be added unconditionally.
     """
     if not bool(mask.any()):
         return prediction.sum() * 0.0
@@ -62,6 +66,8 @@ def masked_huber_loss(
         prediction.float(), target.float(), reduction="none", delta=delta
     )
     weights = mask.to(per_entry.dtype)
+    if target_weights is not None:
+        weights = weights * target_weights.to(per_entry.dtype).to(weights.device)
     return (per_entry * weights).sum() / weights.sum()
 
 
