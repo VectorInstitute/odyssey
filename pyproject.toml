@@ -32,7 +32,7 @@ dependencies = [
     "idna>=3.19",
     # Eval metrics only (AUROC/AUPRC/Brier score for concept quality) --
     # not used anywhere in the training/inference path itself.
-    "scikit-learn>=1.7.0",
+    "scikit-learn>=1.9.1",
 ]
 
 [project.optional-dependencies]
