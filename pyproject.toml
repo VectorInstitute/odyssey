@@ -171,7 +171,7 @@ meds_tab = [
 # from_pretrained(..., device_map=...), so nothing here actually needs
 # accelerate's device-mapping machinery -- add it if that changes.
 text = [
-    "transformers>=5.16.1",
+    "transformers>=5.17.0",
     "sentencepiece>=0.2.0",
     "protobuf>=7.36.1",
 ]
