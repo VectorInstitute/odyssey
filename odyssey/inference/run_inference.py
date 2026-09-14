@@ -410,6 +410,18 @@ def load_run(
     config.event_head_hidden = (
         int(first_layer.shape[0]) if first_layer is not None else 0
     )
+    # Summary head (training-only): rebuild it at the checkpoint's own width
+    # so the weights load; it is never read at inference.
+    summary_out = state.get("summary_head.proj.weight")
+    summary_hidden = state.get("summary_head.proj.0.weight")
+    if summary_out is None and summary_hidden is not None:
+        summary_out = state.get("summary_head.proj.2.weight")
+    config.summary_num_targets = (
+        int(summary_out.shape[0]) if summary_out is not None else 0
+    )
+    config.summary_head_hidden = (
+        int(summary_hidden.shape[0]) if summary_hidden is not None else 0
+    )
 
     concepts = concepts_for_source(
         getattr(config, "source", "mimic_iv"),

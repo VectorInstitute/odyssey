@@ -113,6 +113,13 @@ from odyssey.training.steering_phase import (
     SteeringSchedule,
     choose_injection,
 )
+from odyssey.training.summary_targets import (
+    SummaryTargetTables,
+    load_summary_tables,
+    summary_target_names,
+    summary_target_weights,
+    summary_targets_for_chunk,
+)
 from odyssey.utils.env_fingerprint import write_run_provenance
 
 
@@ -454,6 +461,41 @@ class TrainingConfig:
     value_head -- lets an A/B separate "better input encoding" from
     "better output objective"."""
 
+    summary_targets_dir: str | None = None
+    """Directory of precomputed self-supervised window-summary targets
+    (scripts/build_summary_targets.py: ``<dir>/train/*.parquet``,
+    ``<dir>/tuning/*.parquet``, ``<dir>/stats.json``). When set, a summary
+    head (odyssey.models.summary_head) is trained to report, at 4-hourly
+    landmark positions, the GBM's window statistics of the chart so far
+    (per-signal window min/max/mean, change from the visit's first value,
+    per-family occurrence counts) from the same features the hazard heads
+    read. The statistics are computed from the input and never fed in;
+    the head is unused at inference. Frozen probes on 2026-09-13 showed the
+    state lacks exactly these (change from baseline R^2 0.00), which is
+    the content of the GBM's margin on AKI and the counting events. None
+    (the default) reproduces every existing run."""
+
+    summary_weight: float = 0.5
+    """Weight of the summary head's masked Huber loss."""
+
+    summary_head_hidden: int = 0
+    """Hidden width of the summary head; 0 = linear, which asks for the
+    same linear readability the probes measure."""
+
+    summary_num_targets: int = 0
+    """Width of the summary head, recorded at training time so a checkpoint
+    rebuilds the same head even if the target panel definition changes."""
+
+    summary_change_weight: float = 1.0
+    """Multiplier, inside the summary loss, on the change-from-baseline
+    (``delta_visit_first``) and occurrence-count targets relative to the
+    window-level targets. The first arm (weight 0.5, all targets equal)
+    tripled the readability of window levels but left changes and counts
+    almost where they were (creatinine change from admission R^2 0.00 ->
+    0.23 post-bottleneck, ~0 pre; vasopressor 6 h count unchanged); levels
+    are 241 of the 328 targets and won the average. > 1 shifts the gradient
+    to the targets the state does not hold."""
+
     randint_prob: float = 0.25
     """Intervention-aware training (CEM's RandInt): at every training
     position, each observed concept's mixing probability is replaced by
@@ -691,6 +733,8 @@ def build_model(
             value_head=bool(getattr(config, "value_head", False)),
             value_head_hidden=int(getattr(config, "value_head_hidden", 0) or 0),
             source=getattr(config, "source", "mimic_iv"),
+            summary_targets=int(getattr(config, "summary_num_targets", 0) or 0),
+            summary_head_hidden=int(getattr(config, "summary_head_hidden", 0) or 0),
         )
     return ConceptBottleneckSequenceModel(
         backbone=backbone,
@@ -710,6 +754,8 @@ def build_model(
         value_head=bool(getattr(config, "value_head", False)),
         value_head_hidden=int(getattr(config, "value_head_hidden", 0) or 0),
         source=getattr(config, "source", "mimic_iv"),
+        summary_targets=int(getattr(config, "summary_num_targets", 0) or 0),
+        summary_head_hidden=int(getattr(config, "summary_head_hidden", 0) or 0),
     )
 
 
@@ -978,6 +1024,18 @@ def build_objective(
         value_head_weight=(
             config.value_head_weight if getattr(config, "value_head", False) else 0.0
         ),
+        summary_weight=(
+            config.summary_weight
+            if getattr(config, "summary_targets_dir", None)
+            else 0.0
+        ),
+        summary_target_weights=(
+            summary_target_weights(
+                float(getattr(config, "summary_change_weight", 1.0))
+            ).to(device)
+            if getattr(config, "summary_targets_dir", None)
+            else None
+        ),
     )
 
 
@@ -992,6 +1050,7 @@ def evaluate_streaming(
     supervision: ConceptSupervision = "stay",
     objective: ForecastObjective | None = None,
     event_tables: EventTimeTables | None = None,
+    summary_tables: SummaryTargetTables | None = None,
 ) -> dict[str, float]:
     """Average loss components over one (partial), gradient-free sampler pass."""
     model.eval()
@@ -1009,9 +1068,18 @@ def evaluate_streaming(
                 if event_tables is not None
                 else None
             )
+            summary_targets = (
+                summary_targets_for_chunk(chunk, summary_tables)
+                if summary_tables is not None
+                else None
+            )
             if isinstance(model, BaselineSequenceModel):
                 _, components, state = model.compute_streaming_loss(
-                    chunk, state=state, objective=objective, event_targets=event_targets
+                    chunk,
+                    state=state,
+                    objective=objective,
+                    event_targets=event_targets,
+                    summary_targets=summary_targets,
                 )
             else:
                 _, components, state = model.compute_streaming_loss(
@@ -1022,6 +1090,7 @@ def evaluate_streaming(
                     supervision=supervision,
                     objective=objective,
                     event_targets=event_targets,
+                    summary_targets=summary_targets,
                 )
             state = _detach_state(state)
             for key, value in components.items():
@@ -1042,6 +1111,8 @@ def _combined_val_loss(
     time_weight: float = 0.0,
     event_hazard_weight: float = 0.0,
     value_head_weight: float = 0.0,
+    *,
+    summary_weight: float = 0.0,
 ) -> float:
     """Compute the same task + weighted-auxiliary combination the training loss uses.
 
@@ -1056,6 +1127,7 @@ def _combined_val_loss(
         + time_weight * components.get("time_loss", 0.0)
         + event_hazard_weight * components.get("event_loss", 0.0)
         + value_head_weight * components.get("value_loss", 0.0)
+        + summary_weight * components.get("summary_loss", 0.0)
         + weights.concept * components.get("concept_loss", 0.0)
         + weights.orthogonality * components.get("orthogonality_loss", 0.0)
         + weights.observability * components.get("observability_loss", 0.0)
@@ -1078,6 +1150,9 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
         config.event_hazards = any(k.startswith("event_heads.") for k in resume_keys)
         config.value_head = any(k.startswith("value_head.") for k in resume_keys)
         del resume_keys
+    config.summary_num_targets = (
+        len(summary_target_names()) if config.summary_targets_dir else 0
+    )
     (output_dir / "config.json").write_text(json.dumps(asdict(config), indent=2))
     _activate_run_sidecars(config)
 
@@ -1224,6 +1299,7 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
             shuffle_seed=config.seed + epoch,
         )
 
+    train_summary_tables, tuning_summary_tables = _summary_tables(config)
     corpus = PreparedCorpus(
         vocab=vocab,
         concepts=concepts,
@@ -1237,6 +1313,8 @@ def train(config: TrainingConfig) -> Path:  # noqa: PLR0912, PLR0915
         tuning_event_tables=tuning_event_tables,
         tuning_events_binned=tuning_events_binned,
         make_train_patients=make_train_patients,
+        train_summary_tables=train_summary_tables,
+        tuning_summary_tables=tuning_summary_tables,
     )
     return _run_training(config, output_dir, device, corpus)
 
@@ -1258,6 +1336,28 @@ class PreparedCorpus:
     tuning_events_binned: pl.DataFrame
     make_train_patients: Callable[[int], Iterator[PatientSequence]]
     """epoch -> the training patient stream for that epoch."""
+    train_summary_tables: SummaryTargetTables | None = None
+    tuning_summary_tables: SummaryTargetTables | None = None
+
+
+def _summary_tables(
+    config: TrainingConfig,
+) -> tuple[SummaryTargetTables | None, SummaryTargetTables | None]:
+    """Load the precomputed window-summary targets for both splits, if configured."""
+    directory = getattr(config, "summary_targets_dir", None)
+    if not directory:
+        return None, None
+    root = Path(directory)
+    logger.info("[data] loading window-summary targets from %s", root)
+    train = load_summary_tables(root / "train", root / "stats.json")
+    tuning = load_summary_tables(root / "tuning", root / "stats.json")
+    logger.info(
+        "[data] summary targets: %d train visits, %d tuning visits, %d targets",
+        len(train),
+        len(tuning),
+        train.num_targets,
+    )
+    return train, tuning
 
 
 def _train_streaming(config: TrainingConfig, output_dir: Path, device: str) -> Path:
@@ -1360,6 +1460,7 @@ def _train_streaming(config: TrainingConfig, output_dir: Path, device: str) -> P
             shuffle_seed=config.seed + epoch,
         )
 
+    train_summary_tables, tuning_summary_tables = _summary_tables(config)
     corpus = PreparedCorpus(
         vocab=vocab,
         concepts=concepts,
@@ -1373,6 +1474,8 @@ def _train_streaming(config: TrainingConfig, output_dir: Path, device: str) -> P
         tuning_event_tables=tuning_event_tables,
         tuning_events_binned=tuning_events_binned,
         make_train_patients=make_train_patients,
+        train_summary_tables=train_summary_tables,
+        tuning_summary_tables=tuning_summary_tables,
     )
     return _run_training(config, output_dir, device, corpus)
 
@@ -1420,6 +1523,8 @@ def _run_training(  # noqa: PLR0912, PLR0915
     tuning_labels, tuning_masks = corpus.tuning_labels, corpus.tuning_masks
     train_event_tables = corpus.train_event_tables
     tuning_event_tables = corpus.tuning_event_tables
+    train_summary_tables = corpus.train_summary_tables
+    tuning_summary_tables = corpus.tuning_summary_tables
     tuning_events_binned = corpus.tuning_events_binned
 
     model = build_model(config, vocab_size=len(vocab), num_concepts=len(concepts)).to(
@@ -1616,9 +1721,18 @@ def _run_training(  # noqa: PLR0912, PLR0915
                 if train_event_tables is not None
                 else None
             )
+            summary_targets = (
+                summary_targets_for_chunk(chunk, train_summary_tables)
+                if train_summary_tables is not None
+                else None
+            )
             if isinstance(model, BaselineSequenceModel):
                 total, components, state = model.compute_streaming_loss(
-                    chunk, state=state, objective=objective, event_targets=event_targets
+                    chunk,
+                    state=state,
+                    objective=objective,
+                    event_targets=event_targets,
+                    summary_targets=summary_targets,
                 )
             elif (
                 steering is not None
@@ -1639,6 +1753,7 @@ def _run_training(  # noqa: PLR0912, PLR0915
                     lifted_ids=steering.lifted[injection.concept_index],
                     objective=objective,
                     event_targets=event_targets,
+                    summary_targets=summary_targets,
                     respond_weight=config.respond_weight,
                     express_weight=config.express_weight,
                     forecast_at_injected=config.steering_forecast_at_injected,
@@ -1664,6 +1779,7 @@ def _run_training(  # noqa: PLR0912, PLR0915
                     intervention=intervention,
                     objective=objective,
                     event_targets=event_targets,
+                    summary_targets=summary_targets,
                     teacher_alpha_known=annealed_alpha(
                         global_step,
                         config.teacher_anneal_steps,
@@ -1709,6 +1825,7 @@ def _run_training(  # noqa: PLR0912, PLR0915
                     supervision=config.concept_supervision,  # type: ignore[arg-type]
                     objective=objective,
                     event_tables=tuning_event_tables,
+                    summary_tables=tuning_summary_tables,
                 )
                 fields = {
                     "step": global_step,
@@ -1727,6 +1844,7 @@ def _run_training(  # noqa: PLR0912, PLR0915
                     objective.time_weight,
                     objective.event_hazard_weight,
                     objective.value_head_weight,
+                    summary_weight=objective.summary_weight,
                 )
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
