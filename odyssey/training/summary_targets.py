@@ -47,6 +47,10 @@ from odyssey.inference.baseline_features import (
 )
 
 
+# Window statistics asked for per panel signal: the GBM's ``summary_stats``
+# group without ``last``/``hours_since_last`` (recency probes already showed
+# the state holds those) and without ``delta_prev``/``ratio_visit_min``
+# (functions of the others).
 SIGNAL_STATS: tuple[str, ...] = (
     "min_6h",
     "max_6h",
@@ -55,14 +59,10 @@ SIGNAL_STATS: tuple[str, ...] = (
     "mean_24h",
     "delta_visit_first",
 )
-"""Window statistics asked for per panel signal (the GBM's ``summary_stats``
-group without ``last``/``hours_since_last``, which recency probes already
-showed the state holds, and without ``delta_prev``/``ratio_visit_min``,
-which are functions of the others)."""
 
+# Occurrence counts asked for per drug class and per code family: the GBM's
+# ``counts_occurrence`` group at its two window lengths.
 COUNT_STATS: tuple[str, ...] = ("n_6h", "n_24h")
-"""Occurrence counts asked for per drug class and per code family (the
-GBM's ``counts_occurrence`` group at its two window lengths)."""
 
 DEFAULT_LANDMARK_HOURS = 4.0
 WINSOR_PERCENTILES = (0.5, 99.5)

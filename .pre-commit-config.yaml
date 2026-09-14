@@ -1,5 +1,6 @@
-# Third-party LaTeX template files under paper/ are kept verbatim.
-exclude: ^paper/(sn-jnl\.cls|sn-nature\.bst|template-.*|main\.pdf)$
+# Kept verbatim, never rewritten by hooks: third-party LaTeX template files
+# under paper/, and scripts/gemini/out/ (GEMINI's own exported reports).
+exclude: ^(paper/(sn-jnl\.cls|sn-nature\.bst|template-.*|main\.pdf)|scripts/gemini/out/.*)$
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0  # Use the ref you want to point at
@@ -42,7 +43,10 @@ repos:
       entry: python3 -m mypy --config-file pyproject.toml
       language: system
       types: [python]
-      exclude: "tests"
+      # tests, plus the cohort producers committed verbatim as they ran
+      # (scripts/cohort/README.md); pyproject's mypy exclude does not apply
+      # to files pre-commit passes by name.
+      exclude: ^(tests/|scripts/cohort/cohort_check_(mimic|eicu)\.py$)
 
   - repo: https://github.com/crate-ci/typos
     rev: v1
@@ -56,7 +60,7 @@ repos:
         # etc.), not ours to rename; see _typos.toml for the same exclusion
         # (this one is what actually stops the hook, since pre-commit's own
         # file filtering runs before typos ever sees its own config)
-        exclude: ^(docs/experiments\.md|odyssey/data/resources/.*\.csv|scripts/gemini/out/.*)$
+        exclude: ^(docs/experiments\.md|odyssey/data/resources/.*\.csv|scripts/gemini/out/.*|scripts/cohort/cohort_check_(mimic|eicu)\.py)$
 
   - repo: https://github.com/nbQA-dev/nbQA
     rev: 1.9.1

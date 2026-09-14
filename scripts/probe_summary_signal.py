@@ -83,8 +83,8 @@ SUMMARY_STATS: tuple[str, ...] = (
     "delta_visit_first",
     "ratio_visit_min",
 )
-"""`last` is included as an anchor: the most recent value is the easiest
-statistic to read off a sequence model, so its R^2 bounds the others."""
+# `last` is included as an anchor: the most recent value is the easiest
+# statistic to read off a sequence model, so its R^2 bounds the others.
 
 MIN_TRAIN_ROWS = 500
 MIN_HELD_ROWS = 200
