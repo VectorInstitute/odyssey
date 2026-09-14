@@ -244,6 +244,21 @@ implicit_reexport = false
 strict_equality = true
 extra_checks = true
 
+# The cohort check scripts are committed verbatim as they ran on the VM.
+# They cannot be annotated without redefining the published cohort groups.
+# polars 1.44.2 tightened quantile()'s return type to float | None, which
+# triggers new mypy errors in these files. The exclude above handles file
+# discovery; this override silences errors when pre-commit passes the files
+# explicitly on the command line (mypy ignores exclude for explicit args).
+[[tool.mypy.overrides]]
+module = [
+    "cohort_check_mimic",
+    "cohort_check_eicu",
+    "scripts.cohort.cohort_check_mimic",
+    "scripts.cohort.cohort_check_eicu",
+]
+ignore_errors = true
+
 [tool.ruff]
 include = ["*.py", "pyproject.toml", "*.ipynb"]
 exclude = [
