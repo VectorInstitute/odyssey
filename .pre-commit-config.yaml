@@ -42,7 +42,7 @@ repos:
       entry: python3 -m mypy --config-file pyproject.toml
       language: system
       types: [python]
-      exclude: "tests"
+      exclude: 'tests|scripts/cohort/cohort_check_(mimic|eicu)\.py'
 
   - repo: https://github.com/crate-ci/typos
     rev: v1
