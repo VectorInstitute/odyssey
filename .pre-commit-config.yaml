@@ -42,7 +42,7 @@ repos:
       entry: python3 -m mypy --config-file pyproject.toml
       language: system
       types: [python]
-      exclude: "tests"
+      exclude: "(tests|scripts/cohort/cohort_check_(mimic|eicu)\.py)"
 
   - repo: https://github.com/crate-ci/typos
     rev: v1
@@ -56,7 +56,7 @@ repos:
         # etc.), not ours to rename; see _typos.toml for the same exclusion
         # (this one is what actually stops the hook, since pre-commit's own
         # file filtering runs before typos ever sees its own config)
-        exclude: ^(docs/experiments\.md|odyssey/data/resources/.*\.csv|scripts/gemini/out/.*)$
+        exclude: ^(docs/experiments\.md|odyssey/data/resources/.*\.csv|scripts/gemini/out/.*|scripts/cohort/cohort_check_(mimic|eicu)\.py)$
 
   - repo: https://github.com/nbQA-dev/nbQA
     rev: 1.9.1
