@@ -26,11 +26,6 @@ GAMs = "GAMs"
 # scripts/gemini/extract_dry.py's TOP_LAB_CONCEPTS, not a typo for "MUCH".
 MCH = "MCH"
 
-# evn is a loop variable for "event name" in the verbatim-committed cohort
-# check scripts (scripts/cohort/cohort_check_mimic.py and
-# scripts/cohort/cohort_check_eicu.py). It is an abbreviation, not a typo
-# for "even".
-evn = "evn"
 
 [default.extend-identifiers]
 # get_rolling_window_indicies is MEDS-Tab's own real, upstream function name
