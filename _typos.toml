@@ -26,6 +26,7 @@ GAMs = "GAMs"
 # scripts/gemini/extract_dry.py's TOP_LAB_CONCEPTS, not a typo for "MUCH".
 MCH = "MCH"
 
+
 [default.extend-identifiers]
 # get_rolling_window_indicies is MEDS-Tab's own real, upstream function name
 # (genuinely misspelled there, not by us) -- referenced in prose in
