@@ -173,7 +173,7 @@ meds_tab = [
 text = [
     "transformers>=5.17.0",
     "sentencepiece>=0.2.0",
-    "protobuf>=7.36.1",
+    "protobuf>=7.36.2",
 ]
 
 # NOTE: lightning/etc. are intentionally omitted until the concept-
