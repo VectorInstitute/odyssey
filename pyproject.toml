@@ -27,7 +27,7 @@ dependencies = [
     "torch>=2.12.1; sys_platform != 'linux'",
     "torch==2.6.0; sys_platform == 'linux'",
     # urllib3>=2.7.0 fixes CVE-2026-44431 and CVE-2026-44432
-    "urllib3>=2.7.0",
+    "urllib3>=2.8.0",
     # idna>=3.15 fixes CVE-2026-45409
     "idna>=3.20",
     # Eval metrics only (AUROC/AUPRC/Brier score for concept quality) --
