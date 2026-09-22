@@ -94,7 +94,7 @@ cuda = [
 # has a login on the GEMINI node, so most of this project never needs a
 # Postgres driver at all — see docs/gemini.md.
 gemini = [
-    "sqlalchemy>=2.0.53",
+    "sqlalchemy>=2.0.54",
     "psycopg2-binary>=2.9.13",
     "pandas>=2.2.0",
     # extract_meds.py streams MEDS rows straight to per-shard Parquet
