@@ -96,7 +96,7 @@ cuda = [
 gemini = [
     "sqlalchemy>=2.0.54",
     "psycopg2-binary>=2.9.13",
-    "pandas>=2.2.0",
+    "pandas>=3.0.6",
     # extract_meds.py streams MEDS rows straight to per-shard Parquet
     # files (MedsShardWriter) -- pandas' own to_parquet needs an engine,
     # and this module also uses pyarrow directly for streaming writes.
