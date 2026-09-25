@@ -38,6 +38,16 @@ Each package says what exists, what to build, who runs it, and where the result 
 - Exists: `odyssey/inference/interventions.py` runs truth/flip/none/calibrated/zeroing but scores only `top1_accuracy` and `mean_task_loss`. `odyssey/inference/steering.py` already scores hazard heads and knows the landmark rows.
 - Build: add hazard-head outputs to `interventions.py` (per event, per horizon, at landmark positions, paired subject-clustered bootstrap of truth minus none and truth minus flip on AUROC and on mean hazard). Reuse the landmark row set and the bootstrap from `scripts/alerts_cis.py` so the rows match Tables 12 to 14.
 - Run: on the banked flagship checkpoints, MIMIC `full_run_v10` on VM1 and the eICU joint mixture on VM2, band 0.15, all held-out shards (full-data rule).
+- Built 2026-09-25 (branch `rebuttal/hazard-override`): `--hazard-heads` adds a `hazard` block per mode ({event: {horizon: {auroc, mean_risk, n_at_risk, n_positive, n_censored}}}) read at the alert protocol's landmark rows (same mask and outcome rule as `alerts.py`, so n_at_risk matches Tables 12 to 14 on the hybrid flagships), and a `hazard_paired` block on the left-hand mode's entry (truth carries truth_minus_none and truth_minus_flip, flip carries flip_minus_none) with 95% subject-clustered paired bootstrap intervals on the AUROC difference and on the mean P(event within h) difference. Off by default; the existing top-1/loss JSON is unchanged. Command to run on each VM (one pass per mode, the hazard readout is free; the bootstrap runs on the landmark table only):
+
+  ```
+  python -m odyssey.inference.interventions --run-dir R --held-out-shard-dir D/held_out \
+      --output-json R/interventions_band15_hazard.json --max-shards 37 --num-lanes 64 \
+      --chunk-size 512 --uncertain-band 0.15 --modes none truth flip random \
+      --hazard-heads --hazard-boot 1000 --checkpoint checkpoint_best.pt
+  ```
+
+  Set `--max-shards` to the split's full shard count on each VM (37 is MIMIC's). The transformer arm keeps the lever test's TBTT view (whole history, no context truncation), so its landmark rows are the model-free set, not the packed-context set `alerts.py` scores for that backbone.
 - Bank: `research_journal/figure_data/{vm1,vm2}/<run>/interventions_hazard.json`. New table generator `scripts/make_lever_hazard_table.py`.
 - Rebuttal use: if truth moves the 24 h death or vasopressor hazard the right way, the lever verdict changes and the paper's Q3 gets a real endpoint. If it does not, the negative result becomes like-for-like with the edit test, which is what the review asked for. Either way it answers W1.
 - GEMINI: same script, run by Amrit, only if time.

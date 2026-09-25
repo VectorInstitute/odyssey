@@ -322,6 +322,30 @@ def _landmark_mask(
 # ---------------------------------------------------------------------------
 
 
+def position_visit_starts(
+    sids: torch.Tensor,
+    vids: torch.Tensor,
+    times: torch.Tensor,
+    visit_start: dict[tuple[int, int], float],
+) -> torch.Tensor:
+    """Visit start hours per position, shaped like ``times``.
+
+    Looks up the unique (subject, visit) keys of the chunk once (a few
+    hundred lookups, not one per token); a key with no visit start maps
+    to 0. Shared by :func:`collect_model_scores` and the intervention
+    pass in :mod:`odyssey.inference.interventions`, so both select the
+    same landmark rows.
+    """
+    keys = torch.stack([sids, vids], dim=-1).reshape(-1, 2)
+    unique_keys, inverse = torch.unique(keys, dim=0, return_inverse=True)
+    unique_starts = torch.tensor(
+        [visit_start.get((int(s), int(v)), 0.0) for s, v in unique_keys.tolist()],
+        dtype=times.dtype,
+        device=times.device,
+    )
+    return unique_starts[inverse].view_as(times)
+
+
 def _event_token_mask(
     vocab: Vocabulary, alert: AlertEvent, device: str
 ) -> torch.Tensor:
@@ -480,19 +504,7 @@ def collect_model_scores(
             times = chunk.batch.aux.time_stamps
             # Packed-path timestamps are already in the true frame (see
             # packed_context._truncate_head): no un-rebasing.
-            # visit start per position, via the unique (subject, visit)
-            # keys in this chunk (a few hundred lookups, not one per token)
-            keys = torch.stack([sids, vids], dim=-1).reshape(-1, 2)
-            unique_keys, inverse = torch.unique(keys, dim=0, return_inverse=True)
-            unique_starts = torch.tensor(
-                [
-                    visit_start.get((int(s), int(v)), 0.0)
-                    for s, v in unique_keys.tolist()
-                ],
-                dtype=times.dtype,
-                device=times.device,
-            )
-            starts = unique_starts[inverse].view_as(times)
+            starts = position_visit_starts(sids, vids, times, visit_start)
             # Static/demographic tokens build_patient_sequence prepends
             # (GENDER etc., stamped with the first real event's time) carry
             # visit_id=-1, not a real encounter -- _landmark_mask's own
