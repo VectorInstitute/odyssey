@@ -7,13 +7,22 @@ from pathlib import Path
 import pytest
 import torch
 
+from odyssey.data.alert_events import hazard_events_for
 from odyssey.data.concepts import concepts_for_source
 from odyssey.inference.legacy_concept_pins import (
+    HAZARD_NUM_BINS,
     LEGACY_CONCEPT_PINS,
+    LEGACY_EVENT_PINS,
+    PIN_FILENAME,
     check_concept_count,
+    check_event_count,
     checkpoint_num_concepts,
+    checkpoint_num_events,
     pinned_concept_names,
+    pinned_event_names,
+    read_run_pins,
     resolve_concepts_for_run,
+    write_run_pins,
 )
 
 
@@ -156,3 +165,148 @@ def test_no_checkpoint_caller_pairs_the_registry_with_a_loaded_model() -> None:
         "registry; use resolve_concepts_for_run(run_dir, source, task_set) "
         f"instead: {offenders}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Hazard event pins: the run's own file, then the legacy table, then a
+# readable refusal.
+# ---------------------------------------------------------------------------
+
+EICU_PRE_SOFA_EVENTS = (
+    "vasopressor_start",
+    "icu_admission",
+    "acute_kidney_injury",
+    "death",
+    "readmission_30d",
+)
+
+
+def _event_state(n_events: int, *, mlp: bool) -> dict[str, object]:
+    rows = n_events * HAZARD_NUM_BINS
+    if mlp:
+        return {
+            "event_heads.proj.0.weight": torch.zeros(256, 64),
+            "event_heads.proj.0.bias": torch.zeros(256),
+            "event_heads.proj.2.weight": torch.zeros(rows, 256),
+            "event_heads.proj.2.bias": torch.zeros(rows),
+        }
+    return {
+        "event_heads.proj.weight": torch.zeros(rows, 64),
+        "event_heads.proj.bias": torch.zeros(rows),
+    }
+
+
+def test_hazard_num_bins_matches_the_eicu_flagship_checkpoint() -> None:
+    # eicu_full_v10's event_heads.proj.2.weight is (80, 256): 5 events x 16.
+    assert HAZARD_NUM_BINS == 16
+    assert 5 * HAZARD_NUM_BINS == 80
+
+
+def test_pin_file_round_trip(tmp_path: Path) -> None:
+    concepts = ("tachycardia", "shock")
+    events = ("death", "readmission_30d")
+    path = write_run_pins(tmp_path, concept_names=concepts, event_names=events)
+
+    assert path == tmp_path / PIN_FILENAME
+    assert read_run_pins(tmp_path) == {"concepts": concepts, "events": events}
+    assert pinned_concept_names(str(tmp_path)) == concepts
+    assert pinned_event_names(str(tmp_path)) == events
+    # Order is what the file says, not what the registry says.
+    assert pinned_event_names(str(tmp_path) + "/") == events
+
+
+def test_pin_file_without_hazard_heads_stores_null_events(tmp_path: Path) -> None:
+    write_run_pins(tmp_path, concept_names=["a"], event_names=None)
+    assert read_run_pins(tmp_path) == {"concepts": ("a",)}
+    assert pinned_event_names(str(tmp_path)) is None
+    assert pinned_concept_names(str(tmp_path)) == ("a",)
+
+
+def test_pin_file_beats_the_legacy_table(tmp_path: Path) -> None:
+    run_dir = tmp_path / "eicu_full_v10"
+    run_dir.mkdir()
+    assert pinned_event_names(str(run_dir)) == EICU_PRE_SOFA_EVENTS
+    write_run_pins(run_dir, concept_names=["x"], event_names=["death"])
+    assert pinned_event_names(str(run_dir)) == ("death",)
+    assert pinned_concept_names(str(run_dir)) == ("x",)
+
+
+def test_missing_pin_file_is_unpinned_and_malformed_one_raises(tmp_path: Path) -> None:
+    assert read_run_pins(tmp_path) == {}
+    assert read_run_pins(tmp_path / "never_written") == {}
+    (tmp_path / PIN_FILENAME).write_text('{"events": "death"}')
+    with pytest.raises(ValueError, match="list of names"):
+        read_run_pins(tmp_path)
+
+
+def test_legacy_event_pin_for_the_eicu_flagship_is_the_historical_order() -> None:
+    # Printed from alert_events_for("v3", source="eicu") at cdbd4e7, the
+    # training commit: five heads, no sepsis3, readmission_30d last.
+    assert pinned_event_names("eicu_full_v10") == EICU_PRE_SOFA_EVENTS
+    assert pinned_event_names("/home/x/runs/eicu_full_v10/") == EICU_PRE_SOFA_EVENTS
+    assert pinned_event_names("runs/full_run_v10") is None
+    assert pinned_event_names("runs/never_trained") is None
+
+
+def test_legacy_event_pins_cover_every_pre_sofa_eicu_run() -> None:
+    for name in (
+        "eicu_full_v10",
+        "eicu_full_L_v10",
+        "eicu_full_ADD_v10",
+        "eicu_full_DEC_v10",
+        "eicu_full_DEC_v11",
+        "eicu_full_DEC_v12",
+        "eicu_full_DEC_v12_steer",
+    ):
+        assert LEGACY_EVENT_PINS[name] == EICU_PRE_SOFA_EVENTS, name
+        # Their concept sets froze at the same commits, so they are pinned
+        # to the same 26 names as the flagship.
+        assert LEGACY_CONCEPT_PINS[name] == LEGACY_CONCEPT_PINS["eicu_full_v10"]
+
+
+def test_legacy_event_pins_are_a_strict_subset_of_todays_eicu_events() -> None:
+    # Today's list has sepsis3 spliced in before readmission_30d; the pin
+    # keeps the old order, which is why a width match alone is not enough.
+    today = [a.name for a in hazard_events_for("v3", source="eicu")]
+    assert "sepsis3" in today
+    assert [n for n in today if n != "sepsis3"] == list(EICU_PRE_SOFA_EVENTS)
+
+
+def test_checkpoint_num_events_reads_the_output_layer() -> None:
+    assert checkpoint_num_events(_event_state(5, mlp=True)) == 5
+    assert checkpoint_num_events(_event_state(6, mlp=False)) == 6
+    assert checkpoint_num_events({}) is None
+    assert checkpoint_num_events(_state(16)) is None
+
+
+def test_checkpoint_num_events_refuses_a_foreign_bin_count() -> None:
+    state = {"event_heads.proj.weight": torch.zeros(5 * HAZARD_NUM_BINS + 1, 64)}
+    with pytest.raises(ValueError, match="not a multiple"):
+        checkpoint_num_events(state)
+
+
+def test_check_event_count_passes_when_counts_agree() -> None:
+    check_event_count("runs/x", _event_state(5, mlp=True), ["e"] * 5)
+    check_event_count("runs/x", _event_state(6, mlp=False), ["e"] * 6)
+    # No hazard heads at all: nothing to compare against.
+    check_event_count("runs/x", {}, ["e"] * 6)
+    check_event_count("runs/x", _state(16), None)
+
+
+def test_check_event_count_names_the_run_both_counts_and_the_fix() -> None:
+    # The eICU flagship against today's registry: 80 rows = 5 events, 6 today.
+    state = _event_state(5, mlp=True)
+    with pytest.raises(ValueError) as excinfo:
+        check_event_count("/home/x/runs/eicu_full_v10", state, ["e"] * 6)
+    msg = str(excinfo.value)
+    assert msg.startswith("eicu_full_v10: ")
+    assert "5 events" in msg
+    assert "resolves 6" in msg
+    assert PIN_FILENAME in msg
+    assert "LEGACY_EVENT_PINS" in msg
+    assert "legacy_concept_pins.py" in msg
+
+
+def test_check_event_count_treats_no_names_as_zero() -> None:
+    with pytest.raises(ValueError, match="resolves 0"):
+        check_event_count("runs/x", _event_state(5, mlp=True), None)

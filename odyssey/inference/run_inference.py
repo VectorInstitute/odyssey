@@ -43,7 +43,9 @@ from odyssey.data.value_binning import QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import Vocabulary, code_type
 from odyssey.inference.legacy_concept_pins import (
     check_concept_count,
+    check_event_count,
     pinned_concept_names,
+    pinned_event_names,
     resolve_concepts_for_run,
 )
 from odyssey.models.concept_bottleneck import ConceptBottleneckOutput
@@ -88,7 +90,12 @@ from odyssey.training.metrics import (
     compute_observability_metrics,
     orthogonality_diagnostic,
 )
-from odyssey.training.train import TrainingConfig, _move_chunk_to_device, build_model
+from odyssey.training.train import (
+    TrainingConfig,
+    _move_chunk_to_device,
+    build_model,
+    hazard_event_names_for,
+)
 from odyssey.utils.env_fingerprint import verify_run_provenance
 
 
@@ -421,11 +428,26 @@ def load_run(
     # exists and refuse loudly where the counts disagree and none does.
     pinned = pinned_concept_names(str(run_dir))
     concept_names = list(pinned) if pinned is not None else [c.name for c in concepts]
-    model = build_model(config, vocab_size=len(vocab), num_concepts=len(concept_names))
+    # Hazard heads drift the same way (alert_events_for drops events whose
+    # concept does not resolve for the source, and that set grows with the
+    # code mappings), so the event list is pinned by the same rule.
+    pinned_events = pinned_event_names(str(run_dir))
+    event_names = (
+        list(pinned_events)
+        if pinned_events is not None
+        else hazard_event_names_for(config)
+    )
+    model = build_model(
+        config,
+        vocab_size=len(vocab),
+        num_concepts=len(concept_names),
+        event_names=event_names,
+    )
     # After build_model, before load_state_dict: still ahead of the shape
     # errors this exists to replace, without pre-empting callers that stub
     # build_model out to inspect the reconstructed config.
     check_concept_count(str(run_dir), state, concept_names)
+    check_event_count(str(run_dir), state, event_names)
     model.load_state_dict(checkpoint["model"])
     model = model.to(device)
     model.eval()
