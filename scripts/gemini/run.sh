@@ -118,7 +118,7 @@
 #                decomposition cells are comparable. Needs odyssey at
 #                69c8cb0 or later. The steering and atlas steps, and the
 #                alerts step's hazard column, are meant to read THIS run.
-#   train-rung2  ladder rung 2 (G4, docs/experiment_plan.md): same geometry
+#   train-rung2  ladder rung 2 (G4, docs/archive/experiment_plan.md): same geometry
 #                as train-full, one deliberate delta -- hidden_size 256->512,
 #                an estimated ~60M parameters (the real, measured count logs
 #                at training init, same as every step). CRITICAL: trains on
@@ -1129,7 +1129,7 @@ PY
         local keep_checkpoints="${GEMINI_RUNG2_KEEP_CHECKPOINTS:-3}"
 
         echo "=== train-rung2 ($run_name) ==="
-        echo "Ladder rung 2 (G4, docs/experiment_plan.md): same geometry as"
+        echo "Ladder rung 2 (G4, docs/archive/experiment_plan.md): same geometry as"
         echo "train-full (num_lanes=64/chunk_size=512, model_kind=baseline,"
         echo "source=gemini, concepts/alerts off, num_epochs=2), one"
         echo "deliberate delta -- hidden_size 256 -> 512, an ESTIMATED ~60M"
