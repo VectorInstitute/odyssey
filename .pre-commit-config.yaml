@@ -1,5 +1,6 @@
-# Third-party LaTeX template files under paper/ are kept verbatim.
-exclude: ^paper/(sn-jnl\.cls|sn-nature\.bst|template-.*|main\.pdf)$
+# Kept verbatim, never rewritten by hooks: third-party LaTeX template files
+# under paper/, and scripts/gemini/out/ (GEMINI's own exported reports).
+exclude: ^(paper/(sn-jnl\.cls|sn-nature\.bst|template-.*|main\.pdf)|scripts/gemini/out/.*)$
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0  # Use the ref you want to point at
@@ -42,7 +43,10 @@ repos:
       entry: python3 -m mypy --config-file pyproject.toml
       language: system
       types: [python]
-      exclude: 'tests|scripts/cohort/cohort_check_(mimic|eicu)\.py'
+      # tests, plus the cohort producers committed verbatim as they ran
+      # (scripts/cohort/README.md); pyproject's mypy exclude does not apply
+      # to files pre-commit passes by name.
+      exclude: ^(tests/|scripts/cohort/cohort_check_(mimic|eicu)\.py$)
 
   - repo: https://github.com/crate-ci/typos
     rev: v1.50.2

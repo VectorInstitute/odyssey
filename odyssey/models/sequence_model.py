@@ -57,6 +57,7 @@ from odyssey.models.concept_bottleneck import (
     fold_in_bottleneck_losses,
 )
 from odyssey.models.injection import stream_injection
+from odyssey.models.summary_head import SummaryHead, masked_huber_loss
 from odyssey.models.time_to_event import (
     EventHazardHeads,
     TimeToEventHead,
@@ -74,6 +75,7 @@ from odyssey.models.value_head import (
 
 if TYPE_CHECKING:  # the targets live in training; avoid a runtime import cycle
     from odyssey.training.event_targets import EventHazardTargets
+    from odyssey.training.summary_targets import SummaryTargets
 
 
 @dataclass
@@ -122,6 +124,12 @@ class ForecastObjective:
     time_weight: float = 0.0
     event_hazard_weight: float = 0.0
     value_head_weight: float = 0.0
+    summary_weight: float = 0.0
+    """Weight of the self-supervised window-summary loss
+    (:mod:`odyssey.models.summary_head`), if the model has a summary head;
+    the targets come per chunk from :mod:`odyssey.training.summary_targets`."""
+    summary_target_weights: torch.Tensor | None = None
+    """Optional ``(K,)`` per-target weights inside the summary loss."""
 
 
 class ForwardWithFeatures(NamedTuple):
@@ -421,6 +429,23 @@ class _SequenceModelBase(nn.Module):
             event_heads.edges,
         )
 
+    def _streaming_summary_loss(
+        self,
+        summary_head: SummaryHead | None,
+        features: torch.Tensor,
+        summary_targets: Optional["SummaryTargets"],
+        target_weights: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Masked Huber loss of the window-summary head (zero-graph if absent)."""
+        if summary_head is None or summary_targets is None:
+            return features.sum() * 0.0
+        return masked_huber_loss(
+            summary_head(features),
+            summary_targets.values,
+            summary_targets.mask,
+            target_weights=target_weights,
+        )
+
     def _streaming_time_loss(
         self,
         time_head: TimeToEventHead | None,
@@ -486,6 +511,8 @@ class BaselineSequenceModel(_SequenceModelBase):
         value_head: bool = False,
         value_head_hidden: int = 0,
         source: str = "mimic_iv",
+        summary_targets: int = 0,
+        summary_head_hidden: int = 0,
     ) -> None:
         """Initialize the baseline sequence model.
 
@@ -522,6 +549,11 @@ class BaselineSequenceModel(_SequenceModelBase):
                 hidden=value_head_hidden,
             )
             if value_head
+            else None
+        )
+        self.summary_head: SummaryHead | None = (
+            SummaryHead(head_in, summary_targets, hidden_size=summary_head_hidden)
+            if summary_targets > 0
             else None
         )
 
@@ -580,6 +612,7 @@ class BaselineSequenceModel(_SequenceModelBase):
         *,
         objective: ForecastObjective | None = None,
         event_targets: Optional["EventHazardTargets"] = None,
+        summary_targets: Optional["SummaryTargets"] = None,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor], TimeAwareState]:
         """Compute the forecasting loss over one packed, chunked training step."""
         objective = objective or ForecastObjective()
@@ -590,11 +623,18 @@ class BaselineSequenceModel(_SequenceModelBase):
         time_loss, _ = self._streaming_time_loss(self.time_head, hidden, chunk)
         event_loss = self._streaming_event_loss(self.event_heads, hidden, event_targets)
         value_loss, _ = self._streaming_value_loss(self.value_head, hidden, chunk)
+        summary_loss = self._streaming_summary_loss(
+            self.summary_head,
+            hidden,
+            summary_targets,
+            target_weights=objective.summary_target_weights,
+        )
         total = (
             task_loss
             + objective.time_weight * time_loss
             + objective.event_hazard_weight * event_loss
             + objective.value_head_weight * value_loss
+            + objective.summary_weight * summary_loss
         )
         return (
             total,
@@ -603,6 +643,7 @@ class BaselineSequenceModel(_SequenceModelBase):
                 "time_loss": time_loss.detach(),
                 "event_loss": event_loss.detach(),
                 "value_loss": value_loss.detach(),
+                "summary_loss": summary_loss.detach(),
             },
             new_state,
         )
@@ -632,6 +673,8 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         value_head: bool = False,
         value_head_hidden: int = 0,
         source: str = "mimic_iv",
+        summary_targets: int = 0,
+        summary_head_hidden: int = 0,
     ) -> None:
         """Initialize the concept-bottleneck sequence model.
 
@@ -698,6 +741,11 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
                 hidden=value_head_hidden,
             )
             if value_head
+            else None
+        )
+        self.summary_head: SummaryHead | None = (
+            SummaryHead(head_in, summary_targets, hidden_size=summary_head_hidden)
+            if summary_targets > 0
             else None
         )
 
@@ -815,6 +863,7 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         lifted_ids: torch.Tensor,
         objective: ForecastObjective | None = None,
         event_targets: Optional["EventHazardTargets"] = None,
+        summary_targets: Optional["SummaryTargets"] = None,
         respond_weight: float = 1.0,
         express_weight: float = 1.0,
         forecast_at_injected: bool = True,
@@ -869,11 +918,18 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
             self.event_heads, head_feats, event_targets
         )
         value_loss, _ = self._streaming_value_loss(self.value_head, head_feats, scored)
+        summary_loss = self._streaming_summary_loss(
+            self.summary_head,
+            head_feats,
+            summary_targets,
+            target_weights=objective.summary_target_weights,
+        )
         forecast_loss = (
             next_token_loss
             + objective.time_weight * time_loss
             + objective.event_hazard_weight * event_loss
             + objective.value_head_weight * value_loss
+            + objective.summary_weight * summary_loss
         )
         at = injected & chunk.real_mask
         if bool(at.any()):
@@ -895,6 +951,7 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
             "time_loss": time_loss.detach(),
             "event_loss": event_loss.detach(),
             "value_loss": value_loss.detach(),
+            "summary_loss": summary_loss.detach(),
             "respond_loss": respond.detach(),
             "express_loss": express.detach(),
             "n_injected": at.sum().detach(),
@@ -976,6 +1033,7 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         intervention: BottleneckIntervention | None = None,
         objective: ForecastObjective | None = None,
         event_targets: Optional["EventHazardTargets"] = None,
+        summary_targets: Optional["SummaryTargets"] = None,
         teacher_alpha_known: float = 0.0,
         teacher_alpha_unknown: float = 0.0,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor], TimeAwareState]:
@@ -1043,11 +1101,18 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
             self.event_heads, head_feats, event_targets
         )
         value_loss, _ = self._streaming_value_loss(self.value_head, head_feats, chunk)
+        summary_loss = self._streaming_summary_loss(
+            self.summary_head,
+            head_feats,
+            summary_targets,
+            target_weights=objective.summary_target_weights,
+        )
         forecast_loss = (
             next_token_loss
             + objective.time_weight * time_loss
             + objective.event_hazard_weight * event_loss
             + objective.value_head_weight * value_loss
+            + objective.summary_weight * summary_loss
         )
 
         pool_mask = chunk.patient_end if supervision == "stay" else chunk.visit_end
@@ -1058,6 +1123,7 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
                 "time_loss": time_loss.detach(),
                 "event_loss": event_loss.detach(),
                 "value_loss": value_loss.detach(),
+                "summary_loss": summary_loss.detach(),
                 "concept_loss": zero,
                 "orthogonality_loss": zero,
                 "observability_loss": zero,
@@ -1127,4 +1193,5 @@ class ConceptBottleneckSequenceModel(_SequenceModelBase):
         components["time_loss"] = time_loss.detach()
         components["event_loss"] = event_loss.detach()
         components["value_loss"] = value_loss.detach()
+        components["summary_loss"] = summary_loss.detach()
         return total, components, new_state
