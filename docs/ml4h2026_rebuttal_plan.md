@@ -110,7 +110,7 @@ Keep each block under 150 words. The response box on OpenReview is short.
 - Fix the 26-versus-29 sentence, the "same result a third time" sentence, "10 of 15", "0.030 to 0.054", the Table 2 "median" label, "Two heads", "Three forecasting terms", the 24% versus 4.6% sentence, the naming drift, the stray copyright line, and the acronym expansions. Full list in `reviews/234_review.md`, Minor issues.
 - Move the AKI stage 3 and metabolic acidosis rule caveats and the palliative-code note from captions into the body.
 - Run `figures/pagecheck.py` and the awk comment check after every edit (the build has lost prose to `%` lines before).
-- Decide which of `main.tex` and `main_mixture.tex` is the submitted source, and delete the other after tagging the submitted commit.
+- The submitted source is `paper/ml4h/main_mixture.tex`; the old `main.tex` and its aux files were retired to `paper/ml4h/retired/` on 2026-09-25. `make_steering_table.py` and `make_specificity_table.py` now feed no table in the paper; keep them for the steering follow-up.
 
 ## Schedule
 
