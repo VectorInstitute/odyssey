@@ -67,6 +67,35 @@ class ConceptBottleneckOutput(NamedTuple):
     """(..., num_concepts) sigmoid(observability_logits)."""
 
 
+class MixtureParts(NamedTuple):
+    """The mixture bottleneck's per-position pieces, before mixing.
+
+    Everything the concept probabilities are combined with: the known
+    poles ``w+``/``w-`` and the unknown slot's pair and logit. Exposed so
+    a probe can measure what the poles carry on their own
+    (``scripts/probe_channel.py``); :meth:`ConceptBottleneck.forward`
+    mixes these same pieces.
+    """
+
+    concept_logits: torch.Tensor
+    """(..., num_concepts) known-concept activation logits, pre-sigmoid."""
+
+    known_pos: torch.Tensor
+    """(..., num_concepts, embedding_dim) ``w+`` per known concept."""
+
+    known_neg: torch.Tensor
+    """(..., num_concepts, embedding_dim) ``w-`` per known concept."""
+
+    unknown_pos: torch.Tensor
+    """(..., unknown_dim) the unknown slot's ``w+``."""
+
+    unknown_neg: torch.Tensor
+    """(..., unknown_dim) the unknown slot's ``w-``."""
+
+    unknown_logit: torch.Tensor
+    """(...,) the unknown slot's mixing logit, pre-sigmoid."""
+
+
 @dataclass(frozen=True)
 class BottleneckIntervention:
     """A do()-style edit applied inside the bottleneck's mixing step.
@@ -386,20 +415,17 @@ class ConceptBottleneck(nn.Module):
             out[i, i * d : (i + 1) * d] = directions[i]
         return out
 
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        intervention: BottleneckIntervention | None = None,
-    ) -> ConceptBottleneckOutput:
-        """Project hidden states into known + unknown concept embeddings.
+    def mixture_parts(self, hidden_states: torch.Tensor) -> MixtureParts:
+        """Poles, logits and the unknown pair for ``hidden_states``.
 
-        ``intervention`` edits the mixing step only (see
-        :class:`BottleneckIntervention`): the returned
-        ``concept_logits``/``concept_probs``/observability outputs are
-        always the model's own predictions.
+        Call in eval mode: in train mode the dropout draw here would
+        differ from the forward pass's.
         """
-        batch_shape = hidden_states.shape[:-1]
-        x = self.dropout(hidden_states)
+        return self._mixture_parts(self.dropout(hidden_states))
+
+    def _mixture_parts(self, x: torch.Tensor) -> MixtureParts:
+        """Compute :meth:`mixture_parts` on an already dropout-applied ``x``."""
+        batch_shape = x.shape[:-1]
         k, d, u = self.num_concepts, self.embedding_dim, self.unknown_dim
 
         # Known concepts: (w+, w-) pairs and activation logits.
@@ -420,7 +446,6 @@ class ConceptBottleneck(nn.Module):
                 torch.einsum("...sd,sd->...s", joint, self.prob_weight[:k])
                 + self.prob_bias[:k]
             )
-        concept_probs = torch.sigmoid(concept_logits)
 
         # Unknown (residual) slot: always a context-dependent pair.
         u_pos, u_neg = unknown_ctx[..., 0, :], unknown_ctx[..., 1, :]
@@ -429,7 +454,36 @@ class ConceptBottleneck(nn.Module):
         else:  # shared (num_slots, 2d) weight: the unknown slot is the last row
             u_weight, u_bias = self.prob_weight[k], self.prob_bias[k]
         unknown_logit = torch.cat([u_pos, u_neg], dim=-1) @ u_weight + u_bias
-        unknown_prob = torch.sigmoid(unknown_logit)
+        return MixtureParts(
+            concept_logits=concept_logits,
+            known_pos=k_pos,
+            known_neg=k_neg,
+            unknown_pos=u_pos,
+            unknown_neg=u_neg,
+            unknown_logit=unknown_logit,
+        )
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        intervention: BottleneckIntervention | None = None,
+    ) -> ConceptBottleneckOutput:
+        """Project hidden states into known + unknown concept embeddings.
+
+        ``intervention`` edits the mixing step only (see
+        :class:`BottleneckIntervention`): the returned
+        ``concept_logits``/``concept_probs``/observability outputs are
+        always the model's own predictions.
+        """
+        batch_shape = hidden_states.shape[:-1]
+        x = self.dropout(hidden_states)
+        k, d = self.num_concepts, self.embedding_dim
+        parts = self._mixture_parts(x)
+        concept_logits = parts.concept_logits
+        concept_probs = torch.sigmoid(concept_logits)
+        k_pos, k_neg = parts.known_pos, parts.known_neg
+        u_pos, u_neg = parts.unknown_pos, parts.unknown_neg
+        unknown_prob = torch.sigmoid(parts.unknown_logit)
 
         mix_probs = concept_probs
         if intervention is not None and intervention.probs is not None:
