@@ -1,4 +1,9 @@
 [default.extend-words]
+# evn = short for "event name" (loop variable) in the verbatim cohort check
+# scripts (scripts/cohort/cohort_check_mimic.py and cohort_check_eicu.py),
+# not a typo for "even". These files cannot be edited without redefining the
+# published cohort groups; see the header comment in each file.
+evn = "evn"
 # ND = MIMIC-IV prescription route abbreviation (nasal, with NU/NS/NAS) in
 # odyssey/data/concepts.py's ANTIBIOTIC_ROUTE_EXCLUDE, not a typo for "AND".
 ND = "ND"
@@ -20,6 +25,7 @@ GAMs = "GAMs"
 # MCH = Mean Corpuscular Hemoglobin, a standard CBC lab concept name in
 # scripts/gemini/extract_dry.py's TOP_LAB_CONCEPTS, not a typo for "MUCH".
 MCH = "MCH"
+
 
 [default.extend-identifiers]
 # get_rolling_window_indicies is MEDS-Tab's own real, upstream function name

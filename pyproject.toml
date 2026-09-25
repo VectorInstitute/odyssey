@@ -12,7 +12,7 @@ dependencies = [
     # MIMIC-IV -> MEDS extraction (hosp + icu modules; ED not yet covered upstream)
     "MIMIC_IV_MEDS",
     # Used directly (not just transitively via MIMIC_IV_MEDS) for concept labeling.
-    "polars>=1.44.1",
+    "polars>=1.44.2",
     # Model dev. Mac (local, CPU/MPS) installs plain torch, floating freely.
     # On the GCP A100 host, torch is pinned to an exact cu124 build and
     # mamba-ssm (below) to an exact version -- discovered the hard way that
@@ -27,12 +27,12 @@ dependencies = [
     "torch>=2.12.1; sys_platform != 'linux'",
     "torch==2.6.0; sys_platform == 'linux'",
     # urllib3>=2.7.0 fixes CVE-2026-44431 and CVE-2026-44432
-    "urllib3>=2.7.0",
+    "urllib3>=2.8.0",
     # idna>=3.15 fixes CVE-2026-45409
-    "idna>=3.19",
+    "idna>=3.20",
     # Eval metrics only (AUROC/AUPRC/Brier score for concept quality) --
     # not used anywhere in the training/inference path itself.
-    "scikit-learn>=1.7.0",
+    "scikit-learn>=1.9.1",
 ]
 
 [project.optional-dependencies]
@@ -94,9 +94,9 @@ cuda = [
 # has a login on the GEMINI node, so most of this project never needs a
 # Postgres driver at all — see docs/gemini.md.
 gemini = [
-    "sqlalchemy>=2.0.0",
-    "psycopg2-binary>=2.9.0",
-    "pandas>=2.2.0",
+    "sqlalchemy>=2.0.54",
+    "psycopg2-binary>=2.9.13",
+    "pandas>=3.0.6",
     # extract_meds.py streams MEDS rows straight to per-shard Parquet
     # files (MedsShardWriter) -- pandas' own to_parquet needs an engine,
     # and this module also uses pyarrow directly for streaming writes.
@@ -106,7 +106,7 @@ gemini = [
     # dependencies above) since run.sh's minimal extract-node install is
     # `--no-deps` + this extra only, and skips the base dependency list
     # entirely.
-    "polars>=1.44.1",
+    "polars>=1.44.2",
 ]
 
 # TabICLv2 in-context-learning baseline (odyssey/inference/tabicl_baseline.py),
@@ -171,9 +171,9 @@ meds_tab = [
 # from_pretrained(..., device_map=...), so nothing here actually needs
 # accelerate's device-mapping machinery -- add it if that changes.
 text = [
-    "transformers>=5.16.1",
+    "transformers>=5.17.0",
     "sentencepiece>=0.2.0",
-    "protobuf>=7.36.1",
+    "protobuf>=7.36.2",
 ]
 
 # NOTE: lightning/etc. are intentionally omitted until the concept-
@@ -191,7 +191,7 @@ dev = [
     "codecov>=2.1.13",
     "nbstripout>=0.6.1",
     "mypy>=2.3.1",
-    "ruff>=0.16.6",
+    "ruff>=0.16.8",
     "nbqa[toolchain]>=1.9.1",
     # pip>=26.1.2 fixes PYSEC-2026-196
     "pip>=26.1.2",
@@ -222,7 +222,7 @@ explicit = true
 # Same reason as the ruff exclude above: these two ran on the VMs and
 # are committed verbatim, so they cannot be annotated without editing
 # the code that produced the published table.
-exclude = "^scripts/cohort/cohort_check_(mimic|eicu)\\.py$"
+exclude = "cohort_check_(mimic|eicu)\\.py$"
 ignore_missing_imports = true
 install_types = true
 pretty = true
@@ -243,6 +243,21 @@ warn_return_any = true
 implicit_reexport = false
 strict_equality = true
 extra_checks = true
+
+# The cohort check scripts are committed verbatim as they ran on the VM.
+# They cannot be annotated without redefining the published cohort groups.
+# polars 1.44.2 tightened quantile()'s return type to float | None, which
+# triggers new mypy errors in these files. The exclude above handles file
+# discovery; this override silences errors when pre-commit passes the files
+# explicitly on the command line (mypy ignores exclude for explicit args).
+[[tool.mypy.overrides]]
+module = [
+    "cohort_check_mimic",
+    "cohort_check_eicu",
+    "scripts.cohort.cohort_check_mimic",
+    "scripts.cohort.cohort_check_eicu",
+]
+ignore_errors = true
 
 [tool.ruff]
 include = ["*.py", "pyproject.toml", "*.ipynb"]

@@ -1,6 +1,6 @@
 """Generate the paper's comparator table body from run JSONs, never by hand.
 
-The comparator tables (``tab:mimic``, ``tab:eicu`` in paper/ml4h/main.tex)
+The comparator tables (``tab:mimic``, ``tab:eicu`` in paper/ml4h/main_mixture.tex)
 were hand-transcribed from run outputs. On 2026-08-31 that produced a wrong
 cell in ``tab:decomp`` (a loss delta printed +0.024 when the raw values give
 +0.023) which survived two review passes, and left both comparator tables on
