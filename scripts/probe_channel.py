@@ -54,12 +54,27 @@ dumped: the landmark protocol (v4, one information boundary per landmark)
 lives inside :mod:`odyssey.inference.alerts` and reproducing it here
 would risk a number that disagrees with the paper's alert tables.
 
+Crash recovery: the streaming pass is the expensive part, so the bank is
+saved right after it to ``<output-json stem>.bank.pt`` (``--bank-path``
+overrides) and ``--from-bank PATH`` reloads it without touching the
+checkpoint. The readout block is written to ``--output-json`` as soon as
+the readouts finish, before the CTL probes run, and the ``ctl`` block is
+added at the end. The JSON is append-only: an existing file with a
+``ctl`` block is refused without ``--overwrite``; one without a ``ctl``
+block (a run that died in the CTL probes) has only that block filled in.
+With ``--bank-on-cpu`` the CTL banks stay in host memory as well and
+:func:`odyssey.inference.leakage.compute_ctl` moves each batch to the GPU.
+
 Usage::
 
     uv run python scripts/probe_channel.py \\
         --run-dir ~/runs/full_run_v10 \\
         --held-out-shard-dir ~/data/mimic/held_out \\
         --output-json ~/runs/full_run_v10/channel_probes.json
+
+    # after a crash past the streaming pass
+    uv run python scripts/probe_channel.py ... \\
+        --from-bank ~/runs/full_run_v10/channel_probes.bank.pt
 """
 
 from __future__ import annotations
@@ -95,11 +110,7 @@ from odyssey.inference.leakage import (
     compute_ctl,
 )
 from odyssey.inference.legacy_concept_pins import resolve_concepts_for_run
-from odyssey.inference.run_inference import (
-    _build_type_lookup,
-    load_run,
-    refuse_existing_output,
-)
+from odyssey.inference.run_inference import _build_type_lookup, load_run
 from odyssey.models.concept_bottleneck import ConceptBottleneck
 from odyssey.models.sequence_model import (
     ConceptBottleneckSequenceModel,
@@ -821,6 +832,89 @@ def _cap(idx: torch.Tensor, cap: int | None, seed: int) -> torch.Tensor:
 
 
 # ---------------------------------------------------------------------------
+# Bank persistence
+# ---------------------------------------------------------------------------
+
+
+BANK_FORMAT = 1
+
+
+@dataclass(frozen=True)
+class BankMeta:
+    """What a saved bank carries besides its tensors, so a reload needs no model."""
+
+    vocab_size: int
+    notes: tuple[str, ...]
+
+
+def bank_nbytes(bank: ChannelBank) -> int:
+    """Bytes held by every tensor of ``bank`` (fp16 at rest)."""
+    return sum(
+        getattr(bank, name).numel() * getattr(bank, name).element_size()
+        for name in ChannelBank._TENSORS
+    )
+
+
+def default_bank_path(output_json: Path) -> Path:
+    """``<output-json stem>.bank.pt`` next to the JSON."""
+    return output_json.with_name(output_json.stem + ".bank.pt")
+
+
+def save_bank(
+    bank: ChannelBank, path: Path, *, vocab_size: int, notes: Sequence[str]
+) -> None:
+    """Persist the streamed bank (CPU, fp16 at rest) with ``torch.save``.
+
+    The streaming pass is the expensive part of this script (about 45
+    minutes for 37 shards on an A100); everything after it is minutes.
+    Saving right after the pass means a crash in the fits costs a
+    ``--from-bank`` rerun, not the pass.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "format": BANK_FORMAT,
+            "tensors": {n: getattr(bank, n).cpu() for n in ChannelBank._TENSORS},
+            "concept_names": list(bank.concept_names),
+            "n_positions_seen": int(bank.n_positions_seen),
+            "vocab_size": int(vocab_size),
+            "notes": list(notes),
+        },
+        path,
+    )
+    logger.info(
+        "[probe_channel] saved bank to %s (%.2f GB in memory, %.2f GB on disk)",
+        path,
+        bank_nbytes(bank) / 1e9,
+        path.stat().st_size / 1e9,
+    )
+
+
+def load_bank(path: Path) -> tuple[ChannelBank, BankMeta]:
+    """Load a bank written by :func:`save_bank` onto CPU."""
+    blob = torch.load(path, map_location="cpu", weights_only=True)
+    if not isinstance(blob, dict) or blob.get("format") != BANK_FORMAT:
+        raise ValueError(f"{path} is not a probe_channel bank (format {BANK_FORMAT})")
+    tensors = blob["tensors"]
+    missing = [n for n in ChannelBank._TENSORS if n not in tensors]
+    if missing:
+        raise ValueError(f"{path} lacks bank tensors {missing}")
+    bank = _build_bank(
+        {n: tensors[n] for n in ChannelBank._TENSORS},
+        concept_names=tuple(blob["concept_names"]),
+        n_positions_seen=int(blob["n_positions_seen"]),
+    )
+    meta = BankMeta(vocab_size=int(blob["vocab_size"]), notes=tuple(blob["notes"]))
+    logger.info(
+        "[probe_channel] loaded bank from %s (%d positions, %.2f GB)",
+        path,
+        len(bank),
+        bank_nbytes(bank) / 1e9,
+    )
+    return bank, meta
+
+
+# ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
 
@@ -850,12 +944,19 @@ class ProbeOptions:
     checkpoint: str | None = None
     readouts: tuple[str, ...] = READOUT_NAMES
     notes: list[str] = field(default_factory=list)
+    bank_path: Path | None = None
+    """Where to save the streamed bank (``None``: do not save)."""
+    from_bank: Path | None = None
+    """Load this saved bank instead of streaming (the model is not loaded)."""
+
+
+SplitIdx = tuple[torch.Tensor, torch.Tensor, torch.Tensor]
 
 
 def _fit_all_readouts(
     bank: ChannelBank,
     *,
-    split_idx: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    split_idx: SplitIdx,
     hits: dict[str, torch.Tensor],
     num_classes: int,
     opts: ProbeOptions,
@@ -901,18 +1002,16 @@ def _fit_all_readouts(
     return meta
 
 
-def run_channel_probes(
-    run_dir: str | Path,
-    held_out_shard_dir: str | Path,
-    *,
-    options: ProbeOptions | None = None,
-    device: str | None = None,
-) -> dict[str, Any]:
-    """Load the run, dump the bank, fit every readout, return the JSON payload."""
-    opts = options or ProbeOptions()
-    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    run_dir = Path(run_dir)
-    checkpoint_path = run_dir / (opts.checkpoint or "checkpoint_best.pt")
+def _load_model(
+    run_dir: Path, checkpoint_path: Path, device: str
+) -> tuple[
+    ConceptBottleneckSequenceModel,
+    Vocabulary,
+    QuantileBinner,
+    TrainingConfig,
+    list[str],
+]:
+    """Load the run and check it has a mixture bottleneck; return it plus notes."""
     model, vocab, binner, config = load_run(
         run_dir, device=device, checkpoint_path=checkpoint_path
     )
@@ -927,7 +1026,7 @@ def run_channel_probes(
             "are functions of the hidden state; the run's bottleneck_kind is "
             f"{getattr(config, 'bottleneck_kind', 'mixture')!r}"
         )
-    notes = list(opts.notes)
+    notes: list[str] = []
     if model.bottleneck.global_pairs:
         notes.append(
             "global_pairs=True: the poles are input-independent parameters, so "
@@ -936,47 +1035,23 @@ def run_channel_probes(
     notes.append(
         "hazard-head readouts at landmarks are not dumped; see the module docstring"
     )
+    return model, vocab, binner, config, notes
 
-    bank = bank_from_shards(
-        model,
-        vocab,
-        binner,
-        config,
-        held_out_shard_dir,
-        run_dir=run_dir,
-        max_shards=opts.max_shards,
-        sample_rate=opts.sample_rate,
-        seed=opts.seed,
-        num_lanes=opts.num_lanes,
-        chunk_size=opts.chunk_size,
-        device=device,
-        max_positions=opts.max_positions,
-    )
-    del model
-    logger.info(
-        "[probe_channel] bank: %d positions of %d seen, %d subjects, %d shards",
-        len(bank),
-        bank.n_positions_seen,
-        int(torch.unique(bank.subject_ids).numel()),
-        int(torch.unique(bank.shard_index).numel()),
-    )
-    split = split_by_subject(
-        bank.subject_ids,
-        seed=opts.seed,
-        train_frac=opts.train_frac,
-        tune_frac=opts.tune_frac,
-    )
-    bank_device = "cpu" if opts.bank_on_cpu else device
-    bank = bank.to(bank_device)
-    train_idx = split.train.to(bank_device)
-    tune_idx = split.tune.to(bank_device)
-    test_idx = split.test.to(bank_device)
 
+def _score_readouts(
+    bank: ChannelBank,
+    *,
+    split_idx: SplitIdx,
+    num_classes: int,
+    opts: ProbeOptions,
+    device: str,
+) -> tuple[dict[str, ReadoutScore], float]:
+    """Fit every readout and bootstrap; return scores and the majority rate."""
+    train_idx, tune_idx, test_idx = split_idx
     test_targets = bank.targets[test_idx]
     model_hits = (bank.model_pred[test_idx] == test_targets).cpu()
     model_acc = float(model_hits.float().mean().item())
     majority = _majority_rate(test_targets)
-    num_classes = len(vocab)
     hits: dict[str, torch.Tensor] = {MODEL_READOUT: model_hits}
     meta = _fit_all_readouts(
         bank,
@@ -986,7 +1061,6 @@ def run_channel_probes(
         opts=opts,
         device=device,
     )
-
     subject_np = bank.subject_ids[test_idx].cpu().numpy()
     hits_np = {name: h.numpy() for name, h in hits.items()}
     intervals = subject_bootstrap(
@@ -1010,65 +1084,210 @@ def run_channel_probes(
             parameters=extra.get("parameters"),
             fit=extra.get("fit"),
         )
+    return scores, majority
 
-    ctl: CTLResult | None = None
-    if not opts.skip_ctl:
-        cap = opts.ctl_max_positions
-        ctl = compute_ctl(
-            leakage_bank(bank, _cap(train_idx, cap, opts.seed + 11)).to(device),
-            leakage_bank(bank, _cap(tune_idx, cap, opts.seed + 12)).to(device),
-            leakage_bank(bank, _cap(test_idx, cap, opts.seed + 13)).to(device),
-            epochs=opts.ctl_epochs,
-            batch_size=opts.batch_size,
-            patience=opts.patience,
-            seed=opts.seed,
-            device=device,
+
+def _ctl_block(
+    bank: ChannelBank,
+    *,
+    split_idx: SplitIdx,
+    opts: ProbeOptions,
+    device: str,
+    bank_device: str,
+) -> CTLResult:
+    """Run the CTL probes on the same subject split; banks stay on ``bank_device``.
+
+    With ``--bank-on-cpu`` the three leakage banks stay in host memory too
+    and :func:`compute_ctl` moves each batch to ``device``; moving them to
+    the model's device here is what the flag exists to avoid.
+    """
+    train_idx, tune_idx, test_idx = split_idx
+    cap = opts.ctl_max_positions
+    return compute_ctl(
+        leakage_bank(bank, _cap(train_idx, cap, opts.seed + 11)).to(bank_device),
+        leakage_bank(bank, _cap(tune_idx, cap, opts.seed + 12)).to(bank_device),
+        leakage_bank(bank, _cap(test_idx, cap, opts.seed + 13)).to(bank_device),
+        epochs=opts.ctl_epochs,
+        batch_size=opts.batch_size,
+        patience=opts.patience,
+        seed=opts.seed,
+        device=device,
+    )
+
+
+def _write_payload(path: Path | None, payload: dict[str, Any]) -> None:
+    """Write ``payload`` atomically (temp file, then rename); no-op without a path."""
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2))
+    tmp.replace(path)
+    logger.info("[probe_channel] wrote %s", path)
+
+
+def _check_resumable(
+    existing: dict[str, Any], bank: ChannelBank, split_idx: SplitIdx, opts: ProbeOptions
+) -> None:
+    """Refuse to fill ``ctl`` into a payload fit on a different bank or split."""
+    if existing.get("ctl") is not None:
+        raise ValueError("payload already holds a ctl block")
+    train_idx, tune_idx, test_idx = split_idx
+    expected = {
+        "n_positions.bank": (existing["n_positions"]["bank"], len(bank)),
+        "n_positions.train": (existing["n_positions"]["train"], train_idx.numel()),
+        "n_positions.tune": (existing["n_positions"]["tune"], tune_idx.numel()),
+        "n_positions.test": (existing["n_positions"]["test"], test_idx.numel()),
+        "protocol.seed": (existing["protocol"]["seed"], opts.seed),
+        "protocol.train_frac": (existing["protocol"]["train_frac"], opts.train_frac),
+        "protocol.tune_frac": (existing["protocol"]["tune_frac"], opts.tune_frac),
+        "concept_names": (tuple(existing["concept_names"]), bank.concept_names),
+    }
+    bad = {k: v for k, v in expected.items() if v[0] != v[1]}
+    if bad:
+        raise ValueError(
+            "existing payload does not match this bank/split, refusing to fill "
+            f"its ctl block: {bad} (json value, this run)"
         )
 
-    payload: dict[str, Any] = {
-        "run_dir": str(run_dir),
-        "checkpoint": str(checkpoint_path),
-        "held_out_shard_dir": str(held_out_shard_dir),
-        "concept_names": list(bank.concept_names),
-        "protocol": {
-            "readout": "mlp" if opts.mlp else "linear",
-            "target": "exact next event over the full vocabulary (top-1)",
-            "split": "by subject",
-            "train_frac": opts.train_frac,
-            "tune_frac": opts.tune_frac,
-            "seed": opts.seed,
-            "epochs": opts.epochs,
-            "batch_size": opts.batch_size,
-            "lr": opts.lr,
-            "n_boot": opts.n_boot,
-            "max_positions": opts.max_positions,
-            "sample_rate": opts.sample_rate,
-            "max_shards": opts.max_shards,
-            "ctl_max_positions": opts.ctl_max_positions,
-        },
-        "n_positions": {
-            "seen": bank.n_positions_seen,
-            "bank": len(bank),
-            "train": int(train_idx.numel()),
-            "tune": int(tune_idx.numel()),
-            "test": int(test_idx.numel()),
-        },
-        "n_subjects": {
-            "bank": int(torch.unique(bank.subject_ids).numel()),
-            **split.n_subjects,
-        },
-        "n_shards": int(torch.unique(bank.shard_index).numel()),
-        "vocab_size": num_classes,
-        "majority_class_accuracy": majority,
-        "model_top1_accuracy_all_banked": float(
-            (bank.model_pred == bank.targets).float().mean().item()
-        ),
-        "model": asdict(scores[MODEL_READOUT]),
-        "readouts": {name: asdict(scores[name]) for name in opts.readouts},
-        "ctl": None if ctl is None else asdict(ctl),
-        "hazards": None,
-        "notes": notes,
-    }
+
+def run_channel_probes(
+    run_dir: str | Path,
+    held_out_shard_dir: str | Path,
+    *,
+    options: ProbeOptions | None = None,
+    device: str | None = None,
+    output_json: Path | None = None,
+    existing: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Load the run, dump the bank, fit every readout, return the JSON payload.
+
+    Staged so that a crash late in the run costs as little as possible:
+    the bank is saved to ``options.bank_path`` right after streaming
+    (``options.from_bank`` reloads it and skips the model entirely); with
+    ``output_json`` the readout payload is written as soon as the readouts
+    finish, before the CTL probes run, and updated with the ``ctl`` block
+    at the end. ``existing`` is a payload written earlier without a
+    ``ctl`` block: the readouts are not refit, only ``ctl`` is filled in.
+    """
+    opts = options or ProbeOptions()
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    run_dir = Path(run_dir)
+    checkpoint_path = run_dir / (opts.checkpoint or "checkpoint_best.pt")
+
+    if opts.from_bank is not None:
+        bank, meta = load_bank(Path(opts.from_bank))
+        vocab_size = meta.vocab_size
+        notes = [*opts.notes, *meta.notes]
+    else:
+        model, vocab, binner, config, model_notes = _load_model(
+            run_dir, checkpoint_path, device
+        )
+        vocab_size = len(vocab)
+        notes = [*opts.notes, *model_notes]
+        bank = bank_from_shards(
+            model,
+            vocab,
+            binner,
+            config,
+            held_out_shard_dir,
+            run_dir=run_dir,
+            max_shards=opts.max_shards,
+            sample_rate=opts.sample_rate,
+            seed=opts.seed,
+            num_lanes=opts.num_lanes,
+            chunk_size=opts.chunk_size,
+            device=device,
+            max_positions=opts.max_positions,
+        )
+        del model
+        if opts.bank_path is not None:
+            save_bank(
+                bank, Path(opts.bank_path), vocab_size=vocab_size, notes=model_notes
+            )
+    logger.info(
+        "[probe_channel] bank: %d positions of %d seen, %d subjects, %d shards, %.2f GB",
+        len(bank),
+        bank.n_positions_seen,
+        int(torch.unique(bank.subject_ids).numel()),
+        int(torch.unique(bank.shard_index).numel()),
+        bank_nbytes(bank) / 1e9,
+    )
+    split = split_by_subject(
+        bank.subject_ids,
+        seed=opts.seed,
+        train_frac=opts.train_frac,
+        tune_frac=opts.tune_frac,
+    )
+    bank_device = "cpu" if opts.bank_on_cpu else device
+    bank = bank.to(bank_device)
+    split_idx: SplitIdx = (
+        split.train.to(bank_device),
+        split.tune.to(bank_device),
+        split.test.to(bank_device),
+    )
+    train_idx, tune_idx, test_idx = split_idx
+
+    if existing is not None:
+        _check_resumable(existing, bank, split_idx, opts)
+        payload = existing
+        logger.info("[probe_channel] readouts already fit; filling the ctl block only")
+    else:
+        scores, majority = _score_readouts(
+            bank, split_idx=split_idx, num_classes=vocab_size, opts=opts, device=device
+        )
+        payload = {
+            "run_dir": str(run_dir),
+            "checkpoint": str(checkpoint_path),
+            "held_out_shard_dir": str(held_out_shard_dir),
+            "concept_names": list(bank.concept_names),
+            "protocol": {
+                "readout": "mlp" if opts.mlp else "linear",
+                "target": "exact next event over the full vocabulary (top-1)",
+                "split": "by subject",
+                "train_frac": opts.train_frac,
+                "tune_frac": opts.tune_frac,
+                "seed": opts.seed,
+                "epochs": opts.epochs,
+                "batch_size": opts.batch_size,
+                "lr": opts.lr,
+                "n_boot": opts.n_boot,
+                "max_positions": opts.max_positions,
+                "sample_rate": opts.sample_rate,
+                "max_shards": opts.max_shards,
+                "ctl_max_positions": opts.ctl_max_positions,
+            },
+            "n_positions": {
+                "seen": bank.n_positions_seen,
+                "bank": len(bank),
+                "train": int(train_idx.numel()),
+                "tune": int(tune_idx.numel()),
+                "test": int(test_idx.numel()),
+            },
+            "n_subjects": {
+                "bank": int(torch.unique(bank.subject_ids).numel()),
+                **split.n_subjects,
+            },
+            "n_shards": int(torch.unique(bank.shard_index).numel()),
+            "vocab_size": vocab_size,
+            "majority_class_accuracy": majority,
+            "model_top1_accuracy_all_banked": float(
+                (bank.model_pred == bank.targets).float().mean().item()
+            ),
+            "model": asdict(scores[MODEL_READOUT]),
+            "readouts": {name: asdict(scores[name]) for name in opts.readouts},
+            "ctl": None,
+            "hazards": None,
+            "notes": notes,
+        }
+        _write_payload(output_json, payload)
+
+    if not opts.skip_ctl:
+        ctl = _ctl_block(
+            bank, split_idx=split_idx, opts=opts, device=device, bank_device=bank_device
+        )
+        payload["ctl"] = asdict(ctl)
+        _write_payload(output_json, payload)
     return payload
 
 
@@ -1088,6 +1307,26 @@ def markdown_table(payload: dict[str, Any]) -> str:
             f"{s['completeness_score']:.3f} | {feats} |"
         )
     return "\n".join(rows)
+
+
+def existing_payload(path: Path, *, overwrite: bool) -> dict[str, Any] | None:
+    """Append-only gate on the output JSON.
+
+    Returns ``None`` when there is nothing to build on (no file, or
+    ``--overwrite``). A file with a ``ctl`` block is complete and is
+    refused. A file without one (readouts written, CTL not yet) is
+    returned so the run fills only its ``ctl`` block.
+    """
+    if overwrite or not path.exists():
+        return None
+    loaded: dict[str, Any] = json.loads(path.read_text())
+    if loaded.get("ctl") is not None:
+        raise FileExistsError(
+            f"{path} already holds readouts and a ctl block; pass --overwrite "
+            "to replace it (channel probes are append-only by default)"
+        )
+    logger.info("[probe_channel] %s exists without a ctl block; will fill it", path)
+    return loaded
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -1118,8 +1357,31 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="keep the dump in host memory and move batches to the GPU",
     )
+    parser.add_argument(
+        "--bank-path",
+        default=None,
+        help=(
+            "where to save the streamed bank (torch.save, fp16); default "
+            "<output-json stem>.bank.pt next to the JSON"
+        ),
+    )
+    parser.add_argument(
+        "--from-bank",
+        default=None,
+        help=(
+            "load a saved bank instead of streaming the shards (the checkpoint "
+            "is not loaded); --run-dir and --held-out-shard-dir are only recorded"
+        ),
+    )
     parser.add_argument("--readouts", nargs="*", default=list(READOUT_NAMES))
-    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help=(
+            "replace an existing --output-json (and bank file) instead of "
+            "refusing; without it a JSON lacking a ctl block is filled in place"
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -1127,7 +1389,21 @@ def main(argv: Sequence[str] | None = None) -> None:
     """Command-line entry point."""
     args = _parse_args(argv)
     out = Path(args.output_json)
-    refuse_existing_output(out, overwrite=args.overwrite, kind="channel probes")
+    existing = existing_payload(out, overwrite=args.overwrite)
+    if existing is not None and args.skip_ctl:
+        raise ValueError(
+            f"{out} exists without a ctl block and --skip-ctl leaves nothing to "
+            "fill; drop --skip-ctl or pass --overwrite to refit the readouts"
+        )
+    from_bank = Path(args.from_bank) if args.from_bank else None
+    bank_path: Path | None = None
+    if from_bank is None:
+        bank_path = Path(args.bank_path) if args.bank_path else default_bank_path(out)
+        if bank_path.exists() and not args.overwrite:
+            raise FileExistsError(
+                f"{bank_path} exists; pass --from-bank {bank_path} to reuse it "
+                "or --overwrite to stream the shards again"
+            )
     options = ProbeOptions(
         max_positions=args.max_positions or None,
         max_shards=args.max_shards,
@@ -1149,11 +1425,16 @@ def main(argv: Sequence[str] | None = None) -> None:
         bank_on_cpu=args.bank_on_cpu,
         checkpoint=args.checkpoint,
         readouts=tuple(args.readouts),
+        bank_path=bank_path,
+        from_bank=from_bank,
     )
-    payload = run_channel_probes(args.run_dir, args.held_out_shard_dir, options=options)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(payload, indent=2))
-    logger.info("[probe_channel] wrote %s", out)
+    payload = run_channel_probes(
+        args.run_dir,
+        args.held_out_shard_dir,
+        options=options,
+        output_json=out,
+        existing=existing,
+    )
     print(markdown_table(payload))
 
 

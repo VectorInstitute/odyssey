@@ -11,6 +11,8 @@ import torch
 from odyssey.inference.leakage import (
     LeakageBank,
     _fit_categorical_probe,
+    _predict_in_batches,
+    _random_projection,
     _score_categorical_probe,
     compute_ctl,
     compute_icl,
@@ -202,6 +204,77 @@ def test_compute_ctl_capacity_control_on_pure_noise() -> None:
 
     assert result.ctl_vs_projected_accuracy <= 0.08
     assert result.ctl_vs_projected_cross_entropy >= -0.08
+
+
+# ---------------------------------------------------------------------------
+# Device discipline: bank on CPU, probe on a named device
+# ---------------------------------------------------------------------------
+#
+# The 2026-09-25 incident: probe_channel.py streamed 37 shards with the
+# bank kept on CPU (--bank-on-cpu) and the model on cuda:0, then compute_ctl
+# multiplied the CPU bank by a projection on the other device and lost the
+# pass. A CPU-only machine cannot reproduce two devices, so these tests pin
+# the contract the fix relies on: the projection is created on the bank's
+# device by the device-safe helper, and every fit/score path accepts a bank
+# on CPU together with an explicit ``device`` argument.
+
+
+def test_random_projection_lands_on_the_requested_device_and_is_orthonormal() -> None:
+    proj = _random_projection(NUM_CONCEPTS, 24, seed=0, device="cpu")
+    assert proj.device.type == "cpu"
+    assert proj.shape == (NUM_CONCEPTS, 24)
+    assert torch.allclose(proj @ proj.T, torch.eye(NUM_CONCEPTS), atol=1e-5)
+    # Drawn on CPU before the move, so the matrix does not depend on the
+    # device spelling (str or torch.device) and is reproducible per seed.
+    again = _random_projection(NUM_CONCEPTS, 24, seed=0, device=torch.device("cpu"))
+    assert torch.equal(proj, again)
+    other = _random_projection(NUM_CONCEPTS, 24, seed=1)
+    assert not torch.equal(proj, other)
+
+
+def test_compute_ctl_accepts_a_cpu_bank_with_an_explicit_probe_device() -> None:
+    train, tune, held = _three_splits(leak_slot=0)
+    for bank in (train, tune, held):
+        assert bank.concept_probs.device.type == "cpu"
+    result = compute_ctl(train, tune, held, seed=0, device="cpu", **FIT_KW)
+
+    for score in (
+        result.probs_only,
+        result.embeddings_only,
+        result.unknown_only,
+        result.probs_projected,
+    ):
+        assert score.n == len(held)
+        assert 0.0 <= score.accuracy <= 1.0
+        assert score.cross_entropy == score.cross_entropy  # not NaN
+    assert result.probs_projected.parameters == result.embeddings_only.parameters
+    assert result.embeddings_only.accuracy > 0.9
+
+
+def test_predict_in_batches_matches_one_shot_and_returns_cpu() -> None:
+    g = torch.Generator().manual_seed(0)
+    n = 500
+    y = torch.randint(0, NUM_CLASSES, (n,), generator=g)
+    x = (y.float().unsqueeze(-1) - 2.0) * 4.0 + 0.1 * torch.randn(n, 3, generator=g)
+    head, _ = _fit_categorical_probe(
+        3,
+        NUM_CLASSES,
+        train_x=x.half(),
+        train_y=y,
+        tune_x=x.half(),
+        tune_y=y,
+        device="cpu",
+        epochs=5,
+        batch_size=64,
+    )
+    head.eval()
+    with torch.no_grad():
+        one_shot = head(x.half().float())
+    batched = _predict_in_batches(head, x.half(), batch_size=64)
+    assert batched.device.type == "cpu"
+    assert torch.allclose(batched, one_shot, atol=1e-5)
+    acc, ce = _score_categorical_probe(head, x.half(), y)
+    assert 0.0 <= acc <= 1.0 and ce > 0.0
 
 
 # ---------------------------------------------------------------------------

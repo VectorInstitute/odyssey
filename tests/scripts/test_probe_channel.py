@@ -264,3 +264,177 @@ def test_refuses_a_decomposed_bottleneck(
     _patch_run(monkeypatch, model, _config(tmp_path, bottleneck_kind="decomposed"))
     with pytest.raises(ValueError, match="mixture bottleneck"):
         probe_channel.run_channel_probes(tmp_path / "run", tmp_path / "held_out")
+
+
+# ---------------------------------------------------------------------------
+# Crash recovery: saved bank, staged JSON writes, append-only ctl fill
+# ---------------------------------------------------------------------------
+
+
+COMMON_ARGS = [
+    "--max-positions",
+    "0",
+    "--num-lanes",
+    "2",
+    "--chunk-size",
+    "16",
+    "--epochs",
+    "10",
+    "--n-boot",
+    "20",
+    "--ctl-epochs",
+    "2",
+    "--train-frac",
+    "0.6",
+    "--tune-frac",
+    "0.15",
+]
+
+
+def _options(**overrides: Any) -> probe_channel.ProbeOptions:
+    base: dict[str, Any] = {
+        "max_positions": None,
+        "num_lanes": 2,
+        "chunk_size": 16,
+        "epochs": 10,
+        "n_boot": 20,
+        "ctl_epochs": 2,
+        "train_frac": 0.6,
+        "tune_frac": 0.15,
+        "skip_ctl": True,
+    }
+    base.update(overrides)
+    return probe_channel.ProbeOptions(**base)
+
+
+def _readout_accuracies(payload: dict[str, Any]) -> dict[str, float]:
+    out = {name: s["top1_accuracy"] for name, s in payload["readouts"].items()}
+    out["model_head"] = payload["model"]["top1_accuracy"]
+    return out
+
+
+def test_from_bank_round_trip_reproduces_the_readouts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_shards(tmp_path / "held_out")
+    _patch_run(monkeypatch, _trained_model(_vocab()), _config(tmp_path))
+    bank_path = tmp_path / "saved.bank.pt"
+    streamed = probe_channel.run_channel_probes(
+        tmp_path / "run",
+        tmp_path / "held_out",
+        options=_options(bank_path=bank_path),
+        device="cpu",
+    )
+    assert bank_path.exists()
+
+    bank, meta = probe_channel.load_bank(bank_path)
+    assert len(bank) == streamed["n_positions"]["bank"]
+    assert meta.vocab_size == streamed["vocab_size"]
+    assert bank.concept_names == tuple(streamed["concept_names"])
+    assert bank.concept_probs.dtype == torch.float16
+    assert probe_channel.bank_nbytes(bank) > 0
+
+    # Reloading must not touch the checkpoint at all.
+    def _no_model(*a: Any, **k: Any) -> Any:
+        raise AssertionError("load_run must not be called with --from-bank")
+
+    monkeypatch.setattr(probe_channel, "load_run", _no_model)
+    reloaded = probe_channel.run_channel_probes(
+        tmp_path / "run",
+        tmp_path / "held_out",
+        options=_options(from_bank=bank_path),
+        device="cpu",
+    )
+    assert _readout_accuracies(reloaded) == _readout_accuracies(streamed)
+    assert reloaded["n_positions"] == streamed["n_positions"]
+    assert reloaded["n_subjects"] == streamed["n_subjects"]
+    assert reloaded["notes"] == streamed["notes"]
+    assert reloaded["ctl"] is None
+
+
+def test_readouts_are_written_before_ctl_and_ctl_is_filled_in_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_shards(tmp_path / "held_out")
+    _patch_run(monkeypatch, _trained_model(_vocab()), _config(tmp_path))
+    out = tmp_path / "run" / "channel_probes.json"
+    args = [
+        "--run-dir",
+        str(tmp_path / "run"),
+        "--held-out-shard-dir",
+        str(tmp_path / "held_out"),
+        "--output-json",
+        str(out),
+        *COMMON_ARGS,
+    ]
+
+    # Stage 1: readouts only (as if the run died before/inside the CTL probes).
+    probe_channel.main([*args, "--skip-ctl"])
+    first = json.loads(out.read_text())
+    assert first["ctl"] is None
+    bank_path = probe_channel.default_bank_path(out)
+    assert bank_path.exists()
+
+    # A rerun that would stream again refuses: the bank is already on disk.
+    with pytest.raises(FileExistsError, match="--from-bank"):
+        probe_channel.main(args)
+    # ... and --skip-ctl on an unfilled JSON has nothing to do.
+    with pytest.raises(ValueError, match="nothing to"):
+        probe_channel.main([*args, "--skip-ctl", "--from-bank", str(bank_path)])
+
+    # Stage 2: JSON exists without ctl, bank saved; fill the ctl block only.
+    monkeypatch.setattr(
+        probe_channel,
+        "load_run",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no model load")),
+    )
+    probe_channel.main([*args, "--from-bank", str(bank_path)])
+    second = json.loads(out.read_text())
+    assert second["ctl"] is not None
+    assert "probs_only" in second["ctl"]
+    assert second["readouts"] == first["readouts"]
+    assert second["model"] == first["model"]
+    assert second["n_positions"] == first["n_positions"]
+
+    # Stage 3: complete JSON is append-only.
+    with pytest.raises(FileExistsError, match="--overwrite"):
+        probe_channel.main([*args, "--from-bank", str(bank_path)])
+    # --overwrite refits everything from the saved bank.
+    probe_channel.main([*args, "--from-bank", str(bank_path), "--overwrite"])
+    third = json.loads(out.read_text())
+    assert third["ctl"] is not None
+    assert _readout_accuracies(third) == _readout_accuracies(first)
+
+
+def test_fill_refuses_a_payload_from_a_different_split(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_shards(tmp_path / "held_out")
+    _patch_run(monkeypatch, _trained_model(_vocab()), _config(tmp_path))
+    out = tmp_path / "channel_probes.json"
+    bank_path = tmp_path / "bank.pt"
+    streamed = probe_channel.run_channel_probes(
+        tmp_path / "run",
+        tmp_path / "held_out",
+        options=_options(bank_path=bank_path),
+        device="cpu",
+        output_json=out,
+    )
+    stale = json.loads(out.read_text())
+    stale["protocol"]["seed"] = streamed["protocol"]["seed"] + 1
+    with pytest.raises(ValueError, match="does not match"):
+        probe_channel.run_channel_probes(
+            tmp_path / "run",
+            tmp_path / "held_out",
+            options=_options(from_bank=bank_path, skip_ctl=False),
+            device="cpu",
+            output_json=out,
+            existing=stale,
+        )
+
+
+def test_load_bank_rejects_a_foreign_file(tmp_path: Path) -> None:
+    path = tmp_path / "not_a_bank.pt"
+    torch.save({"format": 99}, path)
+    with pytest.raises(ValueError, match="not a probe_channel bank"):
+        probe_channel.load_bank(path)
