@@ -7,7 +7,7 @@ see :mod:`odyssey.inference.tabicl_baseline`/:mod:`odyssey.inference.ebm_baselin
 scratch just because a LATER stage of the same run crashed. The incident
 this exists for: EBM alone took ~4.6h fitting 12 (event, horizon) pairs
 one night, then the run crashed at the *scoring* stage on an unrelated
-bug, throwing that entire fit away -- see ``docs/reeval_wave_v2.md``.
+bug, throwing that entire fit away -- see ``docs/archive/reeval_wave_v2.md``.
 
 Not a general ML experiment tracker: one ``{key}.pkl`` file per cache
 key (``/`` in a key becomes a real subdirectory) plus an embedded

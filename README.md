@@ -146,7 +146,7 @@ Every run is registered in [`docs/experiments.md`](docs/experiments.md) (host, d
 
 ## Evaluation protocol
 
-Alerts are scored at 4-hour landmark index times on every admission; a row is at risk only if the event has not onset, outcomes are onset within 8, 24 or 72 hours with explicit censoring, and every scorer in a table sees the identical row set under one information boundary (landmark protocol v4). Labels are anchored at the time a clinician could first have known them. Intervals are subject-clustered bootstraps; scorer-versus-scorer verdicts use a paired bootstrap of the AUROC difference. Every training arm is a single seed, so within-run claims carry paired inference and cross-run claims are labelled as hypotheses. Details: `docs/reeval_wave_v2.md`, `docs/missingness_protocol.md`, `docs/sidecars_and_task_sets.md`.
+Alerts are scored at 4-hour landmark index times on every admission; a row is at risk only if the event has not onset, outcomes are onset within 8, 24 or 72 hours with explicit censoring, and every scorer in a table sees the identical row set under one information boundary (landmark protocol v4). Labels are anchored at the time a clinician could first have known them. Intervals are subject-clustered bootstraps; scorer-versus-scorer verdicts use a paired bootstrap of the AUROC difference. Every training arm is a single seed, so within-run claims carry paired inference and cross-run claims are labelled as hypotheses. Details: `docs/archive/reeval_wave_v2.md` (protocol history), `docs/missingness_protocol.md`, `docs/sidecars_and_task_sets.md`.
 
 ## Development
 
