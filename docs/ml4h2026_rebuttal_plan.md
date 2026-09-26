@@ -134,6 +134,64 @@ Keep each block under 150 words. The response box on OpenReview is short.
 - Run `figures/pagecheck.py` and the awk comment check after every edit (the build has lost prose to `%` lines before).
 - The submitted source is `paper/ml4h/main_mixture.tex`; the old `main.tex` and its aux files were retired to `paper/ml4h/retired/` on 2026-09-25. `make_steering_table.py` and `make_specificity_table.py` now feed no table in the paper; keep them for the steering follow-up.
 
+## Results so far (updated 2026-09-26, 01:30 UTC)
+
+Every number below is banked under `research_journal/figure_data/` in the run directory named, and was computed on all held-out shards unless stated. Runs launched 2026-09-25 from the `rebuttal/integration` branch; VM recipe and logs are in the session memory and the chain scripts under the VM home directories.
+
+### WP1, override scored on the hazard heads: done, negative on both databases
+
+`interventions_band15_hazard.json` under `vm1/full_run_v10/` and `vm2/eicu_full_v10/`. Band 0.15, modes none / truth / flip / random, hazards read at the landmark rows of Tables 12 and 13 (the no-intervention hazard AUROCs reproduce those tables to three decimals), paired subject-clustered bootstrap with 1,000 resamples.
+
+- eICU-CRD (655,415 landmark rows): truth minus none on hazard AUROC is negative and separated in all 12 cells (vasopressor -0.006 to -0.008, AKI -0.003 to -0.006, death -0.002 to -0.006, ICU -0.001 to -0.003). Mean predicted risk moves by at most 0.004 absolute.
+- MIMIC-IV (1,214,849 landmark rows): truth minus none between -0.0002 and -0.006 across 15 cells, negative and separated in 9, never positive. Mean risk moves by at most 0.0015.
+- Reading: the label override is inert on the clinical hazards as it is on next-event accuracy. The two halves of Q3 are now scored on the same endpoint.
+
+### WP2, the cost of the bottleneck: done pending the code-drift retrains
+
+No-bottleneck arms (`model_kind=baseline`, flagship recipe, RandInt 0) trained at full scale: `vm1/full_run_baseline_v10` (49,375 steps, best val 1.7985) and `vm2/eicu_full_baseline_v10` (30,250 steps, early stop, best val 1.5362). Scored with the standard chain (GBM refit on every train shard) and compared with the flagship on identical landmark rows by `scripts/compare_runs_paired.py` (`paired_vs_v10.json`, `paired_vs_v10_rescored.json`).
+
+- MIMIC-IV: the no-bottleneck arm is ahead in 15 of 15 cells, every interval clear of zero: AKI +0.011 / +0.010 / +0.008 (8 / 24 / 72 h), death +0.005 / +0.007 / +0.007, ICU admission +0.010 / +0.013 / +0.018, Sepsis-3 +0.013 / +0.012 / +0.013, vasopressor start +0.006 / +0.006 / +0.011. Next-event set top-1 81.6 to 83.3, exact top-1 37.25 to 37.79, cross-entropy 3.556 to 3.525.
+- eICU-CRD: ahead in 11 of 12 cells (ICU admission at 72 h ties): death +0.029 / +0.034 / +0.039, vasopressor +0.015 / +0.014 / +0.009, ICU +0.012 / +0.007 / +0.005, AKI +0.107 / +0.097 / +0.103 under the current AKI label. Exact top-1 54.0 to 55.9, cross-entropy 1.975 to 1.798.
+- Against the panel, the no-bottleneck arm still loses every original cell on both databases (`alerts_cis.json`), by about half the bottleneck's margin on death and a third on vasopressor start, and it wins the new eICU Sepsis-3 cells at 8 and 24 h where the panel has 469 positives.
+- Caveat still open: the flagships were trained on 2026-08-31 code and the baselines on current code. Like-for-like bottleneck retrains on current code are queued: `eicu_full_v10_re` (VM2, after the RandInt chain) and `full_run_v10_re` (VM1, after the MIMIC baseline CIs). If they match the flagships, the numbers above are the bottleneck's cost; if they close part of the gap, the difference was code drift and the retrain pair replaces the flagship pair.
+
+Two facts found on the way. First, the banked eICU Table 13 AKI cells are under an older AKI label: rescoring the same checkpoint with current code (`vm2/eicu_full_v10/alerts_rescore.json`) leaves death, vasopressor and ICU AUROCs identical and drops AKI from 0.741 to 0.649 at 8 h (at-risk rows 451,747 to 308,700; the GBM drops from 0.891 to 0.820). The paper must state which label Table 13 uses. Second, the panel's death-at-8 h AUROC on MIMIC-IV moved from 0.944 to 0.896 between two refits of the same recipe (1,987 positives), larger than the 0.029 refit variance the paper reports; the other cells agree within 0.005.
+
+### WP3, which channel carries the forecast: done, the poles carry it
+
+`channel_probes.json` under both flagship run directories (banks `channel_probes.bank.pt`, about 8 GB each, stay on the VMs). Subject-split held-out sample of 2,000,000 positions; fresh linear readouts scored on strict next-event top-1 over about 390,000 (MIMIC) and 400,000 (eICU) test positions; 95% subject-clustered intervals within 0.005.
+
+| readout | MIMIC-IV | eICU-CRD |
+|---|---|---|
+| model's own head | 0.372 | 0.539 |
+| concept probabilities k only | 0.261 | 0.565 |
+| k plus the unnamed slot | 0.264 | 0.585 |
+| named embeddings z | 0.584 | 0.790 |
+| poles with k fixed at its mean | 0.583 | 0.790 |
+| poles alone (raw w+, w-) | 0.569 | 0.786 |
+| full bottleneck | 0.584 | 0.788 |
+
+- The poles with the probabilities held constant recover everything the bottleneck carries. The probabilities alone recover 45% of it on MIMIC-IV and 72% on eICU-CRD. The forecast runs through the named embeddings; the reviewer's W2 point stands and Q2 must be reworded.
+- Fresh readouts beat the model's own head because they optimise strict top-1 while the model trains bundle-invariant; compare readouts with the full-bottleneck readout, not with the model head.
+- CTL leakage probes on the next-token code family (9 classes): probabilities only 0.935 / 0.967, embeddings only 0.956 / 0.973, unnamed slot only 0.878 / 0.953, random-projected probabilities 0.936 / 0.968 (MIMIC / eICU).
+
+### WP4, RandInt: three subset arms banked, the full-scale arm training
+
+`eicu_full_RI_v10` (flagship recipe with `randint_prob 0.25`) started 2026-09-25 20:24 UTC on VM2, then the full eval chain and CIs. The three subset-scale arms and the steering / control epochs are listed above under WP4.
+
+### WP5, GEMINI: code ready, the node session is Amrit's
+
+`scripts/panel_coverage.py` on the in-repo mapping table: GEMINI resolves 15 of the 48 panel signals; the non-invasive systolic, diastolic and mean pressures are among the unresolved (only arterial systolic maps). The three run.sh steps (`panel-coverage`, `cohort-counts`, `alerts-cis`) are built and tested; commands are listed under WP5.
+
+### WP6, free items: done
+
+- Parameters: 32,233,101 (MIMIC-IV flagship) and 20,384,390 (eICU-CRD), the difference being the per-source next-event vocabulary head; `research_journal/figure_data/param_counts.json`. `paper/ml4h/tables/hparams.tex` generated by `scripts/make_hparams_table.py` with the GBM grid, estimator and panel sizes read from the code.
+- Cohort counts (`cohort_counts.json` under both flagship run directories): MIMIC-IV 291,702 / 36,463 / 36,462 subjects (train / tuning / held-out), 435,803 / 54,898 / 55,328 admissions, median stay 2.8 days, 53% female; per-subject prevalence vasopressor 5.0%, ICU admission 17.9%, AKI 18.2%, death 10.5%, Sepsis-3 12.6%, 30-day readmission 13.8%. eICU-CRD 133,084 / 16,636 / 16,635 subjects, 160,643 / 20,094 / 20,122 stays, years 2014 to 2016, median stay 5.5 days; prevalence vasopressor 27.8%, AKI 55.9%, death 8.8%, Sepsis-3 0.28%, readmission 10.5%.
+
+### Code landed on `rebuttal/integration`
+
+Event pinning for old checkpoints (eICU checkpoints trained before PR #222 have five hazard heads; the registry now builds six because Sepsis-3 resolves; `run_pins.json` plus a legacy table), hazard-head scoring in `interventions.py` (`--hazard-heads`), `scripts/probe_channel.py` (with bank save and resume), the three GEMINI run.sh steps, `scripts/make_hparams_table.py`, `scripts/cohort_counts.py`, `scripts/panel_coverage.py`, `scripts/compare_runs_paired.py`. 1,503 tests pass. Not merged to main yet.
+
 ## Schedule
 
 | Day | VM1 (MIMIC) | VM2 (eICU) | Lead / Amrit |
