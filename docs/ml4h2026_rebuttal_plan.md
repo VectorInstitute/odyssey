@@ -134,7 +134,7 @@ Keep each block under 150 words. The response box on OpenReview is short.
 - Run `figures/pagecheck.py` and the awk comment check after every edit (the build has lost prose to `%` lines before).
 - The submitted source is `paper/ml4h/main_mixture.tex`; the old `main.tex` and its aux files were retired to `paper/ml4h/retired/` on 2026-09-25. `make_steering_table.py` and `make_specificity_table.py` now feed no table in the paper; keep them for the steering follow-up.
 
-## Results so far (updated 2026-09-26, 01:30 UTC)
+## Results so far (updated 2026-09-29, 01:00 UTC)
 
 Every number below is banked under `research_journal/figure_data/` in the run directory named, and was computed on all held-out shards unless stated. Runs launched 2026-09-25 from the `rebuttal/integration` branch; VM recipe and logs are in the session memory and the chain scripts under the VM home directories.
 
@@ -146,16 +146,18 @@ Every number below is banked under `research_journal/figure_data/` in the run di
 - MIMIC-IV (1,214,849 landmark rows): truth minus none between -0.0002 and -0.006 across 15 cells, negative and separated in 9, never positive. Mean risk moves by at most 0.0015.
 - Reading: the label override is inert on the clinical hazards as it is on next-event accuracy. The two halves of Q3 are now scored on the same endpoint.
 
-### WP2, the cost of the bottleneck: done pending the code-drift retrains
+### WP2, the cost of the bottleneck: done
 
-No-bottleneck arms (`model_kind=baseline`, flagship recipe, RandInt 0) trained at full scale: `vm1/full_run_baseline_v10` (49,375 steps, best val 1.7985) and `vm2/eicu_full_baseline_v10` (30,250 steps, early stop, best val 1.5362). Scored with the standard chain (GBM refit on every train shard) and compared with the flagship on identical landmark rows by `scripts/compare_runs_paired.py` (`paired_vs_v10.json`, `paired_vs_v10_rescored.json`).
+No-bottleneck arms (`model_kind=baseline`, flagship recipe, RandInt 0) trained at full scale: `vm1/full_run_baseline_v10` (49,375 steps, best val 1.7985) and `vm2/eicu_full_baseline_v10` (30,250 steps, early stop, best val 1.5362). Because the submitted flagships were trained on 2026-08-31 code, the bottleneck recipe was also retrained on current code (`vm1/full_run_v10_re`, `vm2/eicu_full_v10_re`), so the like-for-like pair is retrain versus baseline. All arms scored with the standard chain (GBM refit on every train shard) and compared on identical landmark rows with `scripts/compare_runs_paired.py` (`paired_re_vs_baseline.json`, `paired_flagship_vs_re.json` under each `_re` run; `paired_vs_v10*.json` under each baseline run for the flagship pair).
 
-- MIMIC-IV: the no-bottleneck arm is ahead in 15 of 15 cells, every interval clear of zero: AKI +0.011 / +0.010 / +0.008 (8 / 24 / 72 h), death +0.005 / +0.007 / +0.007, ICU admission +0.010 / +0.013 / +0.018, Sepsis-3 +0.013 / +0.012 / +0.013, vasopressor start +0.006 / +0.006 / +0.011. Next-event set top-1 81.6 to 83.3, exact top-1 37.25 to 37.79, cross-entropy 3.556 to 3.525.
-- eICU-CRD: ahead in 11 of 12 cells (ICU admission at 72 h ties): death +0.029 / +0.034 / +0.039, vasopressor +0.015 / +0.014 / +0.009, ICU +0.012 / +0.007 / +0.005, AKI +0.107 / +0.097 / +0.103 under the current AKI label. Exact top-1 54.0 to 55.9, cross-entropy 1.975 to 1.798.
-- Against the panel, the no-bottleneck arm still loses every original cell on both databases (`alerts_cis.json`), by about half the bottleneck's margin on death and a third on vasopressor start, and it wins the new eICU Sepsis-3 cells at 8 and 24 h where the panel has 469 positives.
-- Caveat still open: the flagships were trained on 2026-08-31 code and the baselines on current code. Like-for-like bottleneck retrains on current code are queued: `eicu_full_v10_re` (VM2, after the RandInt chain) and `full_run_v10_re` (VM1, after the MIMIC baseline CIs). If they match the flagships, the numbers above are the bottleneck's cost; if they close part of the gap, the difference was code drift and the retrain pair replaces the flagship pair.
+- Like-for-like, MIMIC-IV: the no-bottleneck arm is ahead in 15 of 15 cells by +0.004 to +0.009 AUROC (death +0.004 at every horizon, vasopressor +0.005 / +0.006 / +0.009, AKI +0.006 / +0.007 / +0.004, ICU +0.006 / +0.007 / +0.009, Sepsis-3 +0.005 / +0.006 / +0.005). Code drift on MIMIC-IV (retrain minus flagship) is +0.000 to +0.009.
+- Like-for-like, eICU-CRD: tied on death (-0.004 / -0.000 / +0.005), no-bottleneck ahead by +0.012 to +0.014 on AKI, +0.005 to +0.008 on vasopressor, +0.007 / +0.003 / -0.000 on ICU, mixed on Sepsis-3. Code drift on eICU-CRD is large: retrain minus flagship +0.033 / +0.034 / +0.034 on death and +0.095 / +0.085 / +0.089 on AKI (current AKI label), +0.003 to +0.009 on vasopressor, +0.004 on ICU. Current main trains a much better eICU model than the one in the paper.
+- Against the panel: the MIMIC-IV retrain keeps the flagship's two wins (death 8 h, vasopressor 8 h) and turns vasopressor 24 h into a tie; the eICU-CRD retrain ties on death at 8 h (-0.006, interval crosses zero), wins Sepsis-3 at 8 and 24 h (a new event there; the panel has 469 positives), and loses the other cells by about half the flagship's margin on death (24 h: -0.043 versus -0.078). The no-bottleneck arms lose every original cell too, with the same two MIMIC-IV wins.
+- Next-event, current code: MIMIC-IV exact top-1 37.8 (bottleneck) versus 37.8 (no bottleneck), set top-1 82.0 versus 83.3; eICU-CRD 55.2 versus 55.9, set top-1 88.4 versus 88.7.
+- Reading: the bottleneck's cost is real but under one AUROC point in every cell, at most a fifth of the gap to the panel. The earlier flagship-based estimate (up to 0.04 on eICU death, 0.10 on AKI) was mostly code drift, not the bottleneck.
+- Retrain levers (band 0.15, top-1 points): MIMIC-IV truth minus none -0.22, zero_known retains 5.3%; eICU-CRD -0.04, zero_known retains 39.2%. Same verdict as the paper on both.
 
-Two facts found on the way. First, the banked eICU Table 13 AKI cells are under an older AKI label: rescoring the same checkpoint with current code (`vm2/eicu_full_v10/alerts_rescore.json`) leaves death, vasopressor and ICU AUROCs identical and drops AKI from 0.741 to 0.649 at 8 h (at-risk rows 451,747 to 308,700; the GBM drops from 0.891 to 0.820). The paper must state which label Table 13 uses. Second, the panel's death-at-8 h AUROC on MIMIC-IV moved from 0.944 to 0.896 between two refits of the same recipe (1,987 positives), larger than the 0.029 refit variance the paper reports; the other cells agree within 0.005.
+Two facts found on the way. First, the banked eICU Table 13 AKI cells are under an older AKI label: rescoring the same checkpoint with current code (`vm2/eicu_full_v10/alerts_rescore.json`) leaves death, vasopressor and ICU AUROCs identical and drops AKI from 0.741 to 0.649 at 8 h (at-risk rows 451,747 to 308,700; the GBM drops from 0.891 to 0.820). The paper must state which label Table 13 uses, and the camera-ready should carry the retrained eICU model. Second, the panel's death-at-8 h AUROC on MIMIC-IV moved from 0.944 to 0.896 to 0.909 across three refits of the same recipe (1,987 positives), larger than the 0.029 refit variance the paper reports; the other cells agree within 0.005.
 
 ### WP3, which channel carries the forecast: done, the poles carry it
 
@@ -175,9 +177,9 @@ Two facts found on the way. First, the banked eICU Table 13 AKI cells are under 
 - Fresh readouts beat the model's own head because they optimise strict top-1 while the model trains bundle-invariant; compare readouts with the full-bottleneck readout, not with the model head.
 - CTL leakage probes on the next-token code family (9 classes): probabilities only 0.935 / 0.967, embeddings only 0.956 / 0.973, unnamed slot only 0.878 / 0.953, random-projected probabilities 0.936 / 0.968 (MIMIC / eICU).
 
-### WP4, RandInt: three subset arms banked, the full-scale arm training
+### WP4, RandInt: done, no lever at full scale either
 
-`eicu_full_RI_v10` (flagship recipe with `randint_prob 0.25`) started 2026-09-25 20:24 UTC on VM2, then the full eval chain and CIs. The three subset-scale arms and the steering / control epochs are listed above under WP4.
+`vm2/eicu_full_RI_v10` (flagship recipe, `randint_prob 0.25`, current code, 2 epochs): truth minus none -0.26 top-1 points (loss +0.006 nats), truth minus flip -0.44 points; zero_known retains 54.5%. No accuracy cost: set top-1 88.4 versus 88.1, exact 53.6 versus 54.0, readout mean 0.873 versus 0.872 over the 25 shared concepts. Against the panel it wins the three Sepsis-3 cells and loses the twelve original ones. With the three subset arms and the two steering epochs, the intervention-aware remedy has now been applied five times at two scales without producing a usable override.
 
 ### WP5, GEMINI: code ready, the node session is Amrit's
 
