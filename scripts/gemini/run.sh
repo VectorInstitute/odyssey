@@ -4,7 +4,7 @@
 # nobody can log into the node directly, so this is what actually runs there.
 #
 # Usage (on the GEMINI node, from the repo root):
-#   scripts/gemini/run.sh [probe|schema|env-gpu|extract-dry|extract|finalize|export-codes|pipeline|train-smoke|train-smoke-2|train-full|train-smoke-cbm|train-full-cbm|train-smoke-dec|train-full-dec|train-rung2|eval-forecast <run-name>|interventions <run-name>|alerts <run-name>|tabicl <run-name>|steering <run-name>|outcome-probes <run-name>|steering-twosided <run-name>|atlas <run-name>|train|eval|all]
+#   scripts/gemini/run.sh [probe|schema|env-gpu|extract-dry|extract|finalize|export-codes|pipeline|train-smoke|train-smoke-2|train-full|train-smoke-cbm|train-full-cbm|train-smoke-dec|train-full-dec|train-rung2|eval-forecast <run-name>|interventions <run-name>|alerts <run-name>|tabicl <run-name>|steering <run-name>|outcome-probes <run-name>|steering-twosided <run-name>|atlas <run-name>|alerts-cis <run-name>|panel-coverage <run-name>|cohort-counts <run-name>|train|eval|all]
 #
 # Steps:
 #   probe        scripts/gemini/probe_env.sh -> scripts/gemini/out/env_probe.txt
@@ -208,6 +208,50 @@
 #                sidecar) and ~/runs/<run-name>/intervention_cis.json, and
 #                exports only the CI file (aggregate-only) to
 #                scripts/gemini/out/evals/.
+#   alerts-cis <run-name>
+#                the paired subject-clustered bootstrap behind the alerts
+#                leg (docs/ml4h2026_rebuttal_plan.md WP5(a)): runs
+#                scripts/alerts_cis.py on the row dump the `alerts` step
+#                left on this node, hazard heads against the tuned GBM, per
+#                (event, horizon) cell, 1000 draws. Reads
+#                ~/runs/<run-name>/alerts_rows_allshards.parquet by default
+#                (GEMINI_ALERTS_TAG, default _allshards: the current GBM
+#                refit on all 894 train shards at 10% row thinning, the
+#                number tab:gemini quotes) and writes ~/runs/<run-name>/
+#                alerts_cis_allshards.json. Prints the dump's row and
+#                subject counts before starting; GEMINI_CIS_MAX_SUBJECTS
+#                (default unset = every subject) maps to --max-subjects
+#                when the full bootstrap is not affordable (the ~25M-row
+#                dump takes 15-20 h), GEMINI_CIS_N_BOOT overrides the draw
+#                count. Re-running with the output already present only
+#                re-exports it (GEMINI_CIS_FORCE=1 recomputes). Exports
+#                (aggregate-only) to scripts/gemini/out/evals/
+#                <run-name>_allshards_alerts_cis.json.
+#   panel-coverage <run-name>
+#                how many of the GBM feature panel's 48 signals resolve on
+#                GEMINI (WP5(b)): scripts/panel_coverage.py against the
+#                per-source LOINC table in odyssey/data/code_mapping.py,
+#                and against metadata/codes.parquet when present (which
+#                resolved prefixes were actually charted). Signal and
+#                prefix names only, no counts. Writes ~/runs/<run-name>/
+#                panel_coverage.json and exports it to
+#                scripts/gemini/out/evals/<run-name>_panel_coverage.json.
+#   cohort-counts <run-name>
+#                the aggregate cohort description for the GEMINI arm
+#                (WP5(c)): scripts/cohort_counts.py over the MEDS shards
+#                the run trained on (train/tuning from the run's
+#                config.json) plus the held-out split -- subjects,
+#                admissions, hospitals (metadata/hadm_id_hospital.parquet),
+#                admission year range, length of stay, sex and age where
+#                the source charts them (GEMINI extracts neither), and the
+#                share of subjects with each hazard event under the alerts
+#                leg's own onset definitions. Every count below 10 is
+#                written as "<10". GEMINI_COHORT_MAX_SHARDS caps every
+#                split (recorded in the output), GEMINI_COHORT_NO_EVENTS=1
+#                skips the label pass. Re-running with the output present
+#                only re-exports it (GEMINI_COHORT_FORCE=1 recomputes).
+#                Writes ~/runs/<run-name>/cohort_counts.json and exports it
+#                to scripts/gemini/out/evals/<run-name>_cohort_counts.json.
 #   train        not built yet (a general, non-GEMINI-specific full run).
 #   eval         not built yet.
 #   all          probe, schema, extract-dry, in order (default; deliberately
@@ -254,6 +298,16 @@ main() {
     # given -- the whitelist must match that exactly, not just the keys a
     # particular invocation cares about, or _export_aggregate_json refuses.
     STEERING_JSON_KEYS="site control control_seed stratify_by layer_index tau suppress_strength horizons_hours event_names trained_event_names outcome_probes gammas lifted_tokens at_risk_restricted summaries"
+    # scripts/alerts_cis.py's top-level output keys (its main() builds the
+    # dict; the per-cell block has n/n_positive/n_subjects/scorers/
+    # paired_deltas, the summary block one flat record per cell).
+    ALERTS_CIS_JSON_KEYS="scorers n_boot seed max_subjects variance_scope n_rows_in_dumps n_subjects_in_dumps n_rows_scored n_subjects_scored cells summary"
+    # scripts/panel_coverage.py's OUTPUT_KEYS and scripts/cohort_counts.py's
+    # OUTPUT_KEYS, verbatim -- tests/scripts/gemini/test_run_sh_rebuttal_steps.py
+    # pins these two lines to the scripts so a new field refuses here in CI,
+    # not on the node (the #238 incident).
+    PANEL_COVERAGE_JSON_KEYS="source n_panel_signals n_resolved unresolved resolved prefixes codes_inventory resolved_observed resolved_unobserved"
+    COHORT_COUNTS_JSON_KEYS="source task_set normalize_medications suppression_threshold max_shards los_definition hospital_metadata events events_dropped splits all_splits"
 
     # --- sync with the mirror (fetch + reset, never pull) ---------------------
     #
@@ -2242,6 +2296,209 @@ PY
             || echo "WARNING: atlas output not exported (see above)." >&2
     }
 
+    run_alerts_cis() {
+        # WP5(a) of docs/ml4h2026_rebuttal_plan.md: the interval the paper's
+        # GEMINI hazard-vs-GBM comparison (tab:gemini) never had. Runs
+        # scripts/alerts_cis.py on the row dump the `alerts` step left on
+        # this node -- the dump fixes the rows, labels and every scorer's
+        # scores, so nothing is re-scored and the CI describes exactly the
+        # banked point estimates. Defaults to the _allshards dump: the
+        # current GBM refit (all 894 train shards at 10% row thinning,
+        # docs/experiments.md "alerts, GBM refit on every train shard").
+        local run_name="$1"
+        if [[ -z "$run_name" ]]; then
+            echo "alerts-cis needs a run name: scripts/gemini/run.sh alerts-cis <run-name>" >&2
+            echo "e.g.: scripts/gemini/run.sh alerts-cis gemini_full_DEC_v12" >&2
+            exit 1
+        fi
+        local alerts_tag="${GEMINI_ALERTS_TAG:-_allshards}"
+        local n_boot="${GEMINI_CIS_N_BOOT:-1000}"
+        local max_subjects="${GEMINI_CIS_MAX_SUBJECTS:-}"
+        local scorers="${GEMINI_CIS_SCORERS:-hazard gbm}"
+        local seed="${GEMINI_CIS_SEED:-0}"
+        local force="${GEMINI_CIS_FORCE:-0}"
+
+        echo "=== alerts-cis ($run_name) ==="
+        echo "Paired subject-clustered bootstrap on the alerts row dump:"
+        echo "alerts_tag=$alerts_tag (GEMINI_ALERTS_TAG; _allshards = the current GBM refit),"
+        echo "scorers=$scorers, n_boot=$n_boot, seed=$seed,"
+        echo "max_subjects=${max_subjects:-none (every subject)} (GEMINI_CIS_MAX_SUBJECTS)."
+        if [[ -z "${TMUX:-}" && -z "${STY:-}" ]]; then
+            echo "WARNING: this doesn't look like a tmux or screen session --" >&2
+            echo "a 1000-draw bootstrap over the full dump runs 15-20 h and dies" >&2
+            echo "with a dropped SSH connection. Run it detached instead, e.g.:" >&2
+            echo "  tmux new -s alerts-cis-$run_name 'scripts/gemini/run.sh $STEP $run_name'" >&2
+        fi
+        _require_run_and_data "$run_name"
+
+        DUMP_ROWS="$RUN_DIR/alerts_rows${alerts_tag}.parquet"
+        OUTPUT_JSON="$RUN_DIR/alerts_cis${alerts_tag}.json"
+        if [[ ! -f "$DUMP_ROWS" ]]; then
+            echo "No row dump at $DUMP_ROWS -- the alerts step writes it. Run" >&2
+            echo "  GEMINI_ALERT_SHARDS=1000 GEMINI_ALERTS_TAG=$alerts_tag scripts/gemini/run.sh alerts $run_name" >&2
+            echo "first, or point GEMINI_ALERTS_TAG at the tag of a dump that exists:" >&2
+            ls -1 "$RUN_DIR"/alerts_rows*.parquet 2>/dev/null >&2 || echo "  (no alerts_rows*.parquet under $RUN_DIR)" >&2
+            exit 1
+        fi
+        echo "Run dir: $RUN_DIR"
+        echo "Row dump: $DUMP_ROWS (patient-level, stays on this node)"
+        echo "Output: $OUTPUT_JSON"
+
+        source "$GPU_VENV/bin/activate"
+        if [[ -f "$OUTPUT_JSON" && "$force" != "1" ]]; then
+            echo "Output already exists; not recomputing (set GEMINI_CIS_FORCE=1 to)."
+        else
+            # Row and subject counts before committing to the bootstrap: the
+            # operator decides from these whether GEMINI_CIS_MAX_SUBJECTS is
+            # needed. A lazy scan, so the dump is not materialized twice.
+            python - "$DUMP_ROWS" <<'PY'
+import sys
+
+import polars as pl
+
+path = sys.argv[1]
+counts = (
+    pl.scan_parquet(path)
+    .select(
+        pl.len().alias("rows"),
+        pl.col("subject_id").n_unique().alias("subjects"),
+        pl.col("event").n_unique().alias("events"),
+    )
+    .collect()
+)
+rows, subjects, events = counts.row(0)
+print(f"dump: {rows:,} rows, {subjects:,} subjects, {events} events")
+PY
+            local extra=()
+            if [[ -n "$max_subjects" ]]; then
+                extra+=(--max-subjects "$max_subjects")
+            fi
+            # shellcheck disable=SC2086
+            python scripts/alerts_cis.py \
+                --dump "$DUMP_ROWS" \
+                --output-json "$OUTPUT_JSON" \
+                --scorers $scorers \
+                --n-boot "$n_boot" \
+                --seed "$seed" \
+                "${extra[@]}"
+        fi
+        deactivate
+        source "$VENV/bin/activate"
+
+        echo "$STEP complete. Results at $OUTPUT_JSON"
+        _export_aggregate_json \
+            "scripts/gemini/out/evals/${run_name}${alerts_tag}_alerts_cis.json" "$OUTPUT_JSON" \
+            "$ALERTS_CIS_JSON_KEYS" \
+            || echo "WARNING: alerts CI output not exported (see above)." >&2
+    }
+
+    run_panel_coverage() {
+        # WP5(b): which of the GBM feature panel's 48 signals resolve on
+        # GEMINI, by name. The LOINC table is in the repo, so most of this
+        # could run anywhere; what only this node can add is
+        # metadata/codes.parquet, which says whether each resolved prefix
+        # was actually charted. Names only, never counts.
+        local run_name="$1"
+        if [[ -z "$run_name" ]]; then
+            echo "panel-coverage needs a run name: scripts/gemini/run.sh panel-coverage <run-name>" >&2
+            echo "e.g.: scripts/gemini/run.sh panel-coverage gemini_full_DEC_v12" >&2
+            exit 1
+        fi
+        echo "=== panel-coverage ($run_name) ==="
+        _require_run_and_data "$run_name"
+
+        OUTPUT_JSON="$RUN_DIR/panel_coverage.json"
+        local codes="$METADATA_DIR/codes.parquet"
+        local extra=()
+        if [[ -f "$codes" ]]; then
+            extra+=(--codes-parquet "$codes")
+            echo "Code inventory: $codes"
+        else
+            echo "No code inventory at $codes -- resolving against the LOINC table only."
+        fi
+        echo "Output: $OUTPUT_JSON"
+
+        source "$GPU_VENV/bin/activate"
+        python scripts/panel_coverage.py \
+            --source gemini \
+            --output-json "$OUTPUT_JSON" \
+            "${extra[@]}"
+        deactivate
+        source "$VENV/bin/activate"
+
+        echo "$STEP complete. Results at $OUTPUT_JSON"
+        _export_aggregate_json \
+            "scripts/gemini/out/evals/${run_name}_panel_coverage.json" "$OUTPUT_JSON" \
+            "$PANEL_COVERAGE_JSON_KEYS" \
+            || echo "WARNING: panel coverage not exported (see above)." >&2
+    }
+
+    run_cohort_counts() {
+        # WP5(c): the aggregate cohort description the paper's GEMINI arm
+        # never had. Train/tuning come from the run's own config.json (the
+        # shards it trained on), held-out from the eval dir every other
+        # step reads; hospitals from metadata/hadm_id_hospital.parquet.
+        # Every count below 10 leaves as "<10"; the script never writes a
+        # subject id or a per-patient value.
+        local run_name="$1"
+        if [[ -z "$run_name" ]]; then
+            echo "cohort-counts needs a run name: scripts/gemini/run.sh cohort-counts <run-name>" >&2
+            echo "e.g.: scripts/gemini/run.sh cohort-counts gemini_full_DEC_v12" >&2
+            exit 1
+        fi
+        local max_shards="${GEMINI_COHORT_MAX_SHARDS:-}"
+        local no_events="${GEMINI_COHORT_NO_EVENTS:-0}"
+        local force="${GEMINI_COHORT_FORCE:-0}"
+
+        echo "=== cohort-counts ($run_name) ==="
+        echo "max_shards=${max_shards:-none (every shard)} (GEMINI_COHORT_MAX_SHARDS),"
+        echo "no_events=$no_events (GEMINI_COHORT_NO_EVENTS=1 skips the label pass)."
+        if [[ -z "${TMUX:-}" && -z "${STY:-}" ]]; then
+            echo "WARNING: this doesn't look like a tmux or screen session --" >&2
+            echo "the label pass over ~1000 shards takes a while; run it detached, e.g.:" >&2
+            echo "  tmux new -s cohort-$run_name 'scripts/gemini/run.sh $STEP $run_name'" >&2
+        fi
+        _require_run_and_data "$run_name"
+
+        OUTPUT_JSON="$RUN_DIR/cohort_counts.json"
+        local hospitals="$METADATA_DIR/hadm_id_hospital.parquet"
+        local extra=()
+        if [[ -f "$hospitals" ]]; then
+            extra+=(--hadm-hospital-parquet "$hospitals")
+            echo "Hospital table: $hospitals"
+        else
+            echo "No hospital table at $hospitals -- hospitals will read 'not available'."
+        fi
+        if [[ -n "$max_shards" ]]; then
+            extra+=(--max-shards "$max_shards")
+        fi
+        if [[ "$no_events" == "1" ]]; then
+            extra+=(--no-events)
+        fi
+        echo "Run dir: $RUN_DIR (train/tuning split dirs from its config.json)"
+        echo "Held-out: $HELD_OUT_SHARD_DIR"
+        echo "Output: $OUTPUT_JSON"
+
+        source "$GPU_VENV/bin/activate"
+        if [[ -f "$OUTPUT_JSON" && "$force" != "1" ]]; then
+            echo "Output already exists; not recomputing (set GEMINI_COHORT_FORCE=1 to)."
+        else
+            python scripts/cohort_counts.py \
+                --run-dir "$RUN_DIR" \
+                --split "held_out=$HELD_OUT_SHARD_DIR" \
+                --output-json "$OUTPUT_JSON" \
+                "${extra[@]}"
+        fi
+        deactivate
+        source "$VENV/bin/activate"
+
+        echo "$STEP complete. Results at $OUTPUT_JSON"
+        _export_aggregate_json \
+            "scripts/gemini/out/evals/${run_name}_cohort_counts.json" "$OUTPUT_JSON" \
+            "$COHORT_COUNTS_JSON_KEYS" \
+            || echo "WARNING: cohort counts not exported (see above)." >&2
+    }
+
     case "$STEP" in
         probe) run_probe ;;
         schema) run_schema ;;
@@ -2268,11 +2525,14 @@ PY
         outcome-probes) run_outcome_probes "${2:-}" ;;
         steering-twosided) run_steering_twosided "${2:-}" ;;
         atlas) run_atlas "${2:-}" ;;
+        alerts-cis) run_alerts_cis "${2:-}" ;;
+        panel-coverage) run_panel_coverage "${2:-}" ;;
+        cohort-counts) run_cohort_counts "${2:-}" ;;
         train) run_pending_stub train ;;
         eval) run_pending_stub eval ;;
         all) run_probe; run_schema; run_extract_dry ;;
         *)
-            echo "unknown step: $STEP (expected probe, schema, env-gpu, extract-dry, extract, finalize, export-codes, pipeline, train-smoke, train-smoke-2, train-full, train-smoke-cbm, train-full-cbm, train-smoke-dec, train-full-dec, train-rung2, eval-forecast, interventions, alerts, tabicl, steering, outcome-probes, steering-twosided, atlas, train, eval, or all)" >&2
+            echo "unknown step: $STEP (expected probe, schema, env-gpu, extract-dry, extract, finalize, export-codes, pipeline, train-smoke, train-smoke-2, train-full, train-smoke-cbm, train-full-cbm, train-smoke-dec, train-full-dec, train-rung2, eval-forecast, interventions, alerts, tabicl, steering, outcome-probes, steering-twosided, atlas, alerts-cis, panel-coverage, cohort-counts, train, eval, or all)" >&2
             exit 1
             ;;
     esac
