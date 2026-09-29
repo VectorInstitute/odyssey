@@ -240,7 +240,8 @@ class ChannelBank:
         p = probs.float().unsqueeze(-1)
         w_pos = self.known_pos[idx].float()
         w_neg = self.known_neg[idx].float()
-        return (p * w_pos + (1.0 - p) * w_neg).flatten(1)
+        mixed: torch.Tensor = (p * w_pos + (1.0 - p) * w_neg).flatten(1)
+        return mixed
 
 
 def _build_bank(
