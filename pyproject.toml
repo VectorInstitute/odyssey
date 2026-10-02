@@ -195,6 +195,8 @@ dev = [
     "nbqa[toolchain]>=1.9.1",
     # pip>=26.1.2 fixes PYSEC-2026-196
     "pip>=26.1.2",
+    # virtualenv>=21.7.13 fixes PYSEC-2026-4011, PYSEC-2026-4012, PYSEC-2026-4013, PYSEC-2026-4014
+    "virtualenv>=21.7.13",
 ]
 docs = [
     "mkdocs>=1.5.0",
