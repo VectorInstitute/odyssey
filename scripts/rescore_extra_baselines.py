@@ -14,7 +14,7 @@ visit_id, time_hours) rather than assumed to line up positionally.
 Two anti-lost-compute measures, both added after a real incident (a run
 that fit all three baselines cleanly -- EBM alone took ~4.6h over 12
 (event, horizon) pairs -- then crashed at the first held-out scoring
-call; see ``docs/reeval_wave_v2.md``):
+call; see ``docs/archive/reeval_wave_v2.md``):
 
 - Fits are cached to ``{run-dir}/rescore_cache/`` (see
   :mod:`odyssey.inference.fit_cache`) immediately as each one completes

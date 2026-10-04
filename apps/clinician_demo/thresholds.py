@@ -26,9 +26,9 @@ from apps.clinician_demo.schemas import OperatingPoint, to_jsonable
 logger = logging.getLogger(__name__)
 
 ALERTS_ROWS_FILENAME = "alerts_rows.parquet"
+# Alert lines exported from the GPU host (aggregates only), for running the
+# demo where the patient-level ``alerts_rows.parquet`` is not present.
 AGGREGATE_THRESHOLDS_FILENAME = "demo_thresholds_aggregate.json"
-"""Alert lines exported from the GPU host (aggregates only), for running the
-demo where the patient-level ``alerts_rows.parquet`` is not present."""
 CACHE_VERSION = 1
 
 

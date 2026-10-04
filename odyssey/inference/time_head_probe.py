@@ -33,7 +33,7 @@ the mixture additionally reports its continuous log-likelihood and the
 median-gap absolute error. Features are collected once per split from a
 streaming pass (positions Bernoulli-subsampled to bound memory), heads
 are fit on the train bank with early stopping on the tuning bank, and
-reported on the held-out bank. Decision rule (docs/track_b_designs.md):
+reported on the held-out bank. Decision rule (docs/archive/track_b_designs.md):
 a head graduates to a flagship-run A/B only if it beats the refit hazard
 on after-bundle-1h calibration AND overall NLL.
 """

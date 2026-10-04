@@ -20,6 +20,12 @@ from odyssey.data.packed_context import PackedContextSampler
 from odyssey.data.streaming import PackedLaneSampler
 from odyssey.data.value_binning import QuantileBinner
 from odyssey.data.vocabulary import Vocabulary
+from odyssey.inference.legacy_concept_pins import (
+    HAZARD_NUM_BINS,
+    PIN_FILENAME,
+    pinned_event_names,
+    write_run_pins,
+)
 from odyssey.inference.run_inference import (
     InferenceResults,
     _block_set_hits,
@@ -877,7 +883,7 @@ def test_value_embeddings_flag_ignores_the_backbone_merge_attention(
     torch.save({"model": keys}, run_dir / "checkpoint_final.pt")
     seen = {}
 
-    def fake_build_model(cfg, *, vocab_size, num_concepts):  # noqa: ARG001
+    def fake_build_model(cfg, *, vocab_size, num_concepts, event_names=None):  # noqa: ARG001
         seen["value_embeddings"] = cfg.value_embeddings
         seen["event_head_hidden"] = cfg.event_head_hidden
         seen["concept_global_pairs"] = cfg.concept_global_pairs
@@ -966,7 +972,7 @@ def test_unknown_dim_round_trips_for_the_non_global_pairs_unequal_width_case(
 
     seen = {}
 
-    def fake_build_model(cfg, *, vocab_size, num_concepts):  # noqa: ARG001
+    def fake_build_model(cfg, *, vocab_size, num_concepts, event_names=None):  # noqa: ARG001
         seen["unknown_dim"] = cfg.unknown_dim
         seen["concept_global_pairs"] = cfg.concept_global_pairs
         raise RuntimeError("stop here")
@@ -1008,6 +1014,7 @@ def _write_transformer_run(
     event_hazards: bool = False,
     task_set: str = "v1",
     auxiliary_event_names: tuple[str, ...] = (),
+    event_names: list[str] | None = None,
 ) -> Path:
     """Build a real (CPU-only) transformer BaselineSequenceModel run dir.
 
@@ -1015,13 +1022,17 @@ def _write_transformer_run(
     caller's behavior exactly (no event_heads.* keys at all) -- only set
     it to exercise hazard-head reconstruction (see
     test_load_run_reconstructs_widened_event_heads below).
+    ``event_names`` builds the hazard heads for an explicit list instead of
+    the task set's, standing in for a checkpoint whose registry has since
+    grown (the event-pin tests below).
     """
     torch.manual_seed(0)
-    event_names = (
-        [a.name for a in hazard_events_for(task_set, auxiliary_event_names)]
-        if event_hazards
-        else None
-    )
+    if event_names is None:
+        event_names = (
+            [a.name for a in hazard_events_for(task_set, auxiliary_event_names)]
+            if event_hazards
+            else None
+        )
     model = BaselineSequenceModel(
         backbone=TransformerBackbone(
             vocab_size=len(vocab),
@@ -1108,6 +1119,68 @@ def test_load_run_auxiliary_event_names_empty_matches_pre_existing_behavior(
     model, _, _, config = load_run(run_dir, device="cpu")
 
     assert tuple(config.auxiliary_event_names) == ()
+    assert model.event_heads is not None
+    assert model.event_heads.event_names == [a.name for a in hazard_events_for("v1")]
+
+
+# ---------------------------------------------------------------------------
+# Hazard event pins: a checkpoint trained before the registry grew an event
+# (the eICU sepsis3 head after PR #222) must rebuild its heads at its own
+# width and order, or refuse with a readable message.
+# ---------------------------------------------------------------------------
+
+
+def test_load_run_honours_the_event_pin_file(tmp_path: Path) -> None:
+    """A run_pins.json event list rebuilds the heads at the checkpoint's width."""
+    vocab = _vocab()
+    today = [a.name for a in hazard_events_for("v1")]
+    # Drop one from the middle, as sepsis3 sits in the middle of today's
+    # eICU list: the surviving heads keep their historical order.
+    historical = [n for i, n in enumerate(today) if i != 1]
+    run_dir = _write_transformer_run(
+        tmp_path, vocab, value_head=False, event_hazards=True, event_names=historical
+    )
+    write_run_pins(run_dir, concept_names=[], event_names=historical)
+
+    model, _, _, _ = load_run(run_dir, device="cpu")
+
+    assert model.event_heads is not None
+    assert model.event_heads.event_names == historical
+    assert model.event_heads.proj.out_features == len(historical) * HAZARD_NUM_BINS
+
+
+def test_load_run_refuses_an_unpinned_event_width_mismatch(tmp_path: Path) -> None:
+    """Without a pin, the mismatch is one ValueError, not a load_state_dict wall."""
+    vocab = _vocab()
+    today = [a.name for a in hazard_events_for("v1")]
+    (tmp_path / "eicu_like_v10").mkdir()
+    run_dir = _write_transformer_run(
+        tmp_path / "eicu_like_v10",
+        vocab,
+        value_head=False,
+        event_hazards=True,
+        event_names=today[:-1],
+    )
+    assert not (run_dir / PIN_FILENAME).exists()
+
+    with pytest.raises(ValueError, match="eicu_like_v10: checkpoint has hazard"):
+        load_run(run_dir, device="cpu")
+
+
+def test_load_run_unpinned_run_with_agreeing_counts_is_unchanged(
+    tmp_path: Path,
+) -> None:
+    """The MIMIC path: no pin file, counts agree, today's list is used as before."""
+    vocab = _vocab()
+    (tmp_path / "full_run_v10").mkdir()
+    run_dir = _write_transformer_run(
+        tmp_path / "full_run_v10", vocab, value_head=False, event_hazards=True
+    )
+    assert not (run_dir / PIN_FILENAME).exists()
+    assert pinned_event_names(str(run_dir)) is None
+
+    model, _, _, _ = load_run(run_dir, device="cpu")
+
     assert model.event_heads is not None
     assert model.event_heads.event_names == [a.name for a in hazard_events_for("v1")]
 
