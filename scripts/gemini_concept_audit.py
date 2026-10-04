@@ -5,7 +5,7 @@ Runs on a normal checkout against ``scripts/gemini/out/codes_inventory.json``
 back from the node) -- no GEMINI access, no GPU, no patient data: every input
 is already cell-suppressed vocabulary metadata.
 
-Three questions, matching docs/experiment_plan.md row G2:
+Three questions, matching docs/archive/experiment_plan.md row G2:
 
 1. **Concept resolution** (paper Sec 3 portability RESULT): which of the
    full MIMIC concept set resolve on GEMINI through the LOINC layer

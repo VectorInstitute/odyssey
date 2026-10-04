@@ -396,6 +396,36 @@ def _feature_stats(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     return mean, std
 
 
+def _probe_device(head: nn.Module) -> torch.device:
+    """Return the device a probe's parameters live on (where batches must go)."""
+    return next(head.parameters()).device
+
+
+def _batches(n: int, batch_size: int) -> Iterator[tuple[int, int]]:
+    for start in range(0, n, batch_size):
+        yield start, min(n, start + batch_size)
+
+
+@torch.no_grad()
+def _predict_in_batches(
+    head: _StandardizedLinearProbe, x: torch.Tensor, batch_size: int = 65536
+) -> torch.Tensor:
+    """``head(x)`` on CPU, batch by batch, whatever device ``x`` lives on.
+
+    The bank may sit in host memory (``--bank-on-cpu``) while the probe is
+    on the GPU; each batch is upcast and moved to the probe's device, and
+    the logits come back to CPU so downstream numpy/scoring never sees a
+    CUDA tensor.
+    """
+    head.eval()
+    device = _probe_device(head)
+    out = [
+        head(x[a:b].float().to(device)).cpu()
+        for a, b in _batches(x.shape[0], batch_size)
+    ]
+    return torch.cat(out)
+
+
 def _fit_categorical_probe(
     in_features: int,
     num_classes: int,
@@ -411,7 +441,13 @@ def _fit_categorical_probe(
     seed: int = 0,
     device: str = "cpu",
 ) -> tuple[_StandardizedLinearProbe, ProbeFitTrace]:
-    """Multinomial-logistic probe (CTL): Adam on train, early-stopped on tuning CE."""
+    """Multinomial-logistic probe (CTL): Adam on train, early-stopped on tuning CE.
+
+    The bank tensors may live on a different device from the probe (a
+    CPU bank feeding a GPU head): every batch is moved to ``device``
+    before it touches the head, and the tuning loss is accumulated batch
+    by batch rather than by materializing the whole tuning matrix there.
+    """
     torch.manual_seed(seed)
     mean, std = _feature_stats(train_x.float())
     head = _StandardizedLinearProbe(in_features, num_classes, mean, std).to(device)
@@ -421,6 +457,7 @@ def _fit_categorical_probe(
     best = float("inf")
     bad = 0
     n = train_x.shape[0]
+    n_tune = tune_x.shape[0]
     t0 = time.time()
     for epoch in range(epochs):
         head.train()
@@ -428,11 +465,19 @@ def _fit_categorical_probe(
         for start in range(0, n, batch_size):
             idx = perm[start : start + batch_size]
             opt.zero_grad()
-            loss = F.cross_entropy(head(train_x[idx].float()), train_y[idx])
+            x = train_x[idx].float().to(device)
+            y = train_y[idx].to(device)
+            loss = F.cross_entropy(head(x), y)
             loss.backward()  # type: ignore[no-untyped-call]
             opt.step()
+        head.eval()
         with torch.no_grad():
-            tune_loss = float(F.cross_entropy(head(tune_x.float()), tune_y).item())
+            tune_sum = 0.0
+            for a, b in _batches(n_tune, batch_size):
+                x = tune_x[a:b].float().to(device)
+                y = tune_y[a:b].to(device)
+                tune_sum += float(F.cross_entropy(head(x), y, reduction="sum").item())
+            tune_loss = tune_sum / max(1, n_tune)
         trace.tuning_loss.append(tune_loss)
         if tune_loss < best - 1e-6:
             best, bad = tune_loss, 0
@@ -451,9 +496,9 @@ def _fit_categorical_probe(
 def _score_categorical_probe(
     head: _StandardizedLinearProbe, x: torch.Tensor, y: torch.Tensor
 ) -> tuple[float, float]:
-    """Return (accuracy, mean cross-entropy) on ``(x, y)``."""
-    head.eval()
-    logits = head(x.float())
+    """Return (accuracy, mean cross-entropy) on ``(x, y)``, on any device."""
+    logits = _predict_in_batches(head, x)
+    y = y.cpu()
     ce = float(F.cross_entropy(logits, y).item())
     acc = float((logits.argmax(dim=-1) == y).float().mean().item())
     return acc, ce
@@ -499,6 +544,7 @@ def _fit_masked_multilabel_probe(
     best = float("inf")
     bad = 0
     n = train_x.shape[0]
+    n_tune = tune_x.shape[0]
     t0 = time.time()
     for epoch in range(epochs):
         head.train()
@@ -506,15 +552,30 @@ def _fit_masked_multilabel_probe(
         for start in range(0, n, batch_size):
             idx = perm[start : start + batch_size]
             opt.zero_grad()
+            # Batches move to the probe's device; the bank may be on CPU.
             loss = masked_bce(
-                head(train_x[idx].float()), train_y[idx], train_observed[idx]
+                head(train_x[idx].float().to(device)),
+                train_y[idx].to(device),
+                train_observed[idx].to(device),
             )
             loss.backward()  # type: ignore[no-untyped-call]
             opt.step()
+        head.eval()
         with torch.no_grad():
-            tune_loss = float(
-                masked_bce(head(tune_x.float()), tune_y, tune_observed).item()
-            )
+            # Masked mean over the whole tuning split, accumulated per batch
+            # (the ratio of sums, the same number as one unbatched call).
+            loss_sum = 0.0
+            weight_sum = 0.0
+            for a, b in _batches(n_tune, batch_size):
+                logits = head(tune_x[a:b].float().to(device))
+                y = tune_y[a:b].to(device)
+                observed = tune_observed[a:b].to(device)
+                per_elem = F.binary_cross_entropy_with_logits(
+                    logits, y, reduction="none"
+                )
+                loss_sum += float((per_elem * observed.float()).sum().item())
+                weight_sum += float(observed.float().sum().item())
+            tune_loss = loss_sum / max(1.0, weight_sum)
         trace.tuning_loss.append(tune_loss)
         if tune_loss < best - 1e-6:
             best, bad = tune_loss, 0
@@ -586,7 +647,9 @@ class CTLResult:
     n_held_out: int
 
 
-def _random_projection(in_dim: int, out_dim: int, seed: int) -> torch.Tensor:
+def _random_projection(
+    in_dim: int, out_dim: int, seed: int, *, device: torch.device | str = "cpu"
+) -> torch.Tensor:
     """Build a fixed ``(in_dim, out_dim)`` semi-orthogonal projection, seeded.
 
     CTL's capacity control (see the module docstring): a QR decomposition
@@ -596,13 +659,18 @@ def _random_projection(in_dim: int, out_dim: int, seed: int) -> torch.Tensor:
     re-express it at ``out_dim`` width to match ``embeddings_only``'s
     input dimensionality. Deterministic and self-contained: uses a local
     :class:`torch.Generator`, never the global RNG, so it has no side
-    effect on any other seeded call in this module.
+    effect on any other seeded call in this module. Always drawn on CPU
+    (so the matrix is identical whatever ``device`` is) and then moved to
+    ``device``, which must be the device of the bank it multiplies: a
+    projection on the model's device against a bank kept in host memory
+    is exactly the mixed-device matmul that lost a 45-minute streaming
+    pass (2026-09-25).
     """
     gen = torch.Generator().manual_seed(seed)
     raw = torch.randn(out_dim, in_dim, generator=gen)
     q, _ = torch.linalg.qr(raw)
-    out: torch.Tensor = q.T
-    return out
+    out: torch.Tensor = q.T.contiguous()
+    return out.to(device)
 
 
 def compute_ctl(
@@ -629,16 +697,25 @@ def compute_ctl(
     class_names = dict(_CODE_TYPE_NAMES)
     num_concepts = train_bank.concept_probs.shape[1]
     embedding_dim = train_bank.concept_embeddings.shape[-1]
-    projection = _random_projection(num_concepts, num_concepts * embedding_dim, seed)
+    projection = _random_projection(
+        num_concepts,
+        num_concepts * embedding_dim,
+        seed,
+        device=train_bank.concept_probs.device,
+    )
 
     def flat(bank: LeakageBank) -> dict[str, torch.Tensor]:
+        # Every feature matrix stays on the bank's own device; the probe
+        # fits move batches to ``device``. The projection follows the bank
+        # (the three banks are normally co-located, but nothing requires it).
+        probs = bank.concept_probs.float()
         return {
-            "probs_only": bank.concept_probs.float(),
+            "probs_only": probs,
             "embeddings_only": bank.concept_embeddings.float().reshape(
                 len(bank), num_concepts * embedding_dim
             ),
             "unknown_only": bank.unknown_embedding.float(),
-            "probs_projected": bank.concept_probs.float() @ projection,
+            "probs_projected": probs @ projection.to(probs.device),
         }
 
     train_x = flat(train_bank)
@@ -790,15 +867,22 @@ def compute_icl(
             seed=seed,
             device=device,
         )
-        with torch.no_grad():
-            embed_logits = embed_head(held_out_bank.concept_embeddings[:, i, :].float())
-            prob_logits = prob_head(held_out_bank.concept_probs[:, i : i + 1].float())
+        # Logits and targets on CPU regardless of where the bank or the
+        # probe lives: roc_auc_score reads numpy.
+        embed_logits = _predict_in_batches(
+            embed_head, held_out_bank.concept_embeddings[:, i, :]
+        )
+        prob_logits = _predict_in_batches(
+            prob_head, held_out_bank.concept_probs[:, i : i + 1]
+        )
+        held_labels = held_out_bank.concept_labels.cpu()
+        held_observed = held_out_bank.concept_observed.cpu()
         for j, concept_j in enumerate(names):
             if j == i:
                 continue
-            obs = held_out_bank.concept_observed[:, j]
+            obs = held_observed[:, j]
             n_obs = int(obs.sum().item())
-            y = held_out_bank.concept_labels[obs, j].numpy()
+            y = held_labels[obs, j].numpy()
             if n_obs < 2 or y.min() == y.max():
                 pairs.append(
                     ICLPairScore(concept_i, concept_j, n_obs, None, None, None, None)
