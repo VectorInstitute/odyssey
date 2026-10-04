@@ -50,6 +50,7 @@ from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.patient_stream import risk_within, stream_patient
 from odyssey.models.sequence_model import SequenceModel
 from odyssey.training.data import load_meds_shards
+from odyssey.utils.device import default_device
 
 
 logger = logging.getLogger(__name__)
@@ -560,7 +561,7 @@ def _main() -> None:
     parser.add_argument("--keep-per-subject", action="store_true")
     args = parser.parse_args()
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = default_device()
     run_dir = Path(args.run_dir)
     model, vocab, binner, config = load_run(
         run_dir,

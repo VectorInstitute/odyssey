@@ -129,11 +129,11 @@ def numeric_canary(
     (fixed generator seed, fixed shapes), in eval mode, and records robust
     statistics of the logits. Any kernel or weight change moves them.
     """
+    from odyssey.data.streaming import move_to_device  # noqa: PLC0415
     from odyssey.data.types import (  # noqa: PLC0415
         AuxiliaryInputs,
         ClinicalSequenceBatch,
     )
-    from odyssey.training.train import _move_chunk_to_device  # noqa: PLC0415
 
     g = torch.Generator().manual_seed(12345)
     lanes, t = 2, 64
@@ -152,7 +152,7 @@ def numeric_canary(
             ),
         ),
     )
-    batch = _move_chunk_to_device(batch, device)
+    batch = move_to_device(batch, device)
     was_training = model.training
     model.eval()
     with torch.no_grad():

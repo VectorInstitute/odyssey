@@ -70,6 +70,7 @@ import torch
 from odyssey.data.sequences import NO_VISIT, PatientSequence
 from odyssey.data.types import AuxiliaryInputs, ClinicalSequenceBatch
 from odyssey.data.vocabulary import PAD_ID
+from odyssey.utils.device import to_device
 
 
 # Sentinel `subject_ids` value at padding positions.
@@ -423,10 +424,11 @@ def move_to_device(chunk: _MovableT, device: str) -> _MovableT:
 
     Works for :class:`StreamingChunk` and its nested batch/aux tuples
     without depending on their exact field lists, so a new field added to
-    any of them needs no matching change here.
+    any of them needs no matching change here. Tensors move with
+    :func:`~odyssey.utils.device.to_device` (float64 becomes float32 on MPS).
     """
     if isinstance(chunk, torch.Tensor):
-        return chunk.to(device)  # type: ignore[return-value]
+        return to_device(chunk, device)  # type: ignore[return-value]
     if isinstance(chunk, tuple) and hasattr(chunk, "_fields"):  # NamedTuple
         return type(chunk)(*(move_to_device(v, device) for v in chunk))
     return chunk

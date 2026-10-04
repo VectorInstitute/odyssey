@@ -18,10 +18,9 @@ from dataclasses import dataclass
 import torch
 
 from odyssey.data.sequences import PatientSequence
-from odyssey.data.streaming import NO_SUBJECT, PackedLaneSampler
+from odyssey.data.streaming import NO_SUBJECT, PackedLaneSampler, move_to_device
 from odyssey.models.sequence_model import ForwardWithFeatures, SequenceModel
 from odyssey.models.time_to_event import probability_within
-from odyssey.training.train import _move_chunk_to_device
 
 
 @dataclass(frozen=True)
@@ -65,7 +64,7 @@ def stream_patient(
     state = None
     offset = 0
     for raw_chunk in sampler:
-        chunk = _move_chunk_to_device(raw_chunk, device)
+        chunk = move_to_device(raw_chunk, device)
         with torch.no_grad():
             fwd = model.forward_with_features(
                 chunk.batch, state=state, reset_mask=chunk.reset_mask

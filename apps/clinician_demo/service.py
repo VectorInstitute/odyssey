@@ -71,7 +71,7 @@ from apps.clinician_demo.showcase import (
 from apps.clinician_demo.thresholds import (
     ALERTS_ROWS_FILENAME,
     horizon_key,
-    load_or_compute_operating_points,
+    operating_points_for_run,
 )
 from apps.clinician_demo.whatif import PRESETS, parse_edit_requests, run_whatif
 from odyssey.data.alert_events import alert_events_for
@@ -296,16 +296,12 @@ class DemoService:
             describe=admission_label,
         )
         rows_path = config.run_dir / ALERTS_ROWS_FILENAME
-        points = (
-            load_or_compute_operating_points(
-                rows_path,
-                config.resolved_cache_dir / "thresholds.json",
-                ctx.events,
-                config.horizons,
-                config.alert_rate,
-            )
-            if rows_path.exists()
-            else []
+        points = operating_points_for_run(
+            config.run_dir,
+            config.resolved_cache_dir / "thresholds.json",
+            ctx.events,
+            config.horizons,
+            config.alert_rate,
         )
         concepts = [
             ConceptInfo(d.name, concept_label(d.name), d.description, None)

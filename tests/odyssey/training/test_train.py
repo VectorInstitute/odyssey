@@ -16,7 +16,6 @@ import odyssey.training.train as train_module
 from odyssey.data.alert_events import hazard_events_for
 from odyssey.data.sidecars import activate_sidecars
 from odyssey.data.streaming import PackedLaneSampler
-from odyssey.data.types import AuxiliaryInputs, ClinicalSequenceBatch
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.legacy_concept_pins import HAZARD_NUM_BINS
 from odyssey.models.backbones.base import TimeAwareState
@@ -37,7 +36,6 @@ from odyssey.training.train import (
     _batch_config_fields,
     _combined_val_loss,
     _detach_state,
-    _move_chunk_to_device,
     build_model,
     build_objective,
     evaluate_streaming,
@@ -153,37 +151,6 @@ def test_loss_logger_appends_to_existing_file(tmp_path: Path) -> None:
 
     lines = path.read_text().strip().split("\n")
     assert len(lines) == 2
-
-
-# ---------------------------------------------------------------------------
-# _move_chunk_to_device
-# ---------------------------------------------------------------------------
-
-
-def test_move_chunk_to_device_preserves_structure_and_values() -> None:
-    batch = ClinicalSequenceBatch(
-        concept_ids=torch.tensor([[1, 2]]),
-        aux=AuxiliaryInputs(
-            type_ids=torch.tensor([[0, 1]]),
-            time_stamps=torch.tensor([[0.0, 1.0]]),
-            ages=torch.tensor([[30.0, 30.0]]),
-            visit_orders=torch.tensor([[0, 0]]),
-            visit_segments=torch.tensor([[0, 0]]),
-        ),
-    )
-
-    moved = _move_chunk_to_device(batch, "cpu")
-
-    assert isinstance(moved, ClinicalSequenceBatch)
-    assert isinstance(moved.aux, AuxiliaryInputs)
-    assert torch.equal(moved.concept_ids, batch.concept_ids)
-    assert torch.equal(moved.aux.time_stamps, batch.aux.time_stamps)
-
-
-def test_move_chunk_to_device_passes_through_non_tensor_values() -> None:
-    assert _move_chunk_to_device(5, "cpu") == 5
-    assert _move_chunk_to_device("x", "cpu") == "x"
-    assert _move_chunk_to_device(None, "cpu") is None
 
 
 # ---------------------------------------------------------------------------

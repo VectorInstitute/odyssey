@@ -25,6 +25,7 @@ import sys
 from pathlib import Path
 
 from apps.clinician_demo.config import DATA_MODES, DemoConfig
+from odyssey.utils.device import resolve_device
 
 
 logger = logging.getLogger(__name__)
@@ -53,7 +54,9 @@ def parse_args(argv: list[str] | None = None) -> tuple[DemoConfig, bool]:
     parser.add_argument("--alert-rate", type=float, default=0.05)
     parser.add_argument("--max-shards", type=int, default=None)
     parser.add_argument("--cache-dir", type=Path, default=None)
-    parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--device", default="auto", help="cuda, mps, cpu, or auto (first available)"
+    )
     parser.add_argument("--no-warmup", action="store_true")
     parser.add_argument("--self-check", action="store_true")
     args = parser.parse_args(argv)
@@ -69,7 +72,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[DemoConfig, bool]:
             alert_rate=args.alert_rate,
             max_shards=args.max_shards,
             cache_dir=args.cache_dir.expanduser() if args.cache_dir else None,
-            device=args.device,
+            device=resolve_device(args.device),
             warmup=not args.no_warmup,
         )
     except ValueError as exc:
@@ -102,9 +105,10 @@ def main(argv: list[str] | None = None) -> int:
         service.warm_up()
     server = make_server(service, config.host, config.port)
     logger.info(
-        "serving %s (%s mode) on http://%s:%d -- open an SSH tunnel to this port",
+        "serving %s (%s mode) on %s at http://%s:%d (over an SSH tunnel from a GPU host)",
         config.run_name,
         config.data_mode,
+        config.device,
         config.host,
         config.port,
     )

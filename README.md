@@ -88,7 +88,7 @@ The hybrid backbone depends on `mamba-ssm`, which needs CUDA/`nvcc` to build. On
 uv sync --extra cuda --no-build-isolation
 ```
 
-CPU/MPS development uses a lightweight stand-in backbone so the concept module and the harness can be built and tested without a GPU. The notes-sidecar text pipeline (`odyssey/text/`) needs `uv sync --extra text` (see `docs/sidecars_and_task_sets.md`).
+Without `mamba-ssm` (CPU, Apple silicon), the hybrid backbone runs on a pure-PyTorch version of its layers with the same weight names, so a GPU-trained checkpoint loads and runs for inference; training still needs CUDA. To use a trained checkpoint, see [`docs/checkpoints.md`](docs/checkpoints.md). The notes-sidecar text pipeline (`odyssey/text/`) needs `uv sync --extra text` (see `docs/sidecars_and_task_sets.md`).
 
 ## Data pipeline
 

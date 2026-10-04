@@ -108,7 +108,12 @@ from odyssey.data.alert_events import (
 from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.sidecars import activate_sidecars
-from odyssey.data.streaming import NO_SUBJECT, PackedLaneSampler, StreamingChunk
+from odyssey.data.streaming import (
+    NO_SUBJECT,
+    PackedLaneSampler,
+    StreamingChunk,
+    move_to_device,
+)
 from odyssey.data.value_binning import add_value_tokens
 from odyssey.data.vocabulary import PAD_ID, Vocabulary
 from odyssey.inference.alerts import (
@@ -149,7 +154,6 @@ from odyssey.training.data import (
     load_meds_shards,
 )
 from odyssey.training.running_labels import position_running_labels
-from odyssey.training.train import _move_chunk_to_device
 
 
 logger = logging.getLogger(__name__)
@@ -726,7 +730,7 @@ def run_streaming_intervention(  # noqa: PLR0912, PLR0915 -- one linear scoring 
     state = None
     with torch.no_grad():
         for chunk in sampler:
-            chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
+            chunk = move_to_device(chunk, device)  # noqa: PLW2901
             intervention = (
                 None
                 if mode in CALIBRATED_MODES  # built below, from the model's own probs

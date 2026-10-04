@@ -99,7 +99,7 @@ from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.sequences import PatientSequence
 from odyssey.data.sidecars import activate_sidecars
-from odyssey.data.streaming import PackedLaneSampler
+from odyssey.data.streaming import PackedLaneSampler, move_to_device
 from odyssey.data.value_binning import QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import PAD_ID, Vocabulary
 from odyssey.inference.leakage import (
@@ -127,7 +127,7 @@ from odyssey.training.data import (
 )
 from odyssey.training.running_labels import position_running_labels
 from odyssey.training.shard_stream import shard_paths
-from odyssey.training.train import TrainingConfig, _move_chunk_to_device
+from odyssey.training.train import TrainingConfig
 
 
 logger = logging.getLogger("probe_channel")
@@ -318,7 +318,7 @@ def collect_channel_bank(  # noqa: PLR0915 -- one linear streaming pass
     state = None
     with torch.no_grad():
         for chunk in sampler:
-            chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
+            chunk = move_to_device(chunk, device)  # noqa: PLW2901
             hidden, state = model.backbone(
                 chunk.batch, state=state, reset_mask=chunk.reset_mask
             )

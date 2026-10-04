@@ -98,7 +98,7 @@ from sklearn.metrics import roc_auc_score
 from torch import nn
 
 from odyssey.data.sequences import PatientSequence
-from odyssey.data.streaming import PackedLaneSampler
+from odyssey.data.streaming import PackedLaneSampler, move_to_device
 from odyssey.data.value_binning import add_value_tokens
 from odyssey.data.vocabulary import PAD_ID, Vocabulary
 from odyssey.inference.run_inference import (
@@ -116,7 +116,6 @@ from odyssey.models.sequence_model import (
 )
 from odyssey.training.data import iter_patient_sequences
 from odyssey.training.running_labels import position_running_labels
-from odyssey.training.train import _move_chunk_to_device
 
 
 logger = logging.getLogger(__name__)
@@ -284,7 +283,7 @@ def collect_leakage_bank(
     state = None
     with torch.no_grad():
         for chunk in sampler:
-            chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
+            chunk = move_to_device(chunk, device)  # noqa: PLW2901
             fwd = model.forward_with_features(
                 chunk.batch, state=state, reset_mask=chunk.reset_mask
             )

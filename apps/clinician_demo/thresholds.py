@@ -26,6 +26,9 @@ from apps.clinician_demo.schemas import OperatingPoint, to_jsonable
 logger = logging.getLogger(__name__)
 
 ALERTS_ROWS_FILENAME = "alerts_rows.parquet"
+# Alert lines exported from the GPU host (aggregates only), for running the
+# demo where the patient-level ``alerts_rows.parquet`` is not present.
+AGGREGATE_THRESHOLDS_FILENAME = "demo_thresholds_aggregate.json"
 CACHE_VERSION = 1
 
 
@@ -186,11 +189,95 @@ def load_or_compute_operating_points(
     return points
 
 
+def export_operating_points(
+    rows_path: str | Path,
+    out_path: str | Path,
+    horizons: Sequence[float],
+    alert_rate: float,
+) -> list[OperatingPoint]:
+    """Write the alert lines for every event in ``rows_path`` to ``out_path``.
+
+    Runs where the patient-level row file lives (the GPU host). The output
+    holds aggregates only, so it can travel with the checkpoint to a host
+    without the rows; :func:`load_aggregate_operating_points` reads it.
+    """
+    rows_path = Path(rows_path)
+    events = sorted(
+        pl.scan_parquet(rows_path).select(pl.col("event").unique()).collect()["event"]
+    )
+    points = compute_operating_points(rows_path, events, horizons, alert_rate)
+    Path(out_path).write_text(
+        json.dumps({"alert_rate": alert_rate, "points": to_jsonable(points)}, indent=1)
+    )
+    return points
+
+
+def load_aggregate_operating_points(
+    path: str | Path,
+    events: Sequence[str],
+    horizons: Sequence[float],
+    alert_rate: float,
+) -> list[OperatingPoint]:
+    """Read exported alert lines; empty when the file is absent or does not fit.
+
+    The file holds ``{"alert_rate": ..., "points": [...]}`` as written on the
+    GPU host from :func:`compute_operating_points`. Points are kept only for
+    the requested events and horizons, and only if the alert rate matches.
+    """
+    path = Path(path)
+    if not path.exists():
+        return []
+    payload = json.loads(path.read_text())
+    if payload.get("alert_rate") != alert_rate:
+        logger.warning(
+            "[thresholds] %s was exported at alert rate %s, not %s; no alert lines",
+            path,
+            payload.get("alert_rate"),
+            alert_rate,
+        )
+        return []
+    wanted = {(e, float(h)) for e in events for h in horizons}
+    return [
+        OperatingPoint(**p)
+        for p in payload["points"]
+        if (p["event"], float(p["horizon_hours"])) in wanted
+    ]
+
+
+def operating_points_for_run(
+    run_dir: str | Path,
+    cache_path: str | Path,
+    events: Sequence[str],
+    horizons: Sequence[float],
+    alert_rate: float,
+) -> list[OperatingPoint]:
+    """Return a run's alert lines from its rows if present, else its export.
+
+    On the GPU host the patient-level ``alerts_rows.parquet`` is read (and
+    the result cached in ``cache_path``). Elsewhere the exported aggregates
+    (:data:`AGGREGATE_THRESHOLDS_FILENAME`) are used; with neither, the demo
+    runs without alert lines.
+    """
+    run_dir = Path(run_dir)
+    rows_path = run_dir / ALERTS_ROWS_FILENAME
+    if rows_path.exists():
+        return load_or_compute_operating_points(
+            rows_path, cache_path, events, horizons, alert_rate
+        )
+    return load_aggregate_operating_points(
+        run_dir / AGGREGATE_THRESHOLDS_FILENAME, events, horizons, alert_rate
+    )
+
+
 __all__ = [
+    "AGGREGATE_THRESHOLDS_FILENAME",
     "ALERTS_ROWS_FILENAME",
     "compute_operating_points",
+    "export_operating_points",
     "flag_threshold",
     "horizon_key",
+    "load_aggregate_operating_points",
     "load_or_compute_operating_points",
     "operating_point",
+    "operating_points_for_run",
 ]
