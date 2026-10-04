@@ -38,7 +38,7 @@ from odyssey.data.packed_context import PackedContextSampler
 from odyssey.data.sequences import PatientSequence
 from odyssey.data.sidecars import activate_sidecars
 from odyssey.data.signal_panel import SIGNAL_PANEL, SignalPanelResolver
-from odyssey.data.streaming import PackedLaneSampler, StreamingChunk
+from odyssey.data.streaming import PackedLaneSampler, StreamingChunk, move_to_device
 from odyssey.data.value_binning import QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import Vocabulary, code_type
 from odyssey.inference.legacy_concept_pins import (
@@ -88,7 +88,8 @@ from odyssey.training.metrics import (
     compute_observability_metrics,
     orthogonality_diagnostic,
 )
-from odyssey.training.train import TrainingConfig, _move_chunk_to_device, build_model
+from odyssey.training.train import TrainingConfig, build_model
+from odyssey.utils.device import default_device
 from odyssey.utils.env_fingerprint import verify_run_provenance
 
 
@@ -966,7 +967,7 @@ def run_streaming_inference(
     state = None
     with torch.no_grad():
         for chunk in sampler:
-            chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
+            chunk = move_to_device(chunk, device)  # noqa: PLW2901
             fwd = model.forward_with_features(
                 chunk.batch, state=state, reset_mask=chunk.reset_mask
             )
@@ -1134,7 +1135,7 @@ def evaluate_run(
     checkpoint_path: str | Path | None = None,
 ) -> InferenceResults:
     """End-to-end: load a trained run, score it against a held-out split."""
-    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    device = device or (default_device())
     model, vocab, binner, config = load_run(
         run_dir, device=device, checkpoint_path=checkpoint_path
     )

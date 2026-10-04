@@ -25,13 +25,12 @@ import polars as pl
 import torch
 
 from odyssey.data.alert_events import AlertEvent, EventTimes
-from odyssey.data.streaming import PackedLaneSampler
+from odyssey.data.streaming import PackedLaneSampler, move_to_device
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.alerts import IndexRow, LandmarkState, _select_index_positions
 from odyssey.inference.alerts import outcome_at_horizon as _outcome_at_horizon
 from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
 from odyssey.training.data import iter_patient_sequences
-from odyssey.training.train import _move_chunk_to_device
 
 
 Key = tuple[int, int, float]
@@ -75,7 +74,7 @@ def collect_embeddings(
     landmark_state: LandmarkState | None = None
     with torch.no_grad():
         for chunk in sampler:
-            chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
+            chunk = move_to_device(chunk, device)  # noqa: PLW2901
             hidden_states, state = model.backbone(
                 chunk.batch, state=state, reset_mask=chunk.reset_mask
             )

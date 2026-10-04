@@ -25,6 +25,7 @@ TORCH_FREE = [
     "thresholds",
     "showcase",
     "scorecard",
+    "export_thresholds",
 ]
 
 
@@ -70,6 +71,16 @@ def test_every_flag_reaches_the_config() -> None:
         False,
         True,
     )
+
+
+def test_device_auto_resolves_to_an_available_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("odyssey.utils.device.default_device", lambda: "mps")
+    config, _ = parse_args(["--run-dir", "/r", "--data-dir", "/d"])
+    assert config.device == "mps"
+    config, _ = parse_args(["--run-dir", "/r", "--data-dir", "/d", "--device", "auto"])
+    assert config.device == "mps"
 
 
 @pytest.mark.parametrize(

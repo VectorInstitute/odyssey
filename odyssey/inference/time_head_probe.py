@@ -54,6 +54,7 @@ import torch.nn.functional as F  # noqa: N812
 from torch import nn
 
 from odyssey.data.sequences import PatientSequence
+from odyssey.data.streaming import move_to_device
 from odyssey.data.value_binning import add_value_tokens
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.models.sequence_model import SequenceModel
@@ -63,7 +64,6 @@ from odyssey.models.time_to_event import (
     gap_to_bin,
 )
 from odyssey.training.data import iter_patient_sequences
-from odyssey.training.train import _move_chunk_to_device
 
 
 logger = logging.getLogger(__name__)
@@ -153,7 +153,7 @@ def collect_feature_bank(
     state = None
     with torch.no_grad():
         for chunk in sampler:
-            chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
+            chunk = move_to_device(chunk, device)  # noqa: PLW2901
             fwd = model.forward_with_features(
                 chunk.batch, state=state, reset_mask=chunk.reset_mask
             )

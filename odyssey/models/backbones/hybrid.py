@@ -16,7 +16,10 @@ Section 05. ``MergeAttention`` here is our own implementation in that
 spirit, not a reproduction of their exact published architecture, since
 the paper does not give enough implementation detail to reproduce exactly.
 
-Requires `mamba-ssm`, which needs a CUDA/`nvcc` build. The block stack is
+Training requires `mamba-ssm`, which needs a CUDA/`nvcc` build. Without
+it (CPU, Apple MPS) the backbone builds from the pure-PyTorch layers in
+:mod:`odyssey.models.backbones.mamba_portable` instead: same parameter
+names, so a GPU checkpoint loads unchanged; inference only. The block stack is
 built directly (each :class:`HybridBlock` constructed by hand) rather
 than through ``mamba_ssm``'s high-level ``MixerModel`` dispatcher: that
 dispatcher only builds a sequential stack of single-mixer blocks, with no
@@ -83,6 +86,7 @@ import torch.nn.functional as F  # noqa: N812
 from torch import nn
 
 from odyssey.data.types import ClinicalSequenceBatch
+from odyssey.models.backbones import mamba_portable
 from odyssey.models.backbones.base import (
     SequenceBackbone,
     TimeAwareState,
@@ -362,6 +366,36 @@ def _make_mamba2_with_state_cls(mamba2_cls: Any) -> Any:
     return Mamba2WithState
 
 
+def _mixer_classes(*, portable: bool) -> tuple[Any, Any, Any]:
+    """Return ``(Mamba2WithState, MHA, RMSNorm)`` for this environment.
+
+    ``portable=False`` imports the CUDA ``mamba-ssm`` modules (deferred:
+    importing them needs a CUDA build). ``portable=True`` returns the
+    pure-PyTorch stand-ins from :mod:`mamba_portable`, which have the same
+    parameter names, so one checkpoint loads in either environment.
+    """
+    if portable:
+        return (
+            mamba_portable.Mamba2WithState,
+            mamba_portable.MHA,
+            mamba_portable.RMSNorm,
+        )
+    from mamba_ssm.modules.mamba2 import Mamba2  # noqa: PLC0415
+    from mamba_ssm.modules.mha import MHA  # noqa: PLC0415
+    from mamba_ssm.ops.triton.layer_norm import RMSNorm  # noqa: PLC0415
+
+    return _make_mamba2_with_state_cls(Mamba2), MHA, RMSNorm
+
+
+def _inference_params_cls(*, portable: bool) -> Any:  # noqa: ANN401
+    """Return the ``InferenceParams`` class matching :func:`_mixer_classes`."""
+    if portable:
+        return mamba_portable.InferenceParams
+    from mamba_ssm.utils.generation import InferenceParams  # noqa: PLC0415
+
+    return InferenceParams
+
+
 class MergeAttention(nn.Module):
     """Learned fusion of two per-position branch outputs via a small attention.
 
@@ -474,20 +508,13 @@ class EHRHybridBackbone(SequenceBackbone):
         multi-head attention); set it lower for grouped-query attention,
         as Nemotron-H does (entry 03, Section 03).
         """
-        try:
-            # Deferred: mamba-ssm needs CUDA. See the module docstring.
-            from mamba_ssm.modules.mamba2 import Mamba2  # noqa: PLC0415
-            from mamba_ssm.modules.mha import MHA  # noqa: PLC0415
-            from mamba_ssm.ops.triton.layer_norm import RMSNorm  # noqa: PLC0415
-        except ImportError as exc:
-            raise ImportError(
-                "EHRHybridBackbone requires mamba-ssm, which needs a CUDA "
-                "build: `uv sync --extra cuda --no-build-isolation`. Use "
-                "odyssey.models.backbones.tiny_gru.TinyGRUBackbone for "
-                "CPU development instead."
-            ) from exc
-
         super().__init__()
+        # mamba-ssm needs CUDA; without it (CPU, Apple MPS) the pure-PyTorch
+        # port stands in. See _mixer_classes.
+        self.portable = not mamba_portable.mamba_ssm_available()
+        mamba2_with_state_cls, MHA, RMSNorm = _mixer_classes(  # noqa: N806
+            portable=self.portable
+        )
         self.hidden_size = hidden_size
         self.num_hidden_layers = num_hidden_layers
 
@@ -497,8 +524,6 @@ class EHRHybridBackbone(SequenceBackbone):
             padding_idx=padding_idx,
             **embedding_kwargs,
         )
-
-        mamba2_with_state_cls = _make_mamba2_with_state_cls(Mamba2)
 
         def _make_block(layer_idx: int) -> HybridBlock:
             mamba_cls = partial(
@@ -539,7 +564,7 @@ class EHRHybridBackbone(SequenceBackbone):
         this, but its batch-dimension semantics haven't been validated
         against this backbone.
         """
-        from mamba_ssm.utils.generation import InferenceParams  # noqa: PLC0415
+        InferenceParams = _inference_params_cls(portable=self.portable)  # noqa: N806
 
         typed_state: MambaStateDict | None = (
             None if state is None else cast(HybridState, state.recurrent).mamba_states

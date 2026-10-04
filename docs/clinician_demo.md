@@ -51,7 +51,61 @@ The open demo extraction is made once with
 (the pipeline shells out to `MEDS_transform-stage`, so the venv must be on
 `PATH`).
 
-## View it (laptop)
+## Run it on a laptop (Apple silicon or CPU)
+
+The hybrid backbone needs the CUDA `mamba-ssm` kernels to train, but not to
+run. Without `mamba-ssm`, `EHRHybridBackbone` builds from
+`odyssey/models/backbones/mamba_portable.py`: the same layers in plain
+PyTorch, with the same parameter names, so a GPU checkpoint loads
+unchanged. `--device auto` (the default) picks CUDA, then Apple MPS, then
+CPU. On an M4, MPS traces a 6,000-entry stay in about 10 s.
+
+Checked against the GPU on 12 open-demo patients (about 165,000 positions,
+full_run_v10): risk differs by 0.0002 on average (99th percentile 0.002,
+largest 0.009), concept beliefs by at most 0.006, and the top next-event
+forecast agrees at 99.8% of positions. The GPU's TF32 and Triton
+accumulation order explain the gap; CPU and MPS agree with each other more
+closely than either agrees with the GPU.
+
+Only open mode belongs on a laptop: credentialed patient data stays on the
+GPU host. Copy these files from the GPU host:
+
+- From the run directory: `checkpoint_best.pt`, `config.json`,
+  `vocabulary.json`, `quantile_binner.json`, and the scorecard aggregates
+  `alerts.json`, `alerts_cis.json`, `inference_results.json`.
+- The alert lines, as aggregates. The demo sets them from the patient-level
+  `alerts_rows.parquet`, which stays on the host. Export them once per run;
+  the demo reads the export when the rows file is absent:
+
+  ```bash
+  .venv/bin/python -m apps.clinician_demo.export_thresholds --run-dir ~/runs/full_run_v10
+  ```
+
+  This writes `demo_thresholds_aggregate.json` into the run directory.
+- The open MIMIC-IV demo extraction (`data/`, `metadata/`, `sidecars/`).
+- The model's split for the 100 demo patients only, so the UI can say
+  which ones it trained on:
+
+  ```bash
+  .venv/bin/python -c "
+  import polars as pl
+  ids = pl.scan_parquet('$HOME/data/mimiciv_demo_meds/data/**/*.parquet').select('subject_id').unique().collect()
+  pl.read_parquet('$HOME/data/mimiciv_3.1_v1/metadata/subject_splits.parquet').join(ids, on='subject_id').write_parquet('demo_subject_splits.parquet')"
+  ```
+
+Then, from the repository root on the laptop:
+
+```bash
+.venv/bin/python -m apps.clinician_demo --data-mode open --port 8766 \
+  --run-dir <copy>/runs/full_run_v10 \
+  --data-dir <copy>/mimiciv_demo_meds/data \
+  --metadata-dir <copy>/mimiciv_demo_meds/metadata \
+  --splits <copy>/demo_subject_splits.parquet
+```
+
+and open http://localhost:8766. No tunnel is needed.
+
+## View it from a laptop (server on the GPU host)
 
 ```bash
 gcloud compute ssh odyssey-cbm-a100 --zone us-central1-f \

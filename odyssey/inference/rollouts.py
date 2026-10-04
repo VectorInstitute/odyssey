@@ -41,12 +41,11 @@ import torch
 
 from odyssey.data.alert_events import AlertEvent
 from odyssey.data.sequences import PatientSequence
-from odyssey.data.streaming import PackedLaneSampler
+from odyssey.data.streaming import PackedLaneSampler, move_to_device
 from odyssey.data.types import AuxiliaryInputs, ClinicalSequenceBatch
 from odyssey.data.vocabulary import PAD_ID, Vocabulary, code_type
 from odyssey.models.sequence_model import SequenceModel
 from odyssey.models.time_to_event import survival_curve
-from odyssey.training.train import _move_chunk_to_device
 
 
 logger = logging.getLogger(__name__)
@@ -241,7 +240,7 @@ def rollout_from_position(
     for chunk in PackedLaneSampler(
         iter([prefix]), num_lanes=1, chunk_size=chunk_size, reset_prob=0.0
     ):
-        chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
+        chunk = move_to_device(chunk, device)  # noqa: PLW2901
         fwd = model.forward_with_features(
             chunk.batch, state=state, reset_mask=chunk.reset_mask
         )

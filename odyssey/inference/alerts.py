@@ -75,7 +75,12 @@ from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.packed_context import PackedContextSampler
 from odyssey.data.sequences import BIRTH_CODE
 from odyssey.data.sidecars import activate_sidecars
-from odyssey.data.streaming import NO_SUBJECT, PackedLaneSampler, StreamingChunk
+from odyssey.data.streaming import (
+    NO_SUBJECT,
+    PackedLaneSampler,
+    StreamingChunk,
+    move_to_device,
+)
 from odyssey.data.value_binning import (
     VALUE_Z_CLIP,
     QuantileBinner,
@@ -101,7 +106,6 @@ from odyssey.training.shard_stream import (
     merge_event_times,
     shard_paths,
 )
-from odyssey.training.train import _move_chunk_to_device
 
 
 logger = logging.getLogger(__name__)
@@ -465,7 +469,7 @@ def collect_model_scores(
     landmark_state: LandmarkState | None = None
     with torch.no_grad():
         for chunk in sampler:
-            chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
+            chunk = move_to_device(chunk, device)  # noqa: PLW2901
             if packed:
                 landmark_state = None  # see the docstring: never carried
             fwd = model.forward_with_features(
@@ -709,7 +713,7 @@ def collect_model_scores_at_rows(  # noqa: PLR0912, PLR0915
     state = None
     with torch.no_grad():
         for chunk in sampler:
-            chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
+            chunk = move_to_device(chunk, device)  # noqa: PLW2901
             fwd = model.forward_with_features(
                 chunk.batch, state=state, reset_mask=chunk.reset_mask
             )

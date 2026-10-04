@@ -46,7 +46,7 @@ import torch
 from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.sidecars import activate_sidecars
-from odyssey.data.streaming import PackedLaneSampler
+from odyssey.data.streaming import PackedLaneSampler, move_to_device
 from odyssey.data.value_binning import add_value_tokens
 from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.legacy_concept_pins import resolve_concepts_for_run
@@ -54,7 +54,6 @@ from odyssey.inference.run_inference import load_run, refuse_existing_output
 from odyssey.models.concept_bottleneck import ConceptBottleneck
 from odyssey.models.sequence_model import ConceptBottleneckSequenceModel
 from odyssey.training.data import iter_patient_sequences, load_meds_shards
-from odyssey.training.train import _move_chunk_to_device
 
 
 logger = logging.getLogger(__name__)
@@ -184,7 +183,7 @@ def run_streaming_attribution(  # noqa: PLR0915 -- one linear scoring pass
     state = None
     with torch.no_grad():
         for chunk in sampler:
-            chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
+            chunk = move_to_device(chunk, device)  # noqa: PLW2901
             hidden, state = model.backbone(
                 chunk.batch, state=state, reset_mask=chunk.reset_mask
             )
@@ -297,7 +296,7 @@ def mean_concept_directions(
     state = None
     with torch.no_grad():
         for chunk in sampler:
-            chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
+            chunk = move_to_device(chunk, device)  # noqa: PLW2901
             hidden, state = model.backbone(
                 chunk.batch, state=state, reset_mask=chunk.reset_mask
             )

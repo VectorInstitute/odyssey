@@ -6,12 +6,18 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from apps.clinician_demo.export_thresholds import main as export_main
 from apps.clinician_demo.thresholds import (
+    AGGREGATE_THRESHOLDS_FILENAME,
+    ALERTS_ROWS_FILENAME,
     compute_operating_points,
+    export_operating_points,
     flag_threshold,
     horizon_key,
+    load_aggregate_operating_points,
     load_or_compute_operating_points,
     operating_point,
+    operating_points_for_run,
 )
 
 
@@ -149,3 +155,76 @@ def test_unreadable_cache_is_ignored_and_rewritten(tmp_path: Path) -> None:
         rows_path, cache, ["acute_kidney_injury"], [24.0], 0.2
     )
     assert len(points) == 1 and json.loads(cache.read_text())["points"]
+
+
+def test_export_then_load_round_trips_the_alert_lines(tmp_path: Path) -> None:
+    rows_path, out = tmp_path / "alerts_rows.parquet", tmp_path / "agg.json"
+    _rows().write_parquet(rows_path)
+    exported = export_operating_points(rows_path, out, [24.0, 72.0], 0.2)
+    payload = json.loads(out.read_text())
+    assert payload["alert_rate"] == 0.2
+    assert {p["event"] for p in payload["points"]} == {"acute_kidney_injury", "death"}
+    # aggregates only: nothing row-level travels with the file
+    assert all("subject_id" not in p and "visit_id" not in p for p in payload["points"])
+    loaded = load_aggregate_operating_points(
+        out, ["acute_kidney_injury", "death"], [24.0], 0.2
+    )
+    assert loaded == exported
+
+
+def test_loaded_alert_lines_are_filtered_to_the_request(tmp_path: Path) -> None:
+    rows_path, out = tmp_path / "alerts_rows.parquet", tmp_path / "agg.json"
+    _rows().write_parquet(rows_path)
+    export_operating_points(rows_path, out, [24.0], 0.2)
+    only_death = load_aggregate_operating_points(out, ["death"], [24.0], 0.2)
+    assert [(p.event, p.horizon_hours) for p in only_death] == [("death", 24.0)]
+    assert load_aggregate_operating_points(out, ["death"], [8.0], 0.2) == []
+
+
+def test_aggregate_file_absent_or_at_another_rate_gives_no_lines(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    out = tmp_path / "agg.json"
+    assert load_aggregate_operating_points(out, ["death"], [24.0], 0.05) == []
+    rows_path = tmp_path / "alerts_rows.parquet"
+    _rows().write_parquet(rows_path)
+    export_operating_points(rows_path, out, [24.0], 0.2)
+    assert load_aggregate_operating_points(out, ["death"], [24.0], 0.05) == []
+    assert "alert rate" in caplog.text
+
+
+def test_a_run_uses_its_rows_when_present_else_its_export(tmp_path: Path) -> None:
+    gpu_run, laptop_run = tmp_path / "gpu", tmp_path / "laptop"
+    gpu_run.mkdir()
+    laptop_run.mkdir()
+    _rows().write_parquet(gpu_run / ALERTS_ROWS_FILENAME)
+    cache = tmp_path / "cache" / "thresholds.json"
+    from_rows = operating_points_for_run(gpu_run, cache, ["death"], [24.0], 0.2)
+    assert cache.exists() and [p.event for p in from_rows] == ["death"]
+
+    assert operating_points_for_run(laptop_run, cache, ["death"], [24.0], 0.2) == []
+    export_operating_points(
+        gpu_run / ALERTS_ROWS_FILENAME,
+        laptop_run / AGGREGATE_THRESHOLDS_FILENAME,
+        [24.0],
+        0.2,
+    )
+    from_export = operating_points_for_run(laptop_run, cache, ["death"], [24.0], 0.2)
+    assert from_export == from_rows
+
+
+def test_export_command_writes_next_to_the_checkpoint(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _rows().write_parquet(tmp_path / ALERTS_ROWS_FILENAME)
+    assert export_main(["--run-dir", str(tmp_path), "--alert-rate", "0.2"]) == 0
+    payload = json.loads((tmp_path / AGGREGATE_THRESHOLDS_FILENAME).read_text())
+    assert payload["alert_rate"] == 0.2
+    # the demo's horizons: rows here carry 24 h only
+    assert {p["horizon_hours"] for p in payload["points"]} == {24.0}
+    assert "wrote 2 alert lines" in capsys.readouterr().out
+
+
+def test_export_command_refuses_a_run_without_rows(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        export_main(["--run-dir", str(tmp_path)])
