@@ -27,6 +27,14 @@ the tuned GBM column ``gbm`` while alerts.json's records call the same
 scorer ``baseline_gbm``; both spellings are accepted here and mapped to the
 dump's column.
 
+The output keeps the nested ``cells`` block (per cell: n, n_positive,
+n_subjects, per-scorer AUROC/AUPRC intervals, paired deltas) and adds a
+flat ``summary`` list with one record per (event, horizon) -- sample
+sizes, every scorer's AUROC point estimate, and the paired AUROC delta
+with its interval -- plus the row and subject counts of the dumps before
+and after any ``--max-subjects`` subsample. On GEMINI, ``scripts/gemini/
+run.sh alerts-cis <run>`` wraps this script and exports that file.
+
 Runtime notes from the full-held-out runs: this script imports sklearn (for
 AUPRC), so on the GEMINI node it needs the GPU venv, not the lightweight
 one. A 1000-draw subject bootstrap over ~30M index rows takes 15-20 h
@@ -119,12 +127,19 @@ def score_cell(
         return None
     y = sub[f"y@{h}"].to_numpy().astype(np.float64)
     subj = sub["subject_id"].to_numpy()
+    n_subjects = int(len(np.unique(subj)))
     if len(np.unique(y)) < 2:
-        return {"n": int(len(y)), "n_positive": int(y.sum()), "unscoreable": True}
+        return {
+            "n": int(len(y)),
+            "n_positive": int(y.sum()),
+            "n_subjects": n_subjects,
+            "unscoreable": True,
+        }
 
     result: dict[str, Any] = {
         "n": int(len(y)),
         "n_positive": int(y.sum()),
+        "n_subjects": n_subjects,
         "scorers": {},
         "paired_deltas": {},
     }
@@ -184,6 +199,47 @@ def subsample_subjects(
     return frame.filter(pl.col("subject_id").is_in(keep.tolist()))
 
 
+def summary_rows(cells: dict[str, Any], scorers: list[str]) -> list[dict[str, Any]]:
+    """Flatten ``cells`` into one record per (event, horizon).
+
+    Each record carries the sample sizes, every scorer's AUROC point
+    estimate, and the paired AUROC delta of the first scorer minus each
+    other scorer with its 95% interval -- the table-ready view of the
+    nested ``cells`` block (which keeps AUPRC and the per-scorer
+    intervals as well).
+    """
+    rows: list[dict[str, Any]] = []
+    for key, cell in cells.items():
+        event, _, horizon = key.rpartition("@")
+        row: dict[str, Any] = {
+            "event": event,
+            "horizon_hours": float(horizon[:-1]),
+            "n_at_risk": cell["n"],
+            "n_positive": cell["n_positive"],
+            "n_subjects": cell.get("n_subjects"),
+            "unscoreable": bool(cell.get("unscoreable", False)),
+        }
+        for s in scorers:
+            auroc = cell.get("scorers", {}).get(s, {}).get("auroc")
+            row[f"{s}_auroc"] = auroc["point"] if auroc else None
+        ref = scorers[0]
+        for s in scorers[1:]:
+            delta = cell.get("paired_deltas", {}).get(f"{ref}_minus_{s}", {})
+            auroc = delta.get("auroc")
+            row[f"{ref}_minus_{s}_auroc"] = (
+                {
+                    "point": auroc["point"],
+                    "ci_low": auroc["ci_low"],
+                    "ci_high": auroc["ci_high"],
+                    "separated": auroc["separated"],
+                }
+                if auroc
+                else None
+            )
+        rows.append(row)
+    return rows
+
+
 def main() -> None:
     """Compute per-cell CIs and paired deltas from alerts row dumps."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -208,12 +264,29 @@ def main() -> None:
         "max_subjects": args.max_subjects,
         "variance_scope": "finite-sample only (single fitted model); refit "
         "variance requires seed replicates",
+        "n_rows_in_dumps": 0,
+        "n_subjects_in_dumps": 0,
+        "n_rows_scored": 0,
+        "n_subjects_scored": 0,
         "cells": {},
+        "summary": [],
     }
     for path in args.dump:
-        frame = subsample_subjects(
-            pl.read_parquet(path), max_subjects=args.max_subjects, seed=args.seed
+        full = pl.read_parquet(path)
+        frame = subsample_subjects(full, max_subjects=args.max_subjects, seed=args.seed)
+        out["n_rows_in_dumps"] += full.height
+        out["n_subjects_in_dumps"] += int(full["subject_id"].n_unique())
+        out["n_rows_scored"] += frame.height
+        out["n_subjects_scored"] += int(frame["subject_id"].n_unique())
+        logger.info(
+            "%s: %d rows / %d subjects in the dump, %d rows / %d subjects scored",
+            path,
+            full.height,
+            full["subject_id"].n_unique(),
+            frame.height,
+            frame["subject_id"].n_unique(),
         )
+        del full
         events = (
             frame["event"].unique().to_list() if "event" in frame.columns else [None]
         )
@@ -242,6 +315,7 @@ def main() -> None:
                         if v["auroc"] and v["auroc"]["ci_low"] is not None
                     ),
                 )
+    out["summary"] = summary_rows(out["cells"], args.scorers)
     with open(args.output_json, "w") as f:
         json.dump(out, f, indent=1)
     logger.info("wrote %s (%d cells)", args.output_json, len(out["cells"]))

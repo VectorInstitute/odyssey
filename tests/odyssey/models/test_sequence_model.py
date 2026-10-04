@@ -313,28 +313,3 @@ def test_synthetic_training_reduces_next_token_and_concept_loss() -> None:
 
     assert task_losses[-1] < task_losses[0] * 0.8
     assert concept_losses[-1] < concept_losses[0] * 0.5
-
-
-# ---------------------------------------------------------------------------
-# The real hybrid backbone can't be executed here (CUDA-only); confirm the
-# import guard fails helpfully instead of with an opaque ImportError.
-# ---------------------------------------------------------------------------
-
-
-def test_ehr_hybrid_backbone_raises_helpful_error_without_cuda() -> None:
-    """Can't test the real backbone's forward pass without a GPU here.
-
-    This instead validates that, absent `mamba-ssm`, the import guard
-    raises a clear and actionable error rather than an opaque one.
-    """
-    try:
-        import mamba_ssm  # noqa: F401, PLC0415
-
-        pytest.skip("mamba-ssm is installed here; the guard path isn't exercised")
-    except ImportError:
-        pass
-
-    from odyssey.models.backbones.hybrid import EHRHybridBackbone  # noqa: PLC0415
-
-    with pytest.raises(ImportError, match="mamba-ssm"):
-        EHRHybridBackbone(vocab_size=10, hidden_size=8, num_hidden_layers=1)

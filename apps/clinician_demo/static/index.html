@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Odyssey · Bedside Forecast</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script type="module" src="/static/js/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#app">Skip to content</a>
+  <header class="topbar">
+    <a class="brand" href="#/">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">Odyssey</span>
+      <span class="brand-sub">Bedside Forecast</span>
+    </a>
+    <nav class="topbar__nav" aria-label="Main">
+      <a href="#/" data-nav="gallery">Patients</a>
+      <a href="#/scorecard" data-nav="scorecard">How good is it?</a>
+    </nav>
+    <form class="search" id="search" role="search" hidden>
+      <label class="sr-only" for="search-input">Patient ID</label>
+      <input id="search-input" name="patient" inputmode="numeric" autocomplete="off" placeholder="Patient ID">
+      <button type="submit" class="btn btn--small btn--ghost">Open</button>
+    </form>
+    <span class="mode-badge" id="mode-badge" hidden></span>
+  </header>
+  <div class="banner" id="banner" role="note">Research prototype. Not for clinical use.</div>
+  <main id="app" class="app" tabindex="-1"></main>
+  <footer class="footer" id="footer">
+    <span id="provenance">Loading the model…</span>
+    <button type="button" class="linklike" id="theme-toggle">Dark mode</button>
+  </footer>
+</body>
+</html>

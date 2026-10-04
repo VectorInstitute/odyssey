@@ -16,8 +16,8 @@ import odyssey.training.train as train_module
 from odyssey.data.alert_events import hazard_events_for
 from odyssey.data.sidecars import activate_sidecars
 from odyssey.data.streaming import PackedLaneSampler
-from odyssey.data.types import AuxiliaryInputs, ClinicalSequenceBatch
 from odyssey.data.vocabulary import Vocabulary
+from odyssey.inference.legacy_concept_pins import HAZARD_NUM_BINS
 from odyssey.models.backbones.base import TimeAwareState
 from odyssey.models.backbones.hybrid import HybridState
 from odyssey.models.backbones.tiny_gru import TinyGRUBackbone
@@ -36,10 +36,10 @@ from odyssey.training.train import (
     _batch_config_fields,
     _combined_val_loss,
     _detach_state,
-    _move_chunk_to_device,
     build_model,
     build_objective,
     evaluate_streaming,
+    hazard_event_names_for,
     train,
 )
 
@@ -151,37 +151,6 @@ def test_loss_logger_appends_to_existing_file(tmp_path: Path) -> None:
 
     lines = path.read_text().strip().split("\n")
     assert len(lines) == 2
-
-
-# ---------------------------------------------------------------------------
-# _move_chunk_to_device
-# ---------------------------------------------------------------------------
-
-
-def test_move_chunk_to_device_preserves_structure_and_values() -> None:
-    batch = ClinicalSequenceBatch(
-        concept_ids=torch.tensor([[1, 2]]),
-        aux=AuxiliaryInputs(
-            type_ids=torch.tensor([[0, 1]]),
-            time_stamps=torch.tensor([[0.0, 1.0]]),
-            ages=torch.tensor([[30.0, 30.0]]),
-            visit_orders=torch.tensor([[0, 0]]),
-            visit_segments=torch.tensor([[0, 0]]),
-        ),
-    )
-
-    moved = _move_chunk_to_device(batch, "cpu")
-
-    assert isinstance(moved, ClinicalSequenceBatch)
-    assert isinstance(moved.aux, AuxiliaryInputs)
-    assert torch.equal(moved.concept_ids, batch.concept_ids)
-    assert torch.equal(moved.aux.time_stamps, batch.aux.time_stamps)
-
-
-def test_move_chunk_to_device_passes_through_non_tensor_values() -> None:
-    assert _move_chunk_to_device(5, "cpu") == 5
-    assert _move_chunk_to_device("x", "cpu") == "x"
-    assert _move_chunk_to_device(None, "cpu") is None
 
 
 # ---------------------------------------------------------------------------
@@ -411,6 +380,71 @@ def test_build_model_widens_event_heads_with_auxiliary_events() -> None:
     assert model.event_heads.event_names[:-2] == [
         a.name for a in hazard_events_for("v1")
     ]
+
+
+def test_build_model_event_names_override_sets_head_width_and_order() -> None:
+    """A pinned list builds heads at its own width, in its own order."""
+    config = TrainingConfig(
+        train_shard_dir="/train",
+        tuning_shard_dir="/tuning",
+        output_dir="/out",
+        backbone="transformer",
+        hidden_size=16,
+        num_hidden_layers=1,
+        attn_num_heads=4,
+        task_set="v3",
+        source="eicu",
+        event_hazards=True,
+    )
+    pinned = [
+        "vasopressor_start",
+        "icu_admission",
+        "acute_kidney_injury",
+        "death",
+        "readmission_30d",
+    ]
+    assert len(hazard_events_for("v3", source="eicu")) == 6
+
+    model = build_model(config, vocab_size=50, num_concepts=5, event_names=pinned)
+
+    assert model.event_heads is not None
+    assert model.event_heads.event_names == pinned
+    assert model.event_heads.proj.out_features == 5 * HAZARD_NUM_BINS
+    assert model.event_heads.num_bins == HAZARD_NUM_BINS
+
+
+def test_build_model_event_names_override_is_ignored_without_hazard_heads() -> None:
+    config = TrainingConfig(
+        train_shard_dir="/train",
+        tuning_shard_dir="/tuning",
+        output_dir="/out",
+        backbone="transformer",
+        hidden_size=16,
+        num_hidden_layers=1,
+        attn_num_heads=4,
+        event_hazards=False,
+    )
+    assert hazard_event_names_for(config) is None
+    model = build_model(config, vocab_size=50, num_concepts=5, event_names=["death"])
+    assert model.event_heads is None
+
+
+def test_hazard_event_names_for_matches_the_unpinned_build() -> None:
+    """load_run's pre-load check and build_model must see the same list."""
+    config = TrainingConfig(
+        train_shard_dir="/train",
+        tuning_shard_dir="/tuning",
+        output_dir="/out",
+        backbone="transformer",
+        hidden_size=16,
+        num_hidden_layers=1,
+        attn_num_heads=4,
+        task_set="v1",
+        auxiliary_event_names=("vasopressor",),
+    )
+    model = build_model(config, vocab_size=50, num_concepts=5)
+    assert model.event_heads is not None
+    assert hazard_event_names_for(config) == model.event_heads.event_names
 
 
 def test_build_model_auxiliary_event_names_default_matches_pre_existing_behavior() -> (

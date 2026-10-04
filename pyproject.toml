@@ -94,7 +94,7 @@ cuda = [
 # has a login on the GEMINI node, so most of this project never needs a
 # Postgres driver at all — see docs/gemini.md.
 gemini = [
-    "sqlalchemy>=2.0.54",
+    "sqlalchemy>=2.1.1",
     "psycopg2-binary>=2.9.13",
     "pandas>=3.0.6",
     # extract_meds.py streams MEDS rows straight to per-shard Parquet
@@ -185,16 +185,18 @@ dev = [
     "pytest>=9.0.3",
     "pytest-cov>=6.0.0",
     "pytest-asyncio>=0.25.2",
-    "pytest-mock>=3.14.0",
+    "pytest-mock>=3.16.0",
     "pre-commit>=4.1.0",
     "pip-audit>=2.7.3",
     "codecov>=2.1.13",
     "nbstripout>=0.6.1",
     "mypy>=2.3.1",
-    "ruff>=0.16.8",
+    "ruff>=0.16.9",
     "nbqa[toolchain]>=1.9.1",
     # pip>=26.1.2 fixes PYSEC-2026-196
     "pip>=26.1.2",
+    # virtualenv>=21.7.13 fixes PYSEC-2026-4011, PYSEC-2026-4012, PYSEC-2026-4013, PYSEC-2026-4014
+    "virtualenv>=21.7.13",
 ]
 docs = [
     "mkdocs>=1.5.0",
@@ -344,7 +346,7 @@ markers = [
 
 [tool.coverage]
     [tool.coverage.run]
-    source=["odyssey"]
+    source=["odyssey", "apps"]
     omit=["tests/*", "*__init__.py"]
 
 [build-system]

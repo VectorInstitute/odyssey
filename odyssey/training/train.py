@@ -53,7 +53,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import (
     Any,
-    TypeVar,
 )
 
 import polars as pl
@@ -66,9 +65,10 @@ from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.packed_context import PackedContextSampler
 from odyssey.data.sequences import PatientSequence
 from odyssey.data.sidecars import activate_sidecars, active_sidecar_names
-from odyssey.data.streaming import PackedLaneSampler, StreamingChunk
+from odyssey.data.streaming import PackedLaneSampler, StreamingChunk, move_to_device
 from odyssey.data.value_binning import CLIP_TAIL, QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import PAD_ID, Vocabulary
+from odyssey.inference.legacy_concept_pins import write_run_pins
 from odyssey.models.backbones.base import TimeAwareState
 from odyssey.models.concept_bottleneck import (
     ConceptBottleneckLossWeights,
@@ -570,25 +570,6 @@ class LossLogger:
         self._file.close()
 
 
-_Movable = TypeVar("_Movable")
-
-
-def _move_chunk_to_device(chunk: _Movable, device: str) -> _Movable:
-    """Move every tensor field of a (possibly nested) NamedTuple to ``device``.
-
-    Works for :class:`~odyssey.data.streaming.StreamingChunk` and its
-    nested :class:`~odyssey.data.types.ClinicalSequenceBatch`/
-    :class:`~odyssey.data.types.AuxiliaryInputs` without depending on
-    their exact field lists, so a new field added to any of them doesn't
-    need a matching change here.
-    """
-    if isinstance(chunk, torch.Tensor):
-        return chunk.to(device)  # type: ignore[return-value]
-    if isinstance(chunk, tuple) and hasattr(chunk, "_fields"):  # NamedTuple
-        return type(chunk)(*(_move_chunk_to_device(v, device) for v in chunk))
-    return chunk
-
-
 def _detach_state(state: TimeAwareState) -> TimeAwareState:
     """Truncate BPTT across chunks for a backbone's carried recurrent state.
 
@@ -662,10 +643,40 @@ def _activate_run_sidecars(config: TrainingConfig) -> None:
         )
 
 
+def hazard_event_names_for(config: TrainingConfig) -> list[str] | None:
+    """Return the hazard-head event names ``config`` implies (``None`` without heads).
+
+    One place for the ``event_hazards`` gate and the registry call, so
+    :func:`build_model` and ``load_run``'s pre-load width check agree on
+    what an unpinned run would be built with.
+    """
+    if not getattr(config, "event_hazards", False):
+        return None
+    return [
+        a.name
+        for a in hazard_events_for(
+            getattr(config, "task_set", "v1"),
+            getattr(config, "auxiliary_event_names", ()),
+            source=getattr(config, "source", None),
+        )
+    ]
+
+
 def build_model(
-    config: TrainingConfig, *, vocab_size: int, num_concepts: int
+    config: TrainingConfig,
+    *,
+    vocab_size: int,
+    num_concepts: int,
+    event_names: Sequence[str] | None = None,
 ) -> SequenceModel:
-    """Construct the real backbone + heads from ``config`` (see ``model_kind``)."""
+    """Construct the real backbone + heads from ``config`` (see ``model_kind``).
+
+    ``event_names`` overrides the hazard-head event list that today's
+    registry would give (:func:`hazard_event_names_for`); ``load_run``
+    passes a checkpoint's pinned list so a run trained before the registry
+    grew gets heads of its own width, in its own order. It is ignored when
+    ``config.event_hazards`` is off. Unset, behaviour is unchanged.
+    """
     from odyssey.models.backbones.base import SequenceBackbone  # noqa: PLC0415
     from odyssey.models.backbones.hybrid import EHRHybridBackbone  # noqa: PLC0415
     from odyssey.models.backbones.transformer import (  # noqa: PLC0415
@@ -709,18 +720,10 @@ def build_model(
         if getattr(config, "time_to_event", False)
         else None
     )
-    event_names = (
-        [
-            a.name
-            for a in hazard_events_for(
-                getattr(config, "task_set", "v1"),
-                getattr(config, "auxiliary_event_names", ()),
-                source=getattr(config, "source", None),
-            )
-        ]
-        if getattr(config, "event_hazards", False)
-        else None
-    )
+    if event_names is None or not getattr(config, "event_hazards", False):
+        event_names = hazard_event_names_for(config)
+    else:
+        event_names = list(event_names)
     event_head_hidden = int(getattr(config, "event_head_hidden", 0) or 0)
     if kind == "baseline":
         return BaselineSequenceModel(
@@ -1062,7 +1065,7 @@ def evaluate_streaming(
         for i, chunk in enumerate(sampler):
             if max_chunks is not None and i >= max_chunks:
                 break
-            chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
+            chunk = move_to_device(chunk, device)  # noqa: PLW2901
             event_targets = (
                 event_hazard_targets(chunk, event_tables)
                 if event_tables is not None
@@ -1530,6 +1533,15 @@ def _run_training(  # noqa: PLR0912, PLR0915
     model = build_model(config, vocab_size=len(vocab), num_concepts=len(concepts)).to(
         device
     )
+    # Self-describing run: the concept slots and hazard heads this model was
+    # built with, in order, so load_run never has to guess them from a
+    # registry that may have grown since (see legacy_concept_pins).
+    event_heads = getattr(model, "event_heads", None)
+    write_run_pins(
+        output_dir,
+        concept_names=[c.name for c in concepts],
+        event_names=None if event_heads is None else event_heads.event_names,
+    )
     if config.init_from is not None:
         if config.resume_from is not None:
             raise ValueError(
@@ -1715,7 +1727,7 @@ def _run_training(  # noqa: PLR0912, PLR0915
             steps_this_epoch = steps_into_epoch
 
         for chunk in sampler:
-            chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
+            chunk = move_to_device(chunk, device)  # noqa: PLW2901
             event_targets = (
                 event_hazard_targets(chunk, train_event_tables)
                 if train_event_tables is not None
