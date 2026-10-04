@@ -45,13 +45,11 @@ from odyssey.data.code_normalization import maybe_normalize
 from odyssey.data.history_recap import maybe_history_recap
 from odyssey.data.sequences import BIRTH_CODE, build_patient_sequence
 from odyssey.data.signal_panel import SIGNAL_PANEL
-from odyssey.data.streaming import NO_SUBJECT, PackedLaneSampler
 from odyssey.data.value_binning import QuantileBinner, add_value_tokens
 from odyssey.data.vocabulary import Vocabulary
+from odyssey.inference.patient_stream import risk_within, stream_patient
 from odyssey.models.sequence_model import SequenceModel
-from odyssey.models.time_to_event import probability_within
 from odyssey.training.data import load_meds_shards
-from odyssey.training.train import _move_chunk_to_device
 
 
 logger = logging.getLogger(__name__)
@@ -250,23 +248,14 @@ def score_record_at(
         raise ValueError("index_time precedes the record's first event")
     index_pos = positions[-1]
 
-    sampler = PackedLaneSampler(
-        iter([seq]), num_lanes=1, chunk_size=chunk_size, reset_prob=0.0
-    )
     event_heads = getattr(model, "event_heads", None)
-    state = None
-    offset = 0
-    for chunk in sampler:
-        chunk = _move_chunk_to_device(chunk, device)  # noqa: PLW2901
-        fwd = model.forward_with_features(
-            chunk.batch, state=state, reset_mask=chunk.reset_mask
-        )
-        state = fwd.state
-        n_real = int((chunk.subject_ids[0] != NO_SUBJECT).sum().item())
-        if offset + n_real <= index_pos:
-            offset += n_real
+    for span in stream_patient(
+        model, seq, device=device, chunk_size=chunk_size, stop_after=index_pos
+    ):
+        if span.start + span.n_real <= index_pos:
             continue
-        i = index_pos - offset
+        fwd = span.fwd
+        i = index_pos - span.start
         probs = torch.softmax(fwd.logits[0, i], dim=-1)
         top_p, top_i = probs.topk(min(top_k, probs.numel()))
         top_next = [
@@ -276,12 +265,11 @@ def score_record_at(
         risk: dict[str, dict[str, float]] = {}
         if event_heads is not None:
             hz = event_heads(fwd.features[0, i : i + 1])  # (1, E, B)
+            within = risk_within(hz[0], event_heads.edges, horizons)  # (E, H)
             for e_idx, name in enumerate(event_heads.event_names):
                 risk[name] = {
-                    f"{h:g}h": float(
-                        probability_within(hz[:, e_idx], event_heads.edges, h)[0]
-                    )
-                    for h in horizons
+                    f"{h:g}h": float(within[e_idx, h_idx])
+                    for h_idx, h in enumerate(horizons)
                 }
         concepts: dict[str, float] = {}
         if fwd.bottleneck is not None:
