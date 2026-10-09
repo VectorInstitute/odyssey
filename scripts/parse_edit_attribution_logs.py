@@ -1,11 +1,15 @@
-"""Parse cohort_worsen.py's stdout logs into one structured results JSON.
+"""Parse the edit-attribution cohort logs into one structured results JSON.
 
-cohort_worsen.py (paper/ml4h/../scratch validation harness, not part of the
-package) prints a fixed-format summary block per run: a header line with
-the concept/source/n, an edit-signal-frequency dict, a mean concept-delta,
-and one sign-agreement line per (event, horizon). This turns that text
-into JSON so the paper's table/figure generators never hand-transcribe a
-number from a terminal log.
+The cohort validation (originally the scratch harness cohort_worsen.py,
+now ``python -m odyssey.inference.concept_edit_attribution``) prints a
+fixed-format summary block per run: a header line with the
+concept/source/n, an edit-signal-frequency dict, a mean concept-delta, and
+one sign-agreement line per (event, horizon). This turns that text into
+JSON so the paper's table/figure generators never hand-transcribe a number
+from a terminal log. The header may carry a ``selection=`` tag
+(``attributed`` or ``random``, the reviewer-requested random-code control)
+and, for the random arm, a ``seed=``; a header without the tag is the
+original attributed arm.
 """
 
 from __future__ import annotations
@@ -26,6 +30,8 @@ _ROW_RE = re.compile(
 _SATURATION_RE = re.compile(
     r"baseline concept prob >= 0\.9:\s*(?P<n_sat>\d+)/(?P<n_total>\d+)"
 )
+_SELECTION_RE = re.compile(r"\bselection=(?P<selection>[a-z_]+)")
+_SEED_RE = re.compile(r"\bseed=(?P<seed>\d+)")
 
 
 def parse_log(text: str) -> dict[str, Any]:
@@ -38,6 +44,9 @@ def parse_log(text: str) -> dict[str, Any]:
     header = _HEADER_RE.search(text)
     if header is None:
         raise ValueError("no '=== <concept> on <source>, n=... ===' header found")
+    header_line = text[header.start() : text.find("\n", header.start())]
+    selection = _SELECTION_RE.search(header_line)
+    seed = _SEED_RE.search(header_line)
     sat = _SATURATION_RE.search(text)
     cells: list[dict[str, Any]] = []
     for line in text.splitlines():
@@ -57,6 +66,8 @@ def parse_log(text: str) -> dict[str, Any]:
         "concept": header["concept"],
         "source": header["source"],
         "n_subjects": int(header["n"]),
+        "selection": selection["selection"] if selection else "attributed",
+        "random_seed": int(seed["seed"]) if seed else None,
         "n_baseline_saturated": int(sat["n_sat"]) if sat else None,
         "n_baseline_scored": int(sat["n_total"]) if sat else None,
         "cells": cells,

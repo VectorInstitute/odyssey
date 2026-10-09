@@ -86,9 +86,15 @@ def render(results: dict[str, Any]) -> str:
     for run in results["runs"]:
         concept = CONCEPT_LABELS.get(run["concept"], run["concept"])
         source = SOURCE_LABELS.get(run["source"], run["source"])
+        block = f"{concept}, {source}"
+        selection = run.get("selection") or "attributed"
+        if selection != "attributed":
+            # the random-code control arm shares concept and source with
+            # its attributed twin; say which block this is
+            block += f", {selection} codes"
         lines += [
             "\\midrule",
-            f"\\multicolumn{{{1 + len(HORIZONS)}}}{{l}}{{\\emph{{{concept}, {source}}}"
+            f"\\multicolumn{{{1 + len(HORIZONS)}}}{{l}}{{\\emph{{{block}}}"
             f" ($n={run['n_subjects']}$)}} \\\\",
         ]
         for event in EVENTS:

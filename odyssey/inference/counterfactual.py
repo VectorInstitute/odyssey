@@ -365,22 +365,38 @@ def counterfactual_forecast(
 
 
 def _index_times_by_subject(
-    raw_events: pl.DataFrame, *, index_hours: float
+    raw_events: pl.DataFrame,
+    *,
+    index_hours: float,
+    index_frac: float | None = None,
 ) -> dict[int, object]:
     """Return subject -> last event time at or before ``index_hours`` into a visit.
 
     The first visit of each subject that lasts at least ``index_hours``.
+    With ``index_frac`` the cut sits at that fraction of the visit's
+    duration instead of at a fixed ``index_hours`` into it (the visit
+    still has to last ``index_hours`` to qualify), so a short stay is
+    indexed early and a long one late.
     """
+    if index_frac is not None and not 0.0 < index_frac <= 1.0:
+        raise ValueError(f"index_frac must be in (0, 1], got {index_frac}")
     timed = raw_events.filter(
         pl.col("time").is_not_null() & pl.col("hadm_id").is_not_null()
     )
+    if index_frac is None:
+        cut = pl.col("_start") + pl.duration(hours=index_hours)
+    else:
+        span_us = (pl.col("_end") - pl.col("_start")).dt.total_microseconds()
+        cut = pl.col("_start") + pl.duration(
+            microseconds=(span_us.cast(pl.Float64) * index_frac).cast(pl.Int64)
+        )
     visits = (
         timed.group_by("subject_id", "hadm_id")
         .agg(pl.col("time").min().alias("_start"), pl.col("time").max().alias("_end"))
         .filter((pl.col("_end") - pl.col("_start")) >= pl.duration(hours=index_hours))
         .sort(["subject_id", "_start"])
         .unique(subset=["subject_id"], keep="first", maintain_order=True)
-        .with_columns((pl.col("_start") + pl.duration(hours=index_hours)).alias("_cut"))
+        .with_columns(cut.alias("_cut"))
     )
     at = (
         timed.join(

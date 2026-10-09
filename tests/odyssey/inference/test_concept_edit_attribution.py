@@ -553,3 +553,210 @@ def test_worsen_edit_for_signal_covers_qsofa_resp_rate() -> None:
     edit = WORSEN_EDIT_FOR_SIGNAL["resp_rate"]
     assert edit.mode == "set"
     assert edit.value >= 22.0
+
+
+# ---------------------------------------------------------------------------
+# Cohort validation and the random-code control
+# ---------------------------------------------------------------------------
+
+from odyssey.inference.concept_edit_attribution import (  # noqa: E402
+    cohort_worsen,
+    format_cohort_summary,
+    mappable_candidate_codes,
+    select_random_codes,
+    worsen_edits_for_codes,
+)
+from odyssey.inference.counterfactual import _index_times_by_subject  # noqa: E402
+from scripts.parse_edit_attribution_logs import parse_log  # noqa: E402
+
+
+PLT = "LAB//RESULT//51265//K/uL"  # platelets: panel signal with a worsen edit
+GLUCOSE = "LAB//RESULT//50931//mg/dL"  # panel signal WITHOUT a worsen edit
+DIAG = "DIAG//ICD10//E11"  # outside the panel entirely
+
+
+def _cohort_events(n_subjects: int = 3) -> pl.DataFrame:
+    """``n_subjects`` records, each a 30 h visit with three worsenable codes."""
+    rows: list[tuple[int, str, datetime, float | None, int]] = []
+    for sid in range(1, n_subjects + 1):
+        hadm = 100 + sid
+        rows.append((sid, "HOSPITAL_ADMISSION//EMERGENCY", T0, None, hadm))
+        rows.append((sid, DIAG, T0 + timedelta(hours=1), None, hadm))
+        for h in range(1, 30):
+            rows.append((sid, SBP, T0 + timedelta(hours=h), 120.0 + sid, hadm))
+            if h % 6 == 0:
+                rows.append((sid, CREAT, T0 + timedelta(hours=h), 1.0, hadm))
+            if h % 8 == 0:
+                rows.append((sid, PLT, T0 + timedelta(hours=h), 200.0, hadm))
+                rows.append((sid, GLUCOSE, T0 + timedelta(hours=h), 100.0, hadm))
+        rows.append(
+            (sid, "HOSPITAL_DISCHARGE//HOME", T0 + timedelta(hours=30), None, hadm)
+        )
+    return pl.DataFrame(rows, schema=SCHEMA, orient="row")
+
+
+def test_mappable_candidate_codes_keeps_only_worsenable_window_codes() -> None:
+    events = _cohort_events(1)
+    pool = mappable_candidate_codes(
+        events, index_time=T0 + timedelta(hours=24), lookback_hours=24.0
+    )
+    # glucose is a panel signal but has no worsen edit; the diagnosis is
+    # outside the panel; both are excluded. Sorted, so the pool is stable.
+    assert pool == sorted([SBP, CREAT, PLT])
+
+
+def test_select_random_codes_draws_n_from_pool_and_is_seed_reproducible() -> None:
+    pool = [SBP, CREAT, PLT, "LAB//220180//mmHg"]
+    a = select_random_codes(pool, n=2, seed=0, subject_id=7)
+    b = select_random_codes(pool, n=2, seed=0, subject_id=7)
+    assert a == b
+    assert len(a) == 2
+    assert set(a) <= set(pool)
+    assert len(set(a)) == 2  # without replacement
+    # a different seed or subject changes the draw somewhere in the pool
+    draws = {
+        tuple(select_random_codes(pool, n=2, seed=s, subject_id=7)) for s in range(20)
+    }
+    assert len(draws) > 1
+    # fewer candidates than n: everything, same count the attributed arm gets
+    assert sorted(select_random_codes([SBP], n=3, seed=0, subject_id=1)) == [SBP]
+    with pytest.raises(ValueError, match="non-negative"):
+        select_random_codes(pool, n=-1, seed=0, subject_id=1)
+
+
+def test_worsen_edits_for_codes_matches_attribution_path() -> None:
+    attributions = [
+        CodeAttribution(code=CREAT, n_rows=4, baseline=0.5, occluded=0.1),
+        CodeAttribution(code=SBP, n_rows=24, baseline=0.5, occluded=0.7),
+        CodeAttribution(code=DIAG, n_rows=1, baseline=0.5, occluded=0.55),
+        CodeAttribution(code=GLUCOSE, n_rows=3, baseline=0.5, occluded=0.52),
+    ]
+    via_attribution = worsen_edits_from_attribution(attributions, top_k=4)
+    via_codes = worsen_edits_for_codes([a.code for a in attributions])
+    assert via_codes == via_attribution
+    assert [e.signal for e in via_codes] == ["creatinine", "sbp_noninvasive"]
+
+
+def test_index_frac_places_the_cut_inside_the_visit() -> None:
+    events = _cohort_events(1)
+    fixed = _index_times_by_subject(events, index_hours=24.0)
+    frac = _index_times_by_subject(events, index_hours=24.0, index_frac=0.5)
+    assert fixed[1] == T0 + timedelta(hours=24)
+    assert frac[1] == T0 + timedelta(hours=15)  # 30 h visit, half way
+    with pytest.raises(ValueError, match="index_frac"):
+        _index_times_by_subject(events, index_hours=24.0, index_frac=0.0)
+
+
+def _run_cohort(events: pl.DataFrame, **kwargs: object) -> tuple[list[str], object]:
+    vocab, model, concepts = _vocab_and_model(events)
+    lines: list[str] = []
+    result = cohort_worsen(
+        model,
+        vocab,
+        None,
+        events,
+        concept_name=concepts[0],
+        concept_names=concepts,
+        top_k=2,
+        lookback_hours=24.0,
+        index_hours=24.0,
+        chunk_size=16,
+        log=lines.append,
+        **kwargs,  # type: ignore[arg-type]
+    )
+    return lines, result
+
+
+def test_cohort_worsen_attributed_default_scores_every_subject() -> None:
+    events = _cohort_events(3)
+    lines, result = _run_cohort(events)
+    assert result.code_selection == "attributed"
+    assert result.random_seed is None
+    assert [s.subject_id for s in result.subjects] == [1, 2, 3]
+    assert result.n_pool_above_top_k == 3  # pool of 3 worsenable codes, top_k=2
+    for s in result.subjects:
+        assert s.n_candidates == 3
+        assert len(s.codes) == 2
+        assert set(s.codes) <= {SBP, CREAT, PLT}
+        assert s.rows_edited > 0
+        assert set(s.delta_event_risk) == {"vasopressor_start", "death"}
+        assert set(s.delta_event_risk["death"]) == {"8h", "24h", "72h"}
+    assert len(lines) == 3
+    assert lines[0].startswith("subject 1 [1/50]: [")
+
+
+def test_cohort_worsen_random_draws_same_count_from_same_pool_and_subjects() -> None:
+    events = _cohort_events(3)
+    _, attributed = _run_cohort(events)
+    _, random_a = _run_cohort(events, code_selection="random", random_seed=3)
+    _, random_b = _run_cohort(events, code_selection="random", random_seed=3)
+    assert random_a.code_selection == "random"
+    assert random_a.random_seed == 3
+    # same subjects, in the same order, as the attributed arm
+    assert [s.subject_id for s in random_a.subjects] == [
+        s.subject_id for s in attributed.subjects
+    ]
+    for att, rnd in zip(attributed.subjects, random_a.subjects):
+        assert rnd.n_candidates == att.n_candidates
+        assert len(rnd.codes) == len(att.codes)
+        assert set(rnd.codes) <= {SBP, CREAT, PLT}
+        assert rnd.rows_edited > 0
+    # seed-reproducible, byte for byte
+    assert [s.codes for s in random_a.subjects] == [s.codes for s in random_b.subjects]
+    assert [s.delta_event_risk for s in random_a.subjects] == [
+        s.delta_event_risk for s in random_b.subjects
+    ]
+    # and the draw actually varies with the seed somewhere in the cohort
+    _, random_c = _run_cohort(events, code_selection="random", random_seed=11)
+    assert [s.codes for s in random_a.subjects] != [s.codes for s in random_c.subjects]
+
+
+def test_cohort_worsen_rejects_unknown_selection_and_pool() -> None:
+    events = _cohort_events(1)
+    with pytest.raises(ValueError, match="code_selection"):
+        _run_cohort(events, code_selection="bogus")
+    with pytest.raises(ValueError, match="candidate_pool"):
+        _run_cohort(events, candidate_pool="bogus")
+
+
+def test_cohort_worsen_all_pool_reports_unedited_subjects() -> None:
+    # with every window code as a candidate, a random draw can land on
+    # codes with no worsen edit; those subjects are kept (same cohort) but
+    # not scored, and the header says how many.
+    events = _cohort_events(2)
+    _, result = _run_cohort(events, candidate_pool="all")
+    assert result.candidate_pool == "all"
+    assert all(s.n_candidates == 5 for s in result.subjects)  # 3 worsenable + 2 not
+    text = format_cohort_summary(result)
+    assert "pool=all" in text.splitlines()[0]
+
+
+def test_format_cohort_summary_round_trips_through_the_parser() -> None:
+    events = _cohort_events(3)
+    _, attributed = _run_cohort(events)
+    _, rnd = _run_cohort(events, code_selection="random", random_seed=5)
+    att_text = format_cohort_summary(attributed)
+    rnd_text = format_cohort_summary(rnd)
+    att_head = att_text.splitlines()[0]
+    rnd_head = rnd_text.splitlines()[0]
+    assert att_head.endswith("top_k=2, selection=attributed ===")
+    assert rnd_head.endswith("top_k=2, selection=random, seed=5 ===")
+    parsed_att = parse_log(att_text)
+    parsed_rnd = parse_log(rnd_text)
+    assert parsed_att["selection"] == "attributed"
+    assert parsed_att["random_seed"] is None
+    assert parsed_rnd["selection"] == "random"
+    assert parsed_rnd["random_seed"] == 5
+    for parsed in (parsed_att, parsed_rnd):
+        assert parsed["n_subjects"] == 3
+        assert parsed["n_baseline_scored"] == 3
+        assert {(c["event"], c["horizon"]) for c in parsed["cells"]} == {
+            (ev, h)
+            for ev in ("death", "vasopressor_start")
+            for h in ("8h", "24h", "72h")
+        }
+        assert all(c["total"] == 3 for c in parsed["cells"])
+        assert all(0 <= c["agree"] <= 3 for c in parsed["cells"])
+    # the per-subject lines carry the signals, like the banked logs
+    assert "edit signal frequency: {" in att_text
+    assert "mean concept-probability delta: " in att_text

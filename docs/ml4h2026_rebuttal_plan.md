@@ -134,6 +134,59 @@ Keep each block under 150 words. The response box on OpenReview is short.
 - Run `figures/pagecheck.py` and the awk comment check after every edit (the build has lost prose to `%` lines before).
 - The submitted source is `paper/ml4h/main_mixture.tex`; the old `main.tex` and its aux files were retired to `paper/ml4h/retired/` on 2026-09-25. `make_steering_table.py` and `make_specificity_table.py` now feed no table in the paper; keep them for the steering follow-up.
 
+### WP9. Reviewer-requested controls (added 2026-10-09)
+
+**Random-code control for Table 9 (tab:edit-attribution).** A reviewer asks for a random-code control to show that the concept ranking helps. The arm: for each of the same 50 held-out subjects, draw the same number of codes as the attributed arm edits (top-k = 4) uniformly from the same candidate pool in the same 24-hour window, worsen them with the identical edit machinery, and report the same sign agreement. Code on branch `rebuttal/random-code-control`: `python -m odyssey.inference.concept_edit_attribution` is the cohort driver (the Table 9 numbers came from an uncommitted scratch harness, `cohort_worsen.py`, whose stdout logs are banked under `research_journal/figure_data/edit_attribution/`; this CLI reproduces its log format so `scripts/parse_edit_attribution_logs.py` reads both). New flags: `--code-selection {attributed,random}` (default `attributed`), `--random-seed` (default 0), `--candidate-pool {mappable,all}` (default `mappable`: the distinct codes in the window that resolve to a panel signal with a worsen edit, the only codes either arm can act on; the banked eICU logs show exactly four edits per subject, which is consistent with that pool), `--index-frac` (the banked qSOFA and AKI headers carry `index_frac=0.3333`; its original definition is lost with the harness, here it is the fraction of the first qualifying visit's duration; the paper caption says 24 h into a visit, so the commands below use `--index-hours 24` and the attributed arm is re-run first to confirm reproduction before the random arm is read). The JSON output keeps per-subject codes, signals and hazard deltas, which also lifts the per-subject-CI limit noted on 2026-09-09.
+
+Subjects: the first 50 held-out subjects in shard order whose first visit lasts at least 24 h and whose window holds at least one worsenable code; the pool does not depend on the arm, so both arms score the same subjects. The random draw is seeded per subject from `(seed, subject_id)`, so it is reproducible and independent of subject order. Note the control can only differ from the attributed arm on subjects whose pool holds more than four worsenable codes; the summary line `candidate pool larger than top_k: m/n subjects` reports how many, and the eICU and MIMIC ICU-stay windows (vitals plus labs) are where the two arms separate.
+
+VM recipe as in WP1 to WP4: `PY=~/odyssey/.venv/bin/python`, code from a worktree on this branch (`cd ~/odyssey && git fetch origin && git worktree add ~/odyssey_rc rebuttal/random-code-control`), `PYTHONPATH=~/odyssey_rc`. Never `uv sync` on a VM. Four held-out shards is what the alert chains score by default and gives well over 50 eligible subjects; keep `--max-shards` identical across the arms of one concept.
+
+VM1 (MIMIC-IV, `full_run_v10`), one line per concept and arm; run the attributed arm first:
+
+```
+cd ~/odyssey_rc && export PYTHONPATH=~/odyssey_rc PY=~/odyssey/.venv/bin/python
+for C in sepsis3 qsofa aki_stage_3; do
+  for SEL in attributed random; do
+    $PY -m odyssey.inference.concept_edit_attribution \
+      --run-dir ~/runs/full_run_v10 \
+      --held-out-shard-dir ~/data/mimiciv_3.1_v1/data/held_out \
+      --concept $C --max-subjects 50 --top-k 4 --lookback-hours 24 --index-hours 24 \
+      --max-shards 4 --chunk-size 512 \
+      --code-selection $SEL --random-seed 0 \
+      --output-json ~/runs/full_run_v10/edit_attribution/cohort_${C}_${SEL}.json \
+      > ~/runs/full_run_v10/edit_attribution/cohort_${C}_${SEL}.log 2>&1
+  done
+done
+```
+
+VM2 (eICU-CRD, `eicu_full_v10`; no Sepsis-3 head on that checkpoint, as the paper states):
+
+```
+cd ~/odyssey_rc && export PYTHONPATH=~/odyssey_rc PY=~/odyssey/.venv/bin/python
+for C in qsofa aki_stage_3; do
+  for SEL in attributed random; do
+    $PY -m odyssey.inference.concept_edit_attribution \
+      --run-dir ~/runs/eicu_full_v10 \
+      --held-out-shard-dir ~/data/eicu_2.0_v1/data/held_out \
+      --concept $C --max-subjects 50 --top-k 4 --lookback-hours 24 --index-hours 24 \
+      --max-shards 4 --chunk-size 512 \
+      --code-selection $SEL --random-seed 0 \
+      --output-json ~/runs/eicu_full_v10/edit_attribution/cohort_${C}_${SEL}.json \
+      > ~/runs/eicu_full_v10/edit_attribution/cohort_${C}_${SEL}.log 2>&1
+  done
+done
+```
+
+Optional second random seed (`--random-seed 1`, output suffix `_random_s1`) if the first draw lands near a cell boundary. Then, on the laptop, bank the logs and JSONs under `research_journal/figure_data/edit_attribution/rebuttal/` and build the two-arm table:
+
+```
+uv run python scripts/parse_edit_attribution_logs.py research_journal/figure_data/edit_attribution/rebuttal/cohort_*_{attributed,random}.log --out research_journal/figure_data/edit_attribution/rebuttal/cohort_results_two_arm.json
+uv run python scripts/make_edit_attribution_table.py research_journal/figure_data/edit_attribution/rebuttal/cohort_results_two_arm.json --with-random --out paper/ml4h/tables/edit_attribution_random_control.tex
+```
+
+Without `--with-random` the table script drops the random rows and renders the published Table 9 unchanged; the CI table (`make_edit_attribution_ci_table.py`) labels a random-arm block "random codes". Read the attributed arm against the banked 87 to 97% band first; if it does not reproduce within the Wilson intervals of `tab:edit-attribution-ci`, the subject selection or index definition differs from the lost harness and the rebuttal cites the new paired pair (attributed vs random, same subjects) rather than the published row.
+
 ## Results so far (updated 2026-09-29, 01:00 UTC)
 
 Every number below is banked under `research_journal/figure_data/` in the run directory named, and was computed on all held-out shards unless stated. Runs launched 2026-09-25 from the `rebuttal/integration` branch; VM recipe and logs are in the session memory and the chain scripts under the VM home directories.

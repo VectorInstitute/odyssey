@@ -98,3 +98,19 @@ def test_render_labels_each_run_with_its_n() -> None:
     text = render(results)
     assert "AKI stage 3, eICU-CRD" in text
     assert "$n=50$" in text
+
+
+def test_render_labels_the_random_arm_block() -> None:
+    run = {
+        "concept": "sepsis3",
+        "source": "mimic_iv",
+        "n_subjects": 50,
+        "selection": "random",
+        "cells": [
+            {"event": "death", "horizon": "8h", "agree": 25, "total": 50, "pct": 50.0}
+        ],
+    }
+    text = render({"runs": [run]})
+    assert "Sepsis-3, MIMIC-IV, random codes" in text
+    run["selection"] = "attributed"
+    assert "random codes" not in render({"runs": [run]})
