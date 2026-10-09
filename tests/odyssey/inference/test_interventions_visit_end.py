@@ -6,8 +6,9 @@ only the supervised positions and scores them on their own.
 """
 
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -16,11 +17,14 @@ import torch
 
 import odyssey.inference.interventions as interventions_module
 from odyssey.data.streaming import PackedLaneSampler, StreamingChunk
+from odyssey.data.value_binning import add_value_tokens
+from odyssey.data.vocabulary import Vocabulary
 from odyssey.inference.interventions import (
     OVERRIDE_POSITIONS,
     InterventionResult,
     VisitEndScorer,
     _chunk_intervention,
+    evaluate_interventions,
     result_to_json,
     run_streaming_intervention,
     score_visit_end_rows,
@@ -30,6 +34,7 @@ from odyssey.inference.interventions import (
 from odyssey.models.concept_bottleneck import intervention_apply_mask
 from odyssey.training.data import iter_patient_sequences
 from odyssey.training.running_labels import position_running_labels
+from odyssey.training.train import TrainingConfig
 from tests.odyssey.inference.test_interventions import (
     CODES,
     NUM_CONCEPTS,
@@ -39,6 +44,7 @@ from tests.odyssey.inference.test_interventions import (
 )
 from tests.odyssey.inference.test_interventions_hazard import OLD_KEYS
 from tests.odyssey.inference.test_interventions_hazard import _Fixture as _HazardFixture
+from tests.odyssey.inference.test_interventions_hazard import _model as _hazard_model
 
 
 SUBJECTS = (1, 2, 3)
@@ -463,3 +469,108 @@ def test_hazard_heads_combine_with_the_visit_end_override() -> None:
     assert combined.visit_end_positions is not None
     # Far fewer positions are overridden than under the default.
     assert 0 < combined.n_intervened_positions < hazard_only.n_intervened_positions
+
+
+# ---------------------------------------------------------------------------
+# the run-dir driver attaches the block, and the small guards
+# ---------------------------------------------------------------------------
+
+
+def test_score_visit_end_rows_of_nothing_is_empty() -> None:
+    assert score_visit_end_rows({}) == {}
+
+
+def test_check_override_positions_rejects_unknown_and_warns_on_stay(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with pytest.raises(ValueError, match="unknown override_positions"):
+        interventions_module._check_override_positions("landmark", "visit")
+    with caplog.at_level("WARNING"):
+        interventions_module._check_override_positions("visit_end", "visit")
+    assert not caplog.records
+    with caplog.at_level("WARNING"):
+        interventions_module._check_override_positions("visit_end", "stay")
+    assert any("concept_supervision='stay'" in r.getMessage() for r in caplog.records)
+
+
+def _two_visit_events(n_subjects: int = 16) -> pl.DataFrame:
+    """Split the hazard fixture's hourly heart rates into two admissions.
+
+    The hazard fixture has one admission per subject, so its only visit end
+    is the last position of each stream, which has no next-token target.
+    Splitting each record at hour 12 gives every subject one scorable visit
+    end.
+    """
+    rows: list[tuple[int, str, datetime, float | None, int]] = []
+    for sid in range(1, n_subjects + 1):
+        for h in range(24):
+            hadm = (1000 if h < 12 else 2000) + sid
+            hr = 130.0 if sid % 2 == 0 and h >= 12 else 80.0
+            rows.append((sid, "LAB//220045//bpm", T0 + timedelta(hours=h), hr, hadm))
+    return pl.DataFrame(
+        rows,
+        schema={
+            "subject_id": pl.Int64,
+            "code": pl.Utf8,
+            "time": pl.Datetime("us"),
+            "numeric_value": pl.Float32,
+            "hadm_id": pl.Int64,
+        },
+        orient="row",
+    )
+
+
+def test_evaluate_interventions_attaches_visit_end_blocks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    raw = _two_visit_events()
+    vocab = Vocabulary.build(add_value_tokens(raw)["code"].to_list(), min_count=1)
+    model = _hazard_model(len(vocab))
+    config = TrainingConfig(
+        train_shard_dir="/train",
+        tuning_shard_dir="/tuning",
+        output_dir="/out",
+        source="mimic_iv",
+        task_set="v1",
+        concept_supervision="visit",
+    )
+    monkeypatch.setattr(
+        interventions_module,
+        "load_run",
+        lambda *a, **k: (model, vocab, None, config),
+    )
+    monkeypatch.setattr(
+        interventions_module, "load_meds_shards", lambda *a, **k: raw.clone()
+    )
+    held_out = tmp_path / "held_out"
+    held_out.mkdir()
+    with caplog.at_level("INFO"):
+        results = evaluate_interventions(
+            tmp_path,
+            held_out,
+            modes=["none", "truth", "flip"],
+            num_lanes=2,
+            chunk_size=16,
+            device="cpu",
+            override_positions="visit_end",
+            hazard_boot=20,
+        )
+    by_mode = {r.mode: r for r in results}
+    assert set(by_mode) == {"none", "truth", "flip"}
+    assert all(r.visit_end_positions is not None for r in results)
+    blocks: dict[str, dict[str, Any]] = {
+        m: r.visit_end_positions or {} for m, r in by_mode.items()
+    }
+    n = blocks["none"]["n_positions"]
+    assert n > 0
+    assert all(b["n_positions"] == n for b in blocks.values())
+    assert set(blocks["truth"]["paired"]) == {"truth_minus_none", "truth_minus_flip"}
+    assert set(blocks["flip"]["paired"]) == {"flip_minus_none"}
+    assert blocks["none"]["paired"] == {}
+    assert all(r.hazard is None for r in results)
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("paired visit-end bootstrap" in m for m in messages)
+    assert any("none at visit ends: top1" in m for m in messages)
+    # the JSON carries the block under the old keys
+    written = result_to_json(by_mode["truth"])
+    assert written["visit_end_positions"] == blocks["truth"]

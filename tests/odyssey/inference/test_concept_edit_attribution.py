@@ -1,6 +1,9 @@
 """Occlusion attribution: which codes a concept's probability rests on."""
 
+import json
 from datetime import datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
 
 import polars as pl
 import pytest
@@ -559,7 +562,12 @@ def test_worsen_edit_for_signal_covers_qsofa_resp_rate() -> None:
 # Cohort validation and the random-code control
 # ---------------------------------------------------------------------------
 
+import odyssey.inference.legacy_concept_pins as pins_module  # noqa: E402
+import odyssey.inference.run_inference as run_inference_module  # noqa: E402
+import odyssey.training.data as data_module  # noqa: E402
 from odyssey.inference.concept_edit_attribution import (  # noqa: E402
+    CohortWorsenResult,
+    _main,
     cohort_worsen,
     format_cohort_summary,
     mappable_candidate_codes,
@@ -647,7 +655,9 @@ def test_index_frac_places_the_cut_inside_the_visit() -> None:
         _index_times_by_subject(events, index_hours=24.0, index_frac=0.0)
 
 
-def _run_cohort(events: pl.DataFrame, **kwargs: object) -> tuple[list[str], object]:
+def _run_cohort(
+    events: pl.DataFrame, **kwargs: object
+) -> tuple[list[str], CohortWorsenResult]:
     vocab, model, concepts = _vocab_and_model(events)
     lines: list[str] = []
     result = cohort_worsen(
@@ -760,3 +770,146 @@ def test_format_cohort_summary_round_trips_through_the_parser() -> None:
     # the per-subject lines carry the signals, like the banked logs
     assert "edit signal frequency: {" in att_text
     assert "mean concept-probability delta: " in att_text
+
+
+# ---------------------------------------------------------------------------
+# cohort_worsen edge paths and the CLI entry point
+# ---------------------------------------------------------------------------
+
+
+def test_cohort_worsen_unknown_concept_raises() -> None:
+    events = _cohort_events(1)
+    vocab, model, concepts = _vocab_and_model(events)
+    with pytest.raises(ValueError, match="not in concept_names"):
+        cohort_worsen(
+            model,
+            vocab,
+            None,
+            events,
+            concept_name="not_a_concept",
+            concept_names=concepts,
+            chunk_size=16,
+        )
+
+
+def test_cohort_worsen_stops_at_max_subjects() -> None:
+    _, result = _run_cohort(_cohort_events(3), max_subjects=1)
+    assert [s.subject_id for s in result.subjects] == [1]
+
+
+def test_cohort_worsen_skips_subjects_with_an_empty_pool() -> None:
+    # subject 3 has a 30 h visit but nothing worsenable in the window, so it
+    # is skipped in both arms rather than scored with nothing to edit.
+    events = _cohort_events(2)
+    extra = [
+        (3, "HOSPITAL_ADMISSION//EMERGENCY", T0, None, 103),
+        *[(3, DIAG, T0 + timedelta(hours=h), None, 103) for h in range(1, 30)],
+        (3, "HOSPITAL_DISCHARGE//HOME", T0 + timedelta(hours=30), None, 103),
+    ]
+    events = pl.concat([events, pl.DataFrame(extra, schema=SCHEMA, orient="row")])
+    _, attributed = _run_cohort(events)
+    _, rnd = _run_cohort(events, code_selection="random", random_seed=0)
+    assert [s.subject_id for s in attributed.subjects] == [1, 2]
+    assert [s.subject_id for s in rnd.subjects] == [1, 2]
+
+
+def test_cohort_worsen_random_all_pool_can_leave_a_subject_unedited() -> None:
+    # seed 6 draws glucose + the diagnosis for subject 1 (neither has a
+    # worsen edit) and worsenable codes for subject 2; the unedited subject
+    # is kept, scored as a no-op, and counted in the header.
+    events = _cohort_events(2)
+    _, result = _run_cohort(
+        events, code_selection="random", random_seed=6, candidate_pool="all"
+    )
+    by_sid = {s.subject_id: s for s in result.subjects}
+    assert set(by_sid) == {1, 2}
+    assert by_sid[1].rows_edited == 0
+    assert by_sid[1].signals == []
+    assert by_sid[1].concept_after == by_sid[1].concept_before
+    assert all(
+        v == 0.0 for hs in by_sid[1].delta_event_risk.values() for v in hs.values()
+    )
+    assert by_sid[2].rows_edited > 0
+    assert [s.subject_id for s in result.scored] == [2]
+    header = format_cohort_summary(result).splitlines()[0]
+    assert "pool=all" in header
+    assert header.endswith("no_edit=1 ===")
+
+
+def test_format_cohort_summary_reports_index_frac() -> None:
+    _, result = _run_cohort(_cohort_events(1), index_frac=0.5)
+    header = format_cohort_summary(result).splitlines()[0]
+    assert "index_frac=0.5000" in header
+    assert result.index_frac == 0.5
+
+
+def test_cli_main_runs_the_cohort_and_writes_the_json(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    events = _cohort_events(2)
+    vocab, model, concepts = _vocab_and_model(events)
+    config = SimpleNamespace(source="mimic_iv", task_set="v1")
+    seen: dict[str, object] = {}
+
+    def fake_load_run(run_dir: Path, **kwargs: object) -> tuple[object, ...]:
+        seen["run_dir"] = run_dir
+        seen["checkpoint"] = kwargs["checkpoint_path"]
+        return model, vocab, None, config
+
+    monkeypatch.setattr(run_inference_module, "load_run", fake_load_run)
+    monkeypatch.setattr(
+        pins_module,
+        "resolve_concepts_for_run",
+        lambda run_dir, source, task_set: concepts_for_source(source),
+    )
+    monkeypatch.setattr(
+        data_module, "load_meds_shards", lambda path, max_shards: events.clone()
+    )
+    out = tmp_path / "nested" / "cohort_random.json"
+    argv = [
+        "prog",
+        "--run-dir",
+        str(tmp_path / "run"),
+        "--held-out-shard-dir",
+        str(tmp_path / "held_out"),
+        "--concept",
+        concepts[0],
+        "--output-json",
+        str(out),
+        "--top-k",
+        "2",
+        "--max-subjects",
+        "2",
+        "--code-selection",
+        "random",
+        "--random-seed",
+        "3",
+        "--chunk-size",
+        "16",
+        "--device",
+        "cpu",
+    ]
+    monkeypatch.setattr("sys.argv", argv)
+    _main()
+
+    assert seen["run_dir"] == tmp_path / "run"
+    assert seen["checkpoint"] == tmp_path / "run" / "checkpoint_best.pt"
+    payload = json.loads(out.read_text())
+    assert payload["concept"] == concepts[0]
+    assert payload["code_selection"] == "random"
+    assert payload["random_seed"] == 3
+    assert payload["top_k"] == 2
+    assert payload["run_dir"] == str(tmp_path / "run")
+    assert [s["subject_id"] for s in payload["subjects"]] == [1, 2]
+    assert set(payload["sign_agreement"]) == {"vasopressor_start", "death"}
+    for horizons in payload["sign_agreement"].values():
+        for cell in horizons.values():
+            assert set(cell) == {"agree", "total"}
+            assert cell["total"] == 2
+    parsed = parse_log(payload["summary_text"])
+    assert parsed["selection"] == "random"
+    assert parsed["random_seed"] == 3
+    printed = capsys.readouterr().out
+    assert "worsenable signals with a reading in the loaded shards:" in printed
+    assert "subject 1 [1/2]:" in printed
+    assert payload["summary_text"] in printed
