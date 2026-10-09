@@ -84,6 +84,25 @@ minus none, truth minus flip, flip minus none) are attached to the
 left-hand mode's entry. For ``flip_gated`` the heads are read from the
 flip-intervened features: the logit gate has no hazard analogue. Off by
 default, so an existing run reproduces byte for byte.
+
+Override positions (``--override-positions``). The concept head is
+supervised only at visit ends (the concept loss pools
+``chunk.visit_end``, see ``ConceptBottleneckSequenceModel.compute_streaming_loss``),
+yet the default ``all`` applies the override at every position. Under
+``visit_end`` the substitution (truth, flip, flip_gated, random and the
+calibrated modes) is applied only at the last position of each real
+visit (:func:`visit_end_positions`, the tokenizer's ``visit_ends`` flag
+carried on the chunk, the same flag the loss and the alert protocol's
+``visit_end`` index mode use); every other position is left exactly as
+under ``none``. The zero modes edit embeddings, not probabilities, and
+are not restricted. Each result then carries a ``visit_end_positions``
+block: top-1 and loss over only the visit-end positions that have an
+observed label inside the band and a next-token target (the last visit
+of a stream has none), with ``n_positions`` and ``n_subjects``, and on
+the left-hand mode the :data:`HAZARD_PAIRS` paired subject-clustered
+bootstrap differences in top-1 and loss. With ``--hazard-heads`` the
+hazard block is still read at the landmark rows, which are not visit
+ends, so under ``visit_end`` it mostly reflects the un-overridden model.
 """
 
 import json
@@ -173,6 +192,10 @@ INTERVENTION_MODES = (
 
 CALIBRATED_MODES = ("truth_calibrated", "flip_calibrated")
 
+#: Where the label override is applied: every position, or only the last
+#: position of each real visit (where the concept head was supervised).
+OVERRIDE_POSITIONS = ("all", "visit_end")
+
 #: Paired hazard differences, (left, right), reported on the left mode's entry.
 HAZARD_PAIRS: tuple[tuple[str, str], ...] = (
     ("truth", "none"),
@@ -238,15 +261,24 @@ class InterventionResult:
     each with a subject-clustered paired bootstrap interval. ``{}`` for a
     mode that is never a left operand; None when hazard scoring is off."""
 
+    visit_end_positions: dict[str, Any] | None = None
+    """``{n_positions, n_subjects, top1_accuracy, mean_task_loss, paired}``
+    over only the visit-end positions (see :class:`VisitEndScorer`) when
+    ``override_positions="visit_end"``; ``paired`` holds the
+    :data:`HAZARD_PAIRS` differences whose left mode is this one, each a
+    subject-clustered paired bootstrap of the top-1 and loss difference.
+    None under ``override_positions="all"``."""
+
 
 def result_to_json(result: InterventionResult) -> dict[str, Any]:
-    """Serialise one result; the hazard keys appear only when scored.
+    """Serialise one result; the hazard and visit-end keys appear only when scored.
 
-    With ``--hazard-heads`` off the dict is exactly what earlier versions
-    wrote, so banked JSONs stay byte for byte reproducible.
+    With ``--hazard-heads`` off and ``--override-positions all`` the dict
+    is exactly what earlier versions wrote, so banked JSONs stay byte for
+    byte reproducible.
     """
     out = asdict(result)
-    for key in ("hazard", "hazard_paired"):
+    for key in ("hazard", "hazard_paired", "visit_end_positions"):
         if out[key] is None:
             del out[key]
     return out
@@ -594,6 +626,190 @@ def score_hazard_landmarks(
     return per_mode, paired
 
 
+# ---------------------------------------------------------------------------
+# Visit-end override positions
+# ---------------------------------------------------------------------------
+
+
+def visit_end_positions(chunk: StreamingChunk) -> torch.Tensor:
+    """``(lanes, T)`` bool: the last position of each real (hadm-bearing) visit.
+
+    The tokenizer marks it (``PatientSequence.visit_ends``) and the
+    sampler carries it per chunk as ``chunk.visit_end``; it is the flag
+    visit-scoped concept supervision pools on and the one the alert
+    protocol's ``visit_end`` index mode scores, so "where the concept head
+    was supervised" has one definition. Events outside any visit
+    (``visit_ids < 0``) are never visit ends.
+    """
+    return chunk.visit_end & (chunk.visit_ids >= 0)
+
+
+@dataclass(frozen=True)
+class VisitEndRowTable:
+    """Next-event outcome at every scored visit-end position of one pass."""
+
+    subject_ids: np.ndarray
+    visit_ids: np.ndarray
+    time_hours: np.ndarray
+    hits: np.ndarray
+    """``(n_rows,)`` float64, 1.0 where the top-1 prediction was right."""
+
+    losses: np.ndarray
+    """``(n_rows,)`` float64 next-token cross-entropy per row."""
+
+    @property
+    def n_rows(self) -> int:
+        """Number of scored visit-end rows."""
+        return int(self.subject_ids.shape[0])
+
+    @property
+    def n_subjects(self) -> int:
+        """Number of distinct subjects among the rows."""
+        return int(np.unique(self.subject_ids).shape[0])
+
+    def same_rows(self, other: "VisitEndRowTable") -> bool:
+        """Whether both tables hold the same (subject, visit, time) rows in order."""
+        return (
+            np.array_equal(self.subject_ids, other.subject_ids)
+            and np.array_equal(self.visit_ids, other.visit_ids)
+            and np.array_equal(self.time_hours, other.time_hours)
+        )
+
+
+class VisitEndScorer:
+    """Keep the next-event outcome at the visit-end positions of one pass.
+
+    A row is a visit-end position (:func:`visit_end_positions`) with at
+    least one observed concept whose own probability lies inside the
+    uncertain band (every observed concept when there is no band) and a
+    real next-token target. That is exactly the position set the
+    ``visit_end`` override edits, minus the positions without a target
+    (the last visit of a stream, whose next token is another patient's).
+    The set is defined from the model's OWN probabilities, which no mode
+    changes, so every mode scores the same rows and they can be paired.
+    """
+
+    def __init__(self, *, uncertain_band: float | None) -> None:
+        """Bind the band that defines "observed and inside the band"."""
+        self.uncertain_band = uncertain_band
+        self._sids: list[np.ndarray] = []
+        self._vids: list[np.ndarray] = []
+        self._times: list[np.ndarray] = []
+        self._hits: list[np.ndarray] = []
+        self._losses: list[np.ndarray] = []
+
+    def eligible(
+        self, chunk: StreamingChunk, observed: torch.Tensor, own_probs: torch.Tensor
+    ) -> torch.Tensor:
+        """``(lanes, T)`` bool: the rows this chunk contributes."""
+        entries = observed.bool() & visit_end_positions(chunk).unsqueeze(-1)
+        if self.uncertain_band is not None:
+            entries = entries & ((own_probs - 0.5).abs() < self.uncertain_band)
+        return entries.any(dim=-1) & chunk.real_mask
+
+    def add_chunk(
+        self, chunk: StreamingChunk, logits: torch.Tensor, keep: torch.Tensor
+    ) -> None:
+        """Record top-1 hit and loss at the ``keep`` positions of this chunk."""
+        if not keep.any():
+            return
+        targets = chunk.targets[keep]
+        kept_logits = logits[keep]
+        hits = kept_logits.argmax(dim=-1) == targets
+        losses = F.cross_entropy(
+            kept_logits, targets, ignore_index=PAD_ID, reduction="none"
+        )
+        self._sids.append(chunk.subject_ids[keep].cpu().numpy().astype(np.int64))
+        self._vids.append(chunk.visit_ids[keep].cpu().numpy().astype(np.int64))
+        self._times.append(
+            chunk.batch.aux.time_stamps[keep].cpu().numpy().astype(np.float64)
+        )
+        self._hits.append(hits.cpu().numpy().astype(np.float64))
+        self._losses.append(losses.cpu().numpy().astype(np.float64))
+
+    def table(self) -> VisitEndRowTable:
+        """Concatenate everything accumulated so far."""
+
+        def cat(parts: list[np.ndarray], dtype: type) -> np.ndarray:
+            return np.concatenate(parts) if parts else np.zeros(0, dtype)
+
+        return VisitEndRowTable(
+            subject_ids=cat(self._sids, np.int64),
+            visit_ids=cat(self._vids, np.int64),
+            time_hours=cat(self._times, np.float64),
+            hits=cat(self._hits, np.float64),
+            losses=cat(self._losses, np.float64),
+        )
+
+
+def visit_end_summary(table: VisitEndRowTable) -> dict[str, Any]:
+    """Point top-1 and loss over the visit-end rows, with the subset size."""
+    n = table.n_rows
+    return {
+        "n_positions": n,
+        "n_subjects": table.n_subjects,
+        "top1_accuracy": float(table.hits.mean()) if n else float("nan"),
+        "mean_task_loss": float(table.losses.mean()) if n else float("nan"),
+        "paired": {},
+    }
+
+
+def _mean_delta_json(d: PairedMeanDelta) -> dict[str, Any]:
+    return {
+        "point": d.point,
+        "ci_low": d.ci_low,
+        "ci_high": d.ci_high,
+        "separated": d.separated,
+    }
+
+
+def visit_end_paired_summary(
+    left: VisitEndRowTable,
+    right: VisitEndRowTable,
+    *,
+    n_boot: int,
+    seed: int,
+) -> dict[str, Any]:
+    """Paired subject-clustered bootstrap of the top-1 and loss differences."""
+    if not left.same_rows(right):
+        raise ValueError("paired visit-end scoring needs identical rows")
+    subjects = left.subject_ids
+    top1 = paired_mean_delta(left.hits, right.hits, subjects, n_boot=n_boot, seed=seed)
+    loss = paired_mean_delta(
+        left.losses, right.losses, subjects, n_boot=n_boot, seed=seed
+    )
+    return {
+        "top1_accuracy": _mean_delta_json(top1),
+        "mean_task_loss": _mean_delta_json(loss),
+        "n_positions": top1.n_rows,
+        "n_subjects": top1.n_subjects,
+    }
+
+
+def score_visit_end_rows(
+    tables: dict[str, VisitEndRowTable], *, n_boot: int = 1000, seed: int = 0
+) -> dict[str, dict[str, Any]]:
+    """``{mode: visit_end_positions block}`` with the :data:`HAZARD_PAIRS` attached.
+
+    Every table must hold the same rows, which the shared sampler and the
+    mode-independent row rule guarantee. Pairs land on the left mode's
+    ``paired`` entry, keyed ``<left>_minus_<right>``.
+    """
+    if not tables:
+        return {}
+    first = next(iter(tables.values()))
+    for mode, table in tables.items():
+        if not table.same_rows(first):
+            raise ValueError(f"mode {mode!r} scored different visit-end rows")
+    blocks = {mode: visit_end_summary(table) for mode, table in tables.items()}
+    for left, right in HAZARD_PAIRS:
+        if left in tables and right in tables:
+            blocks[left]["paired"][f"{left}_minus_{right}"] = visit_end_paired_summary(
+                tables[left], tables[right], n_boot=n_boot, seed=seed
+            )
+    return blocks
+
+
 def _chunk_intervention(
     chunk: StreamingChunk,
     mode: str,
@@ -606,8 +822,13 @@ def _chunk_intervention(
     device: str,
     rng: torch.Generator,
     uncertain_band: float | None = None,
+    position_mask: torch.Tensor | None = None,
 ) -> BottleneckIntervention | None:
-    """Build the per-position intervention for one chunk, or None."""
+    """Build the per-position intervention for one chunk, or None.
+
+    ``position_mask`` (``(lanes, T)`` bool), if given, restricts the
+    substitution to those positions on top of the observed mask.
+    """
     if mode == "none":
         return None
     if mode == "zero_known":
@@ -625,6 +846,8 @@ def _chunk_intervention(
         supervision=supervision,
         num_concepts=num_concepts,
     )
+    if position_mask is not None:
+        observed = observed * position_mask.to(observed.device).unsqueeze(-1)
     if mode == "truth":
         values = labels
     elif mode in ("flip", "flip_gated"):
@@ -661,6 +884,8 @@ def run_streaming_intervention(  # noqa: PLR0912, PLR0915 -- one linear scoring 
     calibrated_tau: float | None = None,
     concept_names: Sequence[str] | None = None,
     hazard_scorer: HazardLandmarkScorer | None = None,
+    override_positions: str = "all",
+    visit_end_scorer: VisitEndScorer | None = None,
 ) -> InterventionResult:
     """Score next-event prediction under one intervention mode.
 
@@ -674,6 +899,13 @@ def run_streaming_intervention(  # noqa: PLR0912, PLR0915 -- one linear scoring 
     the alert protocol's landmark rows from the intervened features (see
     :class:`HazardLandmarkScorer`); it changes nothing in the returned
     next-event numbers.
+
+    ``override_positions="visit_end"`` applies the probability override
+    only at :func:`visit_end_positions` (see the module docstring) and
+    fills ``InterventionResult.visit_end_positions`` from
+    ``visit_end_scorer`` (one is created when not given; pass your own to
+    keep the row table for pairing across modes). ``"all"`` is the
+    unchanged default.
 
     The identical streaming pass as
     :func:`~odyssey.inference.run_inference.run_streaming_inference`
@@ -695,6 +927,14 @@ def run_streaming_intervention(  # noqa: PLR0912, PLR0915 -- one linear scoring 
             f"mode {mode!r} needs calibration_gammas (see "
             "odyssey.inference.concept_attribution.calibrated_gammas)"
         )
+    if override_positions not in OVERRIDE_POSITIONS:
+        raise ValueError(
+            f"unknown override_positions {override_positions!r}; "
+            f"known: {OVERRIDE_POSITIONS}"
+        )
+    at_visit_ends = override_positions == "visit_end"
+    if at_visit_ends and visit_end_scorer is None:
+        visit_end_scorer = VisitEndScorer(uncertain_band=uncertain_band)
     if concept_first_times is None:
         if mode in ("truth", "flip", "flip_gated", *CALIBRATED_MODES):
             logger.warning(
@@ -731,6 +971,7 @@ def run_streaming_intervention(  # noqa: PLR0912, PLR0915 -- one linear scoring 
     with torch.no_grad():
         for chunk in sampler:
             chunk = move_to_device(chunk, device)  # noqa: PLW2901
+            position_mask = visit_end_positions(chunk) if at_visit_ends else None
             intervention = (
                 None
                 if mode in CALIBRATED_MODES  # built below, from the model's own probs
@@ -745,6 +986,7 @@ def run_streaming_intervention(  # noqa: PLR0912, PLR0915 -- one linear scoring 
                     device=device,
                     rng=rng,
                     uncertain_band=uncertain_band,
+                    position_mask=position_mask,
                 )
             )
             if mode in CALIBRATED_MODES:
@@ -766,6 +1008,10 @@ def run_streaming_intervention(  # noqa: PLR0912, PLR0915 -- one linear scoring 
                     supervision=supervision,
                     num_concepts=num_concepts,
                 )
+                if position_mask is not None:
+                    observed = observed * position_mask.to(observed.device).unsqueeze(
+                        -1
+                    )
                 pole = labels if mode == "truth_calibrated" else 1.0 - labels
                 # calibration_gammas is derived from the model's own LM-head
                 # weights, so it lives on the model's device, while `pole`
@@ -812,6 +1058,22 @@ def run_streaming_intervention(  # noqa: PLR0912, PLR0915 -- one linear scoring 
                 hazard_features = bottleneck_out.bottleneck
             if hazard_scorer is not None:
                 hazard_scorer.add_chunk(chunk, hazard_features)
+            if visit_end_scorer is not None:
+                # The row set comes from the OBSERVED mask and the model's
+                # own probabilities, both the same in every mode, so the
+                # same positions are kept whether or not this mode edits.
+                _, observed_all = position_running_labels(
+                    chunk,
+                    concept_labels,
+                    concept_mask,
+                    concept_first_times,
+                    supervision=supervision,
+                    num_concepts=num_concepts,
+                )
+                keep = visit_end_scorer.eligible(
+                    chunk, observed_all, bottleneck_out.concept_probs
+                )
+                visit_end_scorer.add_chunk(chunk, logits, keep)
             real = chunk.real_mask
             if intervention is not None and intervention.probs is not None:
                 own = bottleneck_out.concept_probs
@@ -902,6 +1164,11 @@ def run_streaming_intervention(  # noqa: PLR0912, PLR0915 -- one linear scoring 
         calibrated_tau=calibrated_tau if mode in CALIBRATED_MODES else None,
         n_replaced_by_concept=by_concept_n,
         mean_abs_displacement_by_concept=by_concept_disp,
+        visit_end_positions=(
+            visit_end_summary(visit_end_scorer.table())
+            if visit_end_scorer is not None
+            else None
+        ),
     )
 
 
@@ -923,6 +1190,7 @@ def evaluate_interventions(
     hazard_boot: int = 1000,
     landmark_hours: float = 4.0,
     horizons: Sequence[float] = HORIZONS_HOURS,
+    override_positions: str = "all",
 ) -> list[InterventionResult]:
     """End-to-end: load a trained run, score every intervention mode.
 
@@ -937,6 +1205,14 @@ def evaluate_interventions(
     run's landmark alert events that have a hazard head; outcomes and
     landmark rows follow :mod:`odyssey.inference.alerts` exactly. The
     bootstrap seed is ``seed``.
+
+    ``override_positions="visit_end"`` restricts the override to visit
+    ends and adds the ``visit_end_positions`` block to every result, with
+    the :data:`HAZARD_PAIRS` paired differences (``hazard_boot``
+    resamples, seed ``seed``) on the left mode's entry. The hazard block,
+    if also on, is still read at the landmark rows: those are the first
+    event of each 4 h bucket, not visit ends, so under ``visit_end`` the
+    hazard readout is mostly the un-overridden model's.
 
     Data preparation matches
     :func:`~odyssey.inference.run_inference.evaluate_run` exactly (same
@@ -1016,8 +1292,11 @@ def evaluate_interventions(
             device=device,
         )
 
+    _check_override_positions(override_positions, supervision)
+
     results = []
     tables: dict[str, LandmarkRiskTable] = {}
+    visit_end_tables: dict[str, VisitEndRowTable] = {}
     for mode in modes:
         logger.info("[interventions] scoring mode %r", mode)
         mode_subjects: dict[int, list[int]] | None = None
@@ -1032,6 +1311,11 @@ def evaluate_interventions(
                 landmark_hours=landmark_hours,
                 horizons=horizons,
             )
+        visit_end_scorer = (
+            VisitEndScorer(uncertain_band=uncertain_band)
+            if override_positions == "visit_end"
+            else None
+        )
         result = run_streaming_intervention(
             model,
             events_binned,
@@ -1051,11 +1335,15 @@ def evaluate_interventions(
             calibrated_tau=calibrated_tau,
             concept_names=[c.name for c in concepts],
             hazard_scorer=scorer,
+            override_positions=override_positions,
+            visit_end_scorer=visit_end_scorer,
         )
         if mode in CALIBRATED_MODES:
             result = replace(result, calibration_gamma=gamma_by_name)
         if scorer is not None:
             tables[mode] = scorer.table()
+        if visit_end_scorer is not None:
+            visit_end_tables[mode] = visit_end_scorer.table()
         results.append(result)
         baseline = results[0]
         latest = results[-1]
@@ -1066,21 +1354,102 @@ def evaluate_interventions(
             latest.top1_accuracy - baseline.top1_accuracy,
             latest.mean_task_loss,
         )
-    if hazard_targets is not None:
-        logger.info(
-            "[interventions] paired hazard bootstrap: %d resamples over %d landmark rows",
-            hazard_boot,
-            next(iter(tables.values())).n_rows if tables else 0,
+    return _attach_paired_blocks(
+        results,
+        hazard_tables=tables,
+        hazard_times=hazard_targets.times if hazard_targets is not None else None,
+        visit_end_tables=visit_end_tables,
+        n_boot=hazard_boot,
+        seed=seed,
+    )
+
+
+def _attach_paired_blocks(
+    results: list[InterventionResult],
+    *,
+    hazard_tables: dict[str, LandmarkRiskTable],
+    hazard_times: dict[str, EventTimes] | None,
+    visit_end_tables: dict[str, VisitEndRowTable],
+    n_boot: int,
+    seed: int,
+) -> list[InterventionResult]:
+    """Attach the hazard and visit-end blocks that were scored, if any."""
+    if hazard_times is not None:
+        results = _attach_hazard_blocks(
+            results, hazard_tables, hazard_times, n_boot=n_boot, seed=seed
         )
-        per_mode, paired = score_hazard_landmarks(
-            tables, hazard_targets.times, n_boot=hazard_boot, seed=seed
+    if visit_end_tables:
+        results = _attach_visit_end_blocks(
+            results, visit_end_tables, n_boot=n_boot, seed=seed
         )
-        results = [
-            replace(r, hazard=per_mode[r.mode], hazard_paired=paired[r.mode])
-            for r in results
-        ]
-        _log_hazard(results)
     return results
+
+
+def _attach_hazard_blocks(
+    results: Sequence[InterventionResult],
+    tables: dict[str, LandmarkRiskTable],
+    times: dict[str, EventTimes],
+    *,
+    n_boot: int,
+    seed: int,
+) -> list[InterventionResult]:
+    """Score the landmark tables, pair them, and attach the blocks per mode."""
+    logger.info(
+        "[interventions] paired hazard bootstrap: %d resamples over %d landmark rows",
+        n_boot,
+        next(iter(tables.values())).n_rows if tables else 0,
+    )
+    per_mode, paired = score_hazard_landmarks(tables, times, n_boot=n_boot, seed=seed)
+    out = [
+        replace(r, hazard=per_mode[r.mode], hazard_paired=paired[r.mode])
+        for r in results
+    ]
+    _log_hazard(out)
+    return out
+
+
+def _check_override_positions(
+    override_positions: str, supervision: ConceptSupervision
+) -> None:
+    if override_positions not in OVERRIDE_POSITIONS:
+        raise ValueError(
+            f"unknown override_positions {override_positions!r}; "
+            f"known: {OVERRIDE_POSITIONS}"
+        )
+    if override_positions == "visit_end" and supervision != "visit":
+        logger.warning(
+            "[interventions] override_positions='visit_end' on a run with "
+            "concept_supervision=%r: the concept head was supervised at stay "
+            "ends, which are the last visit end of each stream only",
+            supervision,
+        )
+
+
+def _attach_visit_end_blocks(
+    results: Sequence[InterventionResult],
+    tables: dict[str, VisitEndRowTable],
+    *,
+    n_boot: int,
+    seed: int,
+) -> list[InterventionResult]:
+    """Score the visit-end rows, pair them, and attach the block per mode."""
+    logger.info(
+        "[interventions] paired visit-end bootstrap: %d resamples over %d rows",
+        n_boot,
+        next(iter(tables.values())).n_rows,
+    )
+    blocks = score_visit_end_rows(tables, n_boot=n_boot, seed=seed)
+    out = [replace(r, visit_end_positions=blocks[r.mode]) for r in results]
+    for r in out:
+        block = r.visit_end_positions or {}
+        logger.info(
+            "[interventions] %s at visit ends: top1 %.4f, loss %.4f (n=%d)",
+            r.mode,
+            block["top1_accuracy"],
+            block["mean_task_loss"],
+            block["n_positions"],
+        )
+    return out
 
 
 def _concept_labels(
@@ -1249,7 +1618,23 @@ def _main() -> None:
         "--hazard-boot",
         type=int,
         default=1000,
-        help="bootstrap resamples for the paired hazard differences.",
+        help=(
+            "bootstrap resamples for the paired hazard differences and for "
+            "the paired visit-end differences."
+        ),
+    )
+    parser.add_argument(
+        "--override-positions",
+        choices=OVERRIDE_POSITIONS,
+        default="all",
+        help=(
+            "where truth/flip/random (and the calibrated modes) replace the "
+            "concept probability: 'all' positions (default, unchanged output) "
+            "or only each visit's last position ('visit_end'), where the "
+            "concept head was supervised; visit_end also adds a "
+            "visit_end_positions block (top-1 and loss over those positions "
+            "with paired subject-clustered bootstrap differences)."
+        ),
     )
     parser.add_argument(
         "--dump-per-subject",
@@ -1293,6 +1678,7 @@ def _main() -> None:
         calibrated_tau=args.calibrated_tau,
         hazard_heads=args.hazard_heads,
         hazard_boot=args.hazard_boot,
+        override_positions=args.override_positions,
     )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps([result_to_json(r) for r in results], indent=2))
@@ -1321,10 +1707,13 @@ if __name__ == "__main__":
 __all__ = [
     "HAZARD_PAIRS",
     "INTERVENTION_MODES",
+    "OVERRIDE_POSITIONS",
     "HazardLandmarkScorer",
     "InterventionResult",
     "LandmarkRiskTable",
     "PairedMeanDelta",
+    "VisitEndRowTable",
+    "VisitEndScorer",
     "evaluate_interventions",
     "hazard_paired_summary",
     "hazard_summary",
@@ -1333,5 +1722,9 @@ __all__ = [
     "result_to_json",
     "run_streaming_intervention",
     "score_hazard_landmarks",
+    "score_visit_end_rows",
     "subject_bootstrap_means",
+    "visit_end_paired_summary",
+    "visit_end_positions",
+    "visit_end_summary",
 ]
