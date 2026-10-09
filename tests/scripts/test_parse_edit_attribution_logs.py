@@ -80,3 +80,30 @@ def test_parse_log_ignores_per_subject_lines() -> None:
     # mistaken for sign-agreement rows.
     result = parse_log(SAMPLE)
     assert not any(c["event"].startswith("subject") for c in result["cells"])
+
+
+def test_parse_log_untagged_header_is_the_attributed_arm() -> None:
+    result = parse_log(SAMPLE)
+    assert result["selection"] == "attributed"
+    assert result["random_seed"] is None
+
+
+def test_parse_log_reads_selection_and_seed_tags() -> None:
+    tagged = SAMPLE.replace(
+        "top_k=4, index_frac=0.3333 ===",
+        "top_k=4, index_frac=0.3333, selection=random, seed=7 ===",
+    )
+    result = parse_log(tagged)
+    assert result["selection"] == "random"
+    assert result["random_seed"] == 7
+    assert result["n_subjects"] == 2
+    assert len(result["cells"]) == 3
+
+
+def test_parse_log_attributed_tag_without_seed() -> None:
+    tagged = SAMPLE.replace(
+        "top_k=4, index_frac=0.3333 ===", "top_k=4, selection=attributed ==="
+    )
+    result = parse_log(tagged)
+    assert result["selection"] == "attributed"
+    assert result["random_seed"] is None

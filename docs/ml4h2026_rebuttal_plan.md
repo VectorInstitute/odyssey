@@ -49,6 +49,16 @@ Each package says what exists, what to build, who runs it, and where the result 
 
   Set `--max-shards` to the split's full shard count on each VM (37 is MIMIC's). The transformer arm keeps the lever test's TBTT view (whole history, no context truncation), so its landmark rows are the model-free set, not the packed-context set `alerts.py` scores for that backbone.
 - Bank: `research_journal/figure_data/{vm1,vm2}/<run>/interventions_hazard.json`. New table generator `scripts/make_lever_hazard_table.py`.
+- Built 2026-10-09 (branch `rebuttal/visit-end-override`): `--override-positions visit_end` answers the reviewer's "does the true value help when the override is applied only where the concept head was supervised". The concept loss pools at each visit's last event (`chunk.visit_end`, the tokenizer's `visit_ends` flag), while the default `all` overrides every position with the running label; under `visit_end` truth/flip/random (and the calibrated modes) replace the probability only at those visit ends and every other position is the `none` model. Each mode's entry gains a `visit_end_positions` block ({n_positions, n_subjects, top1_accuracy, mean_task_loss, paired}) scored over only the visit ends that have an observed label inside the band and a next-token target (a stream's last visit has none), with `paired` on the left-hand mode (truth carries truth_minus_none and truth_minus_flip, flip carries flip_minus_none) holding 95% subject-clustered paired bootstrap intervals on the top-1 and loss differences (`--hazard-boot` resamples). The whole-stream top-1/loss are still reported. `--hazard-heads` may be combined, but the landmark rows are the first event of each 4 h bucket, not visit ends, so under `visit_end` the hazard block is mostly the un-overridden model and is not the headline. The default output is unchanged byte for byte. Command on each VM:
+
+  ```
+  python -m odyssey.inference.interventions --run-dir R --held-out-shard-dir D/held_out \
+      --output-json R/interventions_band15_visitend.json --max-shards 37 --num-lanes 64 \
+      --chunk-size 512 --uncertain-band 0.15 --modes none truth flip random \
+      --override-positions visit_end --checkpoint checkpoint_best.pt
+  ```
+
+  Bank as `research_journal/figure_data/{vm1,vm2}/<run>/interventions_visitend.json`. Rebuttal use: if truth helps on the visit-end subset, Appendix E's explanation (the head was never trained to receive an override mid-visit) stands and the lever claim is scoped to supervised positions; if it does not, the position mismatch is ruled out as the reason.
 - Rebuttal use: if truth moves the 24 h death or vasopressor hazard the right way, the lever verdict changes and the paper's Q3 gets a real endpoint. If it does not, the negative result becomes like-for-like with the edit test, which is what the review asked for. Either way it answers W1.
 - GEMINI: same script, run by Amrit, only if time.
 
@@ -134,6 +144,59 @@ Keep each block under 150 words. The response box on OpenReview is short.
 - Run `figures/pagecheck.py` and the awk comment check after every edit (the build has lost prose to `%` lines before).
 - The submitted source is `paper/ml4h/main_mixture.tex`; the old `main.tex` and its aux files were retired to `paper/ml4h/retired/` on 2026-09-25. `make_steering_table.py` and `make_specificity_table.py` now feed no table in the paper; keep them for the steering follow-up.
 
+### WP9. Reviewer-requested controls (added 2026-10-09)
+
+**Random-code control for Table 9 (tab:edit-attribution).** A reviewer asks for a random-code control to show that the concept ranking helps. The arm: for each of the same 50 held-out subjects, draw the same number of codes as the attributed arm edits (top-k = 4) uniformly from the same candidate pool in the same 24-hour window, worsen them with the identical edit machinery, and report the same sign agreement. Code on branch `rebuttal/random-code-control`: `python -m odyssey.inference.concept_edit_attribution` is the cohort driver (the Table 9 numbers came from an uncommitted scratch harness, `cohort_worsen.py`, whose stdout logs are banked under `research_journal/figure_data/edit_attribution/`; this CLI reproduces its log format so `scripts/parse_edit_attribution_logs.py` reads both). New flags: `--code-selection {attributed,random}` (default `attributed`), `--random-seed` (default 0), `--candidate-pool {mappable,all}` (default `mappable`: the distinct codes in the window that resolve to a panel signal with a worsen edit, the only codes either arm can act on; the banked eICU logs show exactly four edits per subject, which is consistent with that pool), `--index-frac` (the banked qSOFA and AKI headers carry `index_frac=0.3333`; its original definition is lost with the harness, here it is the fraction of the first qualifying visit's duration; the paper caption says 24 h into a visit, so the commands below use `--index-hours 24` and the attributed arm is re-run first to confirm reproduction before the random arm is read). The JSON output keeps per-subject codes, signals and hazard deltas, which also lifts the per-subject-CI limit noted on 2026-09-09.
+
+Subjects: the first 50 held-out subjects in shard order whose first visit lasts at least 24 h and whose window holds at least one worsenable code; the pool does not depend on the arm, so both arms score the same subjects. The random draw is seeded per subject from `(seed, subject_id)`, so it is reproducible and independent of subject order. Note the control can only differ from the attributed arm on subjects whose pool holds more than four worsenable codes; the summary line `candidate pool larger than top_k: m/n subjects` reports how many, and the eICU and MIMIC ICU-stay windows (vitals plus labs) are where the two arms separate.
+
+VM recipe as in WP1 to WP4: `PY=~/odyssey/.venv/bin/python`, code from a worktree on this branch (`cd ~/odyssey && git fetch origin && git worktree add ~/odyssey_rc rebuttal/random-code-control`), `PYTHONPATH=~/odyssey_rc`. Never `uv sync` on a VM. Four held-out shards is what the alert chains score by default and gives well over 50 eligible subjects; keep `--max-shards` identical across the arms of one concept.
+
+VM1 (MIMIC-IV, `full_run_v10`), one line per concept and arm; run the attributed arm first:
+
+```
+cd ~/odyssey_rc && export PYTHONPATH=~/odyssey_rc PY=~/odyssey/.venv/bin/python
+for C in sepsis3 qsofa aki_stage_3; do
+  for SEL in attributed random; do
+    $PY -m odyssey.inference.concept_edit_attribution \
+      --run-dir ~/runs/full_run_v10 \
+      --held-out-shard-dir ~/data/mimiciv_3.1_v1/data/held_out \
+      --concept $C --max-subjects 50 --top-k 4 --lookback-hours 24 --index-hours 24 \
+      --max-shards 4 --chunk-size 512 \
+      --code-selection $SEL --random-seed 0 \
+      --output-json ~/runs/full_run_v10/edit_attribution/cohort_${C}_${SEL}.json \
+      > ~/runs/full_run_v10/edit_attribution/cohort_${C}_${SEL}.log 2>&1
+  done
+done
+```
+
+VM2 (eICU-CRD, `eicu_full_v10`; no Sepsis-3 head on that checkpoint, as the paper states):
+
+```
+cd ~/odyssey_rc && export PYTHONPATH=~/odyssey_rc PY=~/odyssey/.venv/bin/python
+for C in qsofa aki_stage_3; do
+  for SEL in attributed random; do
+    $PY -m odyssey.inference.concept_edit_attribution \
+      --run-dir ~/runs/eicu_full_v10 \
+      --held-out-shard-dir ~/data/eicu_2.0_v1/data/held_out \
+      --concept $C --max-subjects 50 --top-k 4 --lookback-hours 24 --index-hours 24 \
+      --max-shards 4 --chunk-size 512 \
+      --code-selection $SEL --random-seed 0 \
+      --output-json ~/runs/eicu_full_v10/edit_attribution/cohort_${C}_${SEL}.json \
+      > ~/runs/eicu_full_v10/edit_attribution/cohort_${C}_${SEL}.log 2>&1
+  done
+done
+```
+
+Optional second random seed (`--random-seed 1`, output suffix `_random_s1`) if the first draw lands near a cell boundary. Then, on the laptop, bank the logs and JSONs under `research_journal/figure_data/edit_attribution/rebuttal/` and build the two-arm table:
+
+```
+uv run python scripts/parse_edit_attribution_logs.py research_journal/figure_data/edit_attribution/rebuttal/cohort_*_{attributed,random}.log --out research_journal/figure_data/edit_attribution/rebuttal/cohort_results_two_arm.json
+uv run python scripts/make_edit_attribution_table.py research_journal/figure_data/edit_attribution/rebuttal/cohort_results_two_arm.json --with-random --out paper/ml4h/tables/edit_attribution_random_control.tex
+```
+
+Without `--with-random` the table script drops the random rows and renders the published Table 9 unchanged; the CI table (`make_edit_attribution_ci_table.py`) labels a random-arm block "random codes". Read the attributed arm against the banked 87 to 97% band first; if it does not reproduce within the Wilson intervals of `tab:edit-attribution-ci`, the subject selection or index definition differs from the lost harness and the rebuttal cites the new paired pair (attributed vs random, same subjects) rather than the published row.
+
 ## Results so far (updated 2026-09-29, 01:00 UTC)
 
 Every number below is banked under `research_journal/figure_data/` in the run directory named, and was computed on all held-out shards unless stated. Runs launched 2026-09-25 from the `rebuttal/integration` branch; VM recipe and logs are in the session memory and the chain scripts under the VM home directories.
@@ -190,6 +253,24 @@ Two facts found on the way. First, the banked eICU Table 13 AKI cells are under 
 
 - Parameters: 32,233,101 (MIMIC-IV flagship) and 20,384,390 (eICU-CRD), the difference being the per-source next-event vocabulary head; `research_journal/figure_data/param_counts.json`. `paper/ml4h/tables/hparams.tex` generated by `scripts/make_hparams_table.py` with the GBM grid, estimator and panel sizes read from the code.
 - Cohort counts (`cohort_counts.json` under both flagship run directories): MIMIC-IV 291,702 / 36,463 / 36,462 subjects (train / tuning / held-out), 435,803 / 54,898 / 55,328 admissions, median stay 2.8 days, 53% female; per-subject prevalence vasopressor 5.0%, ICU admission 17.9%, AKI 18.2%, death 10.5%, Sepsis-3 12.6%, 30-day readmission 13.8%. eICU-CRD 133,084 / 16,636 / 16,635 subjects, 160,643 / 20,094 / 20,122 stays, years 2014 to 2016, median stay 5.5 days; prevalence vasopressor 27.8%, AKI 55.9%, death 8.8%, Sepsis-3 0.28%, readmission 10.5%.
+
+### WP9, reviewer-requested controls (run 2026-10-09): done, both negative for the reviewer's hypotheses
+
+Both were asked for by Reviewer 3P7y after the reviews landed; both ran on the submitted flagships with the VMs restarted for one day (stopped again 13:40 UTC).
+
+**Random-code control for Table 9.** Logs and per-subject JSONs under `research_journal/figure_data/edit_attribution/rebuttal/{mimic,eicu}/cohort_<concept>[_k1|_k2]_{attributed,random,random_s1}.*` (top-k 4, 1 and 2; random seeds 0 and 1; same 50 subjects per concept and arm, 24-hour window, `--index-hours 24`, four held-out shards). The attributed arm at top-k 4 reproduces the published 87 to 97% band.
+
+- Sign agreement is near-saturated: on MIMIC-IV any worsened panel signal raises every hazard, so random codes reach 96 to 100% on AKI and death, the same as the attributed codes. At top-k 4 the MIMIC-IV pool exceeds four codes for only 6 of 50 subjects, so the two arms coincide there; the control is read at top-k 1 and 2, where MIMIC-IV separates only on the ICU-admission and vasopressor cells (attributed 86 to 94% versus random 80 to 86% at one code).
+- eICU-CRD windows hold more editable codes (pool larger than k for 40 to 50 of 50 subjects): the attributed codes beat random codes by 10 to 20 points at one or two codes (AKI 90 to 98% versus 74 to 88%, vasopressor 86 to 94% versus 70 to 90%) and by 4 to 8 points at four.
+- What the ranking buys is targeting and effect size: the attributed codes move the target concept's probability 1.3 to 2 times further than random codes (Sepsis-3 on MIMIC-IV +0.108 versus +0.082 at one code, AKI stage 3 on eICU-CRD +0.040 versus +0.016) and change the hazards 1.5 to 7 times more.
+- Camera-ready: random-code rows go into Table 9 (`scripts/make_edit_attribution_table.py --with-random`), and the text says that sign agreement is a weak discriminator; the concept shift and the hazard magnitude are what the ranking improves.
+
+**Override applied only at visit ends (3P7y Q1).** `interventions_band15_visitend.json` under `vm1/full_run_v10/` and `vm2/eicu_full_v10/` (branch `rebuttal/visit-end-override`, `--override-positions visit_end`, band 0.15, modes none / truth / flip / random). The override is applied only at the last position of each visit, the position the concept loss is pooled on, and every other position is left as under `none`; the `visit_end_positions` block scores next-event top-1 and loss at the visit-end positions that have an observed concept inside the band and a next token, paired across modes with a subject-clustered bootstrap (1,000 resamples).
+
+- MIMIC-IV (14,848 positions, 8,764 subjects): top-1 8.03% none, 7.88% truth, 7.99% flip, 7.98% random. Truth minus none -0.15 points (-0.25 to -0.04) and +0.018 nats (+0.013 to +0.024), both separated and both worse; truth minus flip -0.11 points (-0.25 to +0.05) and -0.009 nats (-0.020 to +0.002), ties.
+- eICU-CRD (3,279 positions, 2,636 subjects): top-1 27.45% none, 27.26% truth, 27.11% flip, 27.02% random. Truth minus none -0.18 points (-0.61 to +0.27), tie, with loss +0.044 nats (+0.035 to +0.053), separated and worse; truth minus flip +0.15 points (-0.46 to +0.73) and +0.016 nats (-0.003 to +0.035), ties.
+- Top-1 at these positions is low on both databases because the target is the first event of the next visit. The whole-stream top-1 is unchanged to four decimals because only 15,097 (MIMIC-IV) and 18,622 (eICU-CRD) of 87M positions are edited.
+- Reading: restricting the override to the supervised positions does not create a lever, so the untrained-position explanation in Appendix E does not hold and the appendix will say so, with this variant next to the all-positions result.
 
 ### Code landed on `rebuttal/integration`
 
