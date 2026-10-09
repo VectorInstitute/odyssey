@@ -49,6 +49,16 @@ Each package says what exists, what to build, who runs it, and where the result 
 
   Set `--max-shards` to the split's full shard count on each VM (37 is MIMIC's). The transformer arm keeps the lever test's TBTT view (whole history, no context truncation), so its landmark rows are the model-free set, not the packed-context set `alerts.py` scores for that backbone.
 - Bank: `research_journal/figure_data/{vm1,vm2}/<run>/interventions_hazard.json`. New table generator `scripts/make_lever_hazard_table.py`.
+- Built 2026-10-09 (branch `rebuttal/visit-end-override`): `--override-positions visit_end` answers the reviewer's "does the true value help when the override is applied only where the concept head was supervised". The concept loss pools at each visit's last event (`chunk.visit_end`, the tokenizer's `visit_ends` flag), while the default `all` overrides every position with the running label; under `visit_end` truth/flip/random (and the calibrated modes) replace the probability only at those visit ends and every other position is the `none` model. Each mode's entry gains a `visit_end_positions` block ({n_positions, n_subjects, top1_accuracy, mean_task_loss, paired}) scored over only the visit ends that have an observed label inside the band and a next-token target (a stream's last visit has none), with `paired` on the left-hand mode (truth carries truth_minus_none and truth_minus_flip, flip carries flip_minus_none) holding 95% subject-clustered paired bootstrap intervals on the top-1 and loss differences (`--hazard-boot` resamples). The whole-stream top-1/loss are still reported. `--hazard-heads` may be combined, but the landmark rows are the first event of each 4 h bucket, not visit ends, so under `visit_end` the hazard block is mostly the un-overridden model and is not the headline. The default output is unchanged byte for byte. Command on each VM:
+
+  ```
+  python -m odyssey.inference.interventions --run-dir R --held-out-shard-dir D/held_out \
+      --output-json R/interventions_band15_visitend.json --max-shards 37 --num-lanes 64 \
+      --chunk-size 512 --uncertain-band 0.15 --modes none truth flip random \
+      --override-positions visit_end --checkpoint checkpoint_best.pt
+  ```
+
+  Bank as `research_journal/figure_data/{vm1,vm2}/<run>/interventions_visitend.json`. Rebuttal use: if truth helps on the visit-end subset, Appendix E's explanation (the head was never trained to receive an override mid-visit) stands and the lever claim is scoped to supervised positions; if it does not, the position mismatch is ruled out as the reason.
 - Rebuttal use: if truth moves the 24 h death or vasopressor hazard the right way, the lever verdict changes and the paper's Q3 gets a real endpoint. If it does not, the negative result becomes like-for-like with the edit test, which is what the review asked for. Either way it answers W1.
 - GEMINI: same script, run by Amrit, only if time.
 
