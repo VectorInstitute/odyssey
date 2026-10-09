@@ -43,7 +43,10 @@ repos:
       entry: python3 -m mypy --config-file pyproject.toml
       language: system
       types: [python]
-      exclude: 'tests|scripts/cohort/cohort_check_(mimic|eicu)\.py'
+      # tests, plus the cohort producers committed verbatim as they ran
+      # (scripts/cohort/README.md); pyproject's mypy exclude does not apply
+      # to files pre-commit passes by name.
+      exclude: ^(tests/|scripts/cohort/cohort_check_(mimic|eicu)\.py$)
 
   - repo: https://github.com/crate-ci/typos
     rev: typos-dict-v0.14.2

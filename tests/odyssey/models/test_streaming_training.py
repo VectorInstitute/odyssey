@@ -102,6 +102,7 @@ def test_streaming_loss_is_finite_when_a_patient_ends_in_chunk() -> None:
         "time_loss",
         "event_loss",
         "value_loss",
+        "summary_loss",
         "concept_loss",
         "orthogonality_loss",
         "observability_loss",
