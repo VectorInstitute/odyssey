@@ -2678,7 +2678,7 @@ requires-dist = [
     { name = "polars", marker = "extra == 'gemini'", specifier = ">=1.44.2" },
     { name = "protobuf", marker = "extra == 'text'", specifier = ">=7.36.2" },
     { name = "psycopg2-binary", marker = "extra == 'gemini'", specifier = ">=2.9.13" },
-    { name = "pyarrow", marker = "extra == 'gemini'", specifier = ">=15.0.0" },
+    { name = "pyarrow", marker = "extra == 'gemini'", specifier = ">=26.0.0" },
     { name = "scikit-learn", specifier = ">=1.9.1" },
     { name = "sentencepiece", marker = "extra == 'text'", specifier = ">=0.2.0" },
     { name = "sqlalchemy", marker = "extra == 'gemini'", specifier = ">=2.1.4" },
