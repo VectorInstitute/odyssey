@@ -150,7 +150,7 @@ ebm = [
 # rather than fixed upstream.
 survivalpfn = [
     "survivalpfn @ git+https://github.com/rgklab/SurvivalPFN.git",
-    "omegaconf>=2.3.0",
+    "omegaconf>=2.4.0",
 ]
 
 # MEDS-Tab (odyssey/inference/meds_tab_baseline.py), a fifth comparator: the
