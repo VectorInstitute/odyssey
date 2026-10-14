@@ -2686,7 +2686,7 @@ requires-dist = [
     { name = "tabicl", marker = "extra == 'tabicl'", specifier = ">=2.2.0" },
     { name = "torch", marker = "sys_platform != 'linux'", specifier = ">=2.12.1" },
     { name = "torch", marker = "sys_platform == 'linux'", specifier = "==2.6.0", index = "https://download.pytorch.org/whl/cu124" },
-    { name = "transformers", marker = "extra == 'text'", specifier = ">=5.18.0" },
+    { name = "transformers", marker = "extra == 'text'", specifier = ">=5.19.0" },
     { name = "urllib3", specifier = ">=2.8.0" },
 ]
 provides-extras = ["cuda", "gemini", "tabicl", "ebm", "survivalpfn", "meds-tab", "text"]
