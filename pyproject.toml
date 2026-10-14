@@ -205,7 +205,7 @@ dev = [
 docs = [
     "mkdocs>=1.5.0",
     "mkdocs-material>=9.0.0",
-    "mkdocstrings[python]>=1.0.6",
+    "mkdocstrings[python]>=1.0.7",
 ]
 
 # Default dependency groups to be installed
