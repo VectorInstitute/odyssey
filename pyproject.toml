@@ -104,7 +104,7 @@ gemini = [
     # extract_meds.py streams MEDS rows straight to per-shard Parquet
     # files (MedsShardWriter) -- pandas' own to_parquet needs an engine,
     # and this module also uses pyarrow directly for streaming writes.
-    "pyarrow>=15.0.0",
+    "pyarrow>=26.0.0",
     # extract_meds.py's per-table transforms are vectorized polars, not
     # pandas .iterrows() -- listed here too (not just in the base
     # dependencies above) since run.sh's minimal extract-node install is
