@@ -1074,14 +1074,14 @@ wheels = [
 
 [[package]]
 name = "hydra-core"
-version = "1.4.0rc2"
+version = "1.4.0rc3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "omegaconf" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/99/00/75f049019d222d020d9350ca703ed8749f8e1f0209ae3afa60b1297557a4/hydra_core-1.4.0rc2.tar.gz", hash = "sha256:381bc52a071fb4cb00def58f5a168b6d90a53ad7a6760f5d5470946648d1537d", size = 3375372, upload-time = "2026-10-21T11:56:22.117Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/76/3c/74eef117ed30f7d35b85c7b4027560da6059e6d0c18f3a214301af4c45a3/hydra_core-1.4.0rc3.tar.gz", hash = "sha256:c9cae4b6cd21e86cb9f4095f5d7f276115c1a92448936ca48aad8f02a5feccc1", size = 3375483, upload-time = "2026-10-25T15:25:53.562Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f7/67/91a81765e274e2cba93e2a1bd42a547c28cc3d888e561367b91d493bd1e8/hydra_core-1.4.0rc2-py3-none-any.whl", hash = "sha256:65e4dc20dd6a89be351a0ecdc7eb143a25194580aa5dad250e63cb43bab43a5b", size = 198160, upload-time = "2026-10-21T11:56:11.572Z" },
+    { url = "https://files.pythonhosted.org/packages/11/27/6c832963c39a2d09dd83972992bcd32b625eb9d91769753e8bf3a16aae0a/hydra_core-1.4.0rc3-py3-none-any.whl", hash = "sha256:96c4fe930b14d944f63a13161c32adf2d6728391a2038cc70a0c996766c5ea38", size = 198282, upload-time = "2026-10-25T15:25:42.949Z" },
 ]
 
 [[package]]
@@ -2655,7 +2655,7 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "einops", marker = "extra == 'cuda'", specifier = ">=0.7.0" },
-    { name = "hydra-core", specifier = ">=1.4.0rc2" },
+    { name = "hydra-core", specifier = ">=1.4.0rc3" },
     { name = "idna", specifier = ">=3.20" },
     { name = "interpret-core", marker = "extra == 'ebm'", specifier = ">=0.6.0" },
     { name = "mamba-ssm", marker = "extra == 'cuda'", specifier = "==2.3.0" },
