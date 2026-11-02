@@ -2661,7 +2661,7 @@ requires-dist = [
     { name = "mamba-ssm", marker = "extra == 'cuda'", specifier = "==2.3.0" },
     { name = "meds-tab", marker = "extra == 'meds-tab'", specifier = ">=0.2.0" },
     { name = "mimic-iv-meds" },
-    { name = "omegaconf", marker = "extra == 'survivalpfn'", specifier = ">=2.4.0" },
+    { name = "omegaconf", marker = "extra == 'survivalpfn'", specifier = ">=2.4.1rc2" },
     { name = "pandas", marker = "extra == 'gemini'", specifier = ">=3.1.0" },
     { name = "polars", specifier = ">=1.44.2" },
     { name = "polars", marker = "extra == 'gemini'", specifier = ">=1.44.2" },
@@ -2704,14 +2704,14 @@ docs = [
 
 [[package]]
 name = "omegaconf"
-version = "2.4.1rc1"
+version = "2.4.1rc2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e6/d2/ceaf43a3d56161d8ffd612fdd67a57177903eb509966193fb6cf4254f9fe/omegaconf-2.4.1rc1.tar.gz", hash = "sha256:188bdbcc0ffcc8d7a94e6b6cb0a54bfdbb6b9c48a480fdb5baf787f9ccbcf56b", size = 3554167, upload-time = "2026-10-13T17:23:53.373Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/40/11/1cd1b9135e1ccef7bf7438bc1a527846037381b3720f301a2b845fc8d97a/omegaconf-2.4.1rc2.tar.gz", hash = "sha256:5d44556d785cd6df60419ea1bca74740517e54877d5a50daed92a3c2a478f922", size = 3545933, upload-time = "2026-10-28T12:22:06.364Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7e/32/a6a45c4deb18849559f877b9da312ab20f32859402027ce8f3ee2e385f4d/omegaconf-2.4.1rc1-py3-none-any.whl", hash = "sha256:fc772c4e5a7cf6784bfbaa4aa9951676e88b65b82e4c150cf65e931f05ef9b68", size = 257872, upload-time = "2026-10-13T17:23:50.799Z" },
+    { url = "https://files.pythonhosted.org/packages/0c/0f/eea98e0a6c516c4d5f28ab9de29bf6dc00bb68e334d1f22e2af1bd1cb499/omegaconf-2.4.1rc2-py3-none-any.whl", hash = "sha256:4c7dbb92683503480617be4378b61df3d2765ccd1d2035dbe0d795325c10c143", size = 259143, upload-time = "2026-10-28T12:22:03.622Z" },
 ]
 
 [[package]]
