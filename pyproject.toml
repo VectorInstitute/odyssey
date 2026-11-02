@@ -186,7 +186,7 @@ text = [
 
 [dependency-groups]
 dev = [
-    "pytest>=9.0.3",
+    "pytest>=9.2.0",
     "pytest-cov>=6.0.0",
     "pytest-asyncio>=1.4.1",
     "pytest-mock>=3.17.0",
