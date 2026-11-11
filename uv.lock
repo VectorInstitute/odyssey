@@ -2305,7 +2305,7 @@ wheels = [
 
 [[package]]
 name = "nbqa"
-version = "1.9.1"
+version = "1.10.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "autopep8" },
@@ -2313,9 +2313,9 @@ dependencies = [
     { name = "tokenize-rt" },
     { name = "tomli" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/aa/76/62d2609924cf34445148cd6b5de694cf64c179cc416cac93182579620e57/nbqa-1.9.1.tar.gz", hash = "sha256:a1f4bcf587c597302fed295951001fc4e1be4ce0e77e1ab1b25ac2fbe3db0cdd", size = 38348, upload-time = "2024-11-10T12:21:58.333Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d2/d9/d6dd81a9d0180d4fd2f62ce5c73edc7ec4f2e2aab339f6a9d95a5bc7963f/nbqa-1.10.0.tar.gz", hash = "sha256:c39a6213ac98a3f2b298d81eef85337e6de7591b265d8f8585a52df5b09323a8", size = 39422, upload-time = "2026-11-07T10:51:18.825Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/28/88/4789719fbbe166d12d345b3ac66b96105f10001b16e00a9765ba29261a21/nbqa-1.9.1-py3-none-any.whl", hash = "sha256:95552d2f6c2c038136252a805aa78d85018aef922586270c3a074332737282e5", size = 35259, upload-time = "2024-11-10T12:21:56.731Z" },
+    { url = "https://files.pythonhosted.org/packages/01/5a/ab85a495529bd74f2cf618c4f25b1d635e7d0f874ee70fcab103a6158d50/nbqa-1.10.0-py3-none-any.whl", hash = "sha256:c0b028641f4c243abb038defa383fdd473c1b32e115fa447a64b58f461e027e7", size = 36044, upload-time = "2026-11-07T10:51:17.315Z" },
 ]
 
 [package.optional-dependencies]
@@ -2684,7 +2684,7 @@ provides-extras = ["cuda", "gemini", "tabicl", "ebm", "survivalpfn", "meds-tab",
 dev = [
     { name = "codecov", specifier = ">=2.1.13" },
     { name = "mypy", specifier = ">=2.4.1" },
-    { name = "nbqa", extras = ["toolchain"], specifier = ">=1.9.1" },
+    { name = "nbqa", extras = ["toolchain"], specifier = ">=1.10.0" },
     { name = "nbstripout", specifier = ">=0.6.1" },
     { name = "pip", specifier = ">=26.3" },
     { name = "pip-audit", specifier = ">=2.7.3" },
