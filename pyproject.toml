@@ -176,7 +176,7 @@ meds_tab = [
 # accelerate's device-mapping machinery -- add it if that changes.
 text = [
     "transformers>=5.22.2",
-    "sentencepiece>=0.2.0",
+    "sentencepiece>=0.2.3",
     "protobuf>=7.36.2",
 ]
 
