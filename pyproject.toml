@@ -160,7 +160,7 @@ survivalpfn = [
 # no direct-reference/hatchling wrinkle the way the survivalpfn extra
 # needed.
 meds_tab = [
-    "meds-tab>=0.2.0",
+    "meds-tab>=0.3.0",
 ]
 
 # Frozen text-encoder embeddings for the notes sidecar
