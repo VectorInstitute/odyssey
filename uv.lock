@@ -1932,7 +1932,7 @@ download = [
 
 [[package]]
 name = "meds-tab"
-version = "0.4.1"
+version = "0.5.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "hydra-core" },
@@ -1952,17 +1952,17 @@ dependencies = [
     { name = "tqdm" },
     { name = "xgboost" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/de/d5/211a617a1acd4e5ed6c689507c8cd6188a6417f48f9aedf15df86372d627/meds_tab-0.4.1.tar.gz", hash = "sha256:6cec143c7ff2deda9d737e7649f2c45b054856c12b94cb6123e90b95c3de2fb0", size = 1583571, upload-time = "2026-11-13T04:08:57.636Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/33/ab/451ebdf30fef6dcaacc96209816c61986c6145e93d2160134195dba5bbc9/meds_tab-0.5.1.tar.gz", hash = "sha256:58268938f5abff70d7189ca614466bf1b595a4775e322154678a596ed2c8f787", size = 1530542, upload-time = "2026-11-20T01:49:01.55Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f5/8e/7c95b29131223a702fc07dba1cb777f7aedc83c56c56a605246abd06a762/meds_tab-0.4.1-cp312-cp312-macosx_15_0_arm64.whl", hash = "sha256:8da7dd1d22d66e59689de6c2c425a0aa5db23a3ab8dea31ef91dde2d0b19f1cb", size = 465794, upload-time = "2026-11-13T04:08:42.635Z" },
-    { url = "https://files.pythonhosted.org/packages/d1/94/4f4ff7f6f6ee0a0b004295d0e023d53ded633490506ee0105adcb340b9cc/meds_tab-0.4.1-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:06376cd8ec8b4e08f93c12154864cd54960a5d4b4729cba9509502d988ce22ff", size = 1849854, upload-time = "2026-11-13T04:08:44.571Z" },
-    { url = "https://files.pythonhosted.org/packages/bf/0c/2b143148e8c06611bbf366261282ffb7aaf24aeae8c1afd86d6d6f16c461/meds_tab-0.4.1-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:08faeebcc447305a21e62455727812b95f95f3764b29297585c29fdfb2c2c509", size = 1911235, upload-time = "2026-11-13T04:08:46.542Z" },
-    { url = "https://files.pythonhosted.org/packages/de/85/37c110db359e5d27d197381faf7081c72b055644546a24e6a49d744a4650/meds_tab-0.4.1-cp312-cp312-win_amd64.whl", hash = "sha256:466aa2d2aecea03618b4f871102aa339f8655ec7f3038915077ab9e96a153c65", size = 524277, upload-time = "2026-11-13T04:08:48.185Z" },
-    { url = "https://files.pythonhosted.org/packages/18/3d/394e774d72405b111cb79e199f6e194897274175efdab0cac8905180e412/meds_tab-0.4.1-cp313-cp313-macosx_15_0_arm64.whl", hash = "sha256:ffd7cbfa25af22f1f270df2c3412bf9a14d37e53de6e3c281da13c5cd7474d2c", size = 465798, upload-time = "2026-11-13T04:08:49.872Z" },
-    { url = "https://files.pythonhosted.org/packages/c7/8f/5d85a37f235861beacebdddbe2ae63c454a6b33282a6a07faf3ea2f75813/meds_tab-0.4.1-cp313-cp313-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:0925bd0931a61f31be446ca0ac6c380405da9d0690234a7b90775566949bdc46", size = 1855265, upload-time = "2026-11-13T04:08:51.268Z" },
-    { url = "https://files.pythonhosted.org/packages/ed/0e/627a1a5907d7d0b20766d36ca1f79d7473f8706073a802b389bc0c9fb711/meds_tab-0.4.1-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:cba8e1c640c37d7e8b6d0b784442827a096b9c4925c378cdf5c79f7a972dc2af", size = 1917161, upload-time = "2026-11-13T04:08:53.254Z" },
-    { url = "https://files.pythonhosted.org/packages/92/d6/dcd779e8b3881153b621af7af99a28c9663537e782f73e7d34a189dc15fe/meds_tab-0.4.1-cp313-cp313-win_amd64.whl", hash = "sha256:49c115c1d64ed2c8ac168e11c0dad93d282b5bf11d0ee11d70d8fed7e7f63730", size = 524286, upload-time = "2026-11-13T04:08:54.927Z" },
-    { url = "https://files.pythonhosted.org/packages/39/e7/47af62c86b871d450137a630e8d25f9f316b9027bf5e5719bd8731f637e9/meds_tab-0.4.1-py3-none-any.whl", hash = "sha256:19e3a87a82867e9863a005cdef5211233ca351288c92697fb1e1d178fa34a062", size = 103715, upload-time = "2026-11-13T04:08:56.198Z" },
+    { url = "https://files.pythonhosted.org/packages/2b/8a/6cb1705ab2cd16bbcc4f9aa918af3c062f578ca2bc1848a380d81adc7da4/meds_tab-0.5.1-cp312-cp312-macosx_15_0_arm64.whl", hash = "sha256:462fa44faa5f6313784dc8a571c7cbd60feff49aac2b8c35c7cfa74c7dc6c7e0", size = 503067, upload-time = "2026-11-20T01:48:49.309Z" },
+    { url = "https://files.pythonhosted.org/packages/20/dd/18eccafa7e8d42b5cbe014beba1406daae5c205603d3fd814d3421e43ae5/meds_tab-0.5.1-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:85c75a270b790be53861a39b2a4b5a101c0c6ab1974f5f7b9f644d668d06f71d", size = 2132815, upload-time = "2026-11-20T01:48:50.506Z" },
+    { url = "https://files.pythonhosted.org/packages/e1/30/f5abbac0d923f95657678a9ea4110380c61fd73ca7065899b97a7fc45c85/meds_tab-0.5.1-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:fd5aed282ccf71720f160d6b2bb290fa32da23b80c84bcea065b03f45b96a6e2", size = 2195035, upload-time = "2026-11-20T01:48:51.945Z" },
+    { url = "https://files.pythonhosted.org/packages/f4/9e/e1844f8870db58fac60af05817bdd686a7a902c2ceeb1eafd12c7abdfd3e/meds_tab-0.5.1-cp312-cp312-win_amd64.whl", hash = "sha256:dbe5562fe9c1297a499609bbb087eb81ed50123982dcdc957f6648fe122e4443", size = 562395, upload-time = "2026-11-20T01:48:53.482Z" },
+    { url = "https://files.pythonhosted.org/packages/b5/3b/f7e67dafa2ea0dc1f77a68c9f7e81e604c116d0c575327a3618334d45688/meds_tab-0.5.1-cp313-cp313-macosx_15_0_arm64.whl", hash = "sha256:4da295633fc623735a5e258210979a56645f57b6a602d590d3d91a1a791c6d31", size = 503080, upload-time = "2026-11-20T01:48:54.822Z" },
+    { url = "https://files.pythonhosted.org/packages/81/21/736b6ea0cc180e3ec680f50b4e6a3f91bb24ca0e3adbbd96d6a764300bfb/meds_tab-0.5.1-cp313-cp313-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:60bda8883c346658268f0782201a29baffaed7775bb48a8d1a54432b96f327bf", size = 2139006, upload-time = "2026-11-20T01:48:56.081Z" },
+    { url = "https://files.pythonhosted.org/packages/a7/97/b9694c0f80552f332ae809c99dbe9ab0a6ebb5d5b20238a8be33986e34c3/meds_tab-0.5.1-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:947d940d46c5c27451985a67c96d7343e85eb5233e536f6db9f7bc4dd099fe51", size = 2200468, upload-time = "2026-11-20T01:48:57.416Z" },
+    { url = "https://files.pythonhosted.org/packages/28/d1/68982cc88773c138e69a34cd55601bebe94ebca165fdd7d2353c4f3ae7ae/meds_tab-0.5.1-cp313-cp313-win_amd64.whl", hash = "sha256:95a9e9dacc01678c4a10126885d11ee98fdc7890aebcf1c068593988c7cd46ae", size = 562395, upload-time = "2026-11-20T01:48:58.787Z" },
+    { url = "https://files.pythonhosted.org/packages/b5/b2/ccd7c77f1d07da0fa39e811601179524aae2635f80e65f1ba21e99197b1a/meds_tab-0.5.1-py3-none-any.whl", hash = "sha256:0fb2a4802be7ce3b6e72620e1beed78817ef9b15dfab8d9b97c3eda6fc6b8a1a", size = 125411, upload-time = "2026-11-20T01:49:00.172Z" },
 ]
 
 [[package]]
@@ -2687,7 +2687,7 @@ requires-dist = [
     { name = "idna", specifier = ">=3.20" },
     { name = "interpret-core", marker = "extra == 'ebm'", specifier = ">=0.6.0" },
     { name = "mamba-ssm", marker = "extra == 'cuda'", specifier = "==2.3.0" },
-    { name = "meds-tab", marker = "extra == 'meds-tab'", specifier = ">=0.4.1" },
+    { name = "meds-tab", marker = "extra == 'meds-tab'", specifier = ">=0.5.1" },
     { name = "mimic-iv-meds" },
     { name = "omegaconf", marker = "extra == 'survivalpfn'", specifier = ">=2.4.1rc2" },
     { name = "pandas", marker = "extra == 'gemini'", specifier = ">=3.1.1" },
