@@ -1905,7 +1905,7 @@ wheels = [
 
 [[package]]
 name = "meds-extract"
-version = "0.8.1"
+version = "0.9.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "dftly" },
@@ -1919,9 +1919,9 @@ dependencies = [
     { name = "universal-pathlib" },
     { name = "yaml-to-disk" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ec/f1/85c06540cfec557edc355a9f430a776a5d6f29a539103a5fcf99d55d055f/meds_extract-0.8.1.tar.gz", hash = "sha256:d77c12bb48840fba4c72f05c536465b2b66b470354f8779aba89a909cfcd311b", size = 490265, upload-time = "2026-11-07T23:55:52.805Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c5/e7/6a80cb3d0ccf0bd19f05110aa4a7ca7551af2d7329d53233c4574c361cc1/meds_extract-0.9.2.tar.gz", hash = "sha256:33240fc2867c752a9b0c49013fc782267549b3f02bd74a279e8a4a73d7d1477c", size = 549300, upload-time = "2026-11-20T20:39:25.342Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/02/e2/a3a1e5c65185ae21c9e55a9b9d8cfb1593a38f0e1e9366aa002c6d738949/meds_extract-0.8.1-py3-none-any.whl", hash = "sha256:d0102d5e8d0bee3790ba26b7554f57c90cdaeb5a91ee72927ff8e37d15dce1c1", size = 243733, upload-time = "2026-11-07T23:55:51.198Z" },
+    { url = "https://files.pythonhosted.org/packages/4b/34/4c51aeaf901119334c99647520f15870107abef4133b964f998c43b2853c/meds_extract-0.9.2-py3-none-any.whl", hash = "sha256:dfda150498678a3993b10bf3e79357e6cd967109761d2fce560fde8d4e168090", size = 260540, upload-time = "2026-11-20T20:39:23.763Z" },
 ]
 
 [package.optional-dependencies]
@@ -1986,7 +1986,7 @@ wheels = [
 
 [[package]]
 name = "meds-transforms"
-version = "0.7.1"
+version = "0.7.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "filelock" },
@@ -2000,9 +2000,9 @@ dependencies = [
     { name = "pytest" },
     { name = "yaml-to-disk" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e6/7c/6bff4281d64bf31f123a2577895e0d49852e597d36f300ac547dcec35d56/meds_transforms-0.7.1.tar.gz", hash = "sha256:d45e3beb283b001d649c4a6022afc8156765194e7024ec1c2d1a9302796796f2", size = 645236, upload-time = "2026-11-03T17:39:19.378Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/02/8d/1442a6b1da5ffd4ceec4f0944a514df285d712cb7cafe71ddfe72bc5d379/meds_transforms-0.7.3.tar.gz", hash = "sha256:b4019f77367766c25ebffaa162416afc7347cd21eb9c35fe8d3e8884aab235bb", size = 650405, upload-time = "2026-11-13T22:03:17.338Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0a/63/6d7a33e2eb7d299219dad54849381d6cab35ddf7000509c488be0f2d01ef/meds_transforms-0.7.1-py3-none-any.whl", hash = "sha256:21b2b424b23b20b27b232451f0d4c4c98f47eb7387a6da0b94ccbe7984228cde", size = 232478, upload-time = "2026-11-03T17:39:17.726Z" },
+    { url = "https://files.pythonhosted.org/packages/89/bb/6b76860dd6d121c5a41ddedefe5e06463821baf1d2497a0fb39f9c622641/meds_transforms-0.7.3-py3-none-any.whl", hash = "sha256:411bba400e4d18e8ec57053b2e73f5b2c08f9057ae7170d0a12b18976389e831", size = 235471, upload-time = "2026-11-13T22:03:15.705Z" },
 ]
 
 [[package]]
@@ -2016,15 +2016,15 @@ wheels = [
 
 [[package]]
 name = "mimic-iv-meds"
-version = "0.3.0"
+version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "meds-extract", extra = ["download"] },
     { name = "sumeds" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/39/08/219233734e59ab44093c17d823e4de3be8f9aa3d7d2c51263779f115c632/mimic_iv_meds-0.3.0.tar.gz", hash = "sha256:a03cc7fddc9c4b34a0bac3451b5caebfcf1453c5ed3a4af2c602a033d4997e3b", size = 97584, upload-time = "2026-11-12T02:22:07.913Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/72/10/9a67663a0c629c21bb644f73cf4e4b6d09895875ecb8a58d54e5be63011b/mimic_iv_meds-0.4.0.tar.gz", hash = "sha256:5a394257f16f6cadfcfd640450e90f8b626c5e5e5efb2dce25cf95f3d2e30663", size = 139023, upload-time = "2026-11-21T03:39:45.95Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/25/b8/b5eb43a9e0b950a493b792414886c7ef09edf1f3a69b178e7a41261a182a/mimic_iv_meds-0.3.0-py3-none-any.whl", hash = "sha256:347e61bfd4423080649cb9a687bfe6b34e31c5435aea961304bbd550a39e5be3", size = 24466, upload-time = "2026-11-12T02:22:06.59Z" },
+    { url = "https://files.pythonhosted.org/packages/19/a0/bfc0aa126cc161d7310c7af38ff1507df67b7eacb15affced25d46e1cdf6/mimic_iv_meds-0.4.0-py3-none-any.whl", hash = "sha256:3128df6ad3e67f71ccec3af3882419baca2a1931b397cf98e3d53837b3c5b2e7", size = 35525, upload-time = "2026-11-21T03:39:44.519Z" },
 ]
 
 [[package]]
@@ -4166,7 +4166,7 @@ wheels = [
 
 [[package]]
 name = "sumeds"
-version = "0.6.3"
+version = "0.6.11"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "meds" },
@@ -4175,9 +4175,9 @@ dependencies = [
     { name = "pyyaml" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ce/6f/b975cdbe65f03b07c252f06e2fb53c90c47557ef52d1d410fdcac6f67156/sumeds-0.6.3.tar.gz", hash = "sha256:7b1e8bf1d3b1b5fd2d1e9ceca8e683527bb2890028b1acf795488fe322df5b84", size = 57321, upload-time = "2026-11-08T00:41:13.116Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/dd/a2/cdc870e312de8573ace5c95cce91040c3780cbd0b28cff08ce235dd4a4c9/sumeds-0.6.11.tar.gz", hash = "sha256:1dd745697bde1d85b43d1a2277ad6bf85f9ebfb916df923952f403254ee9d574", size = 98638, upload-time = "2026-11-21T00:14:33.307Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/63/b8/109433e85b1b379df75c017b519dbe52c32f464630ee02416c2b295b4824/sumeds-0.6.3-py3-none-any.whl", hash = "sha256:24aefed498232c84d386f12ea97afe9ad1895fc0d5f34ec754a1bbf4a8b1997a", size = 63123, upload-time = "2026-11-08T00:41:11.814Z" },
+    { url = "https://files.pythonhosted.org/packages/a1/72/0bd61cfd04378fb51e3a85b146dcfe5118aa35a2d031d7e598955eca2eb5/sumeds-0.6.11-py3-none-any.whl", hash = "sha256:3cb49c111c6617b1b3267132089009cf54b79a84de79a62f02900db6b820ad42", size = 108354, upload-time = "2026-11-21T00:14:32.025Z" },
 ]
 
 [[package]]
